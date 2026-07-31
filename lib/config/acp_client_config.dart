@@ -6,6 +6,7 @@ import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
 import '../memory/memory_config.dart';
 import '../storage/sqlite_storage_config.dart';
+import 'assistant_agent_config.dart';
 
 class AcpClientConfig {
   const AcpClientConfig({
@@ -16,6 +17,7 @@ class AcpClientConfig {
     this.clientProviders = const AcpClientProviderConfig(),
     this.memory = const MemoryConfig(),
     this.storage = const SqliteStorageConfig(),
+    this.assistantAgent = const AssistantAgentConfig(),
     this.configPath,
     this.defaultAgentServerName,
     this.runtimeSecretGeneration = 0,
@@ -31,6 +33,7 @@ class AcpClientConfig {
   final AcpClientProviderConfig clientProviders;
   final MemoryConfig memory;
   final SqliteStorageConfig storage;
+  final AssistantAgentConfig assistantAgent;
   final String? configPath;
   final String? defaultAgentServerName;
 
@@ -70,6 +73,7 @@ class AcpClientConfig {
       clientProviders: clientProviders,
       memory: memory,
       storage: storage,
+      assistantAgent: assistantAgent,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
       runtimeSecretGeneration: runtimeSecretGeneration,
@@ -161,6 +165,12 @@ class AcpClientConfig {
         'sqliteStorage',
       ], fieldName: 'storage'),
     );
+    final assistantAgent = AssistantAgentConfig.fromJson(
+      _aliasedValue(json, const <String>[
+        'assistant_agent',
+        'assistantAgent',
+      ], fieldName: 'assistant_agent'),
+    );
     final serversRaw = _aliasedValue(json, const <String>[
       'agent_servers',
       'agentServers',
@@ -173,6 +183,7 @@ class AcpClientConfig {
         clientProviders: clientProviders,
         memory: memory,
         storage: storage,
+        assistantAgent: assistantAgent,
       );
     }
     if (serversRaw is! Map<String, dynamic>) {
@@ -199,6 +210,7 @@ class AcpClientConfig {
         clientProviders: clientProviders,
         memory: memory,
         storage: storage,
+        assistantAgent: assistantAgent,
       );
     }
 
@@ -222,6 +234,7 @@ class AcpClientConfig {
       clientProviders: clientProviders,
       memory: memory,
       storage: storage,
+      assistantAgent: assistantAgent,
       configPath: configPath,
       defaultAgentServerName: preferredName,
     );

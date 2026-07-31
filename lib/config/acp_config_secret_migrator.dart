@@ -62,6 +62,7 @@ final class AcpConfigSecretMigrator {
           clientProviders: clientProviders,
           memory: config.memory,
           storage: config.storage,
+          assistantAgent: config.assistantAgent,
           configPath: config.configPath,
           defaultAgentServerName: config.defaultAgentServerName,
           runtimeSecretGeneration: ++_runtimeSecretGeneration,

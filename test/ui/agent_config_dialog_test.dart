@@ -96,6 +96,98 @@ void main() {
     expect(savedConfig?.memory.maintenance.idleEnabled, isTrue);
   });
 
+  testWidgets('AgentConfigDialog saves the Assistant Agent profile', (
+    tester,
+  ) async {
+    AcpClientConfig? savedConfig;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentConfigDialog(
+            configPath: '/Users/example/.config/ianvs-acp/settings.json',
+            activeAgentName: 'Codex',
+            onSaveConfig: (config) async {
+              savedConfig = config;
+              return config;
+            },
+            agentServers: const [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/codex',
+              ),
+              AgentServerConfig(
+                name: 'Pi',
+                type: 'custom',
+                command: '/usr/local/bin/pi',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(
+      find.byKey(const Key('assistant-agent-enabled-switch')),
+    );
+    final enabledSwitch = tester.widget<Switch>(
+      find.descendant(
+        of: find.byKey(const Key('assistant-agent-enabled-switch')),
+        matching: find.byType(Switch),
+      ),
+    );
+    enabledSwitch.onChanged?.call(true);
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('assistant-agent-name-field')),
+    );
+    final dropdown = tester.widget<DropdownButton<String>>(
+      find.descendant(
+        of: find.byKey(const Key('assistant-agent-name-field')),
+        matching: find.byType(DropdownButton<String>),
+      ),
+    );
+    dropdown.onChanged?.call('Pi');
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const Key('assistant-agent-model-field')),
+    );
+    await tester.enterText(
+      find.byKey(const Key('assistant-agent-model-field')),
+      'deepseek-v3',
+    );
+    await tester.ensureVisible(
+      find.byKey(const Key('assistant-title-character-limit-field')),
+    );
+    await tester.enterText(
+      find.byKey(const Key('assistant-title-character-limit-field')),
+      '32',
+    );
+    await tester.ensureVisible(
+      find.byKey(const Key('assistant-agent-validate-button')),
+    );
+    tester
+        .widget<OutlinedButton>(
+          find.byKey(const Key('assistant-agent-validate-button')),
+        )
+        .onPressed
+        ?.call();
+    await tester.pump();
+
+    expect(find.text('Configuration ready'), findsOneWidget);
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    expect(savedConfig?.assistantAgent.enabled, isTrue);
+    expect(savedConfig?.assistantAgent.agentName, 'Pi');
+    expect(savedConfig?.assistantAgent.model, 'deepseek-v3');
+    expect(savedConfig?.assistantAgent.fallbackTitleCharacters, 32);
+    expect(savedConfig?.assistantAgent.generateSessionTitles, isTrue);
+    expect(savedConfig?.assistantAgent.summarizeTurns, isTrue);
+    expect(savedConfig?.assistantAgent.collapseExecutionProcess, isTrue);
+  });
+
   testWidgets('AgentConfigDialog renders user config and agent servers', (
     tester,
   ) async {

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
+import '../acp/assistant_agent_enhancer.dart';
 import '../acp/acp_input_budget.dart' as acp;
 import '../acp/acp_permission_request.dart';
 import '../acp/acp_permission_reviewer.dart';
@@ -16,6 +17,7 @@ import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
 import '../acp/session_title.dart';
+import '../config/assistant_agent_config.dart';
 import '../memory/acp_memory_middleware.dart';
 import 'connection_state.dart';
 import '../tasks/permission_context.dart';
@@ -26,10 +28,37 @@ enum ChatPermissionEventType { requested, resolved }
 
 enum ChatPromptSubmissionResult {
   submitted,
+  queued,
   empty,
   busy,
   sessionUnavailable,
   failed,
+}
+
+class ChatQueuedPrompt {
+  const ChatQueuedPrompt({
+    required this.id,
+    required this.text,
+    required this.attachments,
+    required this.createdAt,
+    this.guide = false,
+  });
+
+  final int id;
+  final String text;
+  final List<PromptAttachment> attachments;
+  final DateTime createdAt;
+  final bool guide;
+
+  ChatQueuedPrompt copyWith({bool? guide}) {
+    return ChatQueuedPrompt(
+      id: id,
+      text: text,
+      attachments: attachments,
+      createdAt: createdAt,
+      guide: guide ?? this.guide,
+    );
+  }
 }
 
 typedef ChatAgentEventObserver =
@@ -2479,6 +2508,9 @@ class ChatController extends ChangeNotifier {
         const <AcpPermissionTrustRule>[],
     this.memoryMiddleware,
     this.permissionReviewer,
+    this.assistantAgentConfig = const AssistantAgentConfig(),
+    this.assistantAgentEnhancer,
+    this.enableAutomaticSessionTitles = false,
   }) : permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     if (permissionHistoryLimit <= 0) {
       throw ArgumentError.value(
@@ -2528,6 +2560,9 @@ class ChatController extends ChangeNotifier {
   final List<AcpPermissionTrustRule> permissionTrustRules;
   final AcpMemoryMiddleware? memoryMiddleware;
   final AcpPermissionReviewer? permissionReviewer;
+  final AssistantAgentConfig assistantAgentConfig;
+  final AssistantAgentEnhancer? assistantAgentEnhancer;
+  final bool enableAutomaticSessionTitles;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? _currentSession;
@@ -2543,9 +2578,20 @@ class ChatController extends ChangeNotifier {
   late final UnmodifiableListView<ChatMessage> _messagesView =
       UnmodifiableListView<ChatMessage>(_messages);
   UnmodifiableListView<ChatMessage> get messages => _messagesView;
+  final List<ChatQueuedPrompt> _queuedPrompts = <ChatQueuedPrompt>[];
+  late final UnmodifiableListView<ChatQueuedPrompt> _queuedPromptsView =
+      UnmodifiableListView<ChatQueuedPrompt>(_queuedPrompts);
+  UnmodifiableListView<ChatQueuedPrompt> get queuedPrompts =>
+      _queuedPromptsView;
+  int _nextQueuedPromptId = 0;
+  bool _dispatchingQueuedPrompt = false;
   int messagesRevision = 0;
   int _nextTurnId = 0;
   int? _activeTurnId;
+  int? _pendingEnhancementTurnId;
+  String? _pendingEnhancementPrompt;
+  String? _pendingEnhancementSessionId;
+  final Set<String> _titleEnhancementStartedSessionIds = <String>{};
   int _activeTimelineRetainedBytes = _retainedListHostBytes;
   bool _enforcingTimelineBudget = false;
   List<Map<String, Object?>> _availableCommands =
@@ -3184,6 +3230,42 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  void _applyFallbackSessionTitle(String sessionId, String firstPrompt) {
+    final fallback = _boundedSessionTitle(
+      firstPrompt,
+      assistantAgentConfig.fallbackTitleCharacters,
+    );
+    if (fallback == null) return;
+    _updateSessionMetadata(sessionId, (session) {
+      if (session.titleOverride?.trim().isNotEmpty == true) return session;
+      if (session.title?.trim().isNotEmpty == true) return session;
+      return session.copyWith(title: fallback, updatedAt: DateTime.now());
+    });
+  }
+
+  void _scheduleAssistantSessionTitle(String sessionId, String firstPrompt) {
+    final enhancer = assistantAgentEnhancer;
+    if (enhancer == null ||
+        !assistantAgentConfig.isConfigured ||
+        !assistantAgentConfig.generateSessionTitles ||
+        !_titleEnhancementStartedSessionIds.add(sessionId)) {
+      return;
+    }
+    unawaited(() async {
+      final generated = await enhancer.generateSessionTitle(
+        sessionId: sessionId,
+        firstPrompt: firstPrompt,
+      );
+      if (_isDisposed) return;
+      final title = _boundedSessionTitle(generated, 64);
+      if (title == null) return;
+      _updateSessionMetadata(sessionId, (session) {
+        if (session.titleOverride?.trim().isNotEmpty == true) return session;
+        return session.copyWith(title: title, updatedAt: DateTime.now());
+      });
+    }());
+  }
+
   void setSessionArchived(String sessionId, bool archived) {
     _updateSessionMetadata(sessionId, (session) {
       if (session.archived == archived) return session;
@@ -3752,6 +3834,83 @@ class ChatController extends ChangeNotifier {
         !sameSessionWorkspaceIdentity(boundSession, candidate);
   }
 
+  Future<ChatPromptSubmissionResult> submitOrQueuePrompt(
+    String text, {
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    if (!isStreaming && !isSessionOperationRunning) {
+      return sendPrompt(text, attachments: attachments);
+    }
+    return Future<ChatPromptSubmissionResult>.value(
+      enqueuePrompt(text, attachments: attachments),
+    );
+  }
+
+  ChatPromptSubmissionResult enqueuePrompt(
+    String text, {
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+    bool guide = false,
+  }) {
+    final prompt = text.trim();
+    if (prompt.isEmpty && attachments.isEmpty) {
+      return ChatPromptSubmissionResult.empty;
+    }
+    final item = ChatQueuedPrompt(
+      id: ++_nextQueuedPromptId,
+      text: prompt,
+      attachments: List<PromptAttachment>.unmodifiable(attachments),
+      createdAt: DateTime.now(),
+      guide: guide,
+    );
+    if (guide) {
+      _queuedPrompts.insert(0, item);
+    } else {
+      _queuedPrompts.add(item);
+    }
+    _notifyListeners();
+    return ChatPromptSubmissionResult.queued;
+  }
+
+  void guideQueuedPrompt(int id) {
+    final index = _queuedPrompts.indexWhere((item) => item.id == id);
+    if (index == -1) return;
+    final selected = _queuedPrompts.removeAt(index).copyWith(guide: true);
+    for (var cursor = 0; cursor < _queuedPrompts.length; cursor += 1) {
+      final item = _queuedPrompts[cursor];
+      if (item.guide) {
+        _queuedPrompts[cursor] = item.copyWith(guide: false);
+      }
+    }
+    _queuedPrompts.insert(0, selected);
+    _notifyListeners();
+  }
+
+  void removeQueuedPrompt(int id) {
+    final before = _queuedPrompts.length;
+    _queuedPrompts.removeWhere((item) => item.id == id);
+    if (_queuedPrompts.length != before) _notifyListeners();
+  }
+
+  void clearQueuedPrompts() {
+    if (_queuedPrompts.isEmpty) return;
+    _queuedPrompts.clear();
+    _notifyListeners();
+  }
+
+  void reorderQueuedPrompt(int oldIndex, int newIndex) {
+    if (oldIndex < 0 ||
+        oldIndex >= _queuedPrompts.length ||
+        newIndex < 0 ||
+        newIndex > _queuedPrompts.length) {
+      return;
+    }
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (newIndex == oldIndex) return;
+    final item = _queuedPrompts.removeAt(oldIndex);
+    _queuedPrompts.insert(newIndex, item);
+    _notifyListeners();
+  }
+
   Future<ChatPromptSubmissionResult> sendPrompt(
     String text, {
     List<PromptAttachment> attachments = const <PromptAttachment>[],
@@ -3774,6 +3933,10 @@ class ChatController extends ChangeNotifier {
     final session = currentSession;
     if (session == null) return ChatPromptSubmissionResult.sessionUnavailable;
     _removeLocalUnstartedSessionId(session.id);
+    final isFirstUserPrompt = _messages.isEmpty;
+    final titleSeed = prompt.isNotEmpty
+        ? prompt
+        : attachments.map((attachment) => attachment.name).join(' ');
 
     final memoryTurnId = _nextMemoryTurnId();
     final prepared = await memoryMiddleware?.preparePrompt(
@@ -3789,6 +3952,9 @@ class ChatController extends ChangeNotifier {
     _finishTurnBudget();
     _startLocalTurn();
     _turnBudget = _TurnBudgetState(inputBudget);
+    _pendingEnhancementTurnId = _activeTurnId;
+    _pendingEnhancementPrompt = prompt;
+    _pendingEnhancementSessionId = session.id;
 
     final contentBlocks = attachments
         .map((attachment) => attachment.toResourceLink())
@@ -3811,6 +3977,12 @@ class ChatController extends ChangeNotifier {
         metadata: userMetadata,
       ),
     );
+    if (enableAutomaticSessionTitles &&
+        isFirstUserPrompt &&
+        titleSeed.trim().isNotEmpty) {
+      _applyFallbackSessionTitle(session.id, titleSeed);
+      _scheduleAssistantSessionTitle(session.id, titleSeed);
+    }
     isStreaming = true;
     status = ConnectionStatus.streaming;
     lastError = null;
@@ -5501,8 +5673,11 @@ class ChatController extends ChangeNotifier {
   }
 
   void _clearMessages() {
-    if (_messages.isEmpty) return;
-    _mutateMessages(_messages.clear);
+    if (_messages.isNotEmpty) _mutateMessages(_messages.clear);
+    if (_queuedPrompts.isNotEmpty) {
+      _queuedPrompts.clear();
+      _dispatchingQueuedPrompt = false;
+    }
   }
 
   void _mutateMessages(VoidCallback mutation, {bool enforceBudget = true}) {
@@ -7101,6 +7276,11 @@ class ChatController extends ChangeNotifier {
   }
 
   void _finishStreaming({bool notify = true, bool suppressProjection = false}) {
+    final enhancementTurnId = isStreaming ? _pendingEnhancementTurnId : null;
+    final enhancementPrompt = isStreaming ? _pendingEnhancementPrompt : null;
+    final enhancementSessionId = isStreaming
+        ? _pendingEnhancementSessionId
+        : null;
     final previousProjectionSuppression = _suppressAgentEventProjection;
     if (suppressProjection) _suppressAgentEventProjection = true;
     try {
@@ -7110,6 +7290,9 @@ class ChatController extends ChangeNotifier {
     }
     if (!isStreaming) return;
     isStreaming = false;
+    _pendingEnhancementTurnId = null;
+    _pendingEnhancementPrompt = null;
+    _pendingEnhancementSessionId = null;
     _cancelPendingPermissionRequestAfterPromptEnd();
     if (status != ConnectionStatus.error) {
       status = currentSession == null
@@ -7124,7 +7307,162 @@ class ChatController extends ChangeNotifier {
     if (extractionContext != null) {
       unawaited(memoryMiddleware?.extractTurn(extractionContext));
     }
+    if (enhancementTurnId != null &&
+        enhancementPrompt != null &&
+        enhancementSessionId != null) {
+      _scheduleAssistantTurnSummary(
+        sessionId: enhancementSessionId,
+        turnId: enhancementTurnId,
+        prompt: enhancementPrompt,
+      );
+    }
     if (notify) _notifyListeners();
+    _scheduleQueuedPromptDispatch();
+  }
+
+  void _scheduleQueuedPromptDispatch() {
+    if (_isDisposed ||
+        _dispatchingQueuedPrompt ||
+        isStreaming ||
+        isSessionOperationRunning ||
+        status == ConnectionStatus.error ||
+        _queuedPrompts.isEmpty) {
+      return;
+    }
+    _dispatchingQueuedPrompt = true;
+    scheduleMicrotask(() async {
+      if (_isDisposed) return;
+      ChatQueuedPrompt? item;
+      try {
+        final guideIndex = _queuedPrompts.indexWhere((queued) => queued.guide);
+        final index = guideIndex == -1 ? 0 : guideIndex;
+        item = _queuedPrompts.removeAt(index);
+        _notifyListeners();
+        final result = await sendPrompt(
+          item.text,
+          attachments: item.attachments,
+        );
+        if (result != ChatPromptSubmissionResult.submitted &&
+            result != ChatPromptSubmissionResult.empty) {
+          _queuedPrompts.insert(0, item);
+          _notifyListeners();
+        }
+      } on Object {
+        if (item != null &&
+            !_queuedPrompts.any((queued) => queued.id == item!.id)) {
+          _queuedPrompts.insert(0, item);
+          _notifyListeners();
+        }
+      } finally {
+        _dispatchingQueuedPrompt = false;
+      }
+    });
+  }
+
+  void _scheduleAssistantTurnSummary({
+    required String sessionId,
+    required int turnId,
+    required String prompt,
+  }) {
+    final enhancer = assistantAgentEnhancer;
+    if (enhancer == null ||
+        !assistantAgentConfig.isConfigured ||
+        !assistantAgentConfig.summarizeTurns) {
+      return;
+    }
+    final completedTurn = _completedTurnTranscript(turnId);
+    if (completedTurn.trim().isEmpty) return;
+    unawaited(() async {
+      final summary = await enhancer.summarizeTurn(
+        AssistantTurnSummaryRequest(
+          sessionId: sessionId,
+          turnId: turnId,
+          userPrompt: prompt,
+          completedTurn: completedTurn,
+        ),
+      );
+      if (_isDisposed ||
+          summary == null ||
+          summary.trim().isEmpty ||
+          !_sessionIdsMatch(currentSession?.id, sessionId)) {
+        return;
+      }
+      _insertAssistantSummary(
+        turnId: turnId,
+        summary: summary.trim(),
+        collapseProcess: assistantAgentConfig.collapseExecutionProcess,
+      );
+    }());
+  }
+
+  String _completedTurnTranscript(int turnId) {
+    final buffer = StringBuffer();
+    for (final message in _messages) {
+      if (message.turnId != turnId ||
+          message.metadata['kind'] == 'assistant_summary') {
+        continue;
+      }
+      final role = switch (message.role) {
+        ChatMessageRole.user => 'USER',
+        ChatMessageRole.assistant => 'ASSISTANT',
+        ChatMessageRole.tool => 'TOOL',
+        ChatMessageRole.error => 'ERROR',
+        ChatMessageRole.status => 'STATUS',
+      };
+      final text = message.text.trim();
+      if (text.isNotEmpty) {
+        buffer
+          ..writeln('$role:')
+          ..writeln(text);
+      }
+      final contentBlocks = message.metadata['contentBlocks'];
+      if (contentBlocks is List && contentBlocks.isNotEmpty) {
+        buffer.writeln('$role ATTACHMENTS: ${contentBlocks.length}');
+      }
+    }
+    return buffer.toString().trim();
+  }
+
+  void _insertAssistantSummary({
+    required int turnId,
+    required String summary,
+    required bool collapseProcess,
+  }) {
+    if (_messages.any(
+      (message) =>
+          message.metadata['kind'] == 'assistant_summary' &&
+          message.metadata['sourceTurnId'] == turnId,
+    )) {
+      return;
+    }
+    final message = _prepareOwnedMessage(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: summary,
+        metadata: <String, Object?>{
+          'kind': 'assistant_summary',
+          'sourceTurnId': turnId,
+          'collapseProcess': collapseProcess,
+          'assistantAgent': assistantAgentConfig.agentName,
+        },
+        inputBudget: inputBudget,
+      ),
+      turnId: turnId,
+    );
+    if (!_canFitActiveMessageRetainedDelta(
+      message.retainedBytes + _retainedListItemHostBytes,
+    )) {
+      return;
+    }
+    var insertionIndex = _messages.length;
+    for (var index = _messages.length - 1; index >= 0; index -= 1) {
+      if (_messages[index].turnId == turnId) {
+        insertionIndex = index + 1;
+        break;
+      }
+    }
+    _mutateMessages(() => _messages.insert(insertionIndex, message));
+    _notifyListeners();
   }
 
   MemoryTurnContext? _takePendingMemoryExtraction() {
@@ -7327,6 +7665,7 @@ class ChatController extends ChangeNotifier {
     await _ignoreCleanup(_permissionSubscription.cancel);
     await _ignoreCleanup(_permissionInvalidationSubscription.cancel);
     await _ignoreCleanup(client.dispose);
+    await _ignoreCleanup(() => assistantAgentEnhancer?.dispose());
     await _ignoreCleanup(() => permissionReviewer?.dispose());
     memoryMiddleware?.dispose();
   }
@@ -7399,6 +7738,15 @@ class ChatController extends ChangeNotifier {
       turnBudget.thoughtTarget?.text;
     }
   }
+}
+
+String? _boundedSessionTitle(String? value, int maximumCharacters) {
+  final normalized = normalizeSessionTitle(value);
+  if (normalized == null) return null;
+  final runes = normalized.runes.toList(growable: false);
+  if (runes.length <= maximumCharacters) return normalized;
+  if (maximumCharacters <= 1) return '…';
+  return '${String.fromCharCodes(runes.take(maximumCharacters - 1))}…';
 }
 
 bool _isChatHighSurrogate(int codeUnit) =>

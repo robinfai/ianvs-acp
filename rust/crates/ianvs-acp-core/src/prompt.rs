@@ -76,6 +76,12 @@ pub(crate) fn project_prompt_content(
         {
             continue;
         }
+        if attachment.inline_data.is_some() {
+            return Err(format!(
+                "inline image {} exceeds the encoded prompt budget",
+                attachment.name
+            ));
+        }
         let link = attachment.resource_link();
         if !budget.try_push(&mut blocks, link)? {
             return Err(format!(
@@ -104,6 +110,28 @@ fn preferred_content(
     support: PromptSupport,
     budget: &mut PromptBudget,
 ) -> Result<Option<ContentBlock>, String> {
+    if attachment.force_resource_link {
+        return Ok(None);
+    }
+    if let Some(data) = attachment.inline_data.as_ref() {
+        if !support.image {
+            return Err(format!(
+                "agent does not support inline image attachment {}",
+                attachment.name
+            ));
+        }
+        if attachment.size > MAX_IMAGE_BYTES || attachment.size > budget.remaining_source() {
+            return Err(format!(
+                "inline image {} exceeds the image prompt budget",
+                attachment.name
+            ));
+        }
+        budget.source_bytes = budget.source_bytes.saturating_add(attachment.size);
+        return Ok(Some(ContentBlock::Image(ImageContent::new(
+            data.clone(),
+            attachment.mime_type.clone().unwrap_or_default(),
+        ))));
+    }
     if attachment.is_image() {
         if !support.image {
             return Ok(None);
@@ -141,8 +169,14 @@ fn preferred_content(
             .map_err(|_| format!("prompt attachment {} is not valid UTF-8", attachment.name))?;
         return Ok(Some(ContentBlock::Resource(EmbeddedResource::new(
             EmbeddedResourceResource::TextResourceContents(
-                TextResourceContents::new(text, attachment.uri.clone())
-                    .mime_type(attachment.mime_type.clone()),
+                TextResourceContents::new(
+                    text,
+                    attachment
+                        .uri
+                        .clone()
+                        .expect("file attachment should always have a URI"),
+                )
+                .mime_type(attachment.mime_type.clone()),
             ),
         ))));
     }
@@ -151,8 +185,14 @@ fn preferred_content(
     };
     Ok(Some(ContentBlock::Resource(EmbeddedResource::new(
         EmbeddedResourceResource::BlobResourceContents(
-            BlobResourceContents::new(data, attachment.uri.clone())
-                .mime_type(attachment.mime_type.clone()),
+            BlobResourceContents::new(
+                data,
+                attachment
+                    .uri
+                    .clone()
+                    .expect("file attachment should always have a URI"),
+            )
+            .mime_type(attachment.mime_type.clone()),
         ),
     ))))
 }
@@ -174,7 +214,11 @@ fn read_bytes(
     if attachment.size > item_limit || attachment.size > budget.remaining_source() {
         return Ok(None);
     }
-    let file = File::open(&attachment.path)
+    let path = attachment
+        .path
+        .as_ref()
+        .ok_or_else(|| format!("prompt attachment {} has no file path", attachment.name))?;
+    let file = File::open(path)
         .map_err(|error| format!("cannot open prompt attachment {}: {error}", attachment.name))?;
     let metadata = file.metadata().map_err(|error| {
         format!(
@@ -240,21 +284,68 @@ impl PromptBudget {
 }
 
 struct PreparedAttachment {
-    path: PathBuf,
+    path: Option<PathBuf>,
     name: String,
     mime_type: Option<String>,
     size: u64,
     device: u64,
     inode: u64,
-    uri: String,
+    uri: Option<String>,
+    inline_data: Option<String>,
+    force_resource_link: bool,
 }
 
 impl PreparedAttachment {
     fn new(input: &PromptAttachmentInput, scope: &WorkspaceScope) -> Result<Self, String> {
         validate_metadata(input)?;
-        let path = scope
-            .resolve_existing(&input.path)
-            .map_err(|error| error.to_string())?;
+        if let Some(data) = input.data.as_ref() {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| format!("inline image {} is not valid base64", input.name))?;
+            if decoded.is_empty()
+                || u64::try_from(decoded.len()).unwrap_or(u64::MAX) > MAX_IMAGE_BYTES
+            {
+                return Err(format!(
+                    "inline image {} must be {MAX_IMAGE_BYTES} bytes or smaller",
+                    input.name
+                ));
+            }
+            let decoded_size = u64::try_from(decoded.len()).unwrap_or(u64::MAX);
+            if input.size.is_some_and(|size| size != decoded_size) {
+                return Err(format!(
+                    "inline image {} size metadata does not match its data",
+                    input.name
+                ));
+            }
+            let mime_type = normalized_mime(input.mime_type.as_deref(), Path::new(&input.name))?;
+            if !mime_type
+                .as_deref()
+                .is_some_and(|value| value.starts_with("image/"))
+            {
+                return Err(format!(
+                    "inline attachment {} must use an image MIME type",
+                    input.name
+                ));
+            }
+            return Ok(Self {
+                path: None,
+                name: input.name.trim().to_string(),
+                mime_type,
+                size: decoded_size,
+                device: 0,
+                inode: 0,
+                uri: None,
+                inline_data: Some(data.clone()),
+                force_resource_link: input.force_resource_link,
+            });
+        }
+        let path = if input.user_approved_outside_workspace {
+            resolve_user_approved_file(&input.path)?
+        } else {
+            scope
+                .resolve_existing(&input.path)
+                .map_err(|error| error.to_string())?
+        };
         let metadata = fs::metadata(&path)
             .map_err(|error| format!("cannot inspect prompt attachment {}: {error}", input.name))?;
         if !metadata.is_file() {
@@ -269,13 +360,15 @@ impl PreparedAttachment {
         let mime_type = normalized_mime(input.mime_type.as_deref(), &path)?;
         let uri = file_uri(&path);
         Ok(Self {
-            path,
+            path: Some(path),
             name: input.name.trim().to_string(),
             mime_type,
             size: metadata.len(),
             device: metadata.dev(),
             inode: metadata.ino(),
-            uri,
+            uri: Some(uri),
+            inline_data: None,
+            force_resource_link: input.force_resource_link,
         })
     }
 
@@ -307,7 +400,7 @@ impl PreparedAttachment {
 
     fn is_text(&self) -> bool {
         let Some(mime_type) = self.mime_type.as_deref() else {
-            return text_extension(&self.path);
+            return self.path.as_deref().is_some_and(text_extension);
         };
         mime_type.starts_with("text/")
             || matches!(
@@ -323,17 +416,38 @@ impl PreparedAttachment {
 
     fn resource_link(&self) -> ContentBlock {
         ContentBlock::ResourceLink(
-            ResourceLink::new(self.name.clone(), self.uri.clone())
-                .mime_type(self.mime_type.clone())
-                .size(i64::try_from(self.size).ok()),
+            ResourceLink::new(
+                self.name.clone(),
+                self.uri
+                    .clone()
+                    .expect("file attachment should always have a URI"),
+            )
+            .mime_type(self.mime_type.clone())
+            .size(i64::try_from(self.size).ok()),
         )
     }
 }
 
+fn resolve_user_approved_file(path: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return Err("user-approved prompt attachment path must be absolute".to_string());
+    }
+    candidate
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve user-approved prompt attachment {path}: {error}"))
+}
+
 fn validate_metadata(input: &PromptAttachmentInput) -> Result<(), String> {
     let name = input.name.trim();
-    if input.path.is_empty()
+    let has_path = !input.path.is_empty();
+    let has_data = input.data.as_ref().is_some_and(|data| !data.is_empty());
+    if has_path == has_data
         || input.path.len() > MAX_METADATA_BYTES
+        || input
+            .data
+            .as_ref()
+            .is_some_and(|data| data.len() > MAX_ENCODED_BYTES)
         || name.is_empty()
         || name.len() > MAX_METADATA_BYTES
         || name.chars().any(char::is_control)
@@ -468,5 +582,75 @@ mod tests {
             "<agent_memory_context>Use make verify.</agent_memory_context>"
         );
         assert_eq!(encoded[1]["text"], "What should I run?");
+    }
+
+    #[test]
+    fn inline_clipboard_image_is_projected_without_a_workspace_file() {
+        let scope = WorkspaceScope::new(
+            std::env::current_dir().expect("current directory"),
+            std::iter::empty::<&Path>(),
+        )
+        .expect("workspace scope");
+        let data = base64::engine::general_purpose::STANDARD.encode([1_u8, 2, 3]);
+        let attachment = PromptAttachmentInput {
+            path: String::new(),
+            name: "Pasted Image.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(3),
+            data: Some(data.clone()),
+            user_approved_outside_workspace: false,
+            force_resource_link: false,
+        };
+
+        let blocks = project_prompt_content(
+            "inspect this",
+            None,
+            &[attachment],
+            &scope,
+            PromptSupport {
+                image: true,
+                audio: false,
+                embedded_context: false,
+            },
+        )
+        .expect("inline image prompt");
+        let encoded = serde_json::to_value(blocks).expect("serialize prompt blocks");
+
+        assert_eq!(encoded[1]["type"], "image");
+        assert_eq!(encoded[1]["data"], data);
+        assert_eq!(encoded[1]["mimeType"], "image/png");
+    }
+
+    #[test]
+    fn inline_clipboard_image_requires_agent_image_support() {
+        let scope = WorkspaceScope::new(
+            std::env::current_dir().expect("current directory"),
+            std::iter::empty::<&Path>(),
+        )
+        .expect("workspace scope");
+        let attachment = PromptAttachmentInput {
+            path: String::new(),
+            name: "Pasted Image.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(3),
+            data: Some(base64::engine::general_purpose::STANDARD.encode([1_u8, 2, 3])),
+            user_approved_outside_workspace: false,
+            force_resource_link: false,
+        };
+
+        let error = project_prompt_content(
+            "",
+            None,
+            &[attachment],
+            &scope,
+            PromptSupport {
+                image: false,
+                audio: false,
+                embedded_context: false,
+            },
+        )
+        .expect_err("unsupported inline image");
+
+        assert!(error.contains("does not support inline image"));
     }
 }

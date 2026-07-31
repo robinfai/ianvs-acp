@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/connection_state.dart' as app_state;
 import '../theme/app_design_tokens.dart';
+import 'workspace_sidebar.dart';
 
 class AgentToolbar extends StatelessWidget {
   const AgentToolbar({
@@ -23,6 +25,10 @@ class AgentToolbar extends StatelessWidget {
     this.onAuthenticate,
     this.onShowPermissionHistory,
     this.onLogout,
+    this.currentSession,
+    this.canForkSession = false,
+    this.supportsGitWorktrees = false,
+    this.onSessionMenuAction,
   });
 
   final String title;
@@ -41,6 +47,10 @@ class AgentToolbar extends StatelessWidget {
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
   final VoidCallback? onLogout;
+  final AgentSession? currentSession;
+  final bool canForkSession;
+  final bool supportsGitWorktrees;
+  final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
 
   @override
   Widget build(BuildContext context) {
@@ -77,6 +87,10 @@ class AgentToolbar extends StatelessWidget {
                     status: status,
                     compact: compact,
                     veryCompact: veryCompact,
+                    currentSession: currentSession,
+                    canForkSession: canForkSession,
+                    supportsGitWorktrees: supportsGitWorktrees,
+                    onSessionMenuAction: onSessionMenuAction,
                   ),
                 ),
                 SizedBox(width: compact ? 8 : 14),
@@ -534,6 +548,10 @@ class _BrandMark extends StatelessWidget {
     required this.status,
     required this.compact,
     required this.veryCompact,
+    required this.currentSession,
+    required this.canForkSession,
+    required this.supportsGitWorktrees,
+    required this.onSessionMenuAction,
   });
 
   final String title;
@@ -541,6 +559,10 @@ class _BrandMark extends StatelessWidget {
   final app_state.ConnectionStatus status;
   final bool compact;
   final bool veryCompact;
+  final AgentSession? currentSession;
+  final bool canForkSession;
+  final bool supportsGitWorktrees;
+  final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
 
   @override
   Widget build(BuildContext context) {
@@ -555,31 +577,7 @@ class _BrandMark extends StatelessWidget {
             status != app_state.ConnectionStatus.sessionReady;
         return Row(
           children: [
-            Expanded(
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      overflow: TextOverflow.ellipsis,
-                      softWrap: false,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: veryCompact ? 14 : 15,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 3),
-                  const Icon(
-                    Icons.keyboard_arrow_down_rounded,
-                    color: AppColors.textSecondary,
-                    size: 15,
-                  ),
-                ],
-              ),
-            ),
+            Expanded(child: _buildTitle()),
             if (showAgentChip) ...[
               const SizedBox(width: 9),
               _AgentChip(agentName: agentName),
@@ -593,6 +591,214 @@ class _BrandMark extends StatelessWidget {
       },
     );
   }
+
+  Widget _buildTitle() {
+    final label = Text(
+      title,
+      overflow: TextOverflow.ellipsis,
+      softWrap: false,
+      style: TextStyle(
+        color: AppColors.textPrimary,
+        fontSize: veryCompact ? 14 : 15,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0,
+      ),
+    );
+    final session = currentSession;
+    final onSelected = onSessionMenuAction;
+    if (session == null || onSelected == null) return label;
+    return _ToolbarSessionActions(
+      label: label,
+      session: session,
+      canFork: canForkSession,
+      supportsGitWorktrees: supportsGitWorktrees,
+      onSelected: onSelected,
+    );
+  }
+}
+
+class _ToolbarSessionActions extends StatelessWidget {
+  const _ToolbarSessionActions({
+    required this.label,
+    required this.session,
+    required this.canFork,
+    required this.supportsGitWorktrees,
+    required this.onSelected,
+  });
+
+  final Widget label;
+  final AgentSession session;
+  final bool canFork;
+  final bool supportsGitWorktrees;
+  final ValueChanged<WorkspaceSessionMenuAction> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return MenuAnchor(
+      alignmentOffset: const Offset(0, 7),
+      consumeOutsideTap: true,
+      style: _toolbarMenuStyle(),
+      menuChildren: [
+        _toolbarMenuItem(
+          WorkspaceSessionMenuAction.togglePinned,
+          session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+          session.pinned ? 'Unpin Task' : 'Pin Task',
+          onSelected,
+        ),
+        _toolbarMenuItem(
+          WorkspaceSessionMenuAction.rename,
+          Icons.edit_outlined,
+          'Rename Task',
+          onSelected,
+        ),
+        _toolbarMenuItem(
+          WorkspaceSessionMenuAction.toggleUnread,
+          session.unread
+              ? Icons.mark_email_read_outlined
+              : Icons.mark_chat_unread_outlined,
+          session.unread ? 'Mark as Read' : 'Mark as Unread',
+          onSelected,
+        ),
+        _toolbarMenuItem(
+          WorkspaceSessionMenuAction.archive,
+          Icons.archive_outlined,
+          'Archive Task',
+          onSelected,
+        ),
+        const Divider(height: 9),
+        _toolbarMenuItem(
+          WorkspaceSessionMenuAction.openInNewWindow,
+          Icons.open_in_new_rounded,
+          'Open in New Window',
+          onSelected,
+        ),
+        SubmenuButton(
+          menuStyle: _toolbarMenuStyle(),
+          leadingIcon: const Icon(Icons.account_tree_outlined, size: 17),
+          menuChildren: [
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.forkLocally,
+              Icons.call_split_rounded,
+              'Continue in New Task',
+              onSelected,
+              enabled: canFork,
+            ),
+            if (supportsGitWorktrees)
+              _toolbarMenuItem(
+                WorkspaceSessionMenuAction.forkToNewWorktree,
+                Icons.account_tree_outlined,
+                'Continue in New Worktree',
+                onSelected,
+                enabled: canFork,
+              ),
+          ],
+          child: const Text('Continue in...'),
+        ),
+        SubmenuButton(
+          menuStyle: _toolbarMenuStyle(),
+          leadingIcon: const Icon(Icons.copy_all_outlined, size: 17),
+          menuChildren: [
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.copyWorkingDirectory,
+              Icons.folder_copy_outlined,
+              'Copy Working Directory',
+              onSelected,
+            ),
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.copySessionId,
+              Icons.tag_rounded,
+              'Copy Session ID',
+              onSelected,
+            ),
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.copyDeepLink,
+              Icons.link_rounded,
+              'Copy Deep Link',
+              onSelected,
+            ),
+          ],
+          child: const Text('Copy & Share'),
+        ),
+      ],
+      builder: (context, controller, child) {
+        return Tooltip(
+          message: 'Session actions',
+          child: InkWell(
+            key: const Key('toolbar-session-actions'),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            onTap: () {
+              if (controller.isOpen) {
+                controller.close();
+              } else {
+                controller.open();
+              }
+            },
+            child: Row(
+              children: [
+                Expanded(child: label),
+                const SizedBox(width: 6),
+                Container(
+                  width: 28,
+                  height: 28,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceMuted,
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                  ),
+                  child: const Icon(
+                    Icons.more_horiz_rounded,
+                    color: AppColors.textSecondary,
+                    size: 17,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+MenuStyle _toolbarMenuStyle() {
+  return MenuStyle(
+    backgroundColor: const WidgetStatePropertyAll(AppColors.surface),
+    surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+    elevation: const WidgetStatePropertyAll(0),
+    padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(vertical: 6)),
+    shape: WidgetStatePropertyAll(
+      RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        side: const BorderSide(color: AppColors.border),
+      ),
+    ),
+  );
+}
+
+MenuItemButton _toolbarMenuItem(
+  WorkspaceSessionMenuAction value,
+  IconData icon,
+  String label,
+  ValueChanged<WorkspaceSessionMenuAction> onSelected, {
+  bool enabled = true,
+}) {
+  final color = enabled ? AppColors.textPrimary : AppColors.textTertiary;
+  return MenuItemButton(
+    onPressed: enabled ? () => onSelected(value) : null,
+    leadingIcon: Icon(icon, size: 17, color: color),
+    style: ButtonStyle(
+      minimumSize: const WidgetStatePropertyAll(Size(250, 38)),
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 12),
+      ),
+      foregroundColor: WidgetStatePropertyAll(color),
+    ),
+    child: Text(
+      label,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+    ),
+  );
 }
 
 class _AgentChip extends StatelessWidget {

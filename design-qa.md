@@ -142,6 +142,114 @@ Verification for this iteration:
 - `flutter analyze --no-pub`: passed.
 - `git diff --check`: passed.
 
+### Iteration 13 — capability-aware image ingress
+
+- Source visual truth: `/var/folders/k2/8qbf3nrs7t1749d198rw0df40000gn/T/codex-clipboard-845fae3e-8a9c-4f57-97a6-5fa4beb3950b.png`.
+- Native implementation crop: `/Users/robinfai/flutter_projects/ianvs-acp/design-qa-prompt-image-implementation.png`.
+- Side-by-side visual comparison: `/Users/robinfai/flutter_projects/ianvs-acp/design-qa-prompt-image-comparison.png`.
+- State: light neutral theme, connected Codex ACP session with negotiated image support, one local image staged in the composer.
+
+- [P1] Image drag-and-drop was limited to the composer surface, so dropping onto the timeline or toolbar did not stage the image.
+  - Fix: the complete conversation column is now one drop region. During a valid drag it presents a restrained full-area overlay, then forwards the dropped image into the existing composer attachment controller.
+- [P1] Clipboard images and external dropped images could not reliably enter ACP because ordinary resource links require a workspace-scoped file path.
+  - Fix: supported images are encoded as bounded inline ACP image content. The native macOS clipboard bridge accepts image file URLs, PNG data, and TIFF screenshots, while the Rust boundary validates MIME type, declared size, decoded size, prompt budget, and negotiated image capability.
+- [P2] Supported images previously inherited the generic file-chip presentation instead of the reference attachment treatment.
+  - Fix: supported images render in a compact rounded thumbnail tray above the editor, with a dark circular remove control at the top-right. The text editor and action row remain independently usable below it.
+- Capability and fallback behavior:
+  - Image paste interception, the image picker affordance, and inline projection are enabled only when the connected ACP agent advertises image input.
+  - Plain-text paste retains its normal behavior when the clipboard has no image.
+  - Inline images are limited to 4 MB and remain in memory; no temporary workspace file or backup is created.
+
+Verification for this iteration:
+
+- Combined Flutter attachment, ACP client, prompt-input, and shell regression suite: 91 tests passed.
+- Rust prompt projection unit tests: 3 passed.
+- Rust bounded workspace attachment end-to-end test: passed.
+- `flutter analyze --no-pub`: passed.
+- Native `flutter build macos --debug --no-pub`: passed, including the AppKit clipboard bridge.
+- Native runtime confirmed the negotiated “Add image” capability and the reference-style removable image thumbnail.
+
+final result: passed
+
+---
+
+# Selected First Variants — Assistant, Task, Timeline, Tools, and Queue
+
+## Scope and visual sources
+
+- Product surface: native macOS Flutter task workspace.
+- Selected design sources:
+  - task actions and Git-only worktree flow: `call_X3MkLuJ3xMmRdvKjr84A24nI.png`
+  - turn rail prompt/response preview: `call_k1pOyHryROygANjEgdrQtRct.png`
+  - image/tool activity treatment: `call_9nH6UZ1OE2Cm0qfeBSFjnnhE.png`
+  - aggregated tools and file diff: `call_oH5H3G9eBi1E4UyIQGv9VmxF.png`
+  - queued messages and Guide: `call_RB8r7mus26fC9nlXvx8tQg6O.png`
+  - global Assistant Agent settings: `call_yAUhJk94eA9UX9U7QATVgEUt.png`
+- Flutter implementation captures:
+  - `test/ui/goldens/selected-task-menu.png`
+  - `test/ui/goldens/selected-turn-navigation.png`
+  - `test/ui/goldens/selected-tools-diff.png`
+  - `test/ui/goldens/selected-queue-guide.png`
+  - `test/ui/goldens/selected-assistant-settings.png`
+  - `test/ui/goldens/selected-assistant-summary.png`
+- Combined comparison inputs:
+  - `design-qa-artifacts/selected-task-menu-comparison.png`
+  - `design-qa-artifacts/selected-turn-navigation-comparison.png`
+  - `design-qa-artifacts/selected-tools-diff-comparison.png`
+  - `design-qa-artifacts/selected-queue-guide-comparison.png`
+  - `design-qa-artifacts/selected-assistant-settings-comparison.png`
+  - `design-qa-artifacts/selected-assistant-summary-comparison.png`
+
+The implementation keeps the existing ACP Client identity, English product copy, and established design tokens. Reference-only repository names, messages, and dynamic task data were not copied into production.
+
+## Mandatory comparison pass
+
+| Surface | Result | Evidence |
+|---|---|---|
+| Typography | Passed | System UI and monospace roles are preserved. Real Unicode, Material icon, and monospace fonts are loaded by the golden harness so CJK, menu overlays, tool commands, and diff lines are reviewed as rendered text. |
+| Spacing and layout | Passed | Menus use compact 38 px rows and nested secondary panels; queue and composer retain one shared centered width; turn summaries remain within the 820 px timeline measure; configuration stays scrollable at constrained heights. |
+| Viewport resilience | Passed for desktop scope | The selected states render without overflow at 980–1180 logical pixels. Existing narrow-window prompt and AppShell regressions remain covered. |
+| Colors and tokens | Passed | All new surfaces use `AppColors`, `AppRadius`, existing shadows, semantic success/warning colors, and the neutral Codex-style palette. No purple-theme regression is present. |
+| Image quality | Passed | Existing inline image previews retain bounded decode and attachment-size rules. No new raster or approximate icon asset was introduced. |
+| Copy and content | Passed | Assistant Agent scope, fallback title behavior, validation, timeout fallback, queued ordering, Guide behavior, and Git-only worktree availability are explicit. |
+| Icons | Passed | Material outlined icons are consistent across task actions, queues, summaries, tools, diffs, and settings; every actionable icon is paired with text or a tooltip. |
+| States and interactions | Passed | Nested task menus, outside-Git worktree hiding, queue/reorder/remove/clear/Guide, collapsed summaries, turn preview tooltip, expanded tool aggregation, expanded diff, Assistant Agent enable/validation, and failure fallback are covered. |
+| Accessibility | Passed for automated scope | Buttons and menus retain labels/tooltips, queue controls have stable keys, and no information is communicated by color alone. |
+| AI shortcut artifacts | Passed | No decorative gradients, fake SVGs, emoji, placeholder content blocks, or unrelated hero artwork were introduced. |
+
+## Findings and iterations
+
+### Pass 1
+
+- [P1] The task menu initially flattened Continue and Copy actions, weakening the selected hierarchy and exposing too many first-level rows.
+  - Fix: replaced the toolbar popup with a nested `MenuAnchor`, grouped Continue and Copy & Share actions, kept Mark as Unread, and limited New Worktree to Git workspaces.
+- [P2] The selected queue lacked the source's bulk-clear affordance.
+  - Fix: added a compact Clear all action wired to a controller-level queue clear operation and covered it in controller and widget tests.
+- [P2] Hover and menu overlays did not inherit the golden test font, producing unreadable comparison captures despite correct native rendering.
+  - Fix: merged the turn-tooltip style with the active text theme and removed overlay button text-style overrides; the golden harness now loads Unicode, Material icon, and monospace fonts.
+
+### Pass 2
+
+- The refreshed comparisons show the selected hierarchy and interaction states:
+  - task actions expose the Continue submenu beside the parent menu;
+  - turn-rail hover displays the user prompt and Assistant Agent response summary;
+  - multiple tools aggregate into one expandable sequence and the diff exposes line-level changes;
+  - queued prompts show Guided state, reorder handles, per-item delete, and Clear all;
+  - Assistant Agent configuration exposes enable, agent, optional model, validation, title fallback, summary, collapse, data-scope, and fail-open behavior;
+  - completed turns default to a compact Processed header and Task summary card.
+
+No actionable P0, P1, or P2 visual, interaction, accessibility, or data-flow finding remains in this scope.
+
+## Verification
+
+- Native macOS debug app built and launched successfully.
+- Flutter golden regression: 6 selected interaction states passed.
+- Full application interaction regression: 90 tests passed after the nested menu change.
+- Queue, prompt, and controller regression: 351 tests passed after bulk clear was added.
+- Final combined affected-suite regression: 592 tests passed.
+- Git worktree detection and non-Git hiding are covered by dedicated workspace and app tests.
+- `git diff --check`: passed in the final verification pass.
+
 final result: passed
 
 ---

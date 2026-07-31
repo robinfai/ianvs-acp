@@ -9,10 +9,12 @@ import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/acp_session_usage.dart';
+import 'package:ianvs_acp/acp/assistant_agent_enhancer.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/memory/acp_memory_middleware.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
@@ -12613,6 +12615,86 @@ void main() {
     },
   );
 
+  test(
+    'automatic titles and assistant summaries enhance completed turns',
+    () async {
+      final enhancer = _FakeAssistantAgentEnhancer();
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+        enableAutomaticSessionTitles: true,
+        assistantAgentConfig: enhancer.config,
+        assistantAgentEnhancer: enhancer,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.sendPrompt('实现一个可拖动的消息队列');
+      await pumpEventQueue(times: 20);
+
+      expect(controller.currentSession?.title, '消息队列与引导');
+      final summary = controller.messages.where(
+        (message) => message.metadata['kind'] == 'assistant_summary',
+      );
+      expect(summary, hasLength(1));
+      expect(summary.single.text, contains('完成'));
+      expect(summary.single.metadata['collapseProcess'], isTrue);
+      expect(enhancer.titlePrompts, ['实现一个可拖动的消息队列']);
+      expect(enhancer.summaryRequests, hasLength(1));
+    },
+  );
+
+  test(
+    'queued prompts prioritize a guided message at the next boundary',
+    () async {
+      final fake = _RecordingPromptAgentClient(
+        chunkDelay: const Duration(milliseconds: 2),
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.sendPrompt('first');
+      expect(
+        await controller.submitOrQueuePrompt('normal follow-up'),
+        ChatPromptSubmissionResult.queued,
+      );
+      expect(
+        controller.enqueuePrompt('guided follow-up', guide: true),
+        ChatPromptSubmissionResult.queued,
+      );
+      expect(controller.queuedPrompts.first.guide, isTrue);
+
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await pumpEventQueue(times: 20);
+
+      expect(fake.prompts, ['first', 'guided follow-up', 'normal follow-up']);
+      expect(controller.queuedPrompts, isEmpty);
+    },
+  );
+
+  test('queued prompts can be cleared together', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    expect(
+      controller.enqueuePrompt('first'),
+      ChatPromptSubmissionResult.queued,
+    );
+    expect(
+      controller.enqueuePrompt('second'),
+      ChatPromptSubmissionResult.queued,
+    );
+    expect(controller.queuedPrompts, hasLength(2));
+
+    controller.clearQueuedPrompts();
+
+    expect(controller.queuedPrompts, isEmpty);
+  });
+
   test('send prompt error is rendered as error message', () async {
     final controller = ChatController(
       client: FakeAgentClient(promptError: Exception('prompt failed')),
@@ -12753,6 +12835,58 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
     expect(controller.lastError, contains('cancel failed'));
   });
+}
+
+final class _FakeAssistantAgentEnhancer implements AssistantAgentEnhancer {
+  @override
+  final AssistantAgentConfig config = const AssistantAgentConfig(
+    enabled: true,
+    agentName: 'Helper',
+  );
+
+  final List<String> titlePrompts = <String>[];
+  final List<AssistantTurnSummaryRequest> summaryRequests =
+      <AssistantTurnSummaryRequest>[];
+
+  @override
+  Future<String?> generateSessionTitle({
+    required String sessionId,
+    required String firstPrompt,
+  }) async {
+    titlePrompts.add(firstPrompt);
+    return '消息队列与引导';
+  }
+
+  @override
+  Future<String?> summarizeTurn(AssistantTurnSummaryRequest request) async {
+    summaryRequests.add(request);
+    return '已完成队列与引导交互，并保留原始执行过程。';
+  }
+
+  @override
+  Future<void> dispose() async {}
+}
+
+final class _RecordingPromptAgentClient extends FakeAgentClient {
+  _RecordingPromptAgentClient({required super.chunkDelay});
+
+  final List<String> prompts = <String>[];
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    String? memoryContext,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    prompts.add(prompt);
+    return super.sendPrompt(
+      sessionId: sessionId,
+      prompt: prompt,
+      memoryContext: memoryContext,
+      attachments: attachments,
+    );
+  }
 }
 
 Future<String?> _staticMemoryContext(MemoryPromptContext context) async {

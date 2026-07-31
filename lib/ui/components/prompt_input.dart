@@ -1,16 +1,22 @@
+import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 
 import '../../acp/acp_agent_capabilities.dart';
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
+import '../../platform/prompt_image_clipboard.dart';
+import '../../state/chat_controller.dart';
 import '../../tasks/permission_context.dart';
 import '../theme/app_design_tokens.dart';
 import '../bounded_metadata_preview.dart';
@@ -20,10 +26,15 @@ typedef PromptSendCallback =
 typedef PromptAttachmentPicker = Future<List<PromptAttachment>> Function();
 typedef PromptAttachmentKindPicker =
     Future<List<PromptAttachment>> Function(PromptAttachmentKind kind);
+typedef PromptImageClipboardReader = Future<PromptAttachment?> Function();
+typedef PromptDroppedImageReader =
+    Future<PromptAttachment?> Function(PromptAttachment attachment);
 typedef SessionConfigSelectionCallback =
     void Function(String configId, Object value);
 
 enum PromptAttachmentKind { file, image, audio }
+
+const int _maximumInlineImageBytes = 4 * 1024 * 1024;
 
 const Color _permissionAccent = Color(0xffea580c);
 const Color _permissionAccentDark = Color(0xff9a3412);
@@ -31,6 +42,38 @@ const Color _permissionAccentSoft = Color(0xfffff7ed);
 const Color _permissionAccentMist = Color(0xffffedd5);
 const Color _permissionAccentBorder = Color(0xfffb923c);
 const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
+
+class PromptAttachmentController {
+  _PromptInputState? _state;
+  Future<void> _pendingIngress = Future<void>.value();
+
+  bool get isAttached => _state != null;
+  Future<void> get pendingIngress => _pendingIngress;
+
+  void _attach(_PromptInputState state) {
+    _state = state;
+  }
+
+  void _detach(_PromptInputState state) {
+    if (identical(_state, state)) _state = null;
+  }
+
+  void setDragging(bool value) {
+    _state?._setExternalAttachmentDragging(value);
+  }
+
+  Future<void> addDroppedItems(
+    List<DropItem> items, {
+    bool inlineImages = false,
+  }) {
+    final state = _state;
+    final operation = state == null
+        ? Future<void>.value()
+        : state._attachDroppedItems(items, inlineImages: inlineImages);
+    _pendingIngress = operation;
+    return operation;
+  }
+}
 
 class PromptInput extends StatefulWidget {
   const PromptInput({
@@ -60,6 +103,16 @@ class PromptInput extends StatefulWidget {
     this.onConfigOptionSelected,
     this.pickAttachments,
     this.pickAttachmentsForKind,
+    this.attachmentController,
+    this.readClipboardImage = readPromptImageFromClipboard,
+    this.readDroppedImage = _readDroppedImageAttachment,
+    this.workspaceRoots = const <String>[],
+    this.imageAttachmentLimitation,
+    this.queuedPrompts = const <ChatQueuedPrompt>[],
+    this.onGuideQueuedPrompt,
+    this.onRemoveQueuedPrompt,
+    this.onClearQueuedPrompts,
+    this.onReorderQueuedPrompt,
     this.inputBudget = const AcpInputBudget(),
   });
 
@@ -88,6 +141,16 @@ class PromptInput extends StatefulWidget {
   final SessionConfigSelectionCallback? onConfigOptionSelected;
   final PromptAttachmentPicker? pickAttachments;
   final PromptAttachmentKindPicker? pickAttachmentsForKind;
+  final PromptAttachmentController? attachmentController;
+  final PromptImageClipboardReader readClipboardImage;
+  final PromptDroppedImageReader readDroppedImage;
+  final List<String> workspaceRoots;
+  final String? imageAttachmentLimitation;
+  final List<ChatQueuedPrompt> queuedPrompts;
+  final ValueChanged<int>? onGuideQueuedPrompt;
+  final ValueChanged<int>? onRemoveQueuedPrompt;
+  final VoidCallback? onClearQueuedPrompts;
+  final void Function(int oldIndex, int newIndex)? onReorderQueuedPrompt;
   final AcpInputBudget inputBudget;
 
   @override
@@ -108,6 +171,7 @@ class _PromptInputState extends State<PromptInput> {
   @override
   void initState() {
     super.initState();
+    widget.attachmentController?._attach(this);
     widget.inputBudget.validate();
     _commandQuery = _scanBoundedCommandQuery(
       _controller.text,
@@ -119,6 +183,13 @@ class _PromptInputState extends State<PromptInput> {
   @override
   void didUpdateWidget(covariant PromptInput oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(
+      widget.attachmentController,
+      oldWidget.attachmentController,
+    )) {
+      oldWidget.attachmentController?._detach(this);
+      widget.attachmentController?._attach(this);
+    }
     widget.inputBudget.validate();
     if (!identical(widget.inputBudget, oldWidget.inputBudget)) {
       _commandQuery = _scanBoundedCommandQuery(
@@ -132,18 +203,39 @@ class _PromptInputState extends State<PromptInput> {
         !identical(widget.inputBudget, oldWidget.inputBudget)) {
       _rebuildCommandSearchEntries();
     }
-    if ((!widget.enabled || widget.isSending) && _isDraggingAttachments) {
+    if (!widget.enabled && _isDraggingAttachments) {
       _isDraggingAttachments = false;
+    }
+    if (oldWidget.promptCapabilities?.image == true &&
+        widget.promptCapabilities?.image != true) {
+      final removedInlineImages = _attachments
+          .where((attachment) => attachment.isInline && attachment.isImage)
+          .length;
+      if (removedInlineImages > 0) {
+        _attachments.removeWhere(
+          (attachment) => attachment.isInline && attachment.isImage,
+        );
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'The selected model does not accept inline images. '
+                'Reattach the image as a file to share its path.',
+              ),
+            ),
+          );
+        });
+      }
     }
   }
 
   bool get _canSend =>
       (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
-      widget.enabled &&
-      !widget.isSending;
+      widget.enabled;
 
   List<_CommandSearchEntry> get _commandSuggestions {
-    if (!widget.enabled || widget.isSending || _commandSearchEntries.isEmpty) {
+    if (!widget.enabled || _commandSearchEntries.isEmpty) {
       return const <_CommandSearchEntry>[];
     }
     final query = _commandQuery;
@@ -236,6 +328,7 @@ class _PromptInputState extends State<PromptInput> {
 
   @override
   void dispose() {
+    widget.attachmentController?._detach(this);
     _controller.dispose();
     super.dispose();
   }
@@ -254,9 +347,27 @@ class _PromptInputState extends State<PromptInput> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (widget.queuedPrompts.isNotEmpty) ...[
+                _PromptQueueTray(
+                  prompts: widget.queuedPrompts,
+                  onGuide: widget.onGuideQueuedPrompt,
+                  onRemove: widget.onRemoveQueuedPrompt,
+                  onClear: widget.onClearQueuedPrompts,
+                  onReorder: widget.onReorderQueuedPrompt,
+                ),
+                const SizedBox(height: 8),
+              ],
               Focus(
                 onKeyEvent: (node, event) {
                   if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                  if (event.logicalKey == LogicalKeyboardKey.keyV &&
+                      (HardwareKeyboard.instance.isMetaPressed ||
+                          HardwareKeyboard.instance.isControlPressed) &&
+                      widget.promptCapabilities?.image == true &&
+                      widget.enabled) {
+                    unawaited(_pasteClipboardImageOrText());
+                    return KeyEventResult.handled;
+                  }
                   if (event.logicalKey != LogicalKeyboardKey.enter) {
                     return KeyEventResult.ignored;
                   }
@@ -268,7 +379,7 @@ class _PromptInputState extends State<PromptInput> {
                 },
                 child: DropTarget(
                   key: const Key('prompt-input-drop-target'),
-                  enable: widget.enabled && !widget.isSending,
+                  enable: widget.attachmentController == null && widget.enabled,
                   onDragEntered: _handleAttachmentDragEntered,
                   onDragExited: _handleAttachmentDragExited,
                   onDragDone: _handleAttachmentDrop,
@@ -328,12 +439,25 @@ class _PromptInputState extends State<PromptInput> {
                             parameterPreviews: commandParameterPreviews,
                             onSelect: _insertCommand,
                           ),
+                        if (_attachments.isNotEmpty)
+                          _AttachmentTray(
+                            attachments: _attachments,
+                            promptCapabilities: widget.promptCapabilities,
+                            onRemove: _removeAttachment,
+                          ),
+                        if (_attachments.any(
+                              (attachment) => attachment.isImage,
+                            ) &&
+                            widget.imageAttachmentLimitation != null)
+                          _ImageAttachmentLimitationNotice(
+                            message: widget.imageAttachmentLimitation!,
+                          ),
                         TextField(
                           controller: _controller,
                           minLines: 1,
                           maxLines: 4,
                           keyboardType: TextInputType.multiline,
-                          enabled: widget.enabled && !widget.isSending,
+                          enabled: widget.enabled,
                           onChanged: _handlePromptChanged,
                           style: const TextStyle(
                             color: AppColors.textPrimary,
@@ -361,12 +485,6 @@ class _PromptInputState extends State<PromptInput> {
                             disabledBorder: InputBorder.none,
                           ),
                         ),
-                        if (_attachments.isNotEmpty)
-                          _AttachmentTray(
-                            attachments: _attachments,
-                            promptCapabilities: widget.promptCapabilities,
-                            onRemove: _removeAttachment,
-                          ),
                         Padding(
                           padding: const EdgeInsets.fromLTRB(7, 0, 7, 7),
                           child: _ComposerControlBar(
@@ -440,10 +558,15 @@ class _PromptInputState extends State<PromptInput> {
           null => _pickWithFilePicker(kind),
         },
       };
-      if (!mounted || !widget.enabled || widget.isSending || selected.isEmpty) {
+      if (!mounted || !widget.enabled || selected.isEmpty) {
         return;
       }
-      _addAttachments(selected);
+      final prepared = await _prepareAttachments(
+        selected,
+        inlineImages: kind == PromptAttachmentKind.image,
+      );
+      if (!mounted || !widget.enabled) return;
+      _addAttachments(prepared);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -453,7 +576,7 @@ class _PromptInputState extends State<PromptInput> {
   }
 
   void _handleAttachmentDragEntered(DropEventDetails details) {
-    if (!widget.enabled || widget.isSending || _isDraggingAttachments) return;
+    if (!widget.enabled || _isDraggingAttachments) return;
     setState(() => _isDraggingAttachments = true);
   }
 
@@ -466,12 +589,15 @@ class _PromptInputState extends State<PromptInput> {
     if (_isDraggingAttachments) {
       setState(() => _isDraggingAttachments = false);
     }
-    if (!widget.enabled || widget.isSending) return;
-    _attachDroppedItems(details.files);
+    if (!widget.enabled) return;
+    unawaited(_attachDroppedItems(details.files));
   }
 
-  void _attachDroppedItems(List<DropItem> items) {
-    final attachments = <PromptAttachment>[];
+  Future<void> _attachDroppedItems(
+    List<DropItem> items, {
+    bool inlineImages = false,
+  }) async {
+    final selected = <PromptAttachment>[];
     var ignoredDirectories = 0;
     for (final item in items) {
       if (item is DropItemDirectory) {
@@ -479,15 +605,19 @@ class _PromptInputState extends State<PromptInput> {
         continue;
       }
       if (item.path.isEmpty) continue;
-      attachments.add(
-        PromptAttachment.fromPath(
-          path: item.path,
-          name: item.name,
-          mimeType: item.mimeType,
-        ),
+      final attachment = PromptAttachment.fromPath(
+        path: item.path,
+        name: item.name,
+        mimeType: item.mimeType,
       );
+      selected.add(attachment);
     }
-    if (!mounted || !widget.enabled || widget.isSending) return;
+    if (!mounted || !widget.enabled) return;
+    final attachments = await _prepareAttachments(
+      selected,
+      inlineImages: inlineImages,
+    );
+    if (!mounted || !widget.enabled) return;
     _addAttachments(attachments);
     if (ignoredDirectories > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -503,11 +633,11 @@ class _PromptInputState extends State<PromptInput> {
   }
 
   void _addAttachments(Iterable<PromptAttachment> selected) {
-    if (!mounted || !widget.enabled || widget.isSending) return;
+    if (!mounted || !widget.enabled) return;
     setState(() {
       for (final attachment in selected) {
         final duplicate = _attachments.any(
-          (existing) => existing.path == attachment.path,
+          (existing) => existing.identity == attachment.identity,
         );
         if (!duplicate) _attachments.add(attachment);
       }
@@ -516,8 +646,362 @@ class _PromptInputState extends State<PromptInput> {
 
   void _removeAttachment(PromptAttachment attachment) {
     setState(() {
-      _attachments.removeWhere((item) => item.path == attachment.path);
+      _attachments.removeWhere((item) => item.identity == attachment.identity);
     });
+  }
+
+  void _setExternalAttachmentDragging(bool value) {
+    if (!mounted || !widget.enabled || _isDraggingAttachments == value) {
+      return;
+    }
+    setState(() => _isDraggingAttachments = value);
+  }
+
+  Future<PromptAttachment?> _inlineImageAttachment(
+    PromptAttachment attachment,
+  ) async {
+    try {
+      return await widget.readDroppedImage(attachment);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not attach image: $error')),
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<List<PromptAttachment>> _prepareAttachments(
+    Iterable<PromptAttachment> selected, {
+    required bool inlineImages,
+  }) async {
+    final prepared = <PromptAttachment>[];
+    final external = <PromptAttachment>[];
+    for (final attachment in selected) {
+      if (attachment.isInline ||
+          attachment.path.isEmpty ||
+          !await _isOutsideWorkspace(attachment.path)) {
+        prepared.add(attachment);
+      } else {
+        external.add(attachment);
+      }
+    }
+
+    if (external.isNotEmpty) {
+      final approved = await _confirmOutsideWorkspaceRead(external);
+      if (!mounted || !approved) return prepared;
+      prepared.addAll(
+        external.map(
+          (attachment) =>
+              attachment.copyWith(userApprovedOutsideWorkspace: true),
+        ),
+      );
+    }
+
+    if (widget.imageAttachmentLimitation != null) {
+      for (var index = 0; index < prepared.length; index += 1) {
+        final attachment = prepared[index];
+        if (attachment.isImage && !attachment.isInline) {
+          prepared[index] = attachment.copyWith(forceResourceLink: true);
+        }
+      }
+    }
+
+    if (!inlineImages || widget.promptCapabilities?.image != true) {
+      return prepared;
+    }
+
+    final projected = <PromptAttachment>[];
+    for (final attachment in prepared) {
+      if (!attachment.isImage || attachment.isInline) {
+        projected.add(attachment);
+        continue;
+      }
+      final inlineAttachment = await _inlineImageAttachment(attachment);
+      if (inlineAttachment != null) projected.add(inlineAttachment);
+    }
+    return projected;
+  }
+
+  Future<bool> _isOutsideWorkspace(String path) async {
+    if (widget.workspaceRoots.isEmpty) return false;
+    final normalizedPath = await _resolvedPath(path, isDirectory: false);
+    for (final root in widget.workspaceRoots) {
+      final trimmed = root.trim();
+      if (trimmed.isEmpty) continue;
+      final normalizedRoot = await _resolvedPath(trimmed, isDirectory: true);
+      if (p.equals(normalizedPath, normalizedRoot) ||
+          p.isWithin(normalizedRoot, normalizedPath)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Future<String> _resolvedPath(String path, {required bool isDirectory}) async {
+    final normalized = p.normalize(p.absolute(path));
+    final exists = isDirectory
+        ? Directory(normalized).existsSync()
+        : File(normalized).existsSync();
+    if (!exists) return normalized;
+    try {
+      final resolved = isDirectory
+          ? await Directory(normalized).resolveSymbolicLinks()
+          : await File(normalized).resolveSymbolicLinks();
+      return p.normalize(resolved);
+    } on FileSystemException {
+      // Picker and drop paths normally exist. Keep a lexical fallback for a
+      // file that disappears between selection and authorization.
+      return normalized;
+    }
+  }
+
+  Future<bool> _confirmOutsideWorkspaceRead(
+    List<PromptAttachment> attachments,
+  ) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const Key('prompt-outside-workspace-confirmation'),
+        title: const Text('Allow access outside this workspace?'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                attachments.length == 1
+                    ? 'ACP Client needs to read this file once to attach it to '
+                          'the current prompt.'
+                    : 'ACP Client needs to read these files once to attach '
+                          'them to the current prompt.',
+              ),
+              const SizedBox(height: 12),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 180),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceRaised,
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final attachment in attachments)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: SelectableText(
+                            attachment.path,
+                            style: const TextStyle(
+                              color: AppColors.textSecondary,
+                              fontFamily: 'monospace',
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'This approval applies only to these attachments and does not '
+                'grant access to the containing folder.',
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            key: const Key('prompt-outside-workspace-cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('prompt-outside-workspace-allow-once'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Allow once'),
+          ),
+        ],
+      ),
+    );
+    return approved == true;
+  }
+
+  Future<void> _pasteClipboardImageOrText() async {
+    try {
+      final image = await widget.readClipboardImage();
+      if (!mounted || !widget.enabled) return;
+      if (image != null) {
+        _addAttachments(<PromptAttachment>[image]);
+        return;
+      }
+    } on MissingPluginException {
+      // Fall through to plain text paste on platforms without image support.
+    } on PlatformException catch (error) {
+      if (mounted && error.code != 'clipboard_image_unavailable') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.message ?? 'Could not paste clipboard image.'),
+          ),
+        );
+      }
+      return;
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not paste clipboard image: $error')),
+        );
+      }
+      return;
+    }
+
+    final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted || clipboard?.text == null) return;
+    _insertClipboardText(clipboard!.text!);
+  }
+
+  void _insertClipboardText(String text) {
+    final value = _controller.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final nextText = value.text.replaceRange(start, end, text);
+    final caret = start + text.length;
+    _controller.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: caret),
+    );
+    _handlePromptChanged(nextText);
+  }
+}
+
+class PromptAttachmentDropRegion extends StatefulWidget {
+  const PromptAttachmentDropRegion({
+    super.key,
+    required this.controller,
+    required this.enabled,
+    required this.promptCapabilities,
+    required this.child,
+  });
+
+  final PromptAttachmentController controller;
+  final bool enabled;
+  final AcpPromptCapabilities? promptCapabilities;
+  final Widget child;
+
+  @override
+  State<PromptAttachmentDropRegion> createState() =>
+      _PromptAttachmentDropRegionState();
+}
+
+class _PromptAttachmentDropRegionState
+    extends State<PromptAttachmentDropRegion> {
+  bool _dragging = false;
+
+  @override
+  void didUpdateWidget(covariant PromptAttachmentDropRegion oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if ((!widget.enabled ||
+            !identical(widget.controller, oldWidget.controller)) &&
+        _dragging) {
+      oldWidget.controller.setDragging(false);
+      _dragging = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_dragging) widget.controller.setDragging(false);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DropTarget(
+      key: const Key('prompt-conversation-drop-target'),
+      enable: widget.enabled,
+      onDragEntered: (_) => _setDragging(true),
+      onDragExited: (_) => _setDragging(false),
+      onDragDone: (details) {
+        _setDragging(false);
+        unawaited(
+          widget.controller.addDroppedItems(details.files, inlineImages: true),
+        );
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          widget.child,
+          if (_dragging)
+            IgnorePointer(
+              child: ColoredBox(
+                key: const Key('prompt-conversation-drop-overlay'),
+                color: AppColors.surface.withValues(alpha: 0.82),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 18,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.xl),
+                      border: Border.all(
+                        color: AppColors.textSecondary,
+                        width: 1.5,
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x18000000),
+                          blurRadius: 28,
+                          offset: Offset(0, 10),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.add_photo_alternate_outlined,
+                          color: AppColors.textPrimary,
+                          size: 28,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          widget.promptCapabilities?.image == true
+                              ? 'Drop images anywhere to attach'
+                              : 'Drop files anywhere to attach',
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _setDragging(bool value) {
+    if (!widget.enabled || _dragging == value) return;
+    setState(() => _dragging = value);
+    widget.controller.setDragging(value);
   }
 }
 
@@ -1135,6 +1619,229 @@ String _attachmentPickerTooltip(List<PromptAttachmentKind> kinds) {
   return 'Attach ${labels.sublist(0, labels.length - 1).join(', ')} or ${labels.last}';
 }
 
+class _PromptQueueTray extends StatelessWidget {
+  const _PromptQueueTray({
+    required this.prompts,
+    required this.onGuide,
+    required this.onRemove,
+    required this.onClear,
+    required this.onReorder,
+  });
+
+  final List<ChatQueuedPrompt> prompts;
+  final ValueChanged<int>? onGuide;
+  final ValueChanged<int>? onRemove;
+  final VoidCallback? onClear;
+  final void Function(int oldIndex, int newIndex)? onReorder;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('prompt-queue-tray'),
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.xl),
+        border: Border.all(color: AppColors.border),
+        boxShadow: AppShadows.soft,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(13, 9, 10, 7),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.playlist_play_rounded,
+                  size: 18,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 7),
+                Text(
+                  '${prompts.length} queued',
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const Spacer(),
+                if (onClear != null)
+                  TextButton.icon(
+                    key: const Key('clear-prompt-queue'),
+                    onPressed: onClear,
+                    icon: const Icon(Icons.delete_sweep_outlined, size: 15),
+                    label: const Text(
+                      'Clear all',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.textSecondary,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                if (onClear == null)
+                  const Text(
+                    'Runs automatically after the current turn',
+                    style: TextStyle(
+                      color: AppColors.textTertiary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: AppColors.borderSoft),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 216),
+            child: ReorderableListView.builder(
+              shrinkWrap: true,
+              buildDefaultDragHandles: false,
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              itemCount: prompts.length,
+              onReorder: onReorder ?? (_, _) {},
+              itemBuilder: (context, index) {
+                final prompt = prompts[index];
+                return _PromptQueueRow(
+                  key: ValueKey('queued-prompt-${prompt.id}'),
+                  prompt: prompt,
+                  index: index,
+                  canReorder: onReorder != null,
+                  onGuide: onGuide == null ? null : () => onGuide!(prompt.id),
+                  onRemove: onRemove == null
+                      ? null
+                      : () => onRemove!(prompt.id),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PromptQueueRow extends StatelessWidget {
+  const _PromptQueueRow({
+    super.key,
+    required this.prompt,
+    required this.index,
+    required this.canReorder,
+    required this.onGuide,
+    required this.onRemove,
+  });
+
+  final ChatQueuedPrompt prompt;
+  final int index;
+  final bool canReorder;
+  final VoidCallback? onGuide;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = prompt.text.trim().isEmpty
+        ? '${prompt.attachments.length} attachment'
+        : prompt.text.trim();
+    return Material(
+      color: prompt.guide ? AppColors.surfaceMuted : Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 3, 5, 3),
+        child: Row(
+          children: [
+            if (canReorder)
+              ReorderableDragStartListener(
+                index: index,
+                child: const Padding(
+                  padding: EdgeInsets.all(5),
+                  child: Icon(
+                    Icons.drag_indicator_rounded,
+                    size: 16,
+                    color: AppColors.textTertiary,
+                  ),
+                ),
+              )
+            else
+              const SizedBox(width: 26),
+            Icon(
+              prompt.guide
+                  ? Icons.subdirectory_arrow_right_rounded
+                  : Icons.turn_right_rounded,
+              size: 16,
+              color: prompt.guide
+                  ? AppColors.textPrimary
+                  : AppColors.textTertiary,
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: prompt.guide ? FontWeight.w800 : FontWeight.w600,
+                ),
+              ),
+            ),
+            if (prompt.attachments.isNotEmpty) ...[
+              const SizedBox(width: 6),
+              Text(
+                '${prompt.attachments.length} attachment'
+                '${prompt.attachments.length == 1 ? '' : 's'}',
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            const SizedBox(width: 4),
+            Tooltip(
+              message: prompt.guide
+                  ? 'Guided: runs at the next safe boundary'
+                  : 'Guide at the next safe boundary',
+              child: TextButton.icon(
+                key: Key('guide-queued-prompt-${prompt.id}'),
+                onPressed: onGuide,
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.textSecondary,
+                  padding: const EdgeInsets.symmetric(horizontal: 7),
+                  minimumSize: const Size(0, 30),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                icon: Icon(
+                  prompt.guide
+                      ? Icons.near_me_rounded
+                      : Icons.subdirectory_arrow_right_rounded,
+                  size: 15,
+                ),
+                label: Text(prompt.guide ? 'Guided' : 'Guide'),
+              ),
+            ),
+            IconButton(
+              key: Key('remove-queued-prompt-${prompt.id}'),
+              tooltip: 'Remove from queue',
+              onPressed: onRemove,
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+              iconSize: 16,
+              icon: const Icon(Icons.delete_outline_rounded),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ComposerControlBar extends StatelessWidget {
   const _ComposerControlBar({
     required this.enabled,
@@ -1178,7 +1885,7 @@ class _ComposerControlBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final attach = _AttachmentPickerControl(
-      enabled: enabled && !isSending,
+      enabled: enabled,
       promptCapabilities: promptCapabilities,
       onSelected: onPickAttachments,
     );
@@ -2657,31 +3364,49 @@ class _PromptActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final icon = isSending ? Icons.stop_rounded : Icons.arrow_upward_rounded;
-    final tooltip = isSending ? 'Stop' : 'Send';
-    final onPressed = isSending ? onStop : (canSend ? onSend : null);
-    return SizedBox(
+    final primary = SizedBox(
       width: 34,
       height: 34,
       child: Tooltip(
-        message: tooltip,
+        message: isSending ? 'Stop' : 'Send',
         child: FilledButton(
-          onPressed: onPressed,
+          onPressed: isSending ? onStop : (canSend ? onSend : null),
           key: const Key('prompt-action-button'),
           style: FilledButton.styleFrom(
             foregroundColor: Colors.white,
             disabledForegroundColor: AppColors.textTertiary,
-            backgroundColor: isSending
-                ? AppColors.danger
-                : AppColors.textPrimary,
+            backgroundColor: AppColors.textPrimary,
             disabledBackgroundColor: AppColors.surfaceRaised,
             elevation: 0,
             padding: EdgeInsets.zero,
             shape: const CircleBorder(),
           ),
-          child: Icon(icon, size: 19),
+          child: Icon(
+            isSending ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+            size: 19,
+          ),
         ),
       ),
+    );
+    if (!isSending) return primary;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (canSend) ...[
+          Tooltip(
+            message: 'Add this message to the queue',
+            child: IconButton(
+              key: const Key('prompt-queue-button'),
+              onPressed: onSend,
+              visualDensity: VisualDensity.compact,
+              iconSize: 19,
+              icon: const Icon(Icons.playlist_add_rounded),
+            ),
+          ),
+          const SizedBox(width: 4),
+        ],
+        primary,
+      ],
     );
   }
 }
@@ -2941,6 +3666,27 @@ String _commandString(Map<String, Object?> command, String key) {
   return value is String ? value.trim() : '';
 }
 
+Future<PromptAttachment?> _readDroppedImageAttachment(
+  PromptAttachment attachment,
+) async {
+  final file = File(attachment.path);
+  final size = await file.length();
+  if (size <= 0 || size > _maximumInlineImageBytes) {
+    throw const FileSystemException('Images must be 4 MB or smaller.');
+  }
+  final bytes = await file.readAsBytes();
+  if (bytes.length != size) {
+    throw const FileSystemException(
+      'Image changed while it was being attached.',
+    );
+  }
+  return PromptAttachment.fromBytes(
+    bytes: bytes,
+    name: attachment.name,
+    mimeType: attachment.imageMimeType ?? 'image/png',
+  );
+}
+
 Future<List<PromptAttachment>> _pickWithFilePicker(
   PromptAttachmentKind kind,
 ) async {
@@ -3000,6 +3746,54 @@ class _AttachmentTray extends StatelessWidget {
   }
 }
 
+class _ImageAttachmentLimitationNotice extends StatelessWidget {
+  const _ImageAttachmentLimitationNotice({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: Container(
+        key: const Key('prompt-image-model-limitation'),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.warning.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: AppColors.warning.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 1),
+              child: Icon(
+                Icons.visibility_off_outlined,
+                size: 15,
+                color: AppColors.warning,
+              ),
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  height: 1.35,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AttachmentChip extends StatelessWidget {
   const _AttachmentChip({
     required this.attachment,
@@ -3013,6 +3807,12 @@ class _AttachmentChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (attachment.isImage && promptCapabilities?.image == true) {
+      return _ImageAttachmentPreview(
+        attachment: attachment,
+        onRemove: onRemove,
+      );
+    }
     final size = attachment.displaySize;
     final mode = attachment.promptMode(promptCapabilities);
     return ConstrainedBox(
@@ -3073,6 +3873,117 @@ class _AttachmentChip extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ImageAttachmentPreview extends StatelessWidget {
+  const _ImageAttachmentPreview({
+    required this.attachment,
+    required this.onRemove,
+  });
+
+  final PromptAttachment attachment;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget preview;
+    final data = attachment.data;
+    if (data != null) {
+      try {
+        preview = Image.memory(
+          base64Decode(data),
+          width: 82,
+          height: 82,
+          fit: BoxFit.cover,
+          cacheWidth: 164,
+          cacheHeight: 164,
+          errorBuilder: _imageErrorBuilder,
+        );
+      } on FormatException {
+        preview = _imageErrorBuilder(context, const FormatException(), null);
+      }
+    } else {
+      preview = Image.file(
+        File(attachment.path),
+        width: 82,
+        height: 82,
+        fit: BoxFit.cover,
+        cacheWidth: 164,
+        cacheHeight: 164,
+        errorBuilder: _imageErrorBuilder,
+      );
+    }
+
+    return Semantics(
+      label: 'Attached image ${attachment.name}',
+      child: Tooltip(
+        message: attachment.name,
+        child: SizedBox(
+          key: Key('prompt-image-attachment-${attachment.name}'),
+          width: 88,
+          height: 88,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceRaised,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(13),
+                    child: preview,
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 5,
+                right: 5,
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: IconButton.filled(
+                    key: Key(
+                      'prompt-image-attachment-remove-${attachment.name}',
+                    ),
+                    onPressed: onRemove,
+                    tooltip: 'Remove image',
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: AppColors.textPrimary,
+                      foregroundColor: AppColors.surface,
+                    ),
+                    iconSize: 16,
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _imageErrorBuilder(
+    BuildContext context,
+    Object error,
+    StackTrace? stackTrace,
+  ) {
+    return const ColoredBox(
+      color: AppColors.surfaceRaised,
+      child: Center(
+        child: Icon(
+          Icons.broken_image_outlined,
+          color: AppColors.textTertiary,
+          size: 24,
         ),
       ),
     );

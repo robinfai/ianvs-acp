@@ -24,6 +24,7 @@ import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
 import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
+import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/image_decode_budget.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
@@ -2441,6 +2442,7 @@ void main() {
       AcpClientApp(
         controller: controller,
         taskInboxController: taskHarness.controller,
+        gitWorkspaceDetector: (_) => true,
       ),
       const Size(1400, 900),
     );
@@ -2496,8 +2498,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Copy Deep Link'));
     await tester.pump();
 
@@ -2551,23 +2552,20 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Copy Working Directory'));
     await tester.pump();
 
     expect(clipboardText, '/workspace/current');
     expect(find.text('Working directory copied.'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Copy Session ID'));
     await tester.pump();
 
     expect(clipboardText, sessionId);
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Mark as Unread'));
     await tester.pumpAndSettle();
 
@@ -2578,8 +2576,7 @@ void main() {
       isTrue,
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     expect(find.text('Mark as Read'), findsOneWidget);
     await tester.tap(find.text('Mark as Read'));
     await tester.pumpAndSettle();
@@ -2628,8 +2625,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Copy Session ID'));
     await tester.pump();
 
@@ -2713,8 +2709,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Open in New Window'));
     await tester.pumpAndSettle();
 
@@ -3343,8 +3338,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Fork Locally'));
     await tester.pumpAndSettle();
 
@@ -3372,19 +3366,50 @@ void main() {
       AcpClientApp(
         controller: controller,
         taskInboxController: taskHarness.controller,
+        gitWorkspaceDetector: (_) => true,
       ),
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
+    await tester.tap(find.byTooltip('Session actions').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Fork to New Worktree'));
+    await tester.tap(find.text('Continue in...'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continue in New Worktree'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsOneWidget);
     expect(find.text('Fork to New Worktree'), findsOneWidget);
     expect(find.text('/workspace/current-fake-ses-fork'), findsOneWidget);
     expect(fake.lastForkedSessionId, isNull);
+  });
+
+  testWidgets('AcpClientApp hides toolbar worktree action outside Git', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+        gitWorkspaceDetector: (_) => false,
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Continue in...'), findsOneWidget);
+    await tester.tap(find.text('Continue in...'));
+    await tester.pumpAndSettle();
+    expect(find.text('Continue in New Task'), findsOneWidget);
+    expect(find.text('Continue in New Worktree'), findsNothing);
   });
 
   testWidgets('AcpClientApp pins and renames sessions from the session menu', (
@@ -3405,8 +3430,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Pin Conversation'));
     await tester.pumpAndSettle();
 
@@ -3417,8 +3441,7 @@ void main() {
       isTrue,
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     expect(find.text('Unpin Conversation'), findsOneWidget);
     await tester.tap(find.text('Rename Conversation'));
     await tester.pumpAndSettle();
@@ -3462,8 +3485,7 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
-    await tester.pumpAndSettle();
+    await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Archive Conversation'));
     await tester.pump();
 
@@ -3617,8 +3639,7 @@ void main() {
         ),
         const Size(1400, 900),
       );
-      await tester.tap(find.byTooltip('Session actions'));
-      await tester.pumpAndSettle();
+      await _openSidebarSessionMenu(tester, controller);
       await tester.tap(find.text('Archive Conversation'));
       await tester.pumpAndSettle();
       expect(controller.debugActiveUiStateRetainedBytes, 0);
@@ -4004,7 +4025,13 @@ void main() {
 
     await tester.tap(find.text('GPT-5'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('GPT-5 Mini'));
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-option-model')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-choice-model-mini')),
+    );
     await tester.pumpAndSettle();
 
     expect(fake.lastConfigId, 'model');
@@ -4052,7 +4079,15 @@ void main() {
 
     await tester.tap(find.text('Medium'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('High'));
+    await tester.tap(
+      find.byKey(const Key('prompt-session-config-option-reasoning_effort')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(
+        const Key('prompt-session-config-choice-reasoning_effort-high'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(fake.lastConfigId, 'reasoning_effort');
@@ -4251,6 +4286,22 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+}
+
+Future<void> _openSidebarSessionMenu(
+  WidgetTester tester,
+  ChatController controller,
+) async {
+  final title = controller.currentSession!.displayTitle;
+  final sessionTitle = find.descendant(
+    of: find.byType(WorkspaceSidebar),
+    matching: find.text(title),
+  );
+  await tester.tapAt(
+    tester.getCenter(sessionTitle.first),
+    buttons: kSecondaryMouseButton,
+  );
+  await tester.pumpAndSettle();
 }
 
 Future<void> _pumpUntil(

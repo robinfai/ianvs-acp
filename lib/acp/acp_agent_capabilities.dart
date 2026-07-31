@@ -113,6 +113,18 @@ class AcpPromptCapabilities {
   final bool image;
   final bool audio;
   final bool embeddedContext;
+
+  AcpPromptCapabilities copyWith({
+    bool? image,
+    bool? audio,
+    bool? embeddedContext,
+  }) {
+    return AcpPromptCapabilities(
+      image: image ?? this.image,
+      audio: audio ?? this.audio,
+      embeddedContext: embeddedContext ?? this.embeddedContext,
+    );
+  }
 }
 
 class AcpMcpCapabilities {

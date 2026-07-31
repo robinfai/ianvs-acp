@@ -264,6 +264,9 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
         name: name.to_string(),
         mime_type: Some(mime_type.to_string()),
         size: Some(std::fs::metadata(path).unwrap().len()),
+        data: None,
+        user_approved_outside_workspace: false,
+        force_resource_link: false,
     };
     runtime
         .prompt_with_attachments(
@@ -301,6 +304,37 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
         )
     });
 
+    let mut path_only_image = attachment(&image, "image.png", "image/png");
+    path_only_image.force_resource_link = true;
+    runtime
+        .prompt_with_attachments(
+            "attachment-path-only-image",
+            "fixture-session",
+            "inspect via path",
+            vec![path_only_image],
+        )
+        .unwrap();
+    let path_only_message = wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::AgentMessageDelta
+        )
+    });
+    match path_only_message.event {
+        RuntimeEvent::SessionUpdate { update } => {
+            assert_eq!(update.text.as_deref(), Some("content:text,resource_link"))
+        }
+        other => panic!("unexpected path-only image response: {other:?}"),
+    }
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::PromptCompleted
+        )
+    });
+
     runtime
         .prompt_with_attachments(
             "attachment-escape",
@@ -319,6 +353,38 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
             } if request_id == "attachment-escape" && code == "invalid_prompt_attachment"
         )
     });
+
+    let mut approved_external = attachment(&escaped, "escaped.txt", "text/plain");
+    approved_external.user_approved_outside_workspace = true;
+    runtime
+        .prompt_with_attachments(
+            "attachment-approved-external",
+            "fixture-session",
+            "inspect approved",
+            vec![approved_external],
+        )
+        .unwrap();
+    let approved_message = wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::AgentMessageDelta
+        )
+    });
+    match approved_message.event {
+        RuntimeEvent::SessionUpdate { update } => {
+            assert_eq!(update.text.as_deref(), Some("content:text,resource"))
+        }
+        other => panic!("unexpected approved external response: {other:?}"),
+    }
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::PromptCompleted
+        )
+    });
+
     runtime.dispose().unwrap();
     std::fs::remove_dir_all(&cwd).unwrap();
     std::fs::remove_dir_all(&outside).unwrap();

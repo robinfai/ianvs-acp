@@ -5,6 +5,48 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 
 void main() {
+  test(
+    'loads assistant agent config and preserves it when switching agents',
+    () {
+      final config = AcpClientConfig.fromJson({
+        'assistant_agent': {
+          'enabled': true,
+          'agent': 'Codex',
+          'model': 'gpt-5.6-terra',
+          'generate_session_titles': true,
+          'summarize_turns': true,
+          'collapse_execution_process': true,
+          'fallback_title_characters': 32,
+          'timeout_ms': 15000,
+        },
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex'},
+          'Pi': {'type': 'custom', 'command': '/usr/local/bin/pi'},
+        },
+      });
+
+      expect(config.assistantAgent.isConfigured, isTrue);
+      expect(config.assistantAgent.agentName, 'Codex');
+      expect(config.assistantAgent.model, 'gpt-5.6-terra');
+      expect(config.assistantAgent.fallbackTitleCharacters, 32);
+      expect(config.assistantAgent.timeout, const Duration(seconds: 15));
+
+      final selected = config.withActiveAgentServer('Pi');
+      expect(selected.assistantAgent.agentName, 'Codex');
+      expect(selected.assistantAgent.summarizeTurns, isTrue);
+    },
+  );
+
+  test('rejects out-of-range assistant fallback title limits', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'assistant_agent': {'fallback_title_characters': 4},
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('loads memory config and preserves it when switching agents', () {
     final config = AcpClientConfig.fromJson({
       'memory': {

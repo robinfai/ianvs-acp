@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
@@ -73,5 +75,39 @@ void main() {
     expect(dart.isText, isTrue);
     expect(jpg.imageMimeType, 'image/jpeg');
     expect(mp3.audioMimeType, 'audio/mpeg');
+  });
+
+  test('builds bounded inline image metadata from clipboard bytes', () {
+    final image = PromptAttachment.fromBytes(
+      bytes: Uint8List.fromList(<int>[1, 2, 3]),
+      name: 'Pasted Image.png',
+      mimeType: 'image/png',
+    );
+
+    expect(image.path, isEmpty);
+    expect(image.size, 3);
+    expect(image.data, 'AQID');
+    expect(image.isInline, isTrue);
+    expect(image.userApprovedOutsideWorkspace, isFalse);
+    expect(image.forceResourceLink, isFalse);
+    expect(image.toResourceLink(), <String, Object?>{
+      'type': 'image',
+      'data': 'AQID',
+      'mimeType': 'image/png',
+      'name': 'Pasted Image.png',
+      'size': 3,
+    });
+  });
+
+  test('preserves one-time outside-workspace approval in path metadata', () {
+    final attachment = PromptAttachment.fromPath(
+      path: '/outside/workspace/image.png',
+      size: 42,
+    ).copyWith(userApprovedOutsideWorkspace: true);
+
+    expect(attachment.path, '/outside/workspace/image.png');
+    expect(attachment.name, 'image.png');
+    expect(attachment.userApprovedOutsideWorkspace, isTrue);
+    expect(attachment.forceResourceLink, isFalse);
   });
 }

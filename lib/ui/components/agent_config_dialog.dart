@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../acp/acp_permission_request.dart';
 import '../../config/acp_client_config.dart';
+import '../../config/assistant_agent_config.dart';
 import '../../memory/memory_config.dart';
 import '../../storage/sqlite_storage_config.dart';
 import '../theme/app_design_tokens.dart';
@@ -20,6 +21,7 @@ class AgentConfigDialog extends StatefulWidget {
     this.clientProviders = const AcpClientProviderConfig(),
     this.memory = const MemoryConfig(),
     this.storage = const SqliteStorageConfig(),
+    this.assistantAgent = const AssistantAgentConfig(),
     this.configPath,
     this.defaultAgentName,
     this.onSaveConfig,
@@ -32,6 +34,7 @@ class AgentConfigDialog extends StatefulWidget {
   final AcpClientProviderConfig clientProviders;
   final MemoryConfig memory;
   final SqliteStorageConfig storage;
+  final AssistantAgentConfig assistantAgent;
   final String activeAgentName;
   final String? configPath;
   final String? defaultAgentName;
@@ -89,6 +92,20 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   late McpServerConfig? _reviewInlineMcpServer =
       widget.clientProviders.permissions.reviewAgent.mcpServer;
   late bool _memoryEnabled = widget.memory.enabled;
+  late bool _assistantEnabled = widget.assistantAgent.enabled;
+  late String? _assistantAgentName = widget.assistantAgent.agentName;
+  late bool _assistantGenerateTitles =
+      widget.assistantAgent.generateSessionTitles;
+  late bool _assistantSummarizeTurns = widget.assistantAgent.summarizeTurns;
+  late bool _assistantCollapseProcess =
+      widget.assistantAgent.collapseExecutionProcess;
+  late final TextEditingController _assistantModelController =
+      TextEditingController(text: widget.assistantAgent.model ?? '');
+  late final TextEditingController _assistantFallbackTitleController =
+      TextEditingController(
+        text: widget.assistantAgent.fallbackTitleCharacters.toString(),
+      );
+  String? _assistantValidationStatus;
   late final TextEditingController _memoryEmbeddingModelController =
       TextEditingController(text: widget.memory.embedding.model);
   late final TextEditingController _memoryExtractorAgentController =
@@ -183,6 +200,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _reviewModelController.dispose();
     _reviewTimeoutController.dispose();
     _memoryEmbeddingModelController.dispose();
+    _assistantModelController.dispose();
+    _assistantFallbackTitleController.dispose();
     _memoryExtractorAgentController.dispose();
     _memoryExtractorModelController.dispose();
     _memoryExtractorGlobalInstructionsController.dispose();
@@ -252,6 +271,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                     onEdit: _saving ? null : _editMcpServer,
                     onDelete: _saving ? null : _deleteMcpServer,
                   ),
+                const SizedBox(height: 10),
+                _buildAssistantAgentSection(),
                 const SizedBox(height: 10),
                 _buildClientProvidersSection(),
                 const SizedBox(height: 10),
@@ -350,6 +371,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           clientProviders: _clientProvidersConfig(),
           memory: _memoryConfig(),
           storage: _storageConfig(),
+          assistantAgent: _assistantAgentConfig(),
           configPath: widget.configPath,
           defaultAgentServerName: _defaultAgentName,
         ),
@@ -366,6 +388,17 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         _defaultAgentName = saved.defaultAgentServerName;
         _reviewInlineMcpServer =
             saved.clientProviders.permissions.reviewAgent.mcpServer;
+        _assistantEnabled = saved.assistantAgent.enabled;
+        _assistantAgentName = saved.assistantAgent.agentName;
+        _assistantGenerateTitles = saved.assistantAgent.generateSessionTitles;
+        _assistantSummarizeTurns = saved.assistantAgent.summarizeTurns;
+        _assistantCollapseProcess =
+            saved.assistantAgent.collapseExecutionProcess;
+        _assistantModelController.text = saved.assistantAgent.model ?? '';
+        _assistantFallbackTitleController.text = saved
+            .assistantAgent
+            .fallbackTitleCharacters
+            .toString();
       });
     } catch (error) {
       if (!context.mounted) return;
@@ -430,6 +463,210 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   ),
               ],
             ),
+    );
+  }
+
+  Widget _buildAssistantAgentSection() {
+    final configuredAgents = _agentServers
+        .map((server) => server.name)
+        .toList(growable: false);
+    final selectedAgent =
+        _assistantAgentName != null &&
+            configuredAgents.contains(_assistantAgentName)
+        ? _assistantAgentName
+        : null;
+    return _Panel(
+      icon: Icons.auto_awesome_outlined,
+      title: 'Assistant Agent',
+      accent: AppColors.textPrimary,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ConfigSwitch(
+            key: const Key('assistant-agent-enabled-switch'),
+            title: 'Enable Assistant Agent',
+            value: _assistantEnabled,
+            onChanged: (value) {
+              setState(() {
+                _assistantEnabled = value;
+                _assistantValidationStatus = null;
+              });
+            },
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Uses a separate, read-only agent to improve session titles and '
+            'summarize completed work. It never participates in the main task.',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              height: 1.4,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0,
+            ),
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            key: const Key('assistant-agent-name-field'),
+            initialValue: selectedAgent,
+            decoration: const InputDecoration(
+              labelText: 'Agent',
+              prefixIcon: Icon(Icons.smart_toy_outlined),
+            ),
+            items: [
+              for (final name in configuredAgents)
+                DropdownMenuItem(value: name, child: Text(name)),
+            ],
+            onChanged: !_assistantEnabled
+                ? null
+                : (value) {
+                    setState(() {
+                      _assistantAgentName = value;
+                      _assistantValidationStatus = null;
+                    });
+                  },
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('assistant-agent-model-field'),
+            controller: _assistantModelController,
+            label: 'Model (optional)',
+            icon: Icons.memory_outlined,
+            enabled: _assistantEnabled,
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              OutlinedButton.icon(
+                key: const Key('assistant-agent-validate-button'),
+                onPressed: !_assistantEnabled
+                    ? null
+                    : () {
+                        final exists =
+                            _assistantAgentName != null &&
+                            configuredAgents.contains(_assistantAgentName);
+                        setState(() {
+                          _assistantValidationStatus = exists
+                              ? 'Configuration ready'
+                              : 'Choose a configured agent';
+                        });
+                      },
+                icon: const Icon(Icons.check_circle_outline_rounded, size: 17),
+                label: const Text('Validate configuration'),
+              ),
+              if (_assistantValidationStatus case final status?) ...[
+                Icon(
+                  status == 'Configuration ready'
+                      ? Icons.check_circle_rounded
+                      : Icons.error_outline_rounded,
+                  size: 16,
+                  color: status == 'Configuration ready'
+                      ? AppColors.success
+                      : AppColors.warning,
+                ),
+                Text(
+                  status,
+                  style: TextStyle(
+                    color: status == 'Configuration ready'
+                        ? AppColors.success
+                        : AppColors.warning,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const Divider(height: 22, color: AppColors.border),
+          const Text(
+            'Enhancements',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
+          ),
+          const SizedBox(height: 4),
+          _ConfigSwitch(
+            key: const Key('assistant-session-title-switch'),
+            title: 'Smart session titles',
+            value: _assistantGenerateTitles,
+            onChanged: !_assistantEnabled
+                ? null
+                : (value) => setState(() => _assistantGenerateTitles = value),
+          ),
+          Row(
+            children: [
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Without an assistant, use the first prompt as the title.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 112,
+                child: _DialogTextField(
+                  key: const Key('assistant-title-character-limit-field'),
+                  controller: _assistantFallbackTitleController,
+                  label: 'Characters',
+                  icon: Icons.short_text_rounded,
+                ),
+              ),
+            ],
+          ),
+          _ConfigSwitch(
+            key: const Key('assistant-turn-summary-switch'),
+            title: 'Task result summaries',
+            value: _assistantSummarizeTurns,
+            onChanged: !_assistantEnabled
+                ? null
+                : (value) => setState(() => _assistantSummarizeTurns = value),
+          ),
+          _ConfigSwitch(
+            key: const Key('assistant-collapse-process-switch'),
+            title: 'Collapse execution process by default',
+            value: _assistantCollapseProcess,
+            onChanged: !_assistantEnabled || !_assistantSummarizeTurns
+                ? null
+                : (value) => setState(() => _assistantCollapseProcess = value),
+          ),
+          const SizedBox(height: 8),
+          const _AssistantAgentPreview(),
+          const SizedBox(height: 8),
+          const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.shield_outlined,
+                size: 16,
+                color: AppColors.textTertiary,
+              ),
+              SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  'The assistant receives the first prompt and completed-turn '
+                  'content. It has no filesystem, terminal, or MCP tools. If it '
+                  'fails or times out, the original content remains visible.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    height: 1.4,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -904,6 +1141,39 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     );
   }
 
+  AssistantAgentConfig _assistantAgentConfig() {
+    final fallbackTitleCharacters = _positiveIntValue(
+      _assistantFallbackTitleController.text,
+      'Assistant fallback title characters',
+    );
+    if (fallbackTitleCharacters <
+            AssistantAgentConfig.minimumFallbackTitleCharacters ||
+        fallbackTitleCharacters >
+            AssistantAgentConfig.maximumFallbackTitleCharacters) {
+      throw const FormatException(
+        'Assistant fallback title characters must be between 8 and 128.',
+      );
+    }
+    final agentName = _assistantAgentName?.trim();
+    if (_assistantEnabled &&
+        (agentName == null ||
+            !_agentServers.any((server) => server.name == agentName))) {
+      throw const FormatException(
+        'Choose a configured agent for Assistant Agent.',
+      );
+    }
+    return AssistantAgentConfig(
+      enabled: _assistantEnabled,
+      agentName: agentName,
+      model: _trimmedOrNull(_assistantModelController.text),
+      generateSessionTitles: _assistantGenerateTitles,
+      summarizeTurns: _assistantSummarizeTurns,
+      collapseExecutionProcess: _assistantCollapseProcess,
+      fallbackTitleCharacters: fallbackTitleCharacters,
+      timeout: widget.assistantAgent.timeout,
+    );
+  }
+
   MemoryConfig _memoryConfig() {
     return MemoryConfig(
       enabled: _memoryEnabled,
@@ -1228,7 +1498,7 @@ class _ConfigSwitch extends StatelessWidget {
 
   final String title;
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -2248,6 +2518,7 @@ class _DialogTextField extends StatelessWidget {
     required this.icon,
     this.obscureText = false,
     this.maxLines = 1,
+    this.enabled = true,
   });
 
   final TextEditingController controller;
@@ -2255,6 +2526,7 @@ class _DialogTextField extends StatelessWidget {
   final IconData icon;
   final bool obscureText;
   final int maxLines;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -2262,7 +2534,78 @@ class _DialogTextField extends StatelessWidget {
       controller: controller,
       obscureText: obscureText,
       maxLines: maxLines,
+      enabled: enabled,
       decoration: _fieldDecoration(label: label, icon: icon),
+    );
+  }
+}
+
+class _AssistantAgentPreview extends StatelessWidget {
+  const _AssistantAgentPreview();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceMuted,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.expand_more_rounded,
+                size: 18,
+                color: AppColors.textTertiary,
+              ),
+              SizedBox(width: 6),
+              Text(
+                'Processed 1m 10s',
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              Spacer(),
+              Text(
+                'Summary ready',
+                style: TextStyle(
+                  color: AppColors.success,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+          Divider(height: 18, color: AppColors.border),
+          Text(
+            'Committed the requested changes and verified the workspace.',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 12,
+              height: 1.45,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          SizedBox(height: 5),
+          Text(
+            'The original execution process stays available behind the '
+            'processed header.',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 11,
+              height: 1.4,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

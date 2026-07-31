@@ -441,6 +441,12 @@ pub struct PromptAttachmentInput {
     pub mime_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub user_approved_outside_workspace: bool,
+    #[serde(default)]
+    pub force_resource_link: bool,
 }
 
 /// Normalized update types consumed by Timeline/Plan/Tool Call UI projections.

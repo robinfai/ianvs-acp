@@ -51,6 +51,8 @@ void main() {
                 name: 'example.png',
                 mimeType: 'image/png',
                 size: 3,
+                userApprovedOutsideWorkspace: true,
+                forceResourceLink: true,
               ),
             ],
           )
@@ -79,6 +81,8 @@ void main() {
           'name': 'example.png',
           'mimeType': 'image/png',
           'size': 3,
+          'userApprovedOutsideWorkspace': true,
+          'forceResourceLink': true,
         },
       ]);
       expect(
@@ -107,6 +111,29 @@ void main() {
       );
     },
   );
+
+  test('passes a GUI-safe PATH to absolute script-based agents', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: '/opt/homebrew/bin/npx',
+      inheritedProcessEnvironment: const <String, String>{
+        'HOME': '/Users/example',
+        'PATH': '/usr/bin:/bin',
+      },
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await client.connect();
+
+    final environment =
+        native.startedConfig?['environment'] as Map<String, String>;
+    expect(environment['PATH']?.split(':').first, '/opt/homebrew/bin');
+  });
 
   test('projects Rust session catalog, restore, close, and delete', () async {
     final native = _ClientFakeNative();

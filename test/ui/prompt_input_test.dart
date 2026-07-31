@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
-
 import 'package:ianvs_acp/acp/acp_input_budget.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
@@ -11,10 +10,22 @@ import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/prompt_input.dart';
 import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 
 void main() {
+  Future<PromptAttachment?> readPromptImageFromClipboardForTest() async => null;
+  Future<PromptAttachment?> readDroppedImageForTest(
+    PromptAttachment attachment,
+  ) async {
+    return PromptAttachment.fromBytes(
+      bytes: Uint8List.fromList(<int>[1, 2, 3]),
+      name: attachment.name,
+      mimeType: attachment.imageMimeType ?? 'image/png',
+    );
+  }
+
   Widget input({
     required bool isSending,
     required PromptSendCallback onSend,
@@ -42,6 +53,16 @@ void main() {
     SessionConfigSelectionCallback? onConfigOptionSelected,
     PromptAttachmentPicker? pickAttachments,
     PromptAttachmentKindPicker? pickAttachmentsForKind,
+    PromptAttachmentController? attachmentController,
+    PromptImageClipboardReader? readClipboardImage,
+    PromptDroppedImageReader? readDroppedImage,
+    List<String> workspaceRoots = const <String>[],
+    String? imageAttachmentLimitation,
+    List<ChatQueuedPrompt> queuedPrompts = const <ChatQueuedPrompt>[],
+    ValueChanged<int>? onGuideQueuedPrompt,
+    ValueChanged<int>? onRemoveQueuedPrompt,
+    VoidCallback? onClearQueuedPrompts,
+    void Function(int oldIndex, int newIndex)? onReorderQueuedPrompt,
     double? width,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
@@ -70,6 +91,17 @@ void main() {
       onStop: onStop ?? () {},
       pickAttachments: pickAttachments,
       pickAttachmentsForKind: pickAttachmentsForKind,
+      attachmentController: attachmentController,
+      readClipboardImage:
+          readClipboardImage ?? readPromptImageFromClipboardForTest,
+      readDroppedImage: readDroppedImage ?? readDroppedImageForTest,
+      workspaceRoots: workspaceRoots,
+      imageAttachmentLimitation: imageAttachmentLimitation,
+      queuedPrompts: queuedPrompts,
+      onGuideQueuedPrompt: onGuideQueuedPrompt,
+      onRemoveQueuedPrompt: onRemoveQueuedPrompt,
+      onClearQueuedPrompts: onClearQueuedPrompts,
+      onReorderQueuedPrompt: onReorderQueuedPrompt,
       inputBudget: inputBudget,
     );
     return MaterialApp(
@@ -156,6 +188,55 @@ void main() {
     await tester.tap(sendIcon());
     await tester.pump();
     expect(sentText, 'Hello Codex');
+  });
+
+  testWidgets('PromptInput keeps editing available and renders queue actions', (
+    tester,
+  ) async {
+    String? queuedText;
+    int? guidedId;
+    int? removedId;
+    var cleared = false;
+    (int, int)? reordered;
+    final queued = ChatQueuedPrompt(
+      id: 7,
+      text: 'Review the final diff',
+      attachments: const <PromptAttachment>[],
+      createdAt: DateTime(2026, 7, 31),
+    );
+    await tester.pumpWidget(
+      input(
+        isSending: true,
+        queuedPrompts: <ChatQueuedPrompt>[queued],
+        onGuideQueuedPrompt: (id) => guidedId = id,
+        onRemoveQueuedPrompt: (id) => removedId = id,
+        onClearQueuedPrompts: () => cleared = true,
+        onReorderQueuedPrompt: (oldIndex, newIndex) =>
+            reordered = (oldIndex, newIndex),
+        onSend: (text, _) => queuedText = text,
+      ),
+    );
+
+    expect(find.byKey(const Key('prompt-queue-tray')), findsOneWidget);
+    expect(find.text('Review the final diff'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'Add one more test');
+    await tester.pump();
+    expect(find.byKey(const Key('prompt-queue-button')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('prompt-queue-button')));
+    await tester.pump();
+    expect(queuedText, 'Add one more test');
+
+    await tester.tap(find.byKey(const Key('guide-queued-prompt-7')));
+    await tester.tap(find.byKey(const Key('remove-queued-prompt-7')));
+    await tester.tap(find.byKey(const Key('clear-prompt-queue')));
+    final list = tester.widget<ReorderableListView>(
+      find.byType(ReorderableListView),
+    );
+    list.onReorder?.call(0, 1);
+    expect(guidedId, 7);
+    expect(removedId, 7);
+    expect(cleared, isTrue);
+    expect(reordered, (0, 1));
   });
 
   testWidgets('PromptInput preserves multiline prompts', (tester) async {
@@ -740,7 +821,79 @@ void main() {
     expect(find.text('readme.md'), findsNothing);
   });
 
-  testWidgets('PromptInput ignores picker results after sending starts', (
+  testWidgets('PromptInput asks before reading a file outside the workspace', (
+    tester,
+  ) async {
+    List<PromptAttachment>? sentAttachments;
+    const attachment = PromptAttachment(
+      path: '/Users/example/Pictures/external.png',
+      name: 'external.png',
+      mimeType: 'image/png',
+      size: 128,
+    );
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, attachments) => sentAttachments = attachments,
+        workspaceRoots: const <String>['/workspace/project'],
+        pickAttachments: () async => const <PromptAttachment>[attachment],
+      ),
+    );
+
+    await tester.tap(attachFinder());
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('prompt-outside-workspace-confirmation')),
+      findsOneWidget,
+    );
+    expect(find.text('/Users/example/Pictures/external.png'), findsOneWidget);
+    expect(find.text('external.png'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const Key('prompt-outside-workspace-allow-once')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('external.png'), findsOneWidget);
+    await tester.tap(sendIcon());
+    await tester.pump();
+
+    expect(sentAttachments, hasLength(1));
+    expect(sentAttachments!.single.userApprovedOutsideWorkspace, isTrue);
+  });
+
+  testWidgets(
+    'PromptInput keeps an outside-workspace file detached when access is denied',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          workspaceRoots: const <String>['/workspace/project'],
+          pickAttachments: () async => const <PromptAttachment>[
+            PromptAttachment(
+              path: '/Users/example/secret.txt',
+              name: 'secret.txt',
+            ),
+          ],
+        ),
+      );
+
+      await tester.tap(attachFinder());
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('prompt-outside-workspace-cancel')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('secret.txt'), findsNothing);
+      expect(actionButton(tester, sendIcon()).onPressed, isNull);
+    },
+  );
+
+  testWidgets('PromptInput keeps picker results for the queued prompt', (
     tester,
   ) async {
     var sent = false;
@@ -780,7 +933,7 @@ void main() {
     pickerResult.complete(const [attachment]);
     await tester.pump();
 
-    expect(find.text('readme.md'), findsNothing);
+    expect(find.text('readme.md'), findsOneWidget);
     expect(sendIcon(), findsNothing);
     final stopButton = actionButton(tester, stopIcon());
     expect(stopButton.onPressed, isNotNull);
@@ -822,6 +975,49 @@ void main() {
     expect(find.text('Embed'), findsOneWidget);
     expect(find.text('Link'), findsOneWidget);
   });
+
+  testWidgets(
+    'PromptInput explains when the selected model receives only an image path',
+    (tester) async {
+      const limitation =
+          'deepseek/deepseek-v4-pro does not accept direct image input.';
+      List<PromptAttachment>? sentAttachments;
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, attachments) => sentAttachments = attachments,
+          promptCapabilities: const AcpPromptCapabilities(
+            image: false,
+            audio: false,
+            embeddedContext: false,
+          ),
+          imageAttachmentLimitation: limitation,
+          pickAttachments: () async => const <PromptAttachment>[
+            PromptAttachment(
+              path: '/workspace/screenshot.png',
+              name: 'screenshot.png',
+              mimeType: 'image/png',
+            ),
+          ],
+        ),
+      );
+
+      await tester.tap(attachFinder());
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('prompt-image-model-limitation')),
+        findsOneWidget,
+      );
+      expect(find.text(limitation), findsOneWidget);
+      expect(find.text('Link'), findsOneWidget);
+
+      await tester.tap(sendIcon());
+      await tester.pump();
+      expect(sentAttachments, hasLength(1));
+      expect(sentAttachments!.single.forceResourceLink, isTrue);
+    },
+  );
 
   testWidgets(
     'PromptInput attachment choices follow handshake prompt capabilities',
@@ -872,8 +1068,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(pickedKinds, <PromptAttachmentKind>[PromptAttachmentKind.image]);
-      expect(find.text('screenshot.png'), findsOneWidget);
-      expect(find.text('Image'), findsOneWidget);
+      expect(
+        find.byKey(const Key('prompt-image-attachment-screenshot.png')),
+        findsOneWidget,
+      );
 
       await tester.pumpWidget(
         input(
@@ -890,7 +1088,11 @@ void main() {
       await tester.pump();
 
       expect(find.byTooltip('Attach file or audio'), findsOneWidget);
-      expect(find.text('Link'), findsOneWidget);
+      expect(
+        find.byKey(const Key('prompt-image-attachment-screenshot.png')),
+        findsNothing,
+      );
+      expect(find.text('Link'), findsNothing);
       expect(find.text('Image'), findsNothing);
 
       await tester.tap(attachFinder());
@@ -909,6 +1111,137 @@ void main() {
       ]);
       expect(find.text('clip.wav'), findsOneWidget);
       expect(find.text('Audio'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'PromptInput pastes clipboard images as removable inline attachments',
+    (tester) async {
+      List<PromptAttachment>? sentAttachments;
+      var readCount = 0;
+      final pastedImage = PromptAttachment.fromBytes(
+        bytes: Uint8List.fromList(<int>[1, 2, 3]),
+        name: 'Pasted Image.png',
+        mimeType: 'image/png',
+      );
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, attachments) => sentAttachments = attachments,
+          promptCapabilities: const AcpPromptCapabilities(
+            image: true,
+            audio: false,
+            embeddedContext: false,
+          ),
+          readClipboardImage: () async {
+            readCount += 1;
+            return pastedImage;
+          },
+        ),
+      );
+
+      await tester.tap(find.byType(TextField));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pumpAndSettle();
+
+      expect(readCount, 1);
+      expect(
+        find.byKey(const Key('prompt-image-attachment-Pasted Image.png')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const Key('prompt-image-attachment-remove-Pasted Image.png'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(sendIcon());
+      await tester.pump();
+
+      expect(sentAttachments, <PromptAttachment>[pastedImage]);
+      expect(sentAttachments!.single.path, isEmpty);
+      expect(sentAttachments!.single.data, isNotEmpty);
+    },
+  );
+
+  testWidgets(
+    'conversation drop region attaches an external image into the composer',
+    (tester) async {
+      final controller = PromptAttachmentController();
+      List<PromptAttachment>? sentAttachments;
+      const capabilities = AcpPromptCapabilities(
+        image: true,
+        audio: false,
+        embeddedContext: false,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PromptAttachmentDropRegion(
+              controller: controller,
+              enabled: true,
+              promptCapabilities: capabilities,
+              child: PromptInput(
+                isSending: false,
+                onSend: (_, attachments) => sentAttachments = attachments,
+                onStop: () {},
+                promptCapabilities: capabilities,
+                attachmentController: controller,
+                readClipboardImage: readPromptImageFromClipboardForTest,
+                readDroppedImage: readDroppedImageForTest,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final target = tester.widget<DropTarget>(
+        find.byKey(const Key('prompt-conversation-drop-target')),
+      );
+      target.onDragEntered!(dragDetails());
+      await tester.pump();
+      expect(
+        find.byKey(const Key('prompt-conversation-drop-overlay')),
+        findsOneWidget,
+      );
+      expect(find.text('Drop images anywhere to attach'), findsOneWidget);
+
+      target.onDragDone!(
+        dropDetails(<DropItem>[
+          DropItemFile(
+            '/outside-workspace/drop.png',
+            name: 'drop.png',
+            mimeType: 'image/png',
+            length: 3,
+          ),
+        ]),
+      );
+      expect(controller.isAttached, isTrue);
+      await controller.pendingIngress;
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('prompt-conversation-drop-overlay')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('prompt-image-attachment-drop.png')),
+        findsOneWidget,
+      );
+
+      await tester.tap(sendIcon());
+      await tester.pump();
+
+      expect(sentAttachments, hasLength(1));
+      expect(sentAttachments!.single.path, isEmpty);
+      expect(sentAttachments!.single.data, isNotEmpty);
+      expect(sentAttachments!.single.mimeType, 'image/png');
     },
   );
 
@@ -974,11 +1307,16 @@ void main() {
       findsNothing,
     );
     expect(find.text('readme.md'), findsOneWidget);
-    expect(find.text('screenshot.png'), findsOneWidget);
-    expect(find.text('duplicate.png'), findsNothing);
+    expect(
+      find.byKey(const Key('prompt-image-attachment-screenshot.png')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('prompt-image-attachment-duplicate.png')),
+      findsNothing,
+    );
     expect(find.text('clip.wav'), findsOneWidget);
     expect(find.text('Embed'), findsOneWidget);
-    expect(find.text('Image'), findsOneWidget);
     expect(find.text('Audio'), findsOneWidget);
 
     await tester.tap(sendIcon());
@@ -1065,43 +1403,58 @@ void main() {
     },
   );
 
-  for (final state in <({bool enabled, bool isSending, String label})>[
-    (enabled: false, isSending: false, label: 'disabled'),
-    (enabled: true, isSending: true, label: 'sending'),
-  ]) {
-    testWidgets('PromptInput ignores drag and drop while ${state.label}', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        input(
-          enabled: state.enabled,
-          isSending: state.isSending,
-          onSend: (_, _) {},
+  testWidgets('PromptInput ignores drag and drop while disabled', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(enabled: false, isSending: false, onSend: (_, _) {}),
+    );
+
+    final target = dropTarget(tester);
+    expect(target.enable, isFalse);
+    target.onDragEntered!(dragDetails());
+    target.onDragDone!(
+      dropDetails(<DropItem>[
+        DropItemFile(
+          '/workspace/ignored.md',
+          name: 'ignored.md',
+          mimeType: 'text/markdown',
+          length: 32,
         ),
-      );
+      ]),
+    );
+    await tester.pumpAndSettle();
 
-      final target = dropTarget(tester);
-      expect(target.enable, isFalse);
-      target.onDragEntered!(dragDetails());
-      target.onDragDone!(
-        dropDetails(<DropItem>[
-          DropItemFile(
-            '/workspace/ignored.md',
-            name: 'ignored.md',
-            mimeType: 'text/markdown',
-            length: 32,
-          ),
-        ]),
-      );
-      await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('prompt-attachment-drop-indicator')),
+      findsNothing,
+    );
+    expect(find.text('ignored.md'), findsNothing);
+  });
 
-      expect(
-        find.byKey(const Key('prompt-attachment-drop-indicator')),
-        findsNothing,
-      );
-      expect(find.text('ignored.md'), findsNothing);
-    });
-  }
+  testWidgets('PromptInput keeps dropped files for the queued prompt', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(enabled: true, isSending: true, onSend: (_, _) {}),
+    );
+
+    final target = dropTarget(tester);
+    expect(target.enable, isTrue);
+    target.onDragDone!(
+      dropDetails(<DropItem>[
+        DropItemFile(
+          '/workspace/queued.md',
+          name: 'queued.md',
+          mimeType: 'text/markdown',
+          length: 32,
+        ),
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('queued.md'), findsOneWidget);
+  });
 
   testWidgets('PromptInput rejects dropped folders with guidance', (
     tester,

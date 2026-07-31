@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import '../acp/agent_session.dart';
 
 class WorkspaceRecord {
@@ -90,4 +92,22 @@ String workspaceNameFromPath(String path) {
       .toList(growable: false);
   if (parts.isEmpty) return normalized;
   return parts.last;
+}
+
+bool workspaceSupportsGitWorktrees(String path) {
+  var directory = Directory(normalizeWorkspacePath(path));
+  if (directory.path.trim().isEmpty) return false;
+  if (!directory.existsSync()) return false;
+  while (true) {
+    final marker = '${directory.path}${Platform.pathSeparator}.git';
+    final type = FileSystemEntity.typeSync(marker, followLinks: false);
+    if (type == FileSystemEntityType.directory ||
+        type == FileSystemEntityType.file ||
+        type == FileSystemEntityType.link) {
+      return true;
+    }
+    final parent = directory.parent;
+    if (parent.path == directory.path) return false;
+    directory = parent;
+  }
 }

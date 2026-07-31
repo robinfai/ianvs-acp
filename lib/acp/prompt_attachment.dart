@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:mime/mime.dart' as mime;
 
 import 'acp_agent_capabilities.dart';
@@ -10,6 +13,9 @@ class PromptAttachment {
     required this.name,
     this.mimeType,
     this.size,
+    this.data,
+    this.userApprovedOutsideWorkspace = false,
+    this.forceResourceLink = false,
   });
 
   factory PromptAttachment.fromPath({
@@ -17,6 +23,8 @@ class PromptAttachment {
     String? name,
     String? mimeType,
     int? size,
+    bool userApprovedOutsideWorkspace = false,
+    bool forceResourceLink = false,
   }) {
     final normalizedName = name?.trim();
     return PromptAttachment(
@@ -26,6 +34,22 @@ class PromptAttachment {
           : normalizedName,
       mimeType: mimeType ?? mime.lookupMimeType(path),
       size: size,
+      userApprovedOutsideWorkspace: userApprovedOutsideWorkspace,
+      forceResourceLink: forceResourceLink,
+    );
+  }
+
+  factory PromptAttachment.fromBytes({
+    required Uint8List bytes,
+    required String name,
+    required String mimeType,
+  }) {
+    return PromptAttachment(
+      path: '',
+      name: name,
+      mimeType: mimeType,
+      size: bytes.length,
+      data: base64Encode(bytes),
     );
   }
 
@@ -33,10 +57,49 @@ class PromptAttachment {
   final String name;
   final String? mimeType;
   final int? size;
+  final String? data;
+  final bool userApprovedOutsideWorkspace;
+  final bool forceResourceLink;
 
-  Uri get uri => Uri.file(path);
+  bool get isInline => data != null;
+
+  PromptAttachment copyWith({
+    String? path,
+    String? name,
+    String? mimeType,
+    int? size,
+    String? data,
+    bool? userApprovedOutsideWorkspace,
+    bool? forceResourceLink,
+  }) {
+    return PromptAttachment(
+      path: path ?? this.path,
+      name: name ?? this.name,
+      mimeType: mimeType ?? this.mimeType,
+      size: size ?? this.size,
+      data: data ?? this.data,
+      userApprovedOutsideWorkspace:
+          userApprovedOutsideWorkspace ?? this.userApprovedOutsideWorkspace,
+      forceResourceLink: forceResourceLink ?? this.forceResourceLink,
+    );
+  }
+
+  String get identity => isInline ? 'inline:$name:${data.hashCode}' : path;
+
+  Uri get uri => isInline
+      ? Uri(scheme: 'attachment', host: 'inline', path: '/$name')
+      : Uri.file(path);
 
   Map<String, Object?> toResourceLink() {
+    if (isInline && isImage) {
+      return <String, Object?>{
+        'type': 'image',
+        'data': data,
+        if (mimeType != null && mimeType!.isNotEmpty) 'mimeType': mimeType,
+        'name': name,
+        if (size != null) 'size': size,
+      };
+    }
     return <String, Object?>{
       'type': 'resource_link',
       'uri': uri.toString(),
@@ -177,11 +240,22 @@ class PromptAttachment {
         other.path == path &&
         other.name == name &&
         other.mimeType == mimeType &&
-        other.size == size;
+        other.size == size &&
+        other.data == data &&
+        other.userApprovedOutsideWorkspace == userApprovedOutsideWorkspace &&
+        other.forceResourceLink == forceResourceLink;
   }
 
   @override
-  int get hashCode => Object.hash(path, name, mimeType, size);
+  int get hashCode => Object.hash(
+    path,
+    name,
+    mimeType,
+    size,
+    data,
+    userApprovedOutsideWorkspace,
+    forceResourceLink,
+  );
 
   static String _basename(String path) {
     final normalized = path.replaceAll('\\', '/');

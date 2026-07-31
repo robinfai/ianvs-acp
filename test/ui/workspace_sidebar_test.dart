@@ -783,6 +783,7 @@ void main() {
               onRevealWorkspace: (workspace) => revealed = workspace,
               onCreateWorkspaceWorktree: (workspace) =>
                   worktreeWorkspace = workspace,
+              gitWorkspaceDetector: (_) => true,
             ),
           ),
         ),
@@ -815,6 +816,60 @@ void main() {
     await tester.tap(find.text('New Session'));
     await tester.pump();
     expect(newSessionCount, 1);
+  });
+
+  testWidgets('WorkspaceSidebar hides worktree actions outside Git', (
+    tester,
+  ) async {
+    final session = AgentSession(
+      id: 'current-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'Current work',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [session],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              agentName: 'Codex',
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: session,
+              onNewSession: () {},
+              onResumeSession: () {},
+              onCreateWorkspaceWorktree: (_) {},
+              canForkSession: (_) => true,
+              onSessionMenuAction: (_, _) {},
+              gitWorkspaceDetector: (_) => false,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.pumpAndSettle();
+    expect(find.text('Create Permanent Worktree'), findsNothing);
+    await tester.tap(find.text('New Session'));
+    await tester.pumpAndSettle();
+
+    await tester.tapAt(
+      tester.getCenter(find.text('Current work')),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Fork Locally'), findsOneWidget);
+    expect(find.text('Fork to New Worktree'), findsNothing);
   });
 
   testWidgets('WorkspaceSidebar loads sessions when expanding a workspace', (
@@ -891,6 +946,7 @@ void main() {
               onNewSession: () {},
               onResumeSession: () {},
               onRevealWorkspace: (workspace) => revealed = workspace,
+              gitWorkspaceDetector: (_) => true,
             ),
           ),
         ),
@@ -949,6 +1005,7 @@ void main() {
                 actionSession = session;
                 action = selectedAction;
               },
+              gitWorkspaceDetector: (_) => true,
             ),
           ),
         ),
@@ -1728,6 +1785,7 @@ void main() {
                 actionSession = session;
                 action = selectedAction;
               },
+              gitWorkspaceDetector: (_) => true,
             ),
           ),
         ),
@@ -1790,6 +1848,7 @@ void main() {
               onResumeSession: () {},
               canForkSession: (_) => false,
               onSessionMenuAction: (_, _) {},
+              gitWorkspaceDetector: (_) => true,
             ),
           ),
         ),

@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
+import '../../acp/acp_prompt_capability_policy.dart';
 import '../../acp/acp_session_catalog.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../config/acp_agent_discovery.dart';
+import '../../config/assistant_agent_config.dart';
 import '../../memory/memory_config.dart';
 import '../../memory/memory_runtime_status.dart';
 import '../../storage/sqlite_storage_config.dart';
@@ -61,6 +63,7 @@ class AppShell extends StatelessWidget {
     this.clientProviders = const AcpClientProviderConfig(),
     this.memory = const MemoryConfig(),
     this.storage = const SqliteStorageConfig(),
+    this.assistantAgent = const AssistantAgentConfig(),
     this.configPath,
     this.workspaceStateStore,
     this.defaultAgentName,
@@ -90,6 +93,7 @@ class AppShell extends StatelessWidget {
     this.inputBudget = const AcpInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
+    this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
   });
 
   final ChatController controller;
@@ -103,6 +107,7 @@ class AppShell extends StatelessWidget {
   final AcpClientProviderConfig clientProviders;
   final MemoryConfig memory;
   final SqliteStorageConfig storage;
+  final AssistantAgentConfig assistantAgent;
   final String? configPath;
   final WorkspaceSidebarStateStore? workspaceStateStore;
   final String? defaultAgentName;
@@ -148,6 +153,7 @@ class AppShell extends StatelessWidget {
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
+  final bool Function(String path) gitWorkspaceDetector;
 
   @override
   Widget build(BuildContext context) {
@@ -204,6 +210,21 @@ class AppShell extends StatelessWidget {
                 configPath: configPath,
               ),
             );
+        final promptCapabilityResolution = resolvePromptCapabilitiesForSession(
+          advertised: controller.capabilities?.prompt,
+          settings: controller.sessionSettings,
+          agentName: agentName,
+          agentInfo:
+              controller.capabilities?.agentInfo ?? const <String, Object?>{},
+        );
+        final promptCapabilities = promptCapabilityResolution.capabilities;
+        final activeSession = controller.currentSession;
+        final promptWorkspaceRoots = <String>{
+          activeSession?.cwd ?? controller.cwd,
+          ...(activeSession?.additionalDirectories ??
+              controller.additionalDirectories),
+        }.where((path) => path.trim().isNotEmpty).toList(growable: false);
+        final promptAttachmentController = PromptAttachmentController();
         Widget promptDock() => PromptInput(
           inputBudget: inputBudget,
           agentName: agentName,
@@ -211,7 +232,14 @@ class AppShell extends StatelessWidget {
           isSending: controller.isStreaming,
           availableCommands: controller.availableCommands,
           availableCommandsRevision: controller.availableCommandsRevision,
-          promptCapabilities: controller.capabilities?.prompt,
+          promptCapabilities: promptCapabilities,
+          workspaceRoots: promptWorkspaceRoots,
+          imageAttachmentLimitation: promptCapabilityResolution.imageLimitation,
+          queuedPrompts: controller.queuedPrompts,
+          onGuideQueuedPrompt: controller.guideQueuedPrompt,
+          onRemoveQueuedPrompt: controller.removeQueuedPrompt,
+          onClearQueuedPrompts: controller.clearQueuedPrompts,
+          onReorderQueuedPrompt: controller.reorderQueuedPrompt,
           pendingPermissionRequest: controller.pendingPermissionRequest,
           onAllowPermission: () => unawaited(
             controller.resolvePermissionRequest(AcpPermissionDecision.allow),
@@ -235,8 +263,9 @@ class AppShell extends StatelessWidget {
                     unawaited(controller.setConfigOption(configId, value))
               : null,
           onSend: (text, attachments) =>
-              controller.sendPrompt(text, attachments: attachments),
+              controller.submitOrQueuePrompt(text, attachments: attachments),
           onStop: controller.stop,
+          attachmentController: promptAttachmentController,
         );
 
         return Scaffold(
@@ -267,71 +296,101 @@ class AppShell extends StatelessWidget {
                         Widget conversationColumn(
                           BuildContext context,
                           FilePreviewLinkHandler onTapLink,
-                        ) => Column(
-                          children: [
-                            AgentToolbar(
-                              title:
-                                  controller.currentSession?.displayTitle ??
-                                  currentWorkspace.name,
-                              agentName: agentName,
-                              agentServers: agentServers,
-                              status: controller.status,
-                              forceFullActions: constraints.maxWidth >= 1120,
-                              canSwitchAgent:
-                                  canSwitchAgent && sessionActionsEnabled,
-                              onSelectAgent: onSelectAgent,
-                              onShowAgentConfig: () =>
-                                  _showAgentConfigDialog(context),
-                              onShowProtocolCoverage: () =>
-                                  _showProtocolFeatureReviewDialog(context),
-                              onShowMemoryExplorer: memory.enabled
-                                  ? () => unawaited(
-                                      _showMemoryExplorerPage(context),
-                                    )
-                                  : null,
-                              onAuthenticate: controller.canAuthenticate
-                                  ? () => unawaited(
-                                      _showAuthenticateDialog(context),
-                                    )
-                                  : null,
-                              onShowPermissionHistory:
-                                  controller.permissionHistory.isNotEmpty
-                                  ? () => _showPermissionHistoryDialog(context)
-                                  : null,
-                              onLogout: controller.canLogout
-                                  ? () => unawaited(_confirmLogout(context))
-                                  : null,
-                              onNewSession: startNewSession,
-                              onResumeSession: canResumeSessions
-                                  ? () => _showResumeDialog(context)
-                                  : null,
-                              onReconnect: canReconnect
-                                  ? controller.reconnect
-                                  : null,
-                            ),
-                            Expanded(
-                              child: ChatTimeline(
-                                inputBudget: inputBudget,
-                                imageDecodeLedger: imageDecodeLedger,
-                                boundedImageDecoder: boundedImageDecoder,
-                                messages: controller.messages,
-                                messageListRevision:
-                                    controller.messagesRevision,
+                        ) => PromptAttachmentDropRegion(
+                          controller: promptAttachmentController,
+                          enabled: !controller.isSessionOperationRunning,
+                          promptCapabilities: promptCapabilities,
+                          child: Column(
+                            children: [
+                              AgentToolbar(
+                                title:
+                                    controller.currentSession?.displayTitle ??
+                                    currentWorkspace.name,
                                 agentName: agentName,
-                                hasActiveSession:
-                                    controller.currentSession != null,
-                                activeSessionLabel:
-                                    controller.currentSession?.displayTitle,
-                                isLoadingSession:
-                                    controller.isSessionReplayLoading,
-                                onNewSession: null,
-                                onTapLink: onTapLink,
-                                onMemoryFeedback:
-                                    controller.submitMemoryFeedback,
+                                agentServers: agentServers,
+                                status: controller.status,
+                                forceFullActions: constraints.maxWidth >= 1120,
+                                canSwitchAgent:
+                                    canSwitchAgent && sessionActionsEnabled,
+                                onSelectAgent: onSelectAgent,
+                                onShowAgentConfig: () =>
+                                    _showAgentConfigDialog(context),
+                                onShowProtocolCoverage: () =>
+                                    _showProtocolFeatureReviewDialog(context),
+                                onShowMemoryExplorer: memory.enabled
+                                    ? () => unawaited(
+                                        _showMemoryExplorerPage(context),
+                                      )
+                                    : null,
+                                onAuthenticate: controller.canAuthenticate
+                                    ? () => unawaited(
+                                        _showAuthenticateDialog(context),
+                                      )
+                                    : null,
+                                onShowPermissionHistory:
+                                    controller.permissionHistory.isNotEmpty
+                                    ? () =>
+                                          _showPermissionHistoryDialog(context)
+                                    : null,
+                                onLogout: controller.canLogout
+                                    ? () => unawaited(_confirmLogout(context))
+                                    : null,
+                                currentSession: controller.currentSession,
+                                canForkSession:
+                                    controller.currentSession != null &&
+                                    (canForkSession?.call(
+                                          controller.currentSession!,
+                                        ) ??
+                                        false),
+                                supportsGitWorktrees: gitWorkspaceDetector(
+                                  currentWorkspace.path,
+                                ),
+                                onSessionMenuAction:
+                                    controller.currentSession == null ||
+                                        onSessionMenuAction == null
+                                    ? null
+                                    : (action) {
+                                        final result = onSessionMenuAction!(
+                                          context,
+                                          controller.currentSession!,
+                                          action,
+                                        );
+                                        if (result is Future<void>) {
+                                          unawaited(result);
+                                        }
+                                      },
+                                onNewSession: startNewSession,
+                                onResumeSession: canResumeSessions
+                                    ? () => _showResumeDialog(context)
+                                    : null,
+                                onReconnect: canReconnect
+                                    ? controller.reconnect
+                                    : null,
                               ),
-                            ),
-                            promptDock(),
-                          ],
+                              Expanded(
+                                child: ChatTimeline(
+                                  inputBudget: inputBudget,
+                                  imageDecodeLedger: imageDecodeLedger,
+                                  boundedImageDecoder: boundedImageDecoder,
+                                  messages: controller.messages,
+                                  messageListRevision:
+                                      controller.messagesRevision,
+                                  agentName: agentName,
+                                  hasActiveSession:
+                                      controller.currentSession != null,
+                                  activeSessionLabel:
+                                      controller.currentSession?.displayTitle,
+                                  isLoadingSession:
+                                      controller.isSessionReplayLoading,
+                                  onNewSession: null,
+                                  onTapLink: onTapLink,
+                                  onMemoryFeedback:
+                                      controller.submitMemoryFeedback,
+                                ),
+                              ),
+                              promptDock(),
+                            ],
+                          ),
                         );
 
                         final previewWorkspace = FilePreviewWorkspace(
@@ -435,6 +494,7 @@ class AppShell extends StatelessWidget {
                                                 workspace,
                                               ),
                                     stateStore: workspaceStateStore,
+                                    gitWorkspaceDetector: gitWorkspaceDetector,
                                   ),
                                   taskInboxController: taskInboxController,
                                   initialMode: initialSidebarMode,
@@ -728,6 +788,7 @@ class AppShell extends StatelessWidget {
           clientProviders: clientProviders,
           memory: memory,
           storage: storage,
+          assistantAgent: assistantAgent,
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,

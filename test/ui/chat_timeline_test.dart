@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_input_budget.dart';
+import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_acp/ui/components/chat_timeline.dart';
@@ -53,6 +54,52 @@ void main() {
     await tester.pumpWidget(timeline(const []));
 
     expect(find.text('Start a session to chat with Codex'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline collapses enhanced turn process behind summary', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Implement the queue'),
+      startsNewTurn: true,
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: 'Inspecting and editing several files.',
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: 'The queue is implemented and verified.',
+        metadata: const {
+          'kind': 'assistant_summary',
+          'sourceTurnId': 1,
+          'collapseProcess': true,
+        },
+      ),
+    );
+
+    await tester.pumpWidget(timeline(controller.messages));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('assistant-turn-summary')),
+      findsOneWidget,
+    );
+    expect(find.text('The queue is implemented and verified.'), findsOneWidget);
+    expect(find.text('Implement the queue'), findsNothing);
+
+    await tester.tap(find.textContaining('Processed').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Implement the queue'), findsOneWidget);
+    expect(find.text('Inspecting and editing several files.'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline shows used memory and submits feedback', (

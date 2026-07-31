@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'acp/acp_agent_client.dart';
+import 'acp/assistant_agent_enhancer.dart';
 import 'acp/acp_input_budget.dart';
 import 'acp/agent_session.dart';
 import 'acp/rust_acp_agent_client.dart';
@@ -203,6 +204,7 @@ class AcpClientApp extends StatefulWidget {
     this.inputBudget = const AcpInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder,
+    this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
   });
 
   final ChatController? controller;
@@ -239,6 +241,7 @@ class AcpClientApp extends StatefulWidget {
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder? boundedImageDecoder;
+  final bool Function(String path) gitWorkspaceDetector;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -1357,6 +1360,7 @@ class _AcpClientAppState extends State<AcpClientApp>
         inputBudget: _inputBudget,
         imageDecodeLedger: _imageDecodeLedger,
         boundedImageDecoder: _boundedImageDecoder,
+        gitWorkspaceDetector: widget.gitWorkspaceDetector,
         controller: _controller,
         taskInboxController: _taskInboxController,
         initialSidebarMode: _selectedTaskId == null
@@ -1370,6 +1374,7 @@ class _AcpClientAppState extends State<AcpClientApp>
         clientProviders: _clientProviderConfig(_config),
         memory: _config.memory,
         storage: _config.storage,
+        assistantAgent: _config.assistantAgent,
         memoryStatus: _memoryStatus,
         memoryPendingCount: _memoryPendingCount,
         memoryPendingChangeRequestCount: _memoryPendingChangeRequestCount,
@@ -1488,7 +1493,30 @@ class _AcpClientAppState extends State<AcpClientApp>
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
       memoryMiddleware: _memoryMiddleware(config),
+      assistantAgentConfig: config.assistantAgent,
+      assistantAgentEnhancer: _assistantAgentEnhancer(config),
+      enableAutomaticSessionTitles: true,
     );
+  }
+
+  AssistantAgentEnhancer? _assistantAgentEnhancer(AcpClientConfig config) {
+    final assistant = config.assistantAgent;
+    if (!assistant.isConfigured) return null;
+    final agentName = assistant.agentName;
+    if (agentName == null) return null;
+    try {
+      final helperConfig = config.withActiveAgentServer(agentName);
+      final helperClient =
+          widget.createAgentClient?.call(helperConfig) ??
+          _defaultAgentClient(
+            helperConfig,
+            includeMemoryMcp: false,
+            restrictedAssistant: true,
+          );
+      return AcpAssistantAgentEnhancer(helperClient, _cwd, config: assistant);
+    } on Object {
+      return null;
+    }
   }
 
   AcpMemoryMiddleware? _memoryMiddleware(AcpClientConfig config) {
@@ -3513,6 +3541,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   AcpAgentClient _defaultAgentClient(
     AcpClientConfig config, {
     bool includeMemoryMcp = true,
+    bool restrictedAssistant = false,
   }) {
     final server = config.activeAgentServer;
     if (server == null) {
@@ -3539,24 +3568,34 @@ class _AcpClientAppState extends State<AcpClientApp>
       agentCommand: server.command,
       agentArgs: server.args,
       agentCwd: server.cwd,
-      sessionStorePath: _rustAcpSessionDatabasePath(config.configPath),
+      sessionStorePath: restrictedAssistant
+          ? null
+          : _rustAcpSessionDatabasePath(config.configPath),
       sessionStoreMaxBytes: config.storage.budgetBytesFor(
         SqliteStoreKind.acpSessions,
       ),
       sessionStoreRetentionDays: config.storage.retentionDays,
-      mcpServers: config.mcpServers
-          .map(_rustMcpServerProjection)
-          .toList(growable: false),
-      mcpServersProvider: includeMemoryMcp && config.memory.enabled
+      mcpServers: restrictedAssistant
+          ? const <Map<String, Object?>>[]
+          : config.mcpServers
+                .map(_rustMcpServerProjection)
+                .toList(growable: false),
+      mcpServersProvider:
+          !restrictedAssistant && includeMemoryMcp && config.memory.enabled
           ? () => _memoryMcpServers(config.memory, config.storage)
           : null,
       envOverrides: server.env,
-      additionalDirectories: config.additionalDirectories,
+      additionalDirectories: restrictedAssistant
+          ? const <String>[]
+          : config.additionalDirectories,
       enableFilesystemReadTextFile:
+          !restrictedAssistant &&
           config.clientProviders.filesystem.readTextFile,
       enableFilesystemWriteTextFile:
+          !restrictedAssistant &&
           config.clientProviders.filesystem.writeTextFile,
-      enableTerminalProvider: config.clientProviders.terminal.enabled,
+      enableTerminalProvider:
+          !restrictedAssistant && config.clientProviders.terminal.enabled,
     );
   }
 

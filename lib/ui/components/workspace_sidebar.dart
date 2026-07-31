@@ -29,6 +29,7 @@ class WorkspaceSidebar extends StatefulWidget {
     this.onLoadWorkspaceSessions,
     this.pickWorkspaceDirectory,
     this.stateStore,
+    this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
   });
 
   final String agentName;
@@ -54,6 +55,7 @@ class WorkspaceSidebar extends StatefulWidget {
   onLoadWorkspaceSessions;
   final Future<String?> Function()? pickWorkspaceDirectory;
   final WorkspaceSidebarStateStore? stateStore;
+  final bool Function(String path) gitWorkspaceDetector;
 
   @override
   State<WorkspaceSidebar> createState() => _WorkspaceSidebarState();
@@ -75,6 +77,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   final Set<String> _manuallyAddedWorkspacePaths = <String>{};
   final Map<String, String> _workspaceDisplayNames = <String, String>{};
   final Map<String, String> _sessionLoadErrors = <String, String>{};
+  final Map<String, bool> _gitWorkspaceSupport = <String, bool>{};
   final TextEditingController _searchController = TextEditingController();
   Timer? _currentWorkspaceAutoLoadTimer;
   String? _hoveredWorkspacePath;
@@ -100,6 +103,12 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     if (oldWidget.stateStore?.path != widget.stateStore?.path) {
       unawaited(_restoreExpandedWorkspacePaths());
       unawaited(_restoreWorkspaceStates());
+    }
+    if (!identical(
+      oldWidget.gitWorkspaceDetector,
+      widget.gitWorkspaceDetector,
+    )) {
+      _gitWorkspaceSupport.clear();
     }
 
     final loaderBecameAvailable =
@@ -177,6 +186,10 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                 final sessionLoading = _loadingSessionWorkspacePaths.contains(
                   workspace.path,
                 );
+                final supportsGitWorktrees = _gitWorkspaceSupport.putIfAbsent(
+                  workspace.path,
+                  () => widget.gitWorkspaceDetector(workspace.path),
+                );
                 return _WorkspaceGroup(
                   workspace: workspace,
                   displayName: _workspaceName(workspace),
@@ -210,8 +223,8 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                         ),
                   pinned: _isPinned(workspace),
                   canRevealInFinder: widget.onRevealWorkspace != null,
-                  canCreatePermanentWorktree:
-                      widget.onCreateWorkspaceWorktree != null,
+                  canCreatePermanentWorktree: supportsGitWorktrees,
+                  supportsGitWorktrees: supportsGitWorktrees,
                   canArchiveConversations:
                       widget.onArchiveWorkspaceSessions != null &&
                       workspace.sessions.isNotEmpty,
@@ -752,6 +765,7 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.pinned,
     required this.canRevealInFinder,
     required this.canCreatePermanentWorktree,
+    required this.supportsGitWorktrees,
     required this.canArchiveConversations,
     required this.canRemove,
     required this.onHoverChanged,
@@ -784,6 +798,7 @@ class _WorkspaceGroup extends StatelessWidget {
   final bool pinned;
   final bool canRevealInFinder;
   final bool canCreatePermanentWorktree;
+  final bool supportsGitWorktrees;
   final bool canArchiveConversations;
   final bool canRemove;
   final ValueChanged<bool> onHoverChanged;
@@ -848,6 +863,7 @@ class _WorkspaceGroup extends StatelessWidget {
                   onCollapseSessions: onCollapseSessions,
                   onSelectSession: onSelectSession,
                   canForkSession: canForkSession,
+                  supportsGitWorktrees: supportsGitWorktrees,
                   onSessionMenuAction: onSessionMenuAction,
                 ),
               ),
@@ -868,6 +884,7 @@ class _NestedSessionList extends StatelessWidget {
     required this.onCollapseSessions,
     required this.onSelectSession,
     required this.canForkSession,
+    required this.supportsGitWorktrees,
     required this.onSessionMenuAction,
   });
 
@@ -879,6 +896,7 @@ class _NestedSessionList extends StatelessWidget {
   final VoidCallback onCollapseSessions;
   final ValueChanged<AgentSession>? onSelectSession;
   final bool Function(AgentSession session)? canForkSession;
+  final bool supportsGitWorktrees;
   final FutureOr<void> Function(
     AgentSession session,
     WorkspaceSessionMenuAction action,
@@ -917,6 +935,7 @@ class _NestedSessionList extends StatelessWidget {
               ? null
               : () => onSelectSession!(session),
           canFork: canForkSession?.call(session) ?? false,
+          supportsGitWorktrees: supportsGitWorktrees,
           onMenuAction: onSessionMenuAction,
         ),
       );
@@ -1295,12 +1314,12 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
       label: 'Show in Finder',
       enabled: canRevealInFinder,
     ),
-    _workspaceMenuItem(
-      value: _WorkspaceMenuAction.createPermanentWorktree,
-      icon: Icons.call_split_rounded,
-      label: 'Create Permanent Worktree',
-      enabled: canCreatePermanentWorktree,
-    ),
+    if (canCreatePermanentWorktree)
+      _workspaceMenuItem(
+        value: _WorkspaceMenuAction.createPermanentWorktree,
+        icon: Icons.call_split_rounded,
+        label: 'Create Permanent Worktree',
+      ),
     _workspaceMenuItem(
       value: _WorkspaceMenuAction.rename,
       icon: Icons.edit_outlined,
@@ -1387,6 +1406,7 @@ class _SessionTile extends StatefulWidget {
     required this.selected,
     required this.onPressed,
     required this.canFork,
+    required this.supportsGitWorktrees,
     required this.onMenuAction,
   });
 
@@ -1394,6 +1414,7 @@ class _SessionTile extends StatefulWidget {
   final bool selected;
   final VoidCallback? onPressed;
   final bool canFork;
+  final bool supportsGitWorktrees;
   final FutureOr<void> Function(
     AgentSession session,
     WorkspaceSessionMenuAction action,
@@ -1647,6 +1668,7 @@ class _SessionTileState extends State<_SessionTile> {
       items: _sessionMenuItems(
         session: widget.session,
         canFork: widget.canFork,
+        supportsGitWorktrees: widget.supportsGitWorktrees,
       ),
     );
     if (action == null) return;
@@ -1929,6 +1951,7 @@ String _singleLineSessionPreview(String value) {
 List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
   required AgentSession session,
   required bool canFork,
+  required bool supportsGitWorktrees,
 }) {
   return [
     _sessionMenuItem(
@@ -1981,12 +2004,13 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
       label: 'Fork Locally',
       enabled: canFork,
     ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.forkToNewWorktree,
-      icon: Icons.account_tree_outlined,
-      label: 'Fork to New Worktree',
-      enabled: canFork,
-    ),
+    if (supportsGitWorktrees)
+      _sessionMenuItem(
+        value: WorkspaceSessionMenuAction.forkToNewWorktree,
+        icon: Icons.account_tree_outlined,
+        label: 'Fork to New Worktree',
+        enabled: canFork,
+      ),
     const PopupMenuDivider(height: 8),
     _sessionMenuItem(
       value: WorkspaceSessionMenuAction.openInNewWindow,

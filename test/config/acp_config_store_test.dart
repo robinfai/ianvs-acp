@@ -6,10 +6,35 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_agent_discovery.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/acp_config_store.dart';
+import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
 import 'package:ianvs_acp/memory/memory_config.dart';
 
 void main() {
+  test('serializes assistant agent config', () {
+    final settings = AcpConfigStore.toSettingsJson(
+      const AcpClientConfig(
+        assistantAgent: AssistantAgentConfig(
+          enabled: true,
+          agentName: 'Codex',
+          model: 'gpt-5.6-sol',
+          fallbackTitleCharacters: 28,
+        ),
+      ),
+    );
+
+    expect(settings['assistant_agent'], {
+      'enabled': true,
+      'agent': 'Codex',
+      'model': 'gpt-5.6-sol',
+      'generate_session_titles': true,
+      'summarize_turns': true,
+      'collapse_execution_process': true,
+      'fallback_title_characters': 28,
+      'timeout_ms': 30000,
+    });
+  });
+
   test('serializes memory config', () {
     final settings = AcpConfigStore.toSettingsJson(
       const AcpClientConfig(

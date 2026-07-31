@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../platform/agent_process_environment.dart';
 import '../rust/ianvs_acp_native.dart';
 import '../rust/ianvs_runtime_event.dart';
 import 'acp_agent_capabilities.dart';
@@ -31,6 +32,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     this.mcpServers = const <Map<String, Object?>>[],
     this.mcpServersProvider,
     this.envOverrides = const <String, String>{},
+    this.inheritedProcessEnvironment,
     this.additionalDirectories = const <String>[],
     IanvsRustRuntime? runtime,
     this.connectTimeout = const Duration(seconds: 30),
@@ -63,6 +65,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final List<Map<String, Object?>> mcpServers;
   final AcpMcpServersProvider? mcpServersProvider;
   final Map<String, String> envOverrides;
+  final Map<String, String>? inheritedProcessEnvironment;
   final List<String> additionalDirectories;
   final Duration connectTimeout;
   final Duration permissionTimeout;
@@ -167,7 +170,11 @@ final class RustAcpAgentClient implements AcpAgentClient {
         agentName: agentName,
         command: agentCommand,
         args: agentArgs,
-        environment: envOverrides,
+        environment: AgentProcessEnvironment.resolve(
+          command: agentCommand,
+          overrides: envOverrides,
+          inherited: inheritedProcessEnvironment,
+        ),
         processCwd: agentCwd,
         sessionStorePath: sessionStorePath,
         sessionStoreMaxBytes: sessionStoreMaxBytes,
@@ -248,6 +255,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
                 if (attachment.mimeType != null)
                   'mimeType': attachment.mimeType,
                 if (attachment.size != null) 'size': attachment.size,
+                if (attachment.data != null) 'data': attachment.data,
+                if (attachment.userApprovedOutsideWorkspace)
+                  'userApprovedOutsideWorkspace': true,
+                if (attachment.forceResourceLink) 'forceResourceLink': true,
               },
             )
             .toList(growable: false),

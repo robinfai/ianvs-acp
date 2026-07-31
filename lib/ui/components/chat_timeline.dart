@@ -133,7 +133,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
     final visibleMessages = _visibleTimelineMessages(widget.messages);
     final skippedMessageCount = widget.messages.length - visibleMessages.length;
     final hasTrimmedHistory = skippedMessageCount > 0;
-    final entries = _timelineEntries(visibleMessages);
+    final turns = _timelineTurns(visibleMessages);
     final historyNoticeCount = hasTrimmedHistory ? 1 : 0;
     final loadingFooterCount = widget.isLoadingSession ? 1 : 0;
 
@@ -147,34 +147,29 @@ class _ChatTimelineState extends State<ChatTimeline> {
           key: const ValueKey('chat-timeline-list'),
           controller: _scrollController,
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 18),
-          itemCount: entries.length + historyNoticeCount + loadingFooterCount,
+          itemCount: turns.length + historyNoticeCount + loadingFooterCount,
           separatorBuilder: (context, index) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
-            if (hasTrimmedHistory && index == entries.length) {
+            if (hasTrimmedHistory && index == turns.length) {
               return _TrimmedHistoryNotice(
                 shownCount: visibleMessages.length,
                 totalCount: widget.messages.length,
               );
             }
-            if (index >= entries.length + historyNoticeCount) {
+            if (index >= turns.length + historyNoticeCount) {
               return const _SessionLoadingFooter();
             }
-            final entry = entries[index];
-            final item = entry.toolMessages == null
-                ? _MessageBubble(
-                    message: entry.message!,
-                    inputBudget: widget.inputBudget,
-                    onTapLink: widget.onTapLink,
-                    onMemoryFeedback: widget.onMemoryFeedback,
-                  )
-                : _ToolGroupBubble(
-                    messages: entry.toolMessages!,
-                    inputBudget: widget.inputBudget,
-                  );
+            final turn = turns[index];
             return Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 760),
-                child: item,
+                constraints: const BoxConstraints(maxWidth: 820),
+                child: _TurnSectionBubble(
+                  key: ValueKey('timeline-turn-${turn.turnId}-$index'),
+                  turn: turn,
+                  inputBudget: widget.inputBudget,
+                  onTapLink: widget.onTapLink,
+                  onMemoryFeedback: widget.onMemoryFeedback,
+                ),
               ),
             );
           },
@@ -274,6 +269,28 @@ int _messagesSignature(
   ]);
 }
 
+List<_TimelineTurn> _timelineTurns(List<ChatMessage> messages) {
+  final turns = <_TimelineTurn>[];
+  var index = 0;
+  while (index < messages.length) {
+    final first = messages[index];
+    final turnId = _messageTurnId(first);
+    final turnMessages = <ChatMessage>[];
+    while (index < messages.length &&
+        (turnId == null
+            ? (turnMessages.isEmpty ||
+                  (first.role == ChatMessageRole.tool &&
+                      messages[index].role == ChatMessageRole.tool &&
+                      _messageTurnId(messages[index]) == null))
+            : _messageTurnId(messages[index]) == turnId)) {
+      turnMessages.add(messages[index]);
+      index += 1;
+    }
+    turns.add(_TimelineTurn(turnId: turnId, messages: turnMessages));
+  }
+  return turns;
+}
+
 List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {
   final entries = <_TimelineEntry>[];
   var index = 0;
@@ -353,6 +370,257 @@ class _TimelineEntry {
 
   final ChatMessage? message;
   final List<ChatMessage>? toolMessages;
+}
+
+class _TimelineTurn {
+  const _TimelineTurn({required this.turnId, required this.messages});
+
+  final int? turnId;
+  final List<ChatMessage> messages;
+
+  ChatMessage? get summary {
+    for (final message in messages.reversed) {
+      if (message.metadata['kind'] == 'assistant_summary') return message;
+    }
+    return null;
+  }
+
+  List<ChatMessage> get processMessages => messages
+      .where((message) => message.metadata['kind'] != 'assistant_summary')
+      .toList(growable: false);
+
+  String get elapsedLabel {
+    if (messages.length < 2) return 'Processed';
+    final first = _messageTimestamp(messages.first);
+    final last = _messageTimestamp(messages.last);
+    if (first == null || last == null) return 'Processed';
+    final elapsed = last.difference(first);
+    if (elapsed.isNegative) return 'Processed';
+    if (elapsed.inMinutes > 0) {
+      return 'Processed ${elapsed.inMinutes}m ${elapsed.inSeconds % 60}s';
+    }
+    return 'Processed ${elapsed.inSeconds}s';
+  }
+
+  String get promptPreview {
+    for (final message in messages) {
+      if (message.role == ChatMessageRole.user &&
+          message.text.trim().isNotEmpty) {
+        return message.text.trim();
+      }
+    }
+    return 'Turn';
+  }
+
+  String get responsePreview {
+    final assistantSummary = summary?.text.trim();
+    if (assistantSummary != null && assistantSummary.isNotEmpty) {
+      return assistantSummary;
+    }
+    for (final message in messages.reversed) {
+      if (message.role == ChatMessageRole.assistant &&
+          message.text.trim().isNotEmpty) {
+        return message.text.trim();
+      }
+    }
+    return 'Execution in progress';
+  }
+}
+
+int? _messageTurnId(ChatMessage message) {
+  try {
+    return message.turnId;
+  } on NoSuchMethodError {
+    return null;
+  }
+}
+
+DateTime? _messageTimestamp(ChatMessage message) {
+  try {
+    return message.timestamp;
+  } on NoSuchMethodError {
+    return null;
+  }
+}
+
+class _TurnSectionBubble extends StatefulWidget {
+  const _TurnSectionBubble({
+    super.key,
+    required this.turn,
+    required this.inputBudget,
+    required this.onTapLink,
+    this.onMemoryFeedback,
+  });
+
+  final _TimelineTurn turn;
+  final AcpInputBudget inputBudget;
+  final MarkdownTapLinkCallback? onTapLink;
+  final MemoryFeedbackCallback? onMemoryFeedback;
+
+  @override
+  State<_TurnSectionBubble> createState() => _TurnSectionBubbleState();
+}
+
+class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
+  late bool _expanded = _initiallyExpanded();
+
+  bool _initiallyExpanded() {
+    final summary = widget.turn.summary;
+    return summary == null || summary.metadata['collapseProcess'] != true;
+  }
+
+  @override
+  void didUpdateWidget(covariant _TurnSectionBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.turn.summary == null && widget.turn.summary != null) {
+      _expanded = _initiallyExpanded();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = widget.turn.summary;
+    final processEntries = _timelineEntries(widget.turn.processMessages);
+    final preview = [
+      widget.turn.promptPreview,
+      '',
+      widget.turn.responsePreview,
+    ].join('\n');
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 22,
+          child: Tooltip(
+            waitDuration: const Duration(milliseconds: 180),
+            message: preview,
+            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(left: 36),
+            constraints: const BoxConstraints(maxWidth: 420),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.lg),
+              border: Border.all(color: AppColors.border),
+              boxShadow: AppShadows.raised,
+            ),
+            textStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppColors.textPrimary,
+              fontSize: 12,
+              height: 1.45,
+              fontWeight: FontWeight.w600,
+            ),
+            child: _TurnRail(active: summary != null),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (summary != null)
+                _ProcessedTurnHeader(
+                  label: widget.turn.elapsedLabel,
+                  expanded: _expanded,
+                  onPressed: () => setState(() => _expanded = !_expanded),
+                ),
+              if (summary != null) const SizedBox(height: 8),
+              if (_expanded)
+                for (var index = 0; index < processEntries.length; index++) ...[
+                  _buildEntry(processEntries[index]),
+                  if (index != processEntries.length - 1)
+                    const SizedBox(height: 10),
+                ],
+              if (_expanded && processEntries.isNotEmpty && summary != null)
+                const SizedBox(height: 10),
+              if (summary != null) _buildEntry(_TimelineEntry.message(summary)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEntry(_TimelineEntry entry) {
+    if (entry.toolMessages != null) {
+      return _ToolGroupBubble(
+        messages: entry.toolMessages!,
+        inputBudget: widget.inputBudget,
+      );
+    }
+    return _MessageBubble(
+      message: entry.message!,
+      inputBudget: widget.inputBudget,
+      onTapLink: widget.onTapLink,
+      onMemoryFeedback: widget.onMemoryFeedback,
+    );
+  }
+}
+
+class _TurnRail extends StatelessWidget {
+  const _TurnRail({required this.active});
+
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: active ? 4 : 3,
+        height: 34,
+        decoration: BoxDecoration(
+          color: active ? AppColors.textPrimary : AppColors.border,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProcessedTurnHeader extends StatelessWidget {
+  const _ProcessedTurnHeader({
+    required this.label,
+    required this.expanded,
+    required this.onPressed,
+  });
+
+  final String label;
+  final bool expanded;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      onTap: onPressed,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(width: 4),
+            AnimatedRotation(
+              turns: expanded ? 0.25 : 0,
+              duration: const Duration(milliseconds: 160),
+              child: const Icon(
+                Icons.chevron_right_rounded,
+                size: 17,
+                color: AppColors.textTertiary,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(child: Divider(color: AppColors.borderSoft)),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _EmptyTimeline extends StatelessWidget {
@@ -580,6 +848,13 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (message.metadata['kind'] == 'assistant_summary') {
+      return _AssistantSummaryBubble(
+        message: message,
+        inputBudget: inputBudget,
+        onTapLink: onTapLink,
+      );
+    }
     if (message.role == ChatMessageRole.tool) {
       return _ToolBubble(message: message, inputBudget: inputBudget);
     }
@@ -758,6 +1033,93 @@ class _MessageBubble extends StatelessWidget {
     ChatMessageRole.error => const Color(0xffb91c1c),
     ChatMessageRole.status => AppColors.textSecondary,
   };
+}
+
+class _AssistantSummaryBubble extends StatelessWidget {
+  const _AssistantSummaryBubble({
+    required this.message,
+    required this.inputBudget,
+    required this.onTapLink,
+  });
+
+  final ChatMessage message;
+  final AcpInputBudget inputBudget;
+  final MarkdownTapLinkCallback? onTapLink;
+
+  @override
+  Widget build(BuildContext context) {
+    final decision = scanMarkdownForRendering(
+      message.text,
+      budget: inputBudget,
+    );
+    return Container(
+      key: const ValueKey('assistant-turn-summary'),
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: AppColors.border),
+        boxShadow: AppShadows.soft,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(
+                Icons.auto_awesome_rounded,
+                size: 15,
+                color: AppColors.textSecondary,
+              ),
+              SizedBox(width: 7),
+              Text(
+                'Task summary',
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          if (decision.useMarkdown)
+            _SelectableMessageMarkdown(
+              data: decision.text,
+              user: false,
+              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
+                  .copyWith(
+                    p: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 14,
+                      height: 1.48,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    listBullet: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 14,
+                      height: 1.48,
+                    ),
+                    blockSpacing: 7,
+                    listIndent: 22,
+                  ),
+              onTapLink: onTapLink,
+            )
+          else
+            SelectableText(
+              decision.text,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 14,
+                height: 1.48,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 List<AcpInputOmission> _distinctOmissions(
