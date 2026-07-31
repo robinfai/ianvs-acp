@@ -417,6 +417,51 @@ void main() {
     expect(promptRect.right, lessThan(inspectorRect.left));
   });
 
+  testWidgets(
+    'AppShell queues composer submissions while the active turn is streaming',
+    (tester) async {
+      final client = FakeAgentClient(chunkDelay: const Duration(seconds: 1));
+      final controller = ChatController(
+        client: client,
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+      await tester.runAsync(controller.newSession);
+
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppShell(controller: controller, agentName: 'Codex'),
+        ),
+      );
+      await tester.pump();
+
+      await tester.runAsync(() => controller.sendPrompt('active turn'));
+      await tester.pump();
+      expect(controller.isStreaming, isTrue);
+
+      final promptField = find.descendant(
+        of: find.byKey(const Key('prompt-input-surface')),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(promptField, 'queued follow-up');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('prompt-queue-button')));
+      await tester.pump();
+
+      expect(controller.queuedPrompts, hasLength(1));
+      expect(controller.queuedPrompts.single.text, 'queued follow-up');
+      expect(find.byKey(const Key('prompt-queue-tray')), findsOneWidget);
+
+      controller.clearQueuedPrompts();
+      await tester.runAsync(controller.stop);
+    },
+  );
+
   testWidgets('AppShell renders memory status in inspector diagnostics', (
     tester,
   ) async {

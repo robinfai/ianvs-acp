@@ -64,6 +64,7 @@ void main() {
     VoidCallback? onClearQueuedPrompts,
     void Function(int oldIndex, int newIndex)? onReorderQueuedPrompt,
     double? width,
+    Widget? background,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
     final promptInput = PromptInput(
@@ -104,14 +105,17 @@ void main() {
       onReorderQueuedPrompt: onReorderQueuedPrompt,
       inputBudget: inputBudget,
     );
+    final body = width == null
+        ? promptInput
+        : Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(width: width, child: promptInput),
+          );
     return MaterialApp(
       home: Scaffold(
-        body: width == null
-            ? promptInput
-            : Align(
-                alignment: Alignment.topLeft,
-                child: SizedBox(width: width, child: promptInput),
-              ),
+        body: background == null
+            ? body
+            : Stack(fit: StackFit.expand, children: [background, body]),
       ),
     );
   }
@@ -232,7 +236,7 @@ void main() {
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView),
     );
-    list.onReorder?.call(0, 1);
+    list.onReorderItem?.call(0, 1);
     expect(guidedId, 7);
     expect(removedId, 7);
     expect(cleared, isTrue);
@@ -2437,9 +2441,20 @@ void main() {
   testWidgets(
     'PromptInput keeps config menus and advanced overlay mutually exclusive',
     (tester) async {
+      var backgroundTaps = 0;
       await tester.pumpWidget(
         input(
           isSending: false,
+          width: 740,
+          background: Align(
+            alignment: Alignment.topRight,
+            child: IconButton(
+              key: const Key('advanced-overlay-background-action'),
+              onPressed: () => backgroundTaps += 1,
+              tooltip: 'Background action',
+              icon: const Icon(Icons.add),
+            ),
+          ),
           onSend: (_, _) {},
           configOptions: const [
             AcpConfigOption(
@@ -2488,12 +2503,15 @@ void main() {
       );
       expect(find.text('Model'), findsNothing);
 
-      await tester.tapAt(const Offset(4, 4));
+      await tester.tap(
+        find.byKey(const Key('advanced-overlay-background-action')),
+      );
       await tester.pumpAndSettle();
       expect(
         find.byKey(const Key('prompt-session-config-advanced-panel')),
         findsNothing,
       );
+      expect(backgroundTaps, 0);
 
       await openAdvancedOverlay();
       await tester.tap(find.byKey(const Key('prompt-session-config-selector')));

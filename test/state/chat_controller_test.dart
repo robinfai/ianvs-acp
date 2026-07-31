@@ -12673,6 +12673,72 @@ void main() {
     },
   );
 
+  test(
+    'stop waits for cancellation acknowledgement before dispatching queue',
+    () async {
+      final fake = _AcknowledgedCancellationAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(() async {
+        controller.dispose();
+        await fake.closePromptStream();
+      });
+
+      await controller.newSession();
+      await controller.sendPrompt('first');
+      controller.enqueuePrompt('normal follow-up');
+      controller.enqueuePrompt('guided follow-up', guide: true);
+
+      final stop = controller.stop(
+        cancellationTimeout: const Duration(seconds: 1),
+      );
+      await fake.cancelRequested.future;
+      await pumpEventQueue(times: 4);
+
+      expect(fake.prompts, ['first']);
+      expect(controller.isStreaming, isTrue);
+      expect(controller.queuedPrompts.map((prompt) => prompt.text), [
+        'guided follow-up',
+        'normal follow-up',
+      ]);
+
+      await fake.acknowledgeCancellation();
+      await stop;
+      await pumpEventQueue(times: 20);
+
+      expect(fake.prompts, ['first', 'guided follow-up', 'normal follow-up']);
+      expect(controller.queuedPrompts, isEmpty);
+      expect(controller.lastError, isNull);
+    },
+  );
+
+  test(
+    'stop timeout preserves queued prompts instead of consuming them',
+    () async {
+      final fake = _AcknowledgedCancellationAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(() async {
+      controller.dispose();
+      await fake.closePromptStream();
+    });
+
+      await controller.newSession();
+      await controller.sendPrompt('first');
+      controller.enqueuePrompt('guided follow-up', guide: true);
+
+      await controller.stop(
+        cancellationTimeout: const Duration(milliseconds: 20),
+      );
+      await pumpEventQueue(times: 8);
+
+      expect(fake.prompts, ['first']);
+      expect(controller.isStreaming, isFalse);
+      expect(controller.status, app_state.ConnectionStatus.error);
+      expect(controller.queuedPrompts.single.text, 'guided follow-up');
+      expect(controller.queuedPrompts.single.guide, isTrue);
+      expect(controller.lastError, contains('TimeoutException'));
+    },
+  );
+
   test('queued prompts can be cleared together', () async {
     final controller = ChatController(
       client: FakeAgentClient(),
@@ -12693,6 +12759,26 @@ void main() {
     controller.clearQueuedPrompts();
 
     expect(controller.queuedPrompts, isEmpty);
+  });
+
+  test('queued prompts reorder with adjusted list indices', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    controller.enqueuePrompt('first');
+    controller.enqueuePrompt('second');
+    controller.enqueuePrompt('third');
+
+    controller.reorderQueuedPrompt(0, 2);
+
+    expect(controller.queuedPrompts.map((prompt) => prompt.text), [
+      'second',
+      'third',
+      'first',
+    ]);
   });
 
   test('send prompt error is rendered as error message', () async {
@@ -12886,6 +12972,59 @@ final class _RecordingPromptAgentClient extends FakeAgentClient {
       memoryContext: memoryContext,
       attachments: attachments,
     );
+  }
+}
+
+final class _AcknowledgedCancellationAgentClient extends FakeAgentClient {
+  final List<String> prompts = <String>[];
+  final Completer<void> cancelRequested = Completer<void>();
+  final StreamController<AgentEvent> _firstPrompt =
+      StreamController<AgentEvent>();
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    String? memoryContext,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    prompts.add(prompt);
+    if (prompts.length == 1) return _firstPrompt.stream;
+    return Stream<AgentEvent>.value(
+      AgentEvent(
+        type: AgentEventType.agentTextDone,
+        text: '',
+        metadata: const <String, Object?>{
+          'kind': 'turn',
+          'stopReason': 'endTurn',
+        },
+      ),
+    );
+  }
+
+  @override
+  Future<void> cancel() async {
+    await super.cancel();
+    if (!cancelRequested.isCompleted) cancelRequested.complete();
+  }
+
+  Future<void> acknowledgeCancellation() async {
+    if (_firstPrompt.isClosed) return;
+    _firstPrompt.add(
+      AgentEvent(
+        type: AgentEventType.agentTextDone,
+        text: '',
+        metadata: const <String, Object?>{
+          'kind': 'turn',
+          'stopReason': 'cancelled',
+        },
+      ),
+    );
+    await _firstPrompt.close();
+  }
+
+  Future<void> closePromptStream() async {
+    if (!_firstPrompt.isClosed) await _firstPrompt.close();
   }
 }
 

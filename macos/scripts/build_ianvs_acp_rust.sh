@@ -19,6 +19,10 @@ RESOURCES_DIRECTORY="${MACOS_DIRECTORY}/../Resources"
 DESTINATION_MEMORY_CORE="${RESOURCES_DIRECTORY}/memory-core"
 
 mkdir -p "${FRAMEWORKS_DIRECTORY}" "${MACOS_DIRECTORY}" "${RESOURCES_DIRECTORY}"
+# Replacing an already-executed Mach-O in place can leave macOS' code-signing
+# cache associated with the old vnode. Remove executable destinations before
+# staging freshly built binaries so repeated Debug builds remain launchable.
+rm -f "${DESTINATION_DAEMON}" "${DESTINATION_MEMORY_CORE}"
 if [ "${PROFILE}" = "release" ]; then
   ARM_TARGET="aarch64-apple-darwin"
   X86_TARGET="x86_64-apple-darwin"
@@ -57,3 +61,29 @@ chmod 755 "${DESTINATION_LIBRARY}"
 install_name_tool -id "@rpath/libianvs_acp_ffi.dylib" "${DESTINATION_LIBRARY}"
 chmod 755 "${DESTINATION_DAEMON}"
 chmod 755 "${DESTINATION_MEMORY_CORE}"
+
+if [ "${CODE_SIGNING_ALLOWED:-YES}" != "NO" ]; then
+  SIGN_IDENTITY=${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:--}}
+  if [ -z "${SIGN_IDENTITY}" ]; then
+    SIGN_IDENTITY=-
+  fi
+  if [ "${SIGN_IDENTITY}" = "-" ]; then
+    /usr/bin/codesign --force --sign - --timestamp=none \
+      --preserve-metadata=identifier,entitlements,flags \
+      "${DESTINATION_DAEMON}"
+    /usr/bin/codesign --force --sign - --timestamp=none \
+      --preserve-metadata=identifier,entitlements,flags \
+      "${DESTINATION_MEMORY_CORE}"
+  else
+    /usr/bin/codesign --force --sign "${SIGN_IDENTITY}" \
+      --preserve-metadata=identifier,entitlements,flags \
+      "${DESTINATION_DAEMON}"
+    /usr/bin/codesign --force --sign "${SIGN_IDENTITY}" \
+      --preserve-metadata=identifier,entitlements,flags \
+      "${DESTINATION_MEMORY_CORE}"
+  fi
+fi
+
+# Catch a staged daemon that passed the build but cannot be executed because
+# of a stale or invalid code signature.
+"${DESTINATION_DAEMON}" --help >/dev/null

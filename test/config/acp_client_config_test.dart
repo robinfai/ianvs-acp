@@ -363,7 +363,9 @@ void main() {
     expect(config.mcpServers.first.command, '/usr/local/bin/mcp-filesystem');
     expect(config.mcpServers.last.type, 'http');
     expect(config.mcpServers.last.url, 'https://api.example.com/mcp');
-    expect(config.mcpServers.first.toJson(), isNot(contains('env')));
+    expect(config.mcpServers.first.toJson()['env'], [
+      {'name': 'ROOT', 'value': '/workspace'},
+    ]);
     expect(config.mcpServers.first.toRuntimeJson()['env'], [
       {'name': 'ROOT', 'value': '/workspace'},
     ]);

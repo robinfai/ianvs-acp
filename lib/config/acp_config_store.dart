@@ -4,6 +4,7 @@ import 'dart:io';
 import '../platform/secure_atomic_file.dart';
 import 'acp_client_config.dart';
 import 'acp_config_secret_migrator.dart';
+import 'secret_field_policy.dart';
 import 'secret_store.dart';
 
 typedef AcpConfigAtomicWriter =
@@ -354,8 +355,19 @@ Future<void> _writeSecretCleanupQueue(
 
 bool _containsUnreferencedSecrets(AcpClientConfig config) {
   bool mcpHasSecrets(McpServerConfig server) =>
-      server.env.keys.any((key) => !server.envRefs.containsKey(key)) ||
-      server.headers.keys.any((key) => !server.headerRefs.containsKey(key));
+      server.env.keys.any(
+        (key) =>
+            !server.envRefs.containsKey(key) &&
+            isProtectedConfigValue(
+              field: ConfigSecretField.environment,
+              key: key,
+            ),
+      ) ||
+      server.headers.keys.any(
+        (key) =>
+            !server.headerRefs.containsKey(key) &&
+            isProtectedConfigValue(field: ConfigSecretField.header, key: key),
+      );
   bool reviewHasSecrets(AcpPermissionReviewAgentConfig review) =>
       review.mcpServer != null && mcpHasSecrets(review.mcpServer!);
   bool serverHasSecrets(AgentServerConfig server) =>
@@ -837,7 +849,13 @@ Map<String, dynamic> _persistResolvedSecretReferences(
       final server = agents[entry.key];
       if (server == null || entry.value is! Map) continue;
       final serverRaw = entry.value as Map;
-      _replaceSecretMaps(serverRaw, server.envRefs, server.headerRefs);
+      _replaceSecretMaps(
+        serverRaw,
+        server.env,
+        server.headers,
+        server.envRefs,
+        server.headerRefs,
+      );
       _replaceInlineReviewSecrets(
         serverRaw,
         server.permissionReviewAgent.mcpServer,
@@ -858,7 +876,14 @@ Map<String, dynamic> _persistResolvedSecretReferences(
       final item = mcpRaw[index];
       if (item is! Map) continue;
       final server = resolved.mcpServers[index];
-      _replaceSecretMaps(item, server.envRefs, server.headerRefs);
+      _replaceSecretMaps(
+        item,
+        server.env,
+        server.headers,
+        server.envRefs,
+        server.headerRefs,
+        preferNameValueLists: true,
+      );
     }
   }
 
@@ -902,23 +927,53 @@ void _replaceInlineReviewSecrets(
   if (mcpRaw is Map) {
     _replaceSecretMaps(
       mcpRaw,
+      resolvedServer.env,
+      resolvedServer.headers,
       resolvedServer.envRefs,
       resolvedServer.headerRefs,
+      preferNameValueLists: true,
     );
   }
 }
 
 void _replaceSecretMaps(
   Map raw,
+  Map<String, String> env,
+  Map<String, String> headers,
   Map<String, String> envRefs,
-  Map<String, String> headerRefs,
-) {
+  Map<String, String> headerRefs, {
+  bool preferNameValueLists = false,
+}) {
+  final plainEnv = <String, String>{
+    for (final entry in env.entries)
+      if (!envRefs.containsKey(entry.key)) entry.key: entry.value,
+  };
+  final plainHeaders = <String, String>{
+    for (final entry in headers.entries)
+      if (!headerRefs.containsKey(entry.key)) entry.key: entry.value,
+  };
   raw.remove('env');
   raw.remove('headers');
   raw.remove('env_refs');
   raw.remove('envRefs');
   raw.remove('header_refs');
   raw.remove('headerRefs');
+  if (plainEnv.isNotEmpty) {
+    raw['env'] = preferNameValueLists
+        ? <Map<String, String>>[
+            for (final entry in plainEnv.entries)
+              <String, String>{'name': entry.key, 'value': entry.value},
+          ]
+        : plainEnv;
+  }
+  if (plainHeaders.isNotEmpty) {
+    raw['headers'] = preferNameValueLists
+        ? <Map<String, String>>[
+            for (final entry in plainHeaders.entries)
+              <String, String>{'name': entry.key, 'value': entry.value},
+          ]
+        : plainHeaders;
+  }
   if (envRefs.isNotEmpty) raw['env_refs'] = Map<String, String>.from(envRefs);
   if (headerRefs.isNotEmpty) {
     raw['header_refs'] = Map<String, String>.from(headerRefs);

@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:ui' show SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -95,11 +96,25 @@ void main() {
     );
     expect(find.text('The queue is implemented and verified.'), findsOneWidget);
     expect(find.text('Implement the queue'), findsNothing);
+    var processToggle = tester.getSemantics(
+      find.byKey(const ValueKey('processed-turn-toggle')),
+    );
+    expect(processToggle.label, contains('Expand processed turn'));
+    expect(
+      processToggle.getSemanticsData().hasAction(SemanticsAction.tap),
+      isTrue,
+    );
+    expect(processToggle.flagsCollection.isExpanded, Tristate.isFalse);
 
     await tester.tap(find.textContaining('Processed').first);
     await tester.pumpAndSettle();
     expect(find.text('Implement the queue'), findsOneWidget);
     expect(find.text('Inspecting and editing several files.'), findsOneWidget);
+    processToggle = tester.getSemantics(
+      find.byKey(const ValueKey('processed-turn-toggle')),
+    );
+    expect(processToggle.label, contains('Collapse processed turn'));
+    expect(processToggle.flagsCollection.isExpanded, Tristate.isTrue);
   });
 
   testWidgets('ChatTimeline shows used memory and submits feedback', (
@@ -930,6 +945,16 @@ void main() {
     expect(find.text('web_search'), findsOneWidget);
     expect(find.text('x1'), findsOneWidget);
     expect(find.text('call-1'), findsNothing);
+    final groupToggle = tester.getSemantics(
+      find.descendant(
+        of: find.byKey(const ValueKey('tool-call-group-toggle')),
+        matching: find.byType(ListTile),
+      ),
+    );
+    expect(
+      groupToggle.getSemanticsData().hasAction(SemanticsAction.tap),
+      isTrue,
+    );
 
     await tester.tap(find.text('3 tool calls'));
     await tester.pumpAndSettle();
@@ -1735,6 +1760,16 @@ void main() {
 
     expect(find.text('Changed lines'), findsOneWidget);
     expect(find.text('final oldValue = true;'), findsNothing);
+    final diffToggle = tester.getSemantics(
+      find.descendant(
+        of: find.byKey(const ValueKey('diff-changes-toggle')),
+        matching: find.byType(ListTile),
+      ),
+    );
+    expect(
+      diffToggle.getSemanticsData().hasAction(SemanticsAction.tap),
+      isTrue,
+    );
 
     await tester.tap(find.text('Changed lines'));
     await tester.pumpAndSettle();

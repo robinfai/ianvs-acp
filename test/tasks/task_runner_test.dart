@@ -2628,8 +2628,14 @@ class _HangingPromptAgentClient extends FakeAgentClient {
   }
 
   @override
+  Future<void> cancel() async {
+    await super.cancel();
+    if (!_events.isClosed) await _events.close();
+  }
+
+  @override
   Future<void> dispose() async {
-    await _events.close();
+    if (!_events.isClosed) await _events.close();
     await super.dispose();
   }
 }
@@ -2660,8 +2666,14 @@ class _AssistantThenHangingPromptAgentClient extends FakeAgentClient {
   }
 
   @override
+  Future<void> cancel() async {
+    await super.cancel();
+    if (!_events.isClosed) await _events.close();
+  }
+
+  @override
   Future<void> dispose() async {
-    await _events.close();
+    if (!_events.isClosed) await _events.close();
     await super.dispose();
   }
 }

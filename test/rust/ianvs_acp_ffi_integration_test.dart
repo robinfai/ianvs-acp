@@ -177,7 +177,13 @@ void main() {
       }
       expect(history && restored, isTrue);
       final restoredOptions = restoredPayload?['configOptions'] as List;
-      expect((restoredOptions.first as Map)['currentValue'], 'fast');
+      final restoredById = <Object?, Map<Object?, Object?>>{
+        for (final option in restoredOptions.cast<Map<Object?, Object?>>())
+          option['id']: option,
+      };
+      expect(restoredById['model']?['currentValue'], 'fast');
+      expect(restoredById['reasoning_effort']?['currentValue'], 'medium');
+      expect(restoredById['fast_mode']?['currentValue'], 'off');
 
       final configChanged = _nextWhere(
         iterator,
@@ -194,7 +200,63 @@ void main() {
       );
       final changedPayload = (await configChanged).update?['payload'] as Map;
       final changedOptions = changedPayload['configOptions'] as List;
-      expect((changedOptions.first as Map)['currentValue'], 'quality');
+      var changedById = <Object?, Map<Object?, Object?>>{
+        for (final option in changedOptions.cast<Map<Object?, Object?>>())
+          option['id']: option,
+      };
+      expect(changedById['model']?['currentValue'], 'quality');
+      expect(changedById['reasoning_effort']?['currentValue'], 'medium');
+      expect(changedById['fast_mode']?['currentValue'], 'off');
+
+      final reasoningChanged = _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'config_changed' &&
+            event.update?['requestId'] == 'reasoning-from-dart',
+      );
+      runtime.setConfigOption(
+        requestId: 'reasoning-from-dart',
+        sessionId: 'fixture-session',
+        configId: 'reasoning_effort',
+        value: const <String, Object?>{'type': 'value_id', 'value': 'high'},
+      );
+      changedById = <Object?, Map<Object?, Object?>>{
+        for (final option
+            in (((await reasoningChanged).update?['payload']
+                        as Map)['configOptions']
+                    as List)
+                .cast<Map<Object?, Object?>>())
+          option['id']: option,
+      };
+      expect(changedById['model']?['currentValue'], 'quality');
+      expect(changedById['reasoning_effort']?['currentValue'], 'high');
+      expect(changedById['fast_mode']?['currentValue'], 'off');
+
+      final speedChanged = _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'config_changed' &&
+            event.update?['requestId'] == 'speed-from-dart',
+      );
+      runtime.setConfigOption(
+        requestId: 'speed-from-dart',
+        sessionId: 'fixture-session',
+        configId: 'fast_mode',
+        value: const <String, Object?>{'type': 'value_id', 'value': 'on'},
+      );
+      changedById = <Object?, Map<Object?, Object?>>{
+        for (final option
+            in (((await speedChanged).update?['payload']
+                        as Map)['configOptions']
+                    as List)
+                .cast<Map<Object?, Object?>>())
+          option['id']: option,
+      };
+      expect(changedById['model']?['currentValue'], 'quality');
+      expect(changedById['reasoning_effort']?['currentValue'], 'high');
+      expect(changedById['fast_mode']?['currentValue'], 'on');
 
       final closed = _nextWhere(
         iterator,
@@ -417,6 +479,82 @@ void main() {
         (event) =>
             event.type == IanvsRuntimeEventType.sessionUpdate &&
             event.update?['kind'] == 'prompt_completed',
+      );
+    },
+    skip: artifactsAvailable
+        ? false
+        : 'Run tool/verify_rust_runtime.sh to build native test artifacts.',
+    timeout: const Timeout(Duration(seconds: 20)),
+  );
+
+  test(
+    'Dart FFI observes fixture cancellation before accepting another prompt',
+    () async {
+      final runtime = IanvsRustRuntime(
+        native: FfiIanvsAcpNativeApi.open(libraryPath: libraryPath),
+        pollInterval: const Duration(milliseconds: 1),
+      );
+      final iterator = StreamIterator<IanvsRuntimeEvent>(runtime.events);
+      addTearDown(() async {
+        await iterator.cancel();
+        await runtime.dispose();
+      });
+
+      final ready = _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.statusChanged &&
+            event.status == 'ready',
+      );
+      runtime.startAgent(
+        agentName: 'cancellation-fixture',
+        command: agentPath,
+        processCwd: root,
+        environment: const <String, String>{
+          'IANVS_FIXTURE_PROMPT_ATTACHMENTS': '1',
+          'IANVS_FIXTURE_RESPONSE_DELAY_MS': '60000',
+        },
+      );
+      await ready;
+
+      final created = _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'session_created',
+      );
+      runtime.createSession(
+        requestId: 'create-cancellation-from-dart',
+        cwd: Directory.systemTemp.path,
+      );
+      await created;
+
+      runtime.prompt(
+        requestId: 'prompt-cancellation-from-dart',
+        sessionId: 'fixture-session',
+        text: 'wait until cancelled',
+      );
+      await _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'agent_message_delta',
+      );
+
+      final cancelled = _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'cancelled',
+      );
+      runtime.cancel(
+        requestId: 'cancel-from-dart',
+        sessionId: 'fixture-session',
+      );
+      final cancelledEvent = await cancelled;
+      expect(
+        (cancelledEvent.update?['payload'] as Map?)?['stopReason'],
+        'cancelled',
       );
     },
     skip: artifactsAvailable

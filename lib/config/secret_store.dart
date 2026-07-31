@@ -94,6 +94,13 @@ abstract interface class SecretStore {
   });
 }
 
+final class SecretStoreInteractionRequiredException implements Exception {
+  const SecretStoreInteractionRequiredException();
+
+  @override
+  String toString() => 'Keychain access requires user approval.';
+}
+
 String keychainReferenceFor({required String namespace, required String key}) {
   if (namespace.isEmpty) {
     throw ArgumentError.value(namespace, 'namespace', 'Must not be empty.');

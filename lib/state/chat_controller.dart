@@ -2585,6 +2585,7 @@ class ChatController extends ChangeNotifier {
       _queuedPromptsView;
   int _nextQueuedPromptId = 0;
   bool _dispatchingQueuedPrompt = false;
+  Completer<void>? _activePromptCompletion;
   int messagesRevision = 0;
   int _nextTurnId = 0;
   int? _activeTurnId;
@@ -3901,10 +3902,9 @@ class ChatController extends ChangeNotifier {
     if (oldIndex < 0 ||
         oldIndex >= _queuedPrompts.length ||
         newIndex < 0 ||
-        newIndex > _queuedPrompts.length) {
+        newIndex >= _queuedPrompts.length) {
       return;
     }
-    if (newIndex > oldIndex) newIndex -= 1;
     if (newIndex == oldIndex) return;
     final item = _queuedPrompts.removeAt(oldIndex);
     _queuedPrompts.insert(newIndex, item);
@@ -3984,6 +3984,7 @@ class ChatController extends ChangeNotifier {
       _scheduleAssistantSessionTitle(session.id, titleSeed);
     }
     isStreaming = true;
+    _activePromptCompletion = Completer<void>();
     status = ConnectionStatus.streaming;
     lastError = null;
     _lastPromptStartedAt = DateTime.now();
@@ -4056,6 +4057,8 @@ class ChatController extends ChangeNotifier {
   }) async {
     if (!isStreaming) return;
     Object? cancelError;
+    var cancellationAcknowledged = false;
+    final promptCompletion = _activePromptCompletion;
     try {
       final permissionError = await _cancelPendingPermissionRequest(
         reportErrors: false,
@@ -4068,20 +4071,36 @@ class ChatController extends ChangeNotifier {
       await client.cancel().timeout(cancellationTimeout);
     } on Object catch (error) {
       cancelError ??= error;
+    }
+    try {
+      if (promptCompletion != null && !promptCompletion.isCompleted) {
+        await promptCompletion.future.timeout(cancellationTimeout);
+      }
+      cancellationAcknowledged = true;
+    } on Object catch (error) {
+      cancelError ??= error;
     } finally {
       try {
         final promptSubscription = _promptSubscription;
-        if (promptSubscription != null) {
+        if (isStreaming && promptSubscription != null) {
           await promptSubscription.cancel().timeout(cancellationTimeout);
         }
       } on Object catch (error) {
         cancelError ??= error;
       }
       _promptSubscription = null;
-      _finishStreaming();
+      if (isStreaming) {
+        _finishStreaming(dispatchQueuedPrompts: false);
+      }
     }
     if (cancelError != null) {
-      _setActionError(cancelError);
+      if (!cancellationAcknowledged) {
+        status = ConnectionStatus.error;
+      }
+      _setActionError(
+        cancelError,
+        preserveConnectionStatus: !cancellationAcknowledged,
+      );
     }
   }
 
@@ -7275,7 +7294,11 @@ class ChatController extends ChangeNotifier {
     };
   }
 
-  void _finishStreaming({bool notify = true, bool suppressProjection = false}) {
+  void _finishStreaming({
+    bool notify = true,
+    bool suppressProjection = false,
+    bool dispatchQueuedPrompts = true,
+  }) {
     final enhancementTurnId = isStreaming ? _pendingEnhancementTurnId : null;
     final enhancementPrompt = isStreaming ? _pendingEnhancementPrompt : null;
     final enhancementSessionId = isStreaming
@@ -7288,8 +7311,12 @@ class ChatController extends ChangeNotifier {
     } finally {
       _suppressAgentEventProjection = previousProjectionSuppression;
     }
-    if (!isStreaming) return;
+    if (!isStreaming) {
+      _completeActivePrompt();
+      return;
+    }
     isStreaming = false;
+    _completeActivePrompt();
     _pendingEnhancementTurnId = null;
     _pendingEnhancementPrompt = null;
     _pendingEnhancementSessionId = null;
@@ -7317,7 +7344,15 @@ class ChatController extends ChangeNotifier {
       );
     }
     if (notify) _notifyListeners();
-    _scheduleQueuedPromptDispatch();
+    if (dispatchQueuedPrompts) _scheduleQueuedPromptDispatch();
+  }
+
+  void _completeActivePrompt() {
+    final completion = _activePromptCompletion;
+    _activePromptCompletion = null;
+    if (completion != null && !completion.isCompleted) {
+      completion.complete();
+    }
   }
 
   void _scheduleQueuedPromptDispatch() {

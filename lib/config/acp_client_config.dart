@@ -7,6 +7,7 @@ import '../acp/acp_permission_request.dart';
 import '../memory/memory_config.dart';
 import '../storage/sqlite_storage_config.dart';
 import 'assistant_agent_config.dart';
+import 'secret_field_policy.dart';
 
 class AcpClientConfig {
   const AcpClientConfig({
@@ -827,6 +828,16 @@ class AgentServerConfig {
   }
 
   Map<String, Object?> toJson() {
+    final plainEnv = _valuesWithoutReferences(
+      env,
+      envRefs,
+      field: ConfigSecretField.environment,
+    );
+    final plainHeaders = _valuesWithoutReferences(
+      headers,
+      headerRefs,
+      field: ConfigSecretField.header,
+    );
     return <String, Object?>{
       ...additionalProperties,
       'type': type,
@@ -834,6 +845,8 @@ class AgentServerConfig {
       if (cwd != null) 'cwd': cwd,
       if (url.isNotEmpty) 'url': url,
       if (args.isNotEmpty) 'args': args,
+      if (plainEnv.isNotEmpty) 'env': plainEnv,
+      if (plainHeaders.isNotEmpty) 'headers': plainHeaders,
       if (envRefs.isNotEmpty) 'env_refs': envRefs,
       if (headerRefs.isNotEmpty) 'header_refs': headerRefs,
       if (permissionReviewAgent.isConfigured)
@@ -965,10 +978,32 @@ class McpServerConfig {
 
   Map<String, dynamic> toJson() {
     final json = _jsonMap(raw, fieldName: 'mcp_servers');
+    final plainEnv = _valuesWithoutReferences(
+      env,
+      envRefs,
+      field: ConfigSecretField.environment,
+    );
+    final plainHeaders = _valuesWithoutReferences(
+      headers,
+      headerRefs,
+      field: ConfigSecretField.header,
+    );
     json.remove('env');
     json.remove('headers');
     json.remove('envRefs');
     json.remove('headerRefs');
+    if (plainEnv.isNotEmpty) {
+      json['env'] = <Map<String, String>>[
+        for (final entry in plainEnv.entries)
+          <String, String>{'name': entry.key, 'value': entry.value},
+      ];
+    }
+    if (plainHeaders.isNotEmpty) {
+      json['headers'] = <Map<String, String>>[
+        for (final entry in plainHeaders.entries)
+          <String, String>{'name': entry.key, 'value': entry.value},
+      ];
+    }
     if (envRefs.isNotEmpty) {
       json['env_refs'] = Map<String, String>.from(envRefs);
     }
@@ -1176,6 +1211,19 @@ Map<String, String> _runtimeSecretMap(Object? raw) {
     }
   }
   return Map.unmodifiable(values);
+}
+
+Map<String, String> _valuesWithoutReferences(
+  Map<String, String> values,
+  Map<String, String> references, {
+  required ConfigSecretField field,
+}) {
+  return <String, String>{
+    for (final entry in values.entries)
+      if (!references.containsKey(entry.key) &&
+          !isProtectedConfigValue(field: field, key: entry.key))
+        entry.key: entry.value,
+  };
 }
 
 AcpPermissionReviewAgentConfig _agentPermissionReviewAgent(

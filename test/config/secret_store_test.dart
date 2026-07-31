@@ -74,7 +74,10 @@ void main() {
       'key': 'OPENAI_API_KEY',
       'value': 'secret-value',
     });
-    expect(calls[2].arguments, <String, Object?>{'account': account});
+    expect(calls[2].arguments, <String, Object?>{
+      'account': account,
+      'allowInteraction': false,
+    });
   });
 
   test('derives and verifies references with the Swift identity algorithm', () {
@@ -169,5 +172,32 @@ void main() {
         .setMockMethodCallHandler(channel, (call) async => 42);
 
     await expectLater(store.get(reference), throwsStateError);
+  });
+
+  test('maps a platform approval request to a typed exception', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          channel,
+          (call) async =>
+              throw PlatformException(code: 'keychain_interaction_required'),
+        );
+
+    await expectLater(
+      store.get(reference),
+      throwsA(isA<SecretStoreInteractionRequiredException>()),
+    );
+  });
+
+  test('interactive reads opt in explicitly on the platform channel', () async {
+    const interactiveStore = MacosKeychainSecretStore.withUserInteraction(
+      channel,
+    );
+
+    await interactiveStore.get(reference);
+
+    expect(calls.single.arguments, <String, Object?>{
+      'account': account,
+      'allowInteraction': true,
+    });
   });
 }

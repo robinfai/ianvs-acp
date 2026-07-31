@@ -357,161 +357,177 @@ class _PromptInputState extends State<PromptInput> {
                 ),
                 const SizedBox(height: 8),
               ],
-              Focus(
-                onKeyEvent: (node, event) {
-                  if (event is! KeyDownEvent) return KeyEventResult.ignored;
-                  if (event.logicalKey == LogicalKeyboardKey.keyV &&
-                      (HardwareKeyboard.instance.isMetaPressed ||
-                          HardwareKeyboard.instance.isControlPressed) &&
-                      widget.promptCapabilities?.image == true &&
-                      widget.enabled) {
-                    unawaited(_pasteClipboardImageOrText());
+              CallbackShortcuts(
+                bindings:
+                    widget.promptCapabilities?.image == true && widget.enabled
+                    ? <ShortcutActivator, VoidCallback>{
+                        const SingleActivator(
+                          LogicalKeyboardKey.keyV,
+                          meta: true,
+                        ): () =>
+                            unawaited(_pasteClipboardImageOrText()),
+                        const SingleActivator(
+                          LogicalKeyboardKey.keyV,
+                          control: true,
+                        ): () =>
+                            unawaited(_pasteClipboardImageOrText()),
+                      }
+                    : const <ShortcutActivator, VoidCallback>{},
+                child: Focus(
+                  onKeyEvent: (node, event) {
+                    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                    if (event.logicalKey != LogicalKeyboardKey.enter) {
+                      return KeyEventResult.ignored;
+                    }
+                    if (HardwareKeyboard.instance.isShiftPressed) {
+                      return KeyEventResult.ignored;
+                    }
+                    _submit();
                     return KeyEventResult.handled;
-                  }
-                  if (event.logicalKey != LogicalKeyboardKey.enter) {
-                    return KeyEventResult.ignored;
-                  }
-                  if (HardwareKeyboard.instance.isShiftPressed) {
-                    return KeyEventResult.ignored;
-                  }
-                  _submit();
-                  return KeyEventResult.handled;
-                },
-                child: DropTarget(
-                  key: const Key('prompt-input-drop-target'),
-                  enable: widget.attachmentController == null && widget.enabled,
-                  onDragEntered: _handleAttachmentDragEntered,
-                  onDragExited: _handleAttachmentDragExited,
-                  onDragDone: _handleAttachmentDrop,
-                  child: AnimatedContainer(
-                    key: const Key('prompt-input-surface'),
-                    duration: const Duration(milliseconds: 120),
-                    constraints: const BoxConstraints(minHeight: 108),
-                    decoration: BoxDecoration(
-                      color: _isDraggingAttachments
-                          ? AppColors.primarySoft
-                          : AppColors.surface,
-                      borderRadius: BorderRadius.circular(AppRadius.xl),
-                      border: Border.all(
+                  },
+                  child: DropTarget(
+                    key: const Key('prompt-input-drop-target'),
+                    enable:
+                        widget.attachmentController == null && widget.enabled,
+                    onDragEntered: _handleAttachmentDragEntered,
+                    onDragExited: _handleAttachmentDragExited,
+                    onDragDone: _handleAttachmentDrop,
+                    child: AnimatedContainer(
+                      key: const Key('prompt-input-surface'),
+                      duration: const Duration(milliseconds: 120),
+                      constraints: const BoxConstraints(minHeight: 108),
+                      decoration: BoxDecoration(
                         color: _isDraggingAttachments
-                            ? AppColors.textSecondary
-                            : AppColors.border,
-                        width: _isDraggingAttachments ? 2 : 1,
+                            ? AppColors.primarySoft
+                            : AppColors.surface,
+                        borderRadius: BorderRadius.circular(AppRadius.xl),
+                        border: Border.all(
+                          color: _isDraggingAttachments
+                              ? AppColors.textSecondary
+                              : AppColors.border,
+                          width: _isDraggingAttachments ? 2 : 1,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.textPrimary.withValues(
+                              alpha: _isDraggingAttachments ? 0.12 : 0.06,
+                            ),
+                            blurRadius: _isDraggingAttachments ? 28 : 24,
+                            offset: const Offset(0, 8),
+                          ),
+                          BoxShadow(
+                            color: AppColors.textPrimary.withValues(
+                              alpha: 0.035,
+                            ),
+                            blurRadius: 4,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
                       ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.textPrimary.withValues(
-                            alpha: _isDraggingAttachments ? 0.12 : 0.06,
-                          ),
-                          blurRadius: _isDraggingAttachments ? 28 : 24,
-                          offset: const Offset(0, 8),
-                        ),
-                        BoxShadow(
-                          color: AppColors.textPrimary.withValues(alpha: 0.035),
-                          blurRadius: 4,
-                          offset: const Offset(0, 1),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_isDraggingAttachments)
-                          _AttachmentDropIndicator(
-                            kinds: _availableAttachmentKinds(
-                              widget.promptCapabilities,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_isDraggingAttachments)
+                            _AttachmentDropIndicator(
+                              kinds: _availableAttachmentKinds(
+                                widget.promptCapabilities,
+                              ),
                             ),
-                          ),
-                        if (pendingPermissionRequest != null)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-                            child: _PromptPermissionCard(
-                              request: pendingPermissionRequest,
-                              onAllow: widget.onAllowPermission,
-                              onDeny: widget.onDenyPermission,
-                              onCancel: widget.onCancelPermission,
-                              onSelectOption: widget.onSelectPermissionOption,
+                          if (pendingPermissionRequest != null)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+                              child: _PromptPermissionCard(
+                                request: pendingPermissionRequest,
+                                onAllow: widget.onAllowPermission,
+                                onDeny: widget.onDenyPermission,
+                                onCancel: widget.onCancelPermission,
+                                onSelectOption: widget.onSelectPermissionOption,
+                              ),
                             ),
-                          ),
-                        if (commandSuggestions.isNotEmpty)
-                          _CommandSuggestionPanel(
-                            entries: commandSuggestions,
-                            parameterPreviews: commandParameterPreviews,
-                            onSelect: _insertCommand,
-                          ),
-                        if (_attachments.isNotEmpty)
-                          _AttachmentTray(
-                            attachments: _attachments,
-                            promptCapabilities: widget.promptCapabilities,
-                            onRemove: _removeAttachment,
-                          ),
-                        if (_attachments.any(
-                              (attachment) => attachment.isImage,
-                            ) &&
-                            widget.imageAttachmentLimitation != null)
-                          _ImageAttachmentLimitationNotice(
-                            message: widget.imageAttachmentLimitation!,
-                          ),
-                        TextField(
-                          controller: _controller,
-                          minLines: 1,
-                          maxLines: 4,
-                          keyboardType: TextInputType.multiline,
-                          enabled: widget.enabled,
-                          onChanged: _handlePromptChanged,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
-                            fontSize: 13,
-                            height: 1.35,
-                          ),
-                          decoration: InputDecoration(
-                            hintText: 'Send a prompt to ${widget.agentName}...',
-                            hintStyle: const TextStyle(
-                              color: AppColors.textTertiary,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w400,
+                          if (commandSuggestions.isNotEmpty)
+                            _CommandSuggestionPanel(
+                              entries: commandSuggestions,
+                              parameterPreviews: commandParameterPreviews,
+                              onSelect: _insertCommand,
                             ),
-                            filled: false,
-                            isCollapsed: true,
-                            contentPadding: const EdgeInsets.fromLTRB(
-                              13,
-                              14,
-                              13,
-                              27,
+                          if (_attachments.isNotEmpty)
+                            _AttachmentTray(
+                              attachments: _attachments,
+                              promptCapabilities: widget.promptCapabilities,
+                              onRemove: _removeAttachment,
                             ),
-                            border: InputBorder.none,
-                            enabledBorder: InputBorder.none,
-                            focusedBorder: InputBorder.none,
-                            disabledBorder: InputBorder.none,
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(7, 0, 7, 7),
-                          child: _ComposerControlBar(
+                          if (_attachments.any(
+                                (attachment) => attachment.isImage,
+                              ) &&
+                              widget.imageAttachmentLimitation != null)
+                            _ImageAttachmentLimitationNotice(
+                              message: widget.imageAttachmentLimitation!,
+                            ),
+                          TextField(
+                            controller: _controller,
+                            minLines: 1,
+                            maxLines: 4,
+                            keyboardType: TextInputType.multiline,
                             enabled: widget.enabled,
-                            isSending: widget.isSending,
-                            canSend: _canSend,
-                            onPickAttachments: _pickAttachments,
-                            promptCapabilities: widget.promptCapabilities,
-                            pendingPermissionRequest: pendingPermissionRequest,
-                            toolCallExecutionPolicy:
-                                widget.toolCallExecutionPolicy,
-                            hasPermissionReviewer: widget.hasPermissionReviewer,
-                            onToolCallExecutionPolicyChanged:
-                                widget.onToolCallExecutionPolicyChanged,
-                            modelOption: widget.modelOption,
-                            reasoningEffortOption: widget.reasoningEffortOption,
-                            onModelSelected: widget.onModelSelected,
-                            onReasoningEffortSelected:
-                                widget.onReasoningEffortSelected,
-                            configOptions: widget.configOptions,
-                            onConfigOptionSelected:
-                                widget.onConfigOptionSelected,
-                            onSend: _submit,
-                            onStop: widget.onStop,
+                            onChanged: _handlePromptChanged,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 13,
+                              height: 1.35,
+                            ),
+                            decoration: InputDecoration(
+                              hintText:
+                                  'Send a prompt to ${widget.agentName}...',
+                              hintStyle: const TextStyle(
+                                color: AppColors.textTertiary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w400,
+                              ),
+                              filled: false,
+                              isCollapsed: true,
+                              contentPadding: const EdgeInsets.fromLTRB(
+                                13,
+                                14,
+                                13,
+                                27,
+                              ),
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              disabledBorder: InputBorder.none,
+                            ),
                           ),
-                        ),
-                      ],
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(7, 0, 7, 7),
+                            child: _ComposerControlBar(
+                              enabled: widget.enabled,
+                              isSending: widget.isSending,
+                              canSend: _canSend,
+                              onPickAttachments: _pickAttachments,
+                              promptCapabilities: widget.promptCapabilities,
+                              pendingPermissionRequest:
+                                  pendingPermissionRequest,
+                              toolCallExecutionPolicy:
+                                  widget.toolCallExecutionPolicy,
+                              hasPermissionReviewer:
+                                  widget.hasPermissionReviewer,
+                              onToolCallExecutionPolicyChanged:
+                                  widget.onToolCallExecutionPolicyChanged,
+                              modelOption: widget.modelOption,
+                              reasoningEffortOption:
+                                  widget.reasoningEffortOption,
+                              onModelSelected: widget.onModelSelected,
+                              onReasoningEffortSelected:
+                                  widget.onReasoningEffortSelected,
+                              configOptions: widget.configOptions,
+                              onConfigOptionSelected:
+                                  widget.onConfigOptionSelected,
+                              onSend: _submit,
+                              onStop: widget.onStop,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -1706,7 +1722,7 @@ class _PromptQueueTray extends StatelessWidget {
               buildDefaultDragHandles: false,
               padding: const EdgeInsets.symmetric(vertical: 4),
               itemCount: prompts.length,
-              onReorder: onReorder ?? (_, _) {},
+              onReorderItem: onReorder ?? (_, _) {},
               itemBuilder: (context, index) {
                 final prompt = prompts[index];
                 return _PromptQueueRow(
@@ -2127,6 +2143,7 @@ class _AdaptiveSessionConfigSelectorState
   final OverlayPortalController _advancedOverlayController =
       OverlayPortalController();
   final LayerLink _advancedOverlayLink = LayerLink();
+  final Object _advancedTapRegionGroup = Object();
   bool _advancedExpanded = false;
   double? _effortPreviewIndex;
 
@@ -2151,116 +2168,121 @@ class _AdaptiveSessionConfigSelectorState
 
     return CompositedTransformTarget(
       link: _advancedOverlayLink,
-      child: OverlayPortal(
-        controller: _advancedOverlayController,
-        overlayChildBuilder: (context) {
-          return Stack(
-            children: [
-              CompositedTransformFollower(
-                link: _advancedOverlayLink,
-                showWhenUnlinked: false,
-                targetAnchor: Alignment.topRight,
-                followerAnchor: Alignment.bottomRight,
-                offset: const Offset(0, -8),
-                child: TapRegion(
-                  key: const Key(
-                    'prompt-session-config-advanced-overlay-region',
-                  ),
-                  onTapOutside: (_) => _closeAdvancedOverlay(),
-                  child: Material(
-                    type: MaterialType.transparency,
-                    child: _SessionConfigAdvancedPanel(
-                      effort: effort,
-                      fast: fast,
-                      enabled: widget.enabled,
-                      effortPreviewIndex: _effortPreviewIndex,
-                      onBack: _showPrimaryMenuFromAdvanced,
-                      onEffortPreviewChanged: (value) {
-                        setState(() => _effortPreviewIndex = value);
-                      },
-                      onEffortChanged: (value) {
-                        if (effort == null || effort.options.isEmpty) return;
-                        final index = value
-                            .round()
-                            .clamp(0, effort.options.length - 1)
-                            .toInt();
-                        widget.onSelected?.call(
-                          effort.id,
-                          effort.options[index].value,
-                        );
-                      },
-                      onFastToggle: fast == null
-                          ? null
-                          : () => _toggleFast(fast),
+      child: TapRegion(
+        groupId: _advancedTapRegionGroup,
+        child: OverlayPortal(
+          controller: _advancedOverlayController,
+          overlayChildBuilder: (context) {
+            return Stack(
+              children: [
+                CompositedTransformFollower(
+                  link: _advancedOverlayLink,
+                  showWhenUnlinked: false,
+                  targetAnchor: Alignment.topRight,
+                  followerAnchor: Alignment.bottomRight,
+                  offset: const Offset(0, -8),
+                  child: TapRegion(
+                    key: const Key(
+                      'prompt-session-config-advanced-overlay-region',
+                    ),
+                    groupId: _advancedTapRegionGroup,
+                    consumeOutsideTaps: true,
+                    onTapOutside: (_) => _closeAdvancedOverlay(),
+                    child: Material(
+                      type: MaterialType.transparency,
+                      child: _SessionConfigAdvancedPanel(
+                        effort: effort,
+                        fast: fast,
+                        enabled: widget.enabled,
+                        effortPreviewIndex: _effortPreviewIndex,
+                        onBack: _showPrimaryMenuFromAdvanced,
+                        onEffortPreviewChanged: (value) {
+                          setState(() => _effortPreviewIndex = value);
+                        },
+                        onEffortChanged: (value) {
+                          if (effort == null || effort.options.isEmpty) return;
+                          final index = value
+                              .round()
+                              .clamp(0, effort.options.length - 1)
+                              .toInt();
+                          widget.onSelected?.call(
+                            effort.id,
+                            effort.options[index].value,
+                          );
+                        },
+                        onFastToggle: fast == null
+                            ? null
+                            : () => _toggleFast(fast),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          );
-        },
-        child: MenuAnchor(
-          controller: _menuController,
-          style: _sessionConfigMenuStyle(width: 246),
-          alignmentOffset: const Offset(0, -6),
-          onOpen: _closeAdvancedOverlay,
-          menuChildren: [
-            for (final option in primaryOptions) _configSubmenu(option),
-            if (primaryOptions.isNotEmpty && hasAdvancedControls)
-              const Divider(height: 9, indent: 10, endIndent: 10),
-            if (hasAdvancedControls)
-              MenuItemButton(
-                key: const Key('prompt-session-config-advanced'),
-                style: _sessionConfigButtonStyle(width: 246),
-                trailingIcon: const Icon(
-                  Icons.keyboard_arrow_up_rounded,
-                  size: 19,
-                  color: AppColors.textTertiary,
-                ),
-                onPressed: widget.enabled
-                    ? () {
-                        _menuController.close();
-                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (!mounted) return;
-                          setState(() {
-                            _advancedExpanded = true;
-                            _effortPreviewIndex = null;
-                          });
-                          _advancedOverlayController.show();
-                        });
-                      }
-                    : null,
-                child: const _SessionConfigMenuRow(
-                  label: 'Advanced',
-                  value: '',
-                ),
-              ),
-          ],
-          builder: (context, controller, child) {
-            return Tooltip(
-              message: 'Agent session configuration',
-              child: InkWell(
-                key: const Key('prompt-session-config-selector'),
-                borderRadius: BorderRadius.circular(AppRadius.pill),
-                onTap: widget.enabled
-                    ? () {
-                        _closeAdvancedOverlay();
-                        if (controller.isOpen) {
-                          controller.close();
-                        } else {
-                          controller.open();
-                        }
-                      }
-                    : null,
-                child: _SessionConfigSummaryButton(
-                  label: labels.join(' '),
-                  enabled: widget.enabled,
-                  fastEnabled: fast?.isFastEnabled == true,
-                  expanded: controller.isOpen,
-                ),
-              ),
+              ],
             );
           },
+          child: MenuAnchor(
+            controller: _menuController,
+            style: _sessionConfigMenuStyle(width: 246),
+            alignmentOffset: const Offset(0, -6),
+            onOpen: _closeAdvancedOverlay,
+            menuChildren: [
+              for (final option in primaryOptions) _configSubmenu(option),
+              if (primaryOptions.isNotEmpty && hasAdvancedControls)
+                const Divider(height: 9, indent: 10, endIndent: 10),
+              if (hasAdvancedControls)
+                MenuItemButton(
+                  key: const Key('prompt-session-config-advanced'),
+                  style: _sessionConfigButtonStyle(width: 246),
+                  trailingIcon: const Icon(
+                    Icons.keyboard_arrow_up_rounded,
+                    size: 19,
+                    color: AppColors.textTertiary,
+                  ),
+                  onPressed: widget.enabled
+                      ? () {
+                          _menuController.close();
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (!mounted) return;
+                            setState(() {
+                              _advancedExpanded = true;
+                              _effortPreviewIndex = null;
+                            });
+                            _advancedOverlayController.show();
+                          });
+                        }
+                      : null,
+                  child: const _SessionConfigMenuRow(
+                    label: 'Advanced',
+                    value: '',
+                  ),
+                ),
+            ],
+            builder: (context, controller, child) {
+              return Tooltip(
+                message: 'Agent session configuration',
+                child: InkWell(
+                  key: const Key('prompt-session-config-selector'),
+                  borderRadius: BorderRadius.circular(AppRadius.pill),
+                  onTap: widget.enabled
+                      ? () {
+                          _closeAdvancedOverlay();
+                          if (controller.isOpen) {
+                            controller.close();
+                          } else {
+                            controller.open();
+                          }
+                        }
+                      : null,
+                  child: _SessionConfigSummaryButton(
+                    label: labels.join(' '),
+                    enabled: widget.enabled,
+                    fastEnabled: fast?.isFastEnabled == true,
+                    expanded: controller.isOpen,
+                  ),
+                ),
+              );
+            },
+          ),
         ),
       ),
     );

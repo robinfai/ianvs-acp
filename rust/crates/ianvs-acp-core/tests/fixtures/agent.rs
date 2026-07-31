@@ -1,11 +1,11 @@
 use agent_client_protocol::schema::v1::{
     AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateRequest,
-    AuthenticateResponse, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
-    ContentBlock, ContentChunk, CreateTerminalRequest, DeleteSessionRequest, DeleteSessionResponse,
-    Implementation, InitializeRequest, InitializeResponse, KillTerminalRequest,
-    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
-    LogoutCapabilities, LogoutRequest, LogoutResponse, McpCapabilities, McpServer,
-    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    AuthenticateResponse, CancelNotification, CloseSessionRequest, CloseSessionResponse,
+    ConfigOptionUpdate, ContentBlock, ContentChunk, CreateTerminalRequest, DeleteSessionRequest,
+    DeleteSessionResponse, Implementation, InitializeRequest, InitializeResponse,
+    KillTerminalRequest, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, McpCapabilities,
+    McpServer, NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
     PromptCapabilities, PromptRequest, PromptResponse, ReadTextFileRequest, ReleaseTerminalRequest,
     RequestPermissionOutcome, RequestPermissionRequest, ResumeSessionRequest,
     ResumeSessionResponse, SessionAdditionalDirectoriesCapabilities, SessionCapabilities,
@@ -17,6 +17,29 @@ use agent_client_protocol::schema::v1::{
     ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest, WriteTextFileRequest,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Clone)]
+struct FixtureSessionConfig {
+    model: String,
+    reasoning_effort: String,
+    fast_mode: String,
+}
+
+impl Default for FixtureSessionConfig {
+    fn default() -> Self {
+        Self {
+            model: "fast".to_string(),
+            reasoning_effort: "medium".to_string(),
+            fast_mode: "off".to_string(),
+        }
+    }
+}
+
+static FIXTURE_SESSION_CONFIG: OnceLock<Mutex<FixtureSessionConfig>> = OnceLock::new();
+static FIXTURE_PROMPT_CANCELLED: AtomicBool = AtomicBool::new(false);
+static FIXTURE_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,6 +51,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Agent
             .builder()
             .name("ianvs-fixture-agent")
+            .on_receive_notification(
+                async move |_notification: CancelNotification, _connection| {
+                    FIXTURE_PROMPT_CANCELLED.store(true, Ordering::Release);
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
             .on_receive_request(
                 async move |request: InitializeRequest, responder, _connection| {
                     let prompt_attachments =
@@ -125,15 +155,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if std::env::var("IANVS_FIXTURE_CONFIG_UPDATE_AFTER_NEW").as_deref() == Ok("1")
                     {
+                        update_fixture_config("model", "quality");
                         connection.send_notification(SessionNotification::new(
                             "fixture-session",
                             SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
-                                fixture_config_options("quality"),
+                                fixture_config_options(),
                             )),
                         ))?;
                     }
+                    let fixture_session_index =
+                        FIXTURE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+                    let fixture_session_id = if fixture_session_index == 1 {
+                        "fixture-session".to_string()
+                    } else {
+                        format!("fixture-session-{fixture_session_index}")
+                    };
                     let result = responder.respond(
-                        NewSessionResponse::new("fixture-session")
+                        NewSessionResponse::new(fixture_session_id)
                             .modes(SessionModeState::new(
                                 "default",
                                 vec![
@@ -141,7 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     SessionMode::new("plan", "Plan"),
                                 ],
                             ))
-                            .config_options(fixture_config_options("fast")),
+                            .config_options(fixture_config_options()),
                     );
                     if std::env::var("IANVS_FIXTURE_EXIT_AFTER_NEW_SESSION").as_deref() == Ok("1") {
                         std::thread::spawn(|| {
@@ -169,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "default",
                                 vec![SessionMode::new("default", "Default")],
                             ))
-                            .config_options(fixture_config_options("fast")),
+                            .config_options(fixture_config_options()),
                     )
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -182,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "default",
                                 vec![SessionMode::new("default", "Default")],
                             ))
-                            .config_options(fixture_config_options("fast")),
+                            .config_options(fixture_config_options()),
                     )
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -223,6 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .on_receive_request(
                 async move |request: PromptRequest, responder, connection: ConnectionTo<Client>| {
+                    FIXTURE_PROMPT_CANCELLED.store(false, Ordering::Release);
                     let session_id = request.session_id.clone();
                     if std::env::var("IANVS_FIXTURE_PROMPT_ATTACHMENTS").as_deref() == Ok("1") {
                         let kinds = request
@@ -244,7 +283,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ContentBlock::Text(TextContent::new(format!("content:{kinds}"))),
                             )),
                         ))?;
-                        return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                        connection.spawn(async move {
+                            let stop_reason = if fixture_response_delay().await {
+                                StopReason::Cancelled
+                            } else {
+                                StopReason::EndTurn
+                            };
+                            responder.respond(PromptResponse::new(stop_reason))
+                        })?;
+                        return Ok(());
                     }
                     if std::env::var("IANVS_FIXTURE_USE_FILESYSTEM").as_deref() == Ok("1") {
                         connection.spawn({
@@ -408,13 +455,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .on_receive_request(
                 async move |request: SetSessionConfigOptionRequest, responder, _connection| {
-                    let current = request
+                    let value = request
                         .value
                         .as_value_id()
                         .map_or_else(|| "fast".to_string(), ToString::to_string);
-                    responder.respond(SetSessionConfigOptionResponse::new(fixture_config_options(
-                        &current,
-                    )))
+                    update_fixture_config(&request.config_id.to_string(), &value);
+                    responder.respond(SetSessionConfigOptionResponse::new(fixture_config_options()))
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -424,20 +470,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn fixture_config_options(model: &str) -> Vec<SessionConfigOption> {
+fn fixture_config_options() -> Vec<SessionConfigOption> {
+    let config = fixture_session_config();
     vec![
         SessionConfigOption::select(
             "model",
             "Model",
-            model.to_string(),
+            config.model,
             vec![
                 SessionConfigSelectOption::new("fast", "Fast"),
                 SessionConfigSelectOption::new("quality", "Quality"),
+                SessionConfigSelectOption::new("vision", "Vision"),
             ],
         )
         .category(SessionConfigOptionCategory::Model),
+        SessionConfigOption::select(
+            "reasoning_effort",
+            "Reasoning effort",
+            config.reasoning_effort,
+            vec![
+                SessionConfigSelectOption::new("low", "Low"),
+                SessionConfigSelectOption::new("medium", "Medium"),
+                SessionConfigSelectOption::new("high", "High"),
+                SessionConfigSelectOption::new("xhigh", "Extra high"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel),
+        SessionConfigOption::select(
+            "fast_mode",
+            "Speed",
+            config.fast_mode,
+            vec![
+                SessionConfigSelectOption::new("off", "Standard")
+                    .description("Default speed, normal usage"),
+                SessionConfigSelectOption::new("on", "Fast")
+                    .description("1.5x speed, increased usage"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::ModelConfig),
         SessionConfigOption::boolean("auto_approve", "Auto approve", false),
     ]
+}
+
+fn fixture_session_config() -> FixtureSessionConfig {
+    FIXTURE_SESSION_CONFIG
+        .get_or_init(|| Mutex::new(FixtureSessionConfig::default()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn update_fixture_config(config_id: &str, value: &str) {
+    let mut config = FIXTURE_SESSION_CONFIG
+        .get_or_init(|| Mutex::new(FixtureSessionConfig::default()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match config_id {
+        "model" => config.model = value.to_string(),
+        "reasoning_effort" => config.reasoning_effort = value.to_string(),
+        "fast_mode" => config.fast_mode = value.to_string(),
+        _ => {}
+    }
 }
 
 fn fail_once_if_requested() {
@@ -456,4 +549,21 @@ fn fail_once_if_requested() {
         eprintln!("fixture intentionally exiting before initialize");
         std::process::exit(42);
     }
+}
+
+async fn fixture_response_delay() -> bool {
+    let milliseconds = std::env::var("IANVS_FIXTURE_RESPONSE_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_default();
+    let mut remaining = milliseconds;
+    while remaining > 0 {
+        if FIXTURE_PROMPT_CANCELLED.load(Ordering::Acquire) {
+            return true;
+        }
+        let slice = remaining.min(25);
+        tokio::time::sleep(std::time::Duration::from_millis(slice)).await;
+        remaining -= slice;
+    }
+    FIXTURE_PROMPT_CANCELLED.load(Ordering::Acquire)
 }

@@ -1,5 +1,6 @@
 import Foundation
 import FlutterMacOS
+import LocalAuthentication
 import Security
 import XCTest
 @testable import ACP_Client
@@ -118,6 +119,11 @@ class RunnerTests: XCTestCase {
     let copyQuery = try XCTUnwrap(securityClient.copyQueries.first)
     XCTAssertEqual(copyQuery[kSecReturnData] as? Bool, true)
     XCTAssertEqual(copyQuery[kSecMatchLimit] as? String, kSecMatchLimitOne as String)
+    XCTAssertEqual(
+      (copyQuery[kSecUseAuthenticationContext] as? LAContext)?
+        .interactionNotAllowed,
+      true
+    )
 
     let legacyQueries = queries.filter { $0[kSecUseDataProtectionKeychain] == nil }
     XCTAssertFalse(legacyQueries.isEmpty)
@@ -146,6 +152,47 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(try store.get(account: account), "value")
     try store.delete(account: account)
     XCTAssertNil(try store.get(account: account))
+  }
+
+  func testExplicitReadMayAllowKeychainInteraction() throws {
+    let reference = try store.put(namespace: "namespace", key: "key", value: "value")
+    let account = try account(from: reference)
+
+    XCTAssertEqual(
+      try store.get(account: account, allowInteraction: true),
+      "value"
+    )
+
+    let copyQuery = try XCTUnwrap(securityClient.copyQueries.last)
+    XCTAssertNil(copyQuery[kSecUseAuthenticationContext])
+  }
+
+  func testNonInteractiveReadReportsRequiredKeychainInteraction() throws {
+    securityClient.copyStatuses = [
+      errSecItemNotFound,
+      errSecSuccess,
+    ]
+
+    XCTAssertThrowsError(
+      try store.get(account: String(repeating: "a", count: 64))
+    ) { error in
+      guard case KeychainSecretStoreError.osStatus(let status) = error else {
+        return XCTFail("Expected a Keychain OSStatus error, got \(error)")
+      }
+      XCTAssertEqual(status, errSecInteractionNotAllowed)
+    }
+    XCTAssertEqual(securityClient.copyQueries.count, 2)
+    let dataQuery = securityClient.copyQueries[0]
+    XCTAssertEqual(
+      (dataQuery[kSecUseAuthenticationContext] as? LAContext)?
+        .interactionNotAllowed,
+      true
+    )
+    XCTAssertEqual(dataQuery[kSecReturnData] as? Bool, true)
+    let existenceQuery = securityClient.copyQueries[1]
+    XCTAssertNil(existenceQuery[kSecUseAuthenticationContext])
+    XCTAssertEqual(existenceQuery[kSecReturnAttributes] as? Bool, true)
+    XCTAssertNil(existenceQuery[kSecReturnData])
   }
 
   func testPutRetriesUpdateWhenConcurrentAddWins() throws {
@@ -305,6 +352,7 @@ private final class FakeKeychainSecurityClient: KeychainSecurityClient {
 
   var updateStatuses: [OSStatus] = []
   var addStatuses: [OSStatus] = []
+  var copyStatuses: [OSStatus] = []
   private(set) var updateQueries: [[CFString: Any]] = []
   private(set) var addQueries: [[CFString: Any]] = []
   private(set) var copyQueries: [[CFString: Any]] = []
@@ -358,9 +406,10 @@ private final class FakeKeychainSecurityClient: KeychainSecurityClient {
 
   func copyMatching(query: [CFString: Any]) -> (OSStatus, Any?) {
     copyQueries.append(query)
-    guard
-      hasValidBaseQuery(query),
-      query[kSecReturnData] as? Bool == true,
+    if !copyStatuses.isEmpty {
+      return (copyStatuses.removeFirst(), nil)
+    }
+    guard hasValidBaseQuery(query),
       query[kSecMatchLimit] as? String == kSecMatchLimitOne as String
     else {
       return (errSecParam, nil)
@@ -368,7 +417,13 @@ private final class FakeKeychainSecurityClient: KeychainSecurityClient {
     guard let itemKey = itemKey(query), let item = items[itemKey] else {
       return (errSecItemNotFound, nil)
     }
-    return (errSecSuccess, item.data)
+    if query[kSecReturnData] as? Bool == true {
+      return (errSecSuccess, item.data)
+    }
+    if query[kSecReturnAttributes] as? Bool == true {
+      return (errSecSuccess, item.attributes)
+    }
+    return (errSecParam, nil)
   }
 
   func delete(query: [CFString: Any]) -> OSStatus {

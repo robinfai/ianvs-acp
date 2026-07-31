@@ -4533,6 +4533,12 @@ class _TrackingHangingAgentClient extends FakeAgentClient {
   }
 
   @override
+  Future<void> cancel() async {
+    await super.cancel();
+    if (!_events.isClosed) await _events.close();
+  }
+
+  @override
   Future<void> dispose() async {
     disposed = true;
     if (!_events.isClosed) await _events.close();

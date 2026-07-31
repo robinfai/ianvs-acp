@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 
 import 'acp_client_config.dart';
+import 'secret_field_policy.dart';
 import 'secret_store.dart';
 
 final class AcpConfigSecretMigrator {
@@ -241,6 +242,12 @@ final class AcpConfigSecretMigrator {
       fieldName: fieldName,
       key: key,
     );
+    bool shouldProtect(String key) => isProtectedConfigValue(
+      field: fieldName == 'headers'
+          ? ConfigSecretField.header
+          : ConfigSecretField.environment,
+      key: key,
+    );
 
     if (!refsResolved) {
       final mixedKeys = values.keys.where(refs.containsKey).toList();
@@ -265,21 +272,24 @@ final class AcpConfigSecretMigrator {
         resolved[entry.key] = value;
         existingValues[entry.key] = value;
         referenceKinds[entry.key] = read.kind;
-        if (read.kind == _OwnedReferenceKind.legacy) {
-          final migrated = await writes.put(
-            owner,
-            value,
-            ownerLabel: ownerLabel,
-          );
-          desiredRefs[entry.key] = migrated;
-        } else {
-          desiredRefs[entry.key] = entry.value;
+        if (shouldProtect(entry.key)) {
+          if (read.kind == _OwnedReferenceKind.legacy) {
+            final migrated = await writes.put(
+              owner,
+              value,
+              ownerLabel: ownerLabel,
+            );
+            desiredRefs[entry.key] = migrated;
+          } else {
+            desiredRefs[entry.key] = entry.value;
+          }
         }
       }
     }
     resolved.addAll(values);
 
     for (final entry in resolved.entries) {
+      if (!shouldProtect(entry.key)) continue;
       final owner = ownerFor(entry.key);
       final oldRef = refs[entry.key];
       if (oldRef != null) {
@@ -352,6 +362,8 @@ final class AcpConfigSecretMigrator {
     }
     try {
       return _OwnedSecretRead(await _store.get(reference), kind);
+    } on SecretStoreInteractionRequiredException {
+      rethrow;
     } catch (error) {
       throw FormatException(
         '$ownerLabel ${owner.fieldName} "${owner.key}" could not resolve its Keychain secret (${error.runtimeType}).',
@@ -392,6 +404,8 @@ final class _OwnedSecretWrites {
       String? previousValue;
       try {
         previousValue = await _store.get(expected);
+      } on SecretStoreInteractionRequiredException {
+        rethrow;
       } catch (error) {
         throw FormatException(
           '$ownerLabel ${owner.fieldName} "${owner.key}" could not snapshot its Keychain secret (${error.runtimeType}).',

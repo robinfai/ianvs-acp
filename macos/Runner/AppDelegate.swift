@@ -1,6 +1,7 @@
 import Cocoa
 import CryptoKit
 import FlutterMacOS
+import LocalAuthentication
 import Security
 
 enum KeychainSecretStoreError: Error {
@@ -70,16 +71,30 @@ final class KeychainSecretStore {
     return reference(account: account)
   }
 
-  func get(account: String) throws -> String? {
+  func get(account: String, allowInteraction: Bool = false) throws -> String? {
     if dataProtectionKeychainAvailable {
       do {
-        if let value = try get(account: account, useDataProtectionKeychain: true) {
+        if let value = try get(
+          account: account,
+          useDataProtectionKeychain: true,
+          allowInteraction: allowInteraction
+        ) {
           return value
         }
         // Ad-hoc builds have no application-identifier entitlement. Checking
         // the legacy keychain keeps their secrets readable after a later
         // development- or distribution-signed launch.
-        return try get(account: account, useDataProtectionKeychain: false)
+        if !allowInteraction {
+          if try itemExists(account: account, useDataProtectionKeychain: false) {
+            throw KeychainSecretStoreError.osStatus(errSecInteractionNotAllowed)
+          }
+          return nil
+        }
+        return try get(
+          account: account,
+          useDataProtectionKeychain: false,
+          allowInteraction: allowInteraction
+        )
       } catch KeychainSecretStoreError.osStatus(let status)
         where status == errSecMissingEntitlement
       {
@@ -87,7 +102,11 @@ final class KeychainSecretStore {
       }
     }
 
-    return try get(account: account, useDataProtectionKeychain: false)
+    return try get(
+      account: account,
+      useDataProtectionKeychain: false,
+      allowInteraction: allowInteraction
+    )
   }
 
   func delete(account: String) throws {
@@ -146,13 +165,22 @@ final class KeychainSecretStore {
     throw KeychainSecretStoreError.osStatus(lastStatus)
   }
 
-  private func get(account: String, useDataProtectionKeychain: Bool) throws -> String? {
+  private func get(
+    account: String,
+    useDataProtectionKeychain: Bool,
+    allowInteraction: Bool
+  ) throws -> String? {
     var query = baseQuery(
       account: account,
       useDataProtectionKeychain: useDataProtectionKeychain
     )
     query[kSecReturnData] = true
     query[kSecMatchLimit] = kSecMatchLimitOne
+    if !allowInteraction {
+      let context = LAContext()
+      context.interactionNotAllowed = true
+      query[kSecUseAuthenticationContext] = context
+    }
 
     let (status, result) = securityClient.copyMatching(query: query)
     if status == errSecItemNotFound {
@@ -165,6 +193,27 @@ final class KeychainSecretStore {
       throw KeychainSecretStoreError.invalidData
     }
     return value
+  }
+
+  private func itemExists(
+    account: String,
+    useDataProtectionKeychain: Bool
+  ) throws -> Bool {
+    var query = baseQuery(
+      account: account,
+      useDataProtectionKeychain: useDataProtectionKeychain
+    )
+    query[kSecReturnAttributes] = true
+    query[kSecMatchLimit] = kSecMatchLimitOne
+
+    let (status, _) = securityClient.copyMatching(query: query)
+    if status == errSecItemNotFound {
+      return false
+    }
+    guard status == errSecSuccess else {
+      throw KeychainSecretStoreError.osStatus(status)
+    }
+    return true
   }
 
   private func delete(account: String, useDataProtectionKeychain: Bool) throws {
@@ -244,6 +293,10 @@ class AppDelegate: FlutterAppDelegate {
   private let deepLinkChannelName = "ianvs_acp/deep_links"
   private let keychainChannelName = "ianvs_acp/keychain"
   private let keychainStore = KeychainSecretStore()
+  private let keychainQueue = DispatchQueue(
+    label: "com.ianvs.acp.keychain",
+    qos: .userInitiated
+  )
   private var deepLinkChannel: FlutterMethodChannel?
   private var keychainChannel: FlutterMethodChannel?
   private let pendingDeepLinks = PendingDeepLinkBuffer()
@@ -303,7 +356,23 @@ class AppDelegate: FlutterAppDelegate {
       binaryMessenger: controller.engine.binaryMessenger
     )
     channel.setMethodCallHandler { [weak self] call, result in
-      self?.handleKeychainCall(call, result: result)
+      guard let self else {
+        result(
+          FlutterError(
+            code: "keychain_unavailable",
+            message: "Keychain service is unavailable.",
+            details: nil
+          )
+        )
+        return
+      }
+      self.keychainQueue.async {
+        self.handleKeychainCall(call) { value in
+          DispatchQueue.main.async {
+            result(value)
+          }
+        }
+      }
     }
     keychainChannel = channel
   }
@@ -333,7 +402,13 @@ class AppDelegate: FlutterAppDelegate {
           result(invalidArgumentsError())
           return
         }
-        result(try keychainStore.get(account: account))
+        let allowInteraction = arguments["allowInteraction"] as? Bool ?? false
+        result(
+          try keychainStore.get(
+            account: account,
+            allowInteraction: allowInteraction
+          )
+        )
       case "delete":
         guard let arguments = call.arguments as? [String: Any] else {
           result(invalidArgumentsError())
@@ -354,6 +429,16 @@ class AppDelegate: FlutterAppDelegate {
           code: "invalid_keychain_data",
           message: "Keychain item is not valid UTF-8.",
           details: nil
+        )
+      )
+    } catch KeychainSecretStoreError.osStatus(let status)
+      where status == errSecInteractionNotAllowed
+    {
+      result(
+        FlutterError(
+          code: "keychain_interaction_required",
+          message: "Keychain access requires user approval.",
+          details: status
         )
       )
     } catch KeychainSecretStoreError.osStatus(let status) {

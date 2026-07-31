@@ -70,12 +70,124 @@ void main() {
     },
   );
 
+  test(
+    'persists ordinary env and headers without Keychain references',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_non_secret_config',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      await file.writeAsString('''
+{
+  "agent_servers": {
+    "Local": {
+      "type": "custom",
+      "command": "agent",
+      "env": {
+        "PATH": "/opt/tools/bin",
+        "OPENAI_API_KEY": "api-secret"
+      }
+    },
+    "Remote": {
+      "type": "http",
+      "url": "https://agent.example/acp",
+      "headers": {
+        "User-Agent": "ianvs-acp",
+        "Authorization": "Bearer auth-secret"
+      }
+    }
+  }
+}
+''');
+      final store = FakeSecretStore();
+
+      final config = await AcpConfigStore.loadConfig(
+        configPath: file.path,
+        secretStore: store,
+      );
+
+      final json =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final agents = json['agent_servers'] as Map<String, dynamic>;
+      expect(agents['Local']['env'], {'PATH': '/opt/tools/bin'});
+      expect(
+        agents['Local']['env_refs']['OPENAI_API_KEY'],
+        startsWith('keychain://ianvs-acp/'),
+      );
+      expect(agents['Remote']['headers'], {'User-Agent': 'ianvs-acp'});
+      expect(
+        agents['Remote']['header_refs']['Authorization'],
+        startsWith('keychain://ianvs-acp/'),
+      );
+      expect(store.values, hasLength(2));
+      expect(config.agentServers[0].env, {
+        'PATH': '/opt/tools/bin',
+        'OPENAI_API_KEY': 'api-secret',
+      });
+      expect(config.agentServers[1].headers, {
+        'User-Agent': 'ianvs-acp',
+        'Authorization': 'Bearer auth-secret',
+      });
+    },
+  );
+
+  test('migrates a non-sensitive PATH reference back to plaintext', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'acp_path_keychain_migration',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    final store = FakeSecretStore();
+    const server = AgentServerConfig(
+      name: 'Local',
+      type: 'custom',
+      command: 'agent',
+    );
+    final owner = SecretOwner(
+      configIdentity: await configSecretIdentity(file.path),
+      targetKind: 'agent/Local',
+      targetIdentity: agentSecretTargetIdentity(server),
+      fieldName: 'env',
+      key: 'PATH',
+    );
+    final reference = await store.put(
+      namespace: owner.namespace,
+      key: owner.key,
+      value: '/opt/tools/bin',
+    );
+    await file.writeAsString('''
+{
+  "agent_servers": {
+    "Local": {
+      "type": "custom",
+      "command": "agent",
+      "env_refs": {"PATH": "$reference"}
+    }
+  }
+}
+''');
+
+    final config = await AcpConfigStore.loadConfig(
+      configPath: file.path,
+      secretStore: store,
+    );
+
+    final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    final local = json['agent_servers']['Local'] as Map<String, dynamic>;
+    expect(local['env'], {'PATH': '/opt/tools/bin'});
+    expect(local, isNot(contains('env_refs')));
+    expect(config.agentServers.single.env, {'PATH': '/opt/tools/bin'});
+    expect(await store.get(reference), isNull);
+    expect(store.deleted, contains(reference));
+  });
+
   test('put failure leaves original bytes and deletes new refs', () async {
     final temp = await Directory.systemTemp.createTemp('acp_secret_failure');
     addTearDown(() => temp.delete(recursive: true));
     final file = File('${temp.path}/settings.json');
     const original =
-        '{ "agent_servers": { "Local": { "type": "custom", "command": "agent", "env": { "A": "one", "B": "two" } } } }\n';
+        '{ "agent_servers": { "Local": { "type": "custom", "command": "agent", "env": { "TOKEN_A": "one", "TOKEN_B": "two" } } } }\n';
     await file.writeAsString(original);
     final store = FakeSecretStore(failPutAt: 2);
     final foreign = store.referenceFor(
@@ -2013,13 +2125,57 @@ void main() {
       expect(contents, contains('camel-secret'));
     },
   );
+
+  test('preserves a Keychain approval request for startup recovery', () async {
+    const server = AgentServerConfig(
+      name: 'Local',
+      type: 'custom',
+      command: 'agent',
+    );
+    const configPath = '/tmp/acp-keychain-approval/settings.json';
+    final configIdentity = await configSecretIdentity(configPath);
+    final store = FakeSecretStore(interactionRequired: true);
+    final reference = store.referenceFor(
+      namespace: SecretOwner(
+        configIdentity: configIdentity,
+        targetKind: 'agent/Local',
+        targetIdentity: agentSecretTargetIdentity(server),
+        fieldName: 'env',
+        key: 'TOKEN',
+      ).namespace,
+      key: 'TOKEN',
+    );
+
+    await expectLater(
+      AcpConfigSecretMigrator(store).prepare(
+        AcpClientConfig(
+          configPath: configPath,
+          agentServers: [
+            AgentServerConfig(
+              name: server.name,
+              type: server.type,
+              command: server.command,
+              envRefs: {'TOKEN': reference},
+              secretRefsResolved: false,
+            ),
+          ],
+        ),
+      ),
+      throwsA(isA<SecretStoreInteractionRequiredException>()),
+    );
+  });
 }
 
 final class FakeSecretStore implements SecretStore {
-  FakeSecretStore({this.failPutAt, this.failDeletes = false});
+  FakeSecretStore({
+    this.failPutAt,
+    this.failDeletes = false,
+    this.interactionRequired = false,
+  });
 
   final int? failPutAt;
   bool failDeletes;
+  final bool interactionRequired;
   final Map<String, String> values = <String, String>{};
   final Map<String, String> _references = <String, String>{};
   final List<String> deleted = <String>[];
@@ -2048,6 +2204,9 @@ final class FakeSecretStore implements SecretStore {
   @override
   Future<String?> get(String reference) async {
     getCount += 1;
+    if (interactionRequired) {
+      throw const SecretStoreInteractionRequiredException();
+    }
     return values[reference];
   }
 

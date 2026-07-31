@@ -589,34 +589,40 @@ class _ProcessedTurnHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      onTap: onPressed,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          children: [
-            Text(
-              label,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
+    return Semantics(
+      key: const ValueKey('processed-turn-toggle'),
+      button: true,
+      expanded: expanded,
+      label: expanded ? 'Collapse processed turn' : 'Expand processed turn',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-            ),
-            const SizedBox(width: 4),
-            AnimatedRotation(
-              turns: expanded ? 0.25 : 0,
-              duration: const Duration(milliseconds: 160),
-              child: const Icon(
-                Icons.chevron_right_rounded,
-                size: 17,
-                color: AppColors.textTertiary,
+              const SizedBox(width: 4),
+              AnimatedRotation(
+                turns: expanded ? 0.25 : 0,
+                duration: const Duration(milliseconds: 160),
+                child: const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 17,
+                  color: AppColors.textTertiary,
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            const Expanded(child: Divider(color: AppColors.borderSoft)),
-          ],
+              const SizedBox(width: 10),
+              const Expanded(child: Divider(color: AppColors.borderSoft)),
+            ],
+          ),
         ),
       ),
     );
@@ -1288,6 +1294,7 @@ class _ToolGroupBubble extends StatelessWidget {
         child: Material(
           color: Colors.transparent,
           child: ExpansionTile(
+            key: const ValueKey('tool-call-group-toggle'),
             tilePadding: const EdgeInsets.fromLTRB(2, 1, 2, 1),
             childrenPadding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
             initiallyExpanded: false,
@@ -2756,6 +2763,7 @@ class _DiffChangesListState extends State<_DiffChangesList> {
       child: Material(
         color: Colors.transparent,
         child: ExpansionTile(
+          key: const ValueKey('diff-changes-toggle'),
           onExpansionChanged: (expanded) {
             if (_expanded == expanded) return;
             setState(() => _expanded = expanded);
