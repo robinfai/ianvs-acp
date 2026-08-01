@@ -12674,6 +12674,70 @@ void main() {
   );
 
   test(
+    'guiding a queued prompt interrupts the active turn and dispatches it',
+    () async {
+      final fake = _AcknowledgedCancellationAgentClient();
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(() async {
+        controller.dispose();
+        await fake.closePromptStream();
+      });
+
+      await controller.newSession();
+      await controller.sendPrompt('first');
+      controller.enqueuePrompt('normal follow-up');
+      controller.enqueuePrompt('guidance for active work');
+      final guidanceId = controller.queuedPrompts.last.id;
+
+      controller.guideQueuedPrompt(guidanceId);
+      await fake.cancelRequested.future;
+
+      expect(controller.queuedPrompts.first.text, 'guidance for active work');
+      expect(controller.queuedPrompts.first.guide, isTrue);
+      expect(fake.prompts, ['first']);
+
+      await fake.acknowledgeCancellation();
+      await pumpEventQueue(times: 20);
+
+      expect(fake.prompts.take(2), ['first', 'guidance for active work']);
+    },
+  );
+
+  test(
+    'prompt idle warning follows stream activity and clears on completion',
+    () async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        promptIdleWarningDelay: const Duration(milliseconds: 20),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      await controller.sendPrompt('first');
+      await Future<void>.delayed(const Duration(milliseconds: 35));
+
+      expect(controller.isStreaming, isTrue);
+      expect(controller.promptAppearsStalled, isTrue);
+
+      fake.emit(
+        const AgentEvent(type: AgentEventType.agentTextDelta, text: 'working'),
+      );
+      await pumpEventQueue(times: 4);
+      expect(controller.promptAppearsStalled, isFalse);
+
+      await Future<void>.delayed(const Duration(milliseconds: 35));
+      expect(controller.promptAppearsStalled, isTrue);
+
+      await fake.finishPrompt();
+      await pumpEventQueue(times: 4);
+      expect(controller.isStreaming, isFalse);
+      expect(controller.promptAppearsStalled, isFalse);
+    },
+  );
+
+  test(
     'stop waits for cancellation acknowledgement before dispatching queue',
     () async {
       final fake = _AcknowledgedCancellationAgentClient();
@@ -12715,11 +12779,11 @@ void main() {
     'stop timeout preserves queued prompts instead of consuming them',
     () async {
       final fake = _AcknowledgedCancellationAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(() async {
-      controller.dispose();
-      await fake.closePromptStream();
-    });
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(() async {
+        controller.dispose();
+        await fake.closePromptStream();
+      });
 
       await controller.newSession();
       await controller.sendPrompt('first');

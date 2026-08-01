@@ -812,9 +812,7 @@ class _WorkspaceGroup extends StatelessWidget {
       child: Container(
         key: Key('workspace-group:${workspace.path}'),
         decoration: BoxDecoration(
-          color: !selected && hovered
-              ? AppColors.surfaceMuted.withValues(alpha: 0.72)
-              : Colors.transparent,
+          color: Colors.transparent,
           borderRadius: BorderRadius.circular(AppRadius.sm),
         ),
         child: Column(
@@ -853,7 +851,7 @@ class _WorkspaceGroup extends StatelessWidget {
               )
             else if (expanded)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 3, 5),
+                padding: const EdgeInsets.fromLTRB(0, 0, 3, 5),
                 child: _NestedSessionList(
                   workspace: workspace,
                   currentSession: currentSession,
@@ -905,17 +903,9 @@ class _NestedSessionList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        border: Border(left: BorderSide(color: AppColors.borderSoft)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.only(left: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: _sessionGroups(),
-        ),
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: _sessionGroups(),
     );
   }
 
@@ -1065,11 +1055,7 @@ class _WorkspaceTile extends StatelessWidget {
               key: Key('workspace-project-strip:${workspace.path}'),
               padding: const EdgeInsets.fromLTRB(7, 6, 5, 6),
               decoration: BoxDecoration(
-                color: selected
-                    ? AppColors.surfaceMuted
-                    : !selected && hovered
-                    ? AppColors.surfaceRaised
-                    : Colors.transparent,
+                color: hovered ? AppColors.surfaceHover : Colors.transparent,
                 borderRadius: radius,
               ),
               child: Row(
@@ -1391,12 +1377,15 @@ enum WorkspaceSessionMenuAction {
   rename,
   archive,
   toggleUnread,
+  openSideTask,
   revealInFinder,
   copyWorkingDirectory,
   copySessionId,
   copyDeepLink,
+  copyMarkdown,
   forkLocally,
   forkToNewWorktree,
+  addScheduledTask,
   openInNewWindow,
 }
 
@@ -1499,17 +1488,20 @@ class _SessionTileState extends State<_SessionTile> {
                 padding: const EdgeInsets.fromLTRB(3, 3, 4, 3),
                 decoration: BoxDecoration(
                   color: selected
-                      ? AppColors.surfaceMuted
+                      ? AppColors.surfaceSelected
                       : _hovered
-                      ? AppColors.surfaceMuted.withValues(alpha: 0.82)
+                      ? AppColors.surfaceHover
                       : Colors.transparent,
                   borderRadius: radius,
                 ),
-                child: _sessionContent(
-                  session,
-                  onMenuAction,
-                  showActions,
-                  selected: selected,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 24),
+                  child: _sessionContent(
+                    session,
+                    onMenuAction,
+                    showActions,
+                    selected: selected,
+                  ),
                 ),
               ),
             ),
@@ -1539,7 +1531,8 @@ class _SessionTileState extends State<_SessionTile> {
             style: TextStyle(
               color: titleColor,
               fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              fontSize: 12,
+              fontSize: 12.5,
+              height: 1.35,
               letterSpacing: 0,
             ),
           ),
@@ -1978,6 +1971,11 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
     ),
     const PopupMenuDivider(height: 8),
     _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.openSideTask,
+      icon: Icons.add_circle_outline_rounded,
+      label: 'Open Side Task',
+    ),
+    _sessionMenuItem(
       value: WorkspaceSessionMenuAction.revealInFinder,
       icon: Icons.folder_open_outlined,
       label: 'Show in Finder',
@@ -1997,6 +1995,11 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
       icon: Icons.link_rounded,
       label: 'Copy Deep Link',
     ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.copyMarkdown,
+      icon: Icons.description_outlined,
+      label: 'Copy as Markdown',
+    ),
     const PopupMenuDivider(height: 8),
     _sessionMenuItem(
       value: WorkspaceSessionMenuAction.forkLocally,
@@ -2011,6 +2014,11 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
         label: 'Fork to New Worktree',
         enabled: canFork,
       ),
+    _sessionMenuItem(
+      value: WorkspaceSessionMenuAction.addScheduledTask,
+      icon: Icons.schedule_rounded,
+      label: 'Add Scheduled Task...',
+    ),
     const PopupMenuDivider(height: 8),
     _sessionMenuItem(
       value: WorkspaceSessionMenuAction.openInNewWindow,

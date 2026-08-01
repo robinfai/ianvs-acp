@@ -87,6 +87,7 @@ class AppShell extends StatelessWidget {
     this.onOpenTaskSession,
     this.onAgentAuthenticated,
     this.onSaveConfig,
+    this.onValidateAssistantAgent,
     this.onLoadSessionCatalogs,
     this.sessionControllers = const <ChatController>[],
     this.processRunner,
@@ -147,6 +148,7 @@ class AppShell extends StatelessWidget {
   onOpenTaskSession;
   final AppShellAgentAuthenticated? onAgentAuthenticated;
   final AcpConfigSaveCallback? onSaveConfig;
+  final AssistantAgentValidationCallback? onValidateAssistantAgent;
   final Future<void> Function()? onLoadSessionCatalogs;
   final List<ChatController> sessionControllers;
   final AppShellProcessRunner? processRunner;
@@ -230,6 +232,7 @@ class AppShell extends StatelessWidget {
           agentName: agentName,
           enabled: !controller.isSessionOperationRunning,
           isSending: controller.isStreaming,
+          promptAppearsStalled: controller.promptAppearsStalled,
           availableCommands: controller.availableCommands,
           availableCommandsRevision: controller.availableCommandsRevision,
           promptCapabilities: promptCapabilities,
@@ -793,6 +796,7 @@ class AppShell extends StatelessWidget {
           configPath: configPath,
           defaultAgentName: defaultAgentName,
           onSaveConfig: onSaveConfig,
+          onValidateAssistantAgent: onValidateAssistantAgent,
         );
       },
     );
@@ -1296,7 +1300,7 @@ class _SidebarModeSegment extends StatelessWidget {
         selected: selected,
         label: label,
         child: Material(
-          color: selected ? AppColors.primarySoft : Colors.transparent,
+          color: selected ? AppColors.surfaceSelected : Colors.transparent,
           child: InkWell(
             onTap: selected ? null : () => onChanged(mode),
             child: Padding(

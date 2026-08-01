@@ -2511,6 +2511,7 @@ class ChatController extends ChangeNotifier {
     this.assistantAgentConfig = const AssistantAgentConfig(),
     this.assistantAgentEnhancer,
     this.enableAutomaticSessionTitles = false,
+    this.promptIdleWarningDelay = defaultPromptIdleWarningDelay,
   }) : permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     if (permissionHistoryLimit <= 0) {
       throw ArgumentError.value(
@@ -2534,6 +2535,13 @@ class ChatController extends ChangeNotifier {
         'must be greater than zero',
       );
     }
+    if (promptIdleWarningDelay <= Duration.zero) {
+      throw ArgumentError.value(
+        promptIdleWarningDelay,
+        'promptIdleWarningDelay',
+        'must be greater than zero',
+      );
+    }
     inputBudget.validate();
     _permissionSubscription = client.permissionRequests.listen(
       _handlePermissionRequest,
@@ -2548,6 +2556,7 @@ class ChatController extends ChangeNotifier {
 
   static const int defaultPermissionHistoryLimit = 500;
   static const Duration defaultCleanupTimeout = Duration(seconds: 2);
+  static const Duration defaultPromptIdleWarningDelay = Duration(seconds: 90);
 
   final AcpAgentClient client;
   final String cwd;
@@ -2563,6 +2572,7 @@ class ChatController extends ChangeNotifier {
   final AssistantAgentConfig assistantAgentConfig;
   final AssistantAgentEnhancer? assistantAgentEnhancer;
   final bool enableAutomaticSessionTitles;
+  final Duration promptIdleWarningDelay;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? _currentSession;
@@ -2585,6 +2595,7 @@ class ChatController extends ChangeNotifier {
       _queuedPromptsView;
   int _nextQueuedPromptId = 0;
   bool _dispatchingQueuedPrompt = false;
+  bool _guidanceInterruptionRunning = false;
   Completer<void>? _activePromptCompletion;
   int messagesRevision = 0;
   int _nextTurnId = 0;
@@ -2653,6 +2664,8 @@ class ChatController extends ChangeNotifier {
   }
 
   bool isStreaming = false;
+  bool _promptAppearsStalled = false;
+  bool get promptAppearsStalled => _promptAppearsStalled;
   bool sessionSettingsLoading = false;
   bool isSessionOperationRunning = false;
   Completer<void>? _sessionOperationIdleCompleter;
@@ -2805,6 +2818,7 @@ class ChatController extends ChangeNotifier {
   int get permissionHistoryEncodedBytes => _permissionHistoryEncodedBytes;
 
   StreamSubscription<AgentEvent>? _promptSubscription;
+  Timer? _promptIdleWarningTimer;
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
   late final StreamSubscription<AcpPermissionInvalidation>
   _permissionInvalidationSubscription;
@@ -3884,6 +3898,22 @@ class ChatController extends ChangeNotifier {
     }
     _queuedPrompts.insert(0, selected);
     _notifyListeners();
+    if (isStreaming && !_guidanceInterruptionRunning) {
+      _guidanceInterruptionRunning = true;
+      unawaited(_interruptCurrentTurnForGuidance());
+    }
+  }
+
+  Future<void> _interruptCurrentTurnForGuidance() async {
+    try {
+      await stop();
+      if (!isStreaming && status != ConnectionStatus.error) {
+        _scheduleQueuedPromptDispatch();
+      }
+    } finally {
+      _guidanceInterruptionRunning = false;
+      if (!_isDisposed) _notifyListeners();
+    }
   }
 
   void removeQueuedPrompt(int id) {
@@ -3995,6 +4025,7 @@ class ChatController extends ChangeNotifier {
     _pendingMemoryTurnId = memoryTurnId;
     _pendingMemoryUsedMemories = List.unmodifiable(usedMemories);
     _pendingMemoryHadError = false;
+    _recordPromptActivity();
     _notifyListeners();
 
     try {
@@ -4008,6 +4039,7 @@ class ChatController extends ChangeNotifier {
           )
           .listen(
             (event) {
+              _recordPromptActivity();
               _recordMemoryExtractionEvent(event);
               _handleAgentEvent(event);
             },
@@ -5080,6 +5112,7 @@ class ChatController extends ChangeNotifier {
       }
     }
     pendingPermissionRequest = request;
+    _recordPromptActivity();
     _recordPermissionRequest(request);
     _notifyPermissionEventObservers(
       ChatPermissionEvent.requested(_permissionRequestForAudit(request)),
@@ -5106,6 +5139,7 @@ class ChatController extends ChangeNotifier {
     final request = pendingPermissionRequest;
     if (request == null) return;
     pendingPermissionRequest = null;
+    _recordPromptActivity();
     _recordPermissionDecision(
       request,
       AcpPermissionDecision.cancel,
@@ -5125,6 +5159,7 @@ class ChatController extends ChangeNotifier {
     }
     final bindingKey = request.bindingKey;
     pendingPermissionRequest = null;
+    _recordPromptActivity();
     _resolvingPermissionRequestIds.remove(bindingKey);
     _reviewingPermissionRequestIds.remove(bindingKey);
     _recordPermissionDecision(
@@ -5203,6 +5238,7 @@ class ChatController extends ChangeNotifier {
       if (!_isCurrentPermissionRequest(request)) return;
       if (!_isPermissionRequestForActiveSession(request)) return;
       pendingPermissionRequest = null;
+      _recordPromptActivity();
       _recordPermissionDecision(
         request,
         decision,
@@ -5696,6 +5732,7 @@ class ChatController extends ChangeNotifier {
     if (_queuedPrompts.isNotEmpty) {
       _queuedPrompts.clear();
       _dispatchingQueuedPrompt = false;
+      _guidanceInterruptionRunning = false;
     }
   }
 
@@ -7299,6 +7336,7 @@ class ChatController extends ChangeNotifier {
     bool suppressProjection = false,
     bool dispatchQueuedPrompts = true,
   }) {
+    _clearPromptIdleWarning();
     final enhancementTurnId = isStreaming ? _pendingEnhancementTurnId : null;
     final enhancementPrompt = isStreaming ? _pendingEnhancementPrompt : null;
     final enhancementSessionId = isStreaming
@@ -7353,6 +7391,29 @@ class ChatController extends ChangeNotifier {
     if (completion != null && !completion.isCompleted) {
       completion.complete();
     }
+  }
+
+  void _recordPromptActivity() {
+    _promptIdleWarningTimer?.cancel();
+    _promptIdleWarningTimer = null;
+    _promptAppearsStalled = false;
+    if (_isDisposed || !isStreaming) return;
+    _promptIdleWarningTimer = Timer(promptIdleWarningDelay, () {
+      _promptIdleWarningTimer = null;
+      if (_isDisposed || !isStreaming) return;
+      if (pendingPermissionRequest != null) {
+        _recordPromptActivity();
+        return;
+      }
+      _promptAppearsStalled = true;
+      _notifyListeners();
+    });
+  }
+
+  void _clearPromptIdleWarning() {
+    _promptIdleWarningTimer?.cancel();
+    _promptIdleWarningTimer = null;
+    _promptAppearsStalled = false;
   }
 
   void _scheduleQueuedPromptDispatch() {
@@ -7679,6 +7740,7 @@ class ChatController extends ChangeNotifier {
     _sessionOperationGeneration += 1;
     _sessionSettingsLoadSerial += 1;
     _finishTurnBudget();
+    _clearPromptIdleWarning();
     for (final snapshot in _archiveLeasesById.values.toList(growable: false)) {
       snapshot.discard();
     }

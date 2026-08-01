@@ -9,6 +9,8 @@ import '../theme/app_design_tokens.dart';
 
 typedef AcpConfigSaveCallback =
     Future<AcpClientConfig> Function(AcpClientConfig config);
+typedef AssistantAgentValidationCallback =
+    Future<void> Function(AssistantAgentConfig config);
 
 class AgentConfigDialog extends StatefulWidget {
   const AgentConfigDialog({
@@ -25,6 +27,7 @@ class AgentConfigDialog extends StatefulWidget {
     this.configPath,
     this.defaultAgentName,
     this.onSaveConfig,
+    this.onValidateAssistantAgent,
   });
 
   final List<AgentServerConfig> agentServers;
@@ -39,6 +42,7 @@ class AgentConfigDialog extends StatefulWidget {
   final String? configPath;
   final String? defaultAgentName;
   final AcpConfigSaveCallback? onSaveConfig;
+  final AssistantAgentValidationCallback? onValidateAssistantAgent;
 
   @override
   State<AgentConfigDialog> createState() => _AgentConfigDialogState();
@@ -106,6 +110,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         text: widget.assistantAgent.fallbackTitleCharacters.toString(),
       );
   String? _assistantValidationStatus;
+  bool _assistantValidationSucceeded = false;
+  bool _assistantValidating = false;
   late final TextEditingController _memoryEmbeddingModelController =
       TextEditingController(text: widget.memory.embedding.model);
   late final TextEditingController _memoryExtractorAgentController =
@@ -542,35 +548,35 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             children: [
               OutlinedButton.icon(
                 key: const Key('assistant-agent-validate-button'),
-                onPressed: !_assistantEnabled
+                onPressed: !_assistantEnabled || _assistantValidating
                     ? null
-                    : () {
-                        final exists =
-                            _assistantAgentName != null &&
-                            configuredAgents.contains(_assistantAgentName);
-                        setState(() {
-                          _assistantValidationStatus = exists
-                              ? 'Configuration ready'
-                              : 'Choose a configured agent';
-                        });
-                      },
-                icon: const Icon(Icons.check_circle_outline_rounded, size: 17),
-                label: const Text('Validate configuration'),
+                    : _validateAssistantConfiguration,
+                icon: _assistantValidating
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check_circle_outline_rounded, size: 17),
+                label: Text(
+                  _assistantValidating
+                      ? 'Validating...'
+                      : 'Validate configuration',
+                ),
               ),
               if (_assistantValidationStatus case final status?) ...[
                 Icon(
-                  status == 'Configuration ready'
+                  _assistantValidationSucceeded
                       ? Icons.check_circle_rounded
                       : Icons.error_outline_rounded,
                   size: 16,
-                  color: status == 'Configuration ready'
+                  color: _assistantValidationSucceeded
                       ? AppColors.success
                       : AppColors.warning,
                 ),
                 Text(
                   status,
                   style: TextStyle(
-                    color: status == 'Configuration ready'
+                    color: _assistantValidationSucceeded
                         ? AppColors.success
                         : AppColors.warning,
                     fontSize: 12,
@@ -1172,6 +1178,54 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       fallbackTitleCharacters: fallbackTitleCharacters,
       timeout: widget.assistantAgent.timeout,
     );
+  }
+
+  Future<void> _validateAssistantConfiguration() async {
+    AssistantAgentConfig config;
+    try {
+      config = _assistantAgentConfig();
+    } on Object catch (error) {
+      setState(() {
+        _assistantValidationSucceeded = false;
+        _assistantValidationStatus = error.toString().replaceFirst(
+          'FormatException: ',
+          '',
+        );
+      });
+      return;
+    }
+    final validator = widget.onValidateAssistantAgent;
+    if (validator == null) {
+      setState(() {
+        _assistantValidationSucceeded = false;
+        _assistantValidationStatus = 'Runtime validation is unavailable';
+      });
+      return;
+    }
+    setState(() {
+      _assistantValidating = true;
+      _assistantValidationSucceeded = false;
+      _assistantValidationStatus = null;
+    });
+    try {
+      await validator(config);
+      if (!mounted) return;
+      setState(() {
+        _assistantValidationSucceeded = true;
+        _assistantValidationStatus = 'Connection and model verified';
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _assistantValidationSucceeded = false;
+        _assistantValidationStatus = error.toString().replaceFirst(
+          'Bad state: ',
+          '',
+        );
+      });
+    } finally {
+      if (mounted) setState(() => _assistantValidating = false);
+    }
   }
 
   MemoryConfig _memoryConfig() {

@@ -3,21 +3,26 @@ import 'package:flutter/material.dart';
 class AppColors {
   const AppColors._();
 
-  static const Color bg = Color(0xfff7f7f7);
+  // Codex uses a cool, nearly-white canvas to separate persistent navigation
+  // from the pure-white conversation surface without a heavy divider.
+  static const Color bg = Color(0xfff4f5f5);
   static const Color surface = Color(0xffffffff);
-  static const Color surfaceMuted = Color(0xffeeeeee);
+  static const Color surfaceMuted = Color(0xfff0f1f1);
   static const Color surfaceRaised = Color(0xfffafafa);
-  static const Color border = Color(0xffe3e3e3);
-  static const Color borderSoft = Color(0xffeeeeee);
+  static const Color surfaceSelected = Color(0xffe7e8e9);
+  static const Color surfaceHover = Color(0xffeceeef);
+  static const Color userMessageSurface = Color(0xfff3f3f4);
+  static const Color border = Color(0xffe2e4e4);
+  static const Color borderSoft = Color(0xffe9eaea);
 
-  static const Color textPrimary = Color(0xff202020);
-  static const Color textSecondary = Color(0xff686868);
-  static const Color textTertiary = Color(0xff9a9a9a);
+  static const Color textPrimary = Color(0xff27292c);
+  static const Color textSecondary = Color(0xff6f7275);
+  static const Color textTertiary = Color(0xff96999c);
 
-  static const Color primary = Color(0xff4f46e5);
-  static const Color primaryDark = Color(0xff202020);
-  static const Color primarySoft = Color(0xffececec);
-  static const Color primaryMist = Color(0xfff3f3f3);
+  static const Color primary = textPrimary;
+  static const Color primaryDark = textPrimary;
+  static const Color primarySoft = Color(0xffe9eaea);
+  static const Color primaryMist = Color(0xfff3f4f4);
 
   static const Color disabled = Color(0xffdedede);
   static const Color success = Color(0xff16a34a);

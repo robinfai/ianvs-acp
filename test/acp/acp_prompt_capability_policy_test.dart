@@ -10,7 +10,7 @@ void main() {
     embeddedContext: false,
   );
 
-  test('Pi DeepSeek model disables misleading direct image capability', () {
+  test('ACP image capability remains authoritative for Pi DeepSeek', () {
     final resolution = resolvePromptCapabilitiesForSession(
       advertised: advertised,
       settings: _settings(
@@ -21,12 +21,8 @@ void main() {
       agentInfo: const <String, Object?>{'name': 'pi-acp'},
     );
 
-    expect(resolution.capabilities?.image, isFalse);
-    expect(
-      resolution.imageLimitation,
-      contains('does not accept direct image'),
-    );
-    expect(resolution.imageLimitation, contains('vision-capable model'));
+    expect(resolution.capabilities?.image, isTrue);
+    expect(resolution.imageLimitation, isNull);
   });
 
   test('Pi keeps image support for an unknown model', () {
@@ -44,7 +40,7 @@ void main() {
     expect(resolution.imageLimitation, isNull);
   });
 
-  test('explicit model metadata can disable or restore image support', () {
+  test('model metadata cannot override ACP image capability', () {
     final textOnly = resolvePromptCapabilitiesForSession(
       advertised: advertised,
       settings: _settings(
@@ -65,8 +61,27 @@ void main() {
       agentInfo: const <String, Object?>{'name': 'pi-acp'},
     );
 
-    expect(textOnly.capabilities?.image, isFalse);
+    expect(textOnly.capabilities?.image, isTrue);
     expect(vision.capabilities?.image, isTrue);
+  });
+
+  test('missing ACP image support is not inferred from model metadata', () {
+    final resolution = resolvePromptCapabilitiesForSession(
+      advertised: const AcpPromptCapabilities(
+        image: false,
+        audio: false,
+        embeddedContext: false,
+      ),
+      settings: _settings(
+        currentValue: 'custom/vision',
+        name: 'Vision model',
+        description: 'Multimodal image input',
+      ),
+      agentName: 'Custom',
+    );
+
+    expect(resolution.capabilities?.image, isFalse);
+    expect(resolution.imageLimitation, isNull);
   });
 }
 

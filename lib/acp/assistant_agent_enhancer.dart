@@ -128,14 +128,49 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
     }
   }
 
-  Future<void> _selectConfiguredModel(String sessionId) async {
+  Future<void> validate() async {
+    if (_disposed) throw StateError('Assistant Agent validator is disposed.');
+    if (!_connected) {
+      await _client.connect();
+      _connected = true;
+    }
+    final session = await _client.createSession(cwd: _cwd);
+    try {
+      await _selectConfiguredModel(session.id, requireMatch: true);
+    } finally {
+      try {
+        await _client.closeSession(sessionId: session.id);
+      } on Object {
+        // Validation is about connection/session/model compatibility. A helper
+        // that cannot close sessions can still be used with dispose cleanup.
+      }
+    }
+  }
+
+  Future<void> _selectConfiguredModel(
+    String sessionId, {
+    bool requireMatch = false,
+  }) async {
     final requested = config.model?.trim();
     if (requested == null || requested.isEmpty) return;
     final settings = await _client.sessionSettings(sessionId);
     final option = settings.modelOption;
-    if (option == null) return;
+    if (option == null) {
+      if (requireMatch) {
+        throw StateError('The selected agent does not expose a model option.');
+      }
+      return;
+    }
     final choice = _matchingChoice(option, requested);
-    if (choice == null || choice.value == option.currentValue) return;
+    if (choice == null) {
+      if (requireMatch) {
+        throw StateError(
+          'Model "$requested" is not offered by the selected agent.',
+        );
+      }
+      return;
+    }
+    if (choice.value == option.currentValue) return;
     await _client.setConfigOption(
       sessionId: sessionId,
       configId: option.id,

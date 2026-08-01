@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'acp/acp_agent_client.dart';
 import 'acp/assistant_agent_enhancer.dart';
 import 'acp/acp_input_budget.dart';
+import 'acp/agent_event.dart';
 import 'acp/agent_session.dart';
 import 'acp/rust_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
@@ -21,6 +22,7 @@ import 'rust/ianvs_workflow_native.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
+import 'config/assistant_agent_config.dart';
 import 'config/macos_keychain_secret_store.dart';
 import 'config/secret_store.dart';
 import 'memory/acp_memory_middleware.dart';
@@ -205,6 +207,7 @@ class AcpClientApp extends StatefulWidget {
     this.imageDecodeLedger,
     this.boundedImageDecoder,
     this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
+    this.processRunner,
   });
 
   final ChatController? controller;
@@ -242,6 +245,7 @@ class AcpClientApp extends StatefulWidget {
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder? boundedImageDecoder;
   final bool Function(String path) gitWorkspaceDetector;
+  final AppShellProcessRunner? processRunner;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -1361,6 +1365,7 @@ class _AcpClientAppState extends State<AcpClientApp>
         imageDecodeLedger: _imageDecodeLedger,
         boundedImageDecoder: _boundedImageDecoder,
         gitWorkspaceDetector: widget.gitWorkspaceDetector,
+        processRunner: widget.processRunner,
         controller: _controller,
         taskInboxController: _taskInboxController,
         initialSidebarMode: _selectedTaskId == null
@@ -1401,6 +1406,7 @@ class _AcpClientAppState extends State<AcpClientApp>
             unawaited(_createWorkspaceWorktree(context, workspace)),
         onArchiveWorkspaceSessions: (context, workspace) =>
             _archiveWorkspaceSessions(workspace),
+        onValidateAssistantAgent: _validateAssistantAgent,
         onRunTask: (context, task) => _runTask(context, task),
         onOpenTaskSession: (context, task) => _openTaskSession(context, task),
         onAgentAuthenticated: _authenticateTaskAgent,
@@ -1516,6 +1522,31 @@ class _AcpClientAppState extends State<AcpClientApp>
       return AcpAssistantAgentEnhancer(helperClient, _cwd, config: assistant);
     } on Object {
       return null;
+    }
+  }
+
+  Future<void> _validateAssistantAgent(AssistantAgentConfig assistant) async {
+    final agentName = assistant.agentName?.trim();
+    if (!assistant.enabled || agentName == null || agentName.isEmpty) {
+      throw StateError('Choose and enable an Assistant Agent.');
+    }
+    final helperConfig = _config.withActiveAgentServer(agentName);
+    final helperClient =
+        widget.createAgentClient?.call(helperConfig) ??
+        _defaultAgentClient(
+          helperConfig,
+          includeMemoryMcp: false,
+          restrictedAssistant: true,
+        );
+    final enhancer = AcpAssistantAgentEnhancer(
+      helperClient,
+      _cwd,
+      config: assistant,
+    );
+    try {
+      await enhancer.validate().timeout(assistant.timeout);
+    } finally {
+      await enhancer.dispose();
     }
   }
 
@@ -3071,6 +3102,8 @@ class _AcpClientAppState extends State<AcpClientApp>
       case WorkspaceSessionMenuAction.toggleUnread:
         controller.setSessionUnread(session.id, !session.unread);
         if (mounted) setState(() {});
+      case WorkspaceSessionMenuAction.openSideTask:
+        await _openSideTask(session);
       case WorkspaceSessionMenuAction.revealInFinder:
         await _revealPathInFinder(context, session.cwd, label: 'session');
       case WorkspaceSessionMenuAction.copyWorkingDirectory:
@@ -3082,10 +3115,17 @@ class _AcpClientAppState extends State<AcpClientApp>
           _deepLinkForSession(session),
           label: 'Deep link',
         );
+      case WorkspaceSessionMenuAction.copyMarkdown:
+        await _copyToClipboard(
+          _sessionMarkdown(controller, session),
+          label: 'Conversation Markdown',
+        );
       case WorkspaceSessionMenuAction.forkLocally:
         await _forkSession(session);
       case WorkspaceSessionMenuAction.forkToNewWorktree:
         await _forkSessionToNewWorktree(context, session);
+      case WorkspaceSessionMenuAction.addScheduledTask:
+        await _scheduleSessionTask(context, controller, session);
       case WorkspaceSessionMenuAction.openInNewWindow:
         await _openSessionInNewWindow(session);
     }
@@ -3169,12 +3209,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (mounted) setState(() {});
   }
 
-  Future<void> _forkSession(AgentSession session) async {
-    if (!_canForkSession(session)) {
-      _showSnackBar('This agent does not advertise session/fork.');
-      return;
-    }
-
+  Future<void> _openSideTask(AgentSession session) async {
     var controller = _controllerForSession(session);
     final agentName = session.agentName?.trim();
     if (widget.controller == null &&
@@ -3188,9 +3223,92 @@ class _AcpClientAppState extends State<AcpClientApp>
       }
       controller = _activateAgent(config);
     }
+    if (controller.isStreaming || controller.isSessionOperationRunning) {
+      _showSnackBar('Finish the active operation before opening a side task.');
+      return;
+    }
+    final created = await controller.newSession(cwd: session.cwd);
+    if (!created) {
+      _showSnackBar('Could not open a side task.');
+      return;
+    }
+    _showSnackBar('Opened a new side task in this workspace.');
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _scheduleSessionTask(
+    BuildContext context,
+    ChatController controller,
+    AgentSession session,
+  ) async {
+    final taskController = _taskInboxController ?? widget.taskInboxController;
+    if (taskController == null) {
+      _showSnackBar('Task Inbox is not available.');
+      return;
+    }
+    final draft = await showDialog<_ScheduledSessionTaskDraft>(
+      context: context,
+      builder: (context) => _ScheduledSessionTaskDialog(session: session),
+    );
+    if (draft == null) return;
+    try {
+      final scheduledAt = draft.scheduledAt.toUtc().toIso8601String();
+      final model = controller.currentModelValue?.trim();
+      final task = await taskController.createTask(
+        title: draft.title,
+        description: draft.instructions,
+        workspacePath: session.cwd,
+        agentName: session.agentName?.trim().isNotEmpty == true
+            ? session.agentName!.trim()
+            : controller.agentName,
+        metadata: <String, Object?>{
+          'source_session_id': session.id,
+          'source_deep_link': _deepLinkForSession(session),
+          'scheduled_at': scheduledAt,
+          'next_retry_at': scheduledAt,
+          if (model != null && model.isNotEmpty) 'model': model,
+        },
+      );
+      await taskController.updateTask(
+        task.id,
+        status: TaskStatus.queued,
+        summary: 'Scheduled for ${draft.scheduledAt.toLocal()}.',
+      );
+      _showSnackBar('Scheduled "${draft.title}".');
+      if (mounted) setState(() {});
+    } catch (error) {
+      _showSnackBar('Could not schedule task: $error');
+    }
+  }
+
+  Future<bool> _forkSession(AgentSession session) async {
+    if (!_canForkSession(session)) {
+      _showSnackBar('This agent does not advertise session/fork.');
+      return false;
+    }
+
+    var controller = _controllerForSession(session);
+    final agentName = session.agentName?.trim();
+    if (widget.controller == null &&
+        agentName != null &&
+        agentName.isNotEmpty &&
+        agentName != _config.agentName) {
+      final config = _configForAgent(_config, agentName);
+      if (config == null) {
+        _showSnackBar('Could not select agent "$agentName".');
+        return false;
+      }
+      controller = _activateAgent(config);
+    }
 
     await controller.forkSession(session);
     if (mounted) setState(() {});
+    final forked = controller.currentSession;
+    return forked != null &&
+        forked.id != session.id &&
+        normalizeWorkspacePath(forked.cwd) ==
+            normalizeWorkspacePath(session.cwd) &&
+        controller.lastError == null;
   }
 
   Future<void> _forkSessionToNewWorktree(
@@ -3205,13 +3323,14 @@ class _AcpClientAppState extends State<AcpClientApp>
     final worktreePath = await _promptWorktreePath(context, session);
     if (worktreePath == null) return;
 
+    String? gitRoot;
+    String? branchName;
+    var worktreeCreated = false;
     try {
-      final gitRoot = await _gitRootFor(session.cwd);
-      final branchName = _worktreeBranchName(
-        session.cwd,
-        '${session.shortId}-fork',
-      );
-      final result = await Process.run('git', [
+      _validateNewWorktreePath(worktreePath);
+      gitRoot = await _gitRootFor(session.cwd);
+      branchName = _worktreeBranchName(session.cwd, '${session.shortId}-fork');
+      final result = await _runProcess('git', [
         '-C',
         gitRoot,
         'worktree',
@@ -3222,10 +3341,26 @@ class _AcpClientAppState extends State<AcpClientApp>
         'HEAD',
       ]);
       if (result.exitCode != 0) throw StateError(result.stderr.toString());
+      worktreeCreated = true;
 
-      await _forkSession(session.copyWith(cwd: worktreePath));
+      final didFork = await _forkSession(session.copyWith(cwd: worktreePath));
+      if (!didFork) {
+        throw StateError('The ACP agent did not create the forked session.');
+      }
+      _showSnackBar('Created worktree "$branchName" for the new task.');
     } catch (error) {
-      _showSnackBar('Could not fork to new worktree: $error');
+      final cleanupError =
+          worktreeCreated && gitRoot != null && branchName != null
+          ? await _rollbackCreatedWorktree(
+              gitRoot: gitRoot,
+              worktreePath: worktreePath,
+              branchName: branchName,
+            )
+          : null;
+      _showSnackBar(
+        'Could not fork to new worktree: $error'
+        '${cleanupError == null ? '' : ' Cleanup also failed: $cleanupError'}',
+      );
     }
   }
 
@@ -3240,10 +3375,14 @@ class _AcpClientAppState extends State<AcpClientApp>
     final worktreePath = await _promptWorkspaceWorktreePath(context, workspace);
     if (worktreePath == null) return;
 
+    String? gitRoot;
+    String? branchName;
+    var worktreeCreated = false;
     try {
-      final gitRoot = await _gitRootFor(workspace.path);
-      final branchName = _worktreeBranchName(workspace.path, 'worktree');
-      final result = await Process.run('git', [
+      _validateNewWorktreePath(worktreePath);
+      gitRoot = await _gitRootFor(workspace.path);
+      branchName = _worktreeBranchName(workspace.path, 'worktree');
+      final result = await _runProcess('git', [
         '-C',
         gitRoot,
         'worktree',
@@ -3254,13 +3393,73 @@ class _AcpClientAppState extends State<AcpClientApp>
         'HEAD',
       ]);
       if (result.exitCode != 0) throw StateError(result.stderr.toString());
+      worktreeCreated = true;
 
       await _controller.newSession(cwd: worktreePath);
+      if (_controller.currentSession == null ||
+          normalizeWorkspacePath(_controller.currentSession!.cwd) !=
+              normalizeWorkspacePath(worktreePath) ||
+          _controller.lastError != null) {
+        throw StateError('The ACP agent did not create the worktree session.');
+      }
       _showSnackBar('Created worktree "$branchName".');
       if (mounted) setState(() {});
     } catch (error) {
-      _showSnackBar('Could not create worktree: $error');
+      final cleanupError =
+          worktreeCreated && gitRoot != null && branchName != null
+          ? await _rollbackCreatedWorktree(
+              gitRoot: gitRoot,
+              worktreePath: worktreePath,
+              branchName: branchName,
+            )
+          : null;
+      _showSnackBar(
+        'Could not create worktree: $error'
+        '${cleanupError == null ? '' : ' Cleanup also failed: $cleanupError'}',
+      );
     }
+  }
+
+  void _validateNewWorktreePath(String path) {
+    final normalized = normalizeWorkspacePath(path);
+    if (normalized.isEmpty || !File(normalized).isAbsolute) {
+      throw ArgumentError('Worktree path must be absolute.');
+    }
+    if (FileSystemEntity.typeSync(normalized, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      throw StateError('Worktree path already exists: $normalized');
+    }
+  }
+
+  Future<String?> _rollbackCreatedWorktree({
+    required String gitRoot,
+    required String worktreePath,
+    required String branchName,
+  }) async {
+    final errors = <String>[];
+    final remove = await _runProcess('git', [
+      '-C',
+      gitRoot,
+      'worktree',
+      'remove',
+      '--force',
+      worktreePath,
+    ]);
+    if (remove.exitCode != 0) {
+      errors.add(remove.stderr.toString().trim());
+    }
+    final branch = await _runProcess('git', [
+      '-C',
+      gitRoot,
+      'branch',
+      '-D',
+      branchName,
+    ]);
+    if (branch.exitCode != 0) {
+      errors.add(branch.stderr.toString().trim());
+    }
+    errors.removeWhere((message) => message.isEmpty);
+    return errors.isEmpty ? null : errors.join('; ');
   }
 
   Future<String?> _promptWorktreePath(
@@ -3360,7 +3559,7 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   Future<String> _gitRootFor(String cwd) async {
-    final result = await Process.run('git', [
+    final result = await _runProcess('git', [
       '-C',
       cwd,
       'rev-parse',
@@ -3382,6 +3581,13 @@ class _AcpClientAppState extends State<AcpClientApp>
         .replaceAll(RegExp(r'^-|-$'), '');
     final prefix = workspaceName.isEmpty ? 'session' : workspaceName;
     return 'codex/$prefix-$suffix-${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  Future<ProcessResult> _runProcess(String executable, List<String> arguments) {
+    final runner = widget.processRunner;
+    return runner == null
+        ? Process.run(executable, arguments)
+        : runner(executable, List<String>.unmodifiable(arguments));
   }
 
   String _joinPath(String directory, String basename) {
@@ -3413,6 +3619,53 @@ class _AcpClientAppState extends State<AcpClientApp>
     } catch (error) {
       _showSnackBar('Could not copy $label: $error');
     }
+  }
+
+  String _sessionMarkdown(ChatController controller, AgentSession session) {
+    final buffer = StringBuffer()
+      ..writeln('# ${session.displayTitle}')
+      ..writeln()
+      ..writeln('- Session: `${session.id}`')
+      ..writeln('- Workspace: `${session.cwd}`')
+      ..writeln('- Agent: `${session.agentName ?? controller.agentName}`')
+      ..writeln();
+    if (controller.currentSession?.id == session.id) {
+      for (final message in controller.messages) {
+        final heading = switch (message.role) {
+          ChatMessageRole.user => 'User',
+          ChatMessageRole.assistant => 'Agent',
+          ChatMessageRole.tool => 'Tool',
+          ChatMessageRole.error => 'Error',
+          ChatMessageRole.status => 'Status',
+        };
+        final text = message.text.trim();
+        if (text.isEmpty) continue;
+        buffer
+          ..writeln('## $heading')
+          ..writeln()
+          ..writeln(text)
+          ..writeln();
+      }
+    } else {
+      for (final event in session.initialEvents) {
+        final heading = switch (event.type) {
+          AgentEventType.userMessage => 'User',
+          AgentEventType.agentTextDelta ||
+          AgentEventType.agentTextDone => 'Agent',
+          AgentEventType.toolCall => 'Tool',
+          AgentEventType.error => 'Error',
+          AgentEventType.status => 'Status',
+        };
+        final text = event.text.trim();
+        if (text.isEmpty) continue;
+        buffer
+          ..writeln('## $heading')
+          ..writeln()
+          ..writeln(text)
+          ..writeln();
+      }
+    }
+    return buffer.toString().trimRight();
   }
 
   String _deepLinkForSession(AgentSession session) {
@@ -3793,6 +4046,204 @@ class _AcpClientAppState extends State<AcpClientApp>
       'model': config.model,
       'timeoutMs': config.timeout.inMilliseconds,
     };
+  }
+}
+
+class _ScheduledSessionTaskDraft {
+  const _ScheduledSessionTaskDraft({
+    required this.title,
+    required this.instructions,
+    required this.scheduledAt,
+  });
+
+  final String title;
+  final String instructions;
+  final DateTime scheduledAt;
+}
+
+class _ScheduledSessionTaskDialog extends StatefulWidget {
+  const _ScheduledSessionTaskDialog({required this.session});
+
+  final AgentSession session;
+
+  @override
+  State<_ScheduledSessionTaskDialog> createState() =>
+      _ScheduledSessionTaskDialogState();
+}
+
+class _ScheduledSessionTaskDialogState
+    extends State<_ScheduledSessionTaskDialog> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _instructionsController;
+  late DateTime _scheduledAt;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(
+      text: 'Continue ${widget.session.displayTitle}',
+    );
+    _instructionsController = TextEditingController(
+      text: 'Continue the work from session ${widget.session.id}.',
+    );
+    final nextHour = DateTime.now().add(const Duration(hours: 1));
+    _scheduledAt = DateTime(
+      nextHour.year,
+      nextHour.month,
+      nextHour.day,
+      nextHour.hour,
+    );
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _instructionsController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final localizations = MaterialLocalizations.of(context);
+    return AlertDialog(
+      title: const Text('Add Scheduled Task'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const Key('scheduled-task-title'),
+              controller: _titleController,
+              autofocus: true,
+              decoration: InputDecoration(
+                labelText: 'Title',
+                errorText: _error,
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('scheduled-task-instructions'),
+              controller: _instructionsController,
+              minLines: 3,
+              maxLines: 5,
+              decoration: const InputDecoration(
+                labelText: 'Instructions',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    key: const Key('scheduled-task-date'),
+                    onPressed: _pickDate,
+                    icon: const Icon(Icons.calendar_today_outlined, size: 17),
+                    label: Text(localizations.formatFullDate(_scheduledAt)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    key: const Key('scheduled-task-time'),
+                    onPressed: _pickTime,
+                    icon: const Icon(Icons.schedule_outlined, size: 17),
+                    label: Text(
+                      localizations.formatTimeOfDay(
+                        TimeOfDay.fromDateTime(_scheduledAt),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'The task is persisted in Task Inbox and will run when its '
+                'scheduled time is reached.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('create-scheduled-task'),
+          onPressed: _submit,
+          child: const Text('Schedule'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _pickDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _scheduledAt,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 3650)),
+    );
+    if (date == null || !mounted) return;
+    setState(() {
+      _scheduledAt = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        _scheduledAt.hour,
+        _scheduledAt.minute,
+      );
+      _error = null;
+    });
+  }
+
+  Future<void> _pickTime() async {
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_scheduledAt),
+    );
+    if (time == null || !mounted) return;
+    setState(() {
+      _scheduledAt = DateTime(
+        _scheduledAt.year,
+        _scheduledAt.month,
+        _scheduledAt.day,
+        time.hour,
+        time.minute,
+      );
+      _error = null;
+    });
+  }
+
+  void _submit() {
+    final title = _titleController.text.trim();
+    if (title.isEmpty) {
+      setState(() => _error = 'Enter a title.');
+      return;
+    }
+    if (!_scheduledAt.isAfter(DateTime.now())) {
+      setState(() => _error = 'Choose a future date and time.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _ScheduledSessionTaskDraft(
+        title: title,
+        instructions: _instructionsController.text.trim(),
+        scheduledAt: _scheduledAt,
+      ),
+    );
   }
 }
 

@@ -102,7 +102,9 @@ void main() {
     },
   );
 
-  testWidgets('inspector is a fixed full-height right rail', (tester) async {
+  testWidgets('inspector is a floating card in a reserved right region', (
+    tester,
+  ) async {
     final workspace = createWorkspace();
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
@@ -116,10 +118,19 @@ void main() {
     final surfaceRect = tester.getRect(
       find.byKey(const Key('workspace-inspector-surface')),
     );
-    expect(surfaceRect.top, 0);
-    expect(surfaceRect.right, 1200);
-    expect(surfaceRect.width, 332);
-    expect(surfaceRect.height, 800);
+    final workspaceRect = tester.getRect(find.byType(FilePreviewWorkspace));
+    expect(surfaceRect.top, 12);
+    expect(surfaceRect.right, workspaceRect.right - 18);
+    expect(surfaceRect.width, 318);
+    expect(surfaceRect.height, 520);
+    expect(surfaceRect.bottom, lessThan(800));
+
+    final surface = tester.widget<Container>(
+      find.byKey(const Key('workspace-inspector-surface')),
+    );
+    final decoration = surface.decoration! as BoxDecoration;
+    expect(decoration.borderRadius, BorderRadius.circular(18));
+    expect(decoration.boxShadow, isNotEmpty);
   });
 
   testWidgets(

@@ -1,5 +1,5 @@
 import 'dart:collection';
-import 'dart:ui' show SemanticsAction, Tristate;
+import 'dart:ui' show PointerDeviceKind, SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -51,6 +51,12 @@ void main() {
     );
   }
 
+  ScrollController timelineScrollController(WidgetTester tester) => tester
+      .widget<CustomScrollView>(
+        find.byKey(const ValueKey('chat-timeline-list')),
+      )
+      .controller!;
+
   testWidgets('ChatTimeline renders empty state', (tester) async {
     await tester.pumpWidget(timeline(const []));
 
@@ -95,7 +101,8 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('The queue is implemented and verified.'), findsOneWidget);
-    expect(find.text('Implement the queue'), findsNothing);
+    expect(find.text('Implement the queue'), findsOneWidget);
+    expect(find.text('Inspecting and editing several files.'), findsNothing);
     var processToggle = tester.getSemantics(
       find.byKey(const ValueKey('processed-turn-toggle')),
     );
@@ -115,6 +122,427 @@ void main() {
     );
     expect(processToggle.label, contains('Collapse processed turn'));
     expect(processToggle.flagsCollection.isExpanded, Tristate.isTrue);
+  });
+
+  testWidgets(
+    'ChatTimeline keeps legacy prompt and response visible while process is collapsed',
+    (tester) async {
+      await tester.pumpWidget(
+        timeline([
+          ChatMessage(role: ChatMessageRole.user, text: 'Review this change'),
+          ChatMessage(
+            role: ChatMessageRole.status,
+            text: 'Inspecting files',
+            metadata: const {'kind': 'thought'},
+          ),
+          ChatMessage(
+            role: ChatMessageRole.tool,
+            text: 'wait',
+            metadata: const {'status': 'completed'},
+          ),
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'The change is ready.',
+          ),
+          ChatMessage(
+            role: ChatMessageRole.status,
+            text: 'Turn ended normally.',
+            metadata: const {'kind': 'turn', 'stopReason': 'endTurn'},
+          ),
+        ]),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Review this change'), findsOneWidget);
+      expect(find.text('The change is ready.'), findsOneWidget);
+      expect(find.text('Inspecting files'), findsNothing);
+      expect(find.text('wait'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('processed-turn-toggle')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('processed-turn-toggle')));
+      await tester.pumpAndSettle();
+      expect(find.text('Inspecting files'), findsOneWidget);
+      expect(find.text('wait'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'ChatTimeline aggregates attachment projections into one turn node',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(980, 520));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      controller.addMessageForTesting(
+        ChatMessage(
+          role: ChatMessageRole.user,
+          text: '''# Files mentioned by the user:
+
+## reference.png: /private/tmp/reference.png
+
+## My request for Codex:
+Review the screenshot''',
+        ),
+        startsNewTurn: true,
+      );
+      controller.addMessageForTesting(
+        ChatMessage(
+          role: ChatMessageRole.user,
+          text: '[@image](file:///private/tmp/reference.png)',
+        ),
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'Reviewed.'),
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.user, text: 'Apply the changes'),
+        startsNewTurn: true,
+      );
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'Applied.'),
+      );
+
+      await tester.pumpWidget(timeline(controller.messages));
+      await tester.pumpAndSettle();
+
+      final outline = tester.widget<ListView>(
+        find.byKey(const ValueKey('turn-navigation-outline-list')),
+      );
+      expect(outline.childrenDelegate.estimatedChildCount, 2);
+      expect(find.textContaining('@image'), findsNothing);
+      expect(find.textContaining('/private/tmp/reference.png'), findsNothing);
+      expect(find.text('Review the screenshot'), findsOneWidget);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer();
+      await mouse.moveTo(
+        tester.getCenter(
+          find.byKey(const ValueKey('turn-navigation-marker-0')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Review the screenshot'), findsAtLeastNWidgets(1));
+    },
+  );
+
+  testWidgets(
+    'ChatTimeline turn rail previews prompts and scrolls to a selected turn',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(980, 420));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      for (var index = 0; index < 4; index++) {
+        controller.addMessageForTesting(
+          ChatMessage(
+            role: ChatMessageRole.user,
+            text: 'User request ${index + 1}',
+          ),
+          startsNewTurn: true,
+        );
+        controller.addMessageForTesting(
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'Agent response ${index + 1}\n${'details\n' * 12}',
+          ),
+        );
+      }
+
+      await tester.pumpWidget(timeline(controller.messages));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.bySemanticsLabel('Conversation turn navigation'),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('turn-navigation-marker-3')),
+        findsOneWidget,
+      );
+      final firstMarkerTop = tester
+          .getTopLeft(find.byKey(const ValueKey('turn-navigation-marker-0')))
+          .dy;
+      final secondMarkerTop = tester
+          .getTopLeft(find.byKey(const ValueKey('turn-navigation-marker-1')))
+          .dy;
+      final lastMarkerTop = tester
+          .getTopLeft(find.byKey(const ValueKey('turn-navigation-marker-3')))
+          .dy;
+      expect(secondMarkerTop - firstMarkerTop, moreOrLessEquals(16));
+      expect(lastMarkerTop - firstMarkerTop, lessThanOrEqualTo(48));
+      final outlineRect = tester.getRect(
+        find.byKey(const ValueKey('turn-navigation-outline-list')),
+      );
+      final markerGroupCenter =
+          (firstMarkerTop +
+              tester
+                  .getBottomRight(
+                    find.byKey(const ValueKey('turn-navigation-marker-3')),
+                  )
+                  .dy) /
+          2;
+      expect(
+        markerGroupCenter,
+        moreOrLessEquals(outlineRect.center.dy, epsilon: 1),
+      );
+
+      double markerWidth(int index) => tester
+          .getSize(find.byKey(ValueKey('turn-navigation-bar-$index')))
+          .width;
+      expect(markerWidth(0), 7);
+      expect(markerWidth(3), 7);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer();
+      await mouse.moveTo(
+        tester.getCenter(
+          find.byKey(const ValueKey('turn-navigation-marker-2')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(markerWidth(2), 34);
+      expect(markerWidth(1), greaterThan(markerWidth(0)));
+      expect(markerWidth(1), lessThan(markerWidth(2)));
+      expect(markerWidth(3), markerWidth(1));
+      expect(
+        tester
+                .getTopLeft(
+                  find.byKey(const ValueKey('turn-navigation-marker-1')),
+                )
+                .dy -
+            tester
+                .getTopLeft(
+                  find.byKey(const ValueKey('turn-navigation-marker-0')),
+                )
+                .dy,
+        moreOrLessEquals(16),
+      );
+
+      expect(
+        find.byKey(const ValueKey('turn-navigation-preview')),
+        findsOneWidget,
+      );
+      expect(find.text('User request 3'), findsAtLeastNWidgets(1));
+      expect(find.textContaining('Agent response 3'), findsAtLeastNWidgets(1));
+
+      await mouse.moveTo(
+        tester.getCenter(
+          find.byKey(const ValueKey('turn-navigation-marker-1')),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 16));
+
+      expect(markerWidth(1), greaterThan(7));
+      expect(markerWidth(2), greaterThan(7));
+      expect(
+        find.byKey(const ValueKey('turn-navigation-preview')),
+        findsAtLeastNWidgets(1),
+      );
+      await tester.pumpAndSettle();
+      expect(markerWidth(1), 34);
+      expect(markerWidth(0), greaterThan(7));
+      expect(markerWidth(2), markerWidth(0));
+      expect(find.text('User request 2'), findsAtLeastNWidgets(1));
+
+      await mouse.moveTo(Offset(outlineRect.right + 20, outlineRect.center.dy));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(
+        find.byKey(const ValueKey('turn-navigation-preview')),
+        findsAtLeastNWidgets(1),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('turn-navigation-preview')),
+        findsNothing,
+      );
+      expect(markerWidth(0), 7);
+      expect(markerWidth(1), 7);
+
+      final timelineController = timelineScrollController(tester);
+      expect(timelineController.offset, greaterThan(0));
+      await tester.tap(find.byKey(const ValueKey('turn-navigation-marker-0')));
+      await tester.pumpAndSettle();
+      expect(timelineController.offset, lessThan(1));
+    },
+  );
+
+  testWidgets(
+    'ChatTimeline outline indexes every user message across full history',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(980, 520));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final messages = <ChatMessage>[];
+      for (var index = 0; index < 220; index++) {
+        messages
+          ..add(
+            ChatMessage(
+              role: ChatMessageRole.user,
+              text: 'Historical user request $index',
+            ),
+          )
+          ..add(
+            ChatMessage(
+              role: ChatMessageRole.assistant,
+              text:
+                  'Historical agent response $index\n'
+                  '${index < 110 ? 'variable-height detail\n' * 8 : 'short'}',
+            ),
+          );
+      }
+
+      await tester.pumpWidget(timeline(messages));
+      await tester.pumpAndSettle();
+
+      final outline = tester.widget<ListView>(
+        find.byKey(const ValueKey('turn-navigation-outline-list')),
+      );
+      expect(outline.childrenDelegate.estimatedChildCount, 220);
+      expect(outline.controller!.offset, greaterThan(0));
+      expect(find.textContaining('Showing latest'), findsNothing);
+
+      outline.controller!.jumpTo(110 * 16);
+      await tester.pumpAndSettle();
+      final timelineController = timelineScrollController(tester);
+      final offsetBeforeJump = timelineController.offset;
+      await tester.tap(
+        find.byKey(const ValueKey('turn-navigation-marker-110')),
+      );
+      await tester.pump();
+      expect(find.text('Historical user request 110'), findsOneWidget);
+      expect(find.text('Historical user request 109'), findsOneWidget);
+      expect(find.text('Historical user request 111'), findsOneWidget);
+      expect(find.text('Historical user request 0'), findsNothing);
+      expect(find.text('Historical user request 219'), findsNothing);
+      await tester.pumpAndSettle();
+      expect(offsetBeforeJump, greaterThan(0));
+      expect(timelineController.offset, moreOrLessEquals(0, epsilon: 0.5));
+      final firstTargetOffset = timelineController.offset;
+      final firstTargetTop = tester
+          .getTopLeft(find.text('Historical user request 110'))
+          .dy;
+      final timelineTop = tester
+          .getTopLeft(find.byKey(const ValueKey('chat-timeline-list')))
+          .dy;
+      expect(firstTargetTop, inInclusiveRange(timelineTop, timelineTop + 100));
+
+      await tester.tap(
+        find.byKey(const ValueKey('turn-navigation-marker-110')),
+      );
+      await tester.pumpAndSettle();
+      final repeatedTargetOffset = timelineScrollController(tester).offset;
+      expect(
+        repeatedTargetOffset,
+        moreOrLessEquals(firstTargetOffset, epsilon: 1),
+      );
+      expect(
+        tester.getTopLeft(find.text('Historical user request 110')).dy,
+        moreOrLessEquals(firstTargetTop, epsilon: 1),
+      );
+      final activeBar = tester.widget<AnimatedContainer>(
+        find.byKey(const ValueKey('turn-navigation-bar-110')),
+      );
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('turn-navigation-bar-110')))
+            .width,
+        7,
+      );
+      expect(
+        (activeBar.decoration! as BoxDecoration).color,
+        AppColors.textPrimary,
+      );
+    },
+  );
+
+  testWidgets(
+    'ChatTimeline legacy messages share their response in outline preview',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(980, 420));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        timeline([
+          ChatMessage(role: ChatMessageRole.user, text: 'First request'),
+          ChatMessage(role: ChatMessageRole.assistant, text: 'First response'),
+          ChatMessage(role: ChatMessageRole.user, text: 'Second request'),
+          ChatMessage(role: ChatMessageRole.assistant, text: 'Second response'),
+        ]),
+      );
+      await tester.pumpAndSettle();
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer();
+      await mouse.moveTo(
+        tester.getCenter(
+          find.byKey(const ValueKey('turn-navigation-marker-0')),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('First request'), findsAtLeastNWidgets(1));
+      expect(find.text('First response'), findsAtLeastNWidgets(1));
+    },
+  );
+
+  testWidgets('ChatTimeline directly retargets the virtualized turn window', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(980, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final messages = <ChatMessage>[];
+    for (var index = 0; index < 140; index++) {
+      messages
+        ..add(
+          ChatMessage(
+            role: ChatMessageRole.user,
+            text: 'Retarget user request $index',
+          ),
+        )
+        ..add(
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text:
+                'Retarget agent response $index\n'
+                '${index.isEven ? 'variable detail\n' * 6 : 'short'}',
+          ),
+        );
+    }
+
+    await tester.pumpWidget(timeline(messages));
+    await tester.pumpAndSettle();
+
+    final outline = tester.widget<ListView>(
+      find.byKey(const ValueKey('turn-navigation-outline-list')),
+    );
+    final timelineController = timelineScrollController(tester);
+    outline.controller!.jumpTo(20 * 16);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('turn-navigation-marker-20')));
+    await tester.pump();
+    expect(find.text('Retarget user request 20'), findsOneWidget);
+    expect(timelineController.offset, moreOrLessEquals(0, epsilon: 0.5));
+
+    outline.controller!.jumpTo(outline.controller!.position.maxScrollExtent);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('turn-navigation-marker-139')));
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Retarget user request 139'), findsOneWidget);
+    expect(find.text('Retarget user request 20'), findsNothing);
+    expect(timelineController.offset, moreOrLessEquals(0, epsilon: 0.5));
   });
 
   testWidgets('ChatTimeline shows used memory and submits feedback', (
@@ -207,6 +635,122 @@ void main() {
     await tester.pump();
     expect(decoder.createBufferCalls, 1);
     expect(find.text('Image preview unavailable.'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline places sent image thumbnails above user text', (
+    tester,
+  ) async {
+    final message = ChatMessage(
+      role: ChatMessageRole.user,
+      text: 'Please inspect this image',
+      metadata: const {
+        'contentBlocks': [
+          {'type': 'image', 'mimeType': 'image/png', 'data': 'YQ=='},
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      timeline([message], boundedImageDecoder: _RejectingImageDecoder()),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    final thumbnail = find.byKey(const ValueKey('inline-image-thumbnail'));
+    expect(thumbnail, findsOneWidget);
+    expect(
+      tester.getTopLeft(thumbnail).dy,
+      lessThan(tester.getTopLeft(find.text('Please inspect this image')).dy),
+    );
+  });
+
+  testWidgets('ChatTimeline renders ACP tool image content as viewed images', (
+    tester,
+  ) async {
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'read_image',
+      metadata: const {
+        'toolCallId': 'image-1',
+        'title': 'Read image',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'content',
+            'content': {
+              'type': 'image',
+              'mimeType': 'image/png',
+              'data': 'YQ==',
+            },
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      timeline([message], boundedImageDecoder: _RejectingImageDecoder()),
+    );
+    await tester.pump();
+
+    expect(find.text('Viewed 1 image'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('tool-image-activity-toggle')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('inline-image-thumbnail')), findsNothing);
+
+    await tester.tap(find.text('Viewed 1 image'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('inline-image-thumbnail')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('ChatTimeline renders ACP tool diffs with file change counts', (
+    tester,
+  ) async {
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'edit_file',
+      metadata: const {
+        'toolCallId': 'diff-1',
+        'title': 'Edit file',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'diff',
+            'path': 'lib/example.dart',
+            'oldText': 'first\nold value\nlast\n',
+            'newText': 'first\nnew value\nlast\n',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(timeline([message]));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1 file edited'), findsOneWidget);
+    expect(find.text('lib/example.dart'), findsNothing);
+    expect(find.text('+1'), findsOneWidget);
+    expect(find.text('-1'), findsOneWidget);
+    expect(find.text('old value'), findsNothing);
+    expect(find.text('new value'), findsNothing);
+
+    await tester.tap(find.text('1 file edited'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('lib/example.dart'), findsOneWidget);
+    expect(find.text('+1'), findsNWidgets(2));
+    expect(find.text('-1'), findsNWidgets(2));
+    expect(find.text('old value'), findsOneWidget);
+    expect(find.text('new value'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('copy-tool-diff-lib/example.dart')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('ChatTimeline never builds MarkdownBody after syntax overflow', (
@@ -675,10 +1219,7 @@ void main() {
       await tester.pump();
 
       ScrollPosition timelinePosition() {
-        return tester
-            .widget<ListView>(find.byKey(const ValueKey('chat-timeline-list')))
-            .controller!
-            .position;
+        return timelineScrollController(tester).position;
       }
 
       var position = timelinePosition();
@@ -743,10 +1284,7 @@ void main() {
     await tester.pump();
 
     ScrollPosition timelinePosition() {
-      return tester
-          .widget<ListView>(find.byKey(const ValueKey('chat-timeline-list')))
-          .controller!
-          .position;
+      return timelineScrollController(tester).position;
     }
 
     var position = timelinePosition();
@@ -809,9 +1347,7 @@ void main() {
       await tester.pump();
       await tester.pump();
       await tester.pump();
-      final controller = tester
-          .widget<ListView>(find.byKey(const ValueKey('chat-timeline-list')))
-          .controller!;
+      final controller = timelineScrollController(tester);
       controller.jumpTo(0);
 
       messages[messages.length - 1] = ChatMessage(
@@ -843,7 +1379,7 @@ void main() {
     },
   );
 
-  testWidgets('ChatTimeline limits initial render for large histories', (
+  testWidgets('ChatTimeline lazily keeps complete large histories', (
     tester,
   ) async {
     final messages = List<ChatMessage>.generate(
@@ -855,10 +1391,13 @@ void main() {
     );
 
     await tester.pumpWidget(timeline(messages));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
-    expect(find.text('Showing latest 200 of 260 messages'), findsOneWidget);
-    expect(find.text('Large history message 0'), findsNothing);
+    expect(find.textContaining('Showing latest'), findsNothing);
+    final controller = timelineScrollController(tester);
+    controller.jumpTo(controller.position.minScrollExtent);
+    await tester.pumpAndSettle();
+    expect(find.text('Large history message 0'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline renders error card', (tester) async {
@@ -899,7 +1438,7 @@ void main() {
     expect(find.text('All tests passed.'), findsOneWidget);
   });
 
-  testWidgets('ChatTimeline groups consecutive tool calls by tool name', (
+  testWidgets('ChatTimeline tool group has default hover and expanded states', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -939,32 +1478,68 @@ void main() {
       ]),
     );
 
-    expect(find.text('3 tool calls'), findsOneWidget);
-    expect(find.text('exec_command'), findsOneWidget);
-    expect(find.text('x2'), findsOneWidget);
-    expect(find.text('web_search'), findsOneWidget);
-    expect(find.text('x1'), findsOneWidget);
+    expect(find.text('Ran commands and searched'), findsOneWidget);
+    expect(find.text('exec_command'), findsNothing);
+    expect(find.text('web_search'), findsNothing);
     expect(find.text('call-1'), findsNothing);
+    var summaryStyle = tester.widget<AnimatedDefaultTextStyle>(
+      find.byKey(const ValueKey('tool-call-group-summary')),
+    );
+    var chevronOpacity = tester.widget<AnimatedOpacity>(
+      find.byKey(const ValueKey('tool-call-group-chevron-opacity')),
+    );
+    expect(summaryStyle.style.color, AppColors.textSecondary);
+    expect(chevronOpacity.opacity, 0);
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer();
+    await mouse.moveTo(
+      tester.getCenter(find.byKey(const ValueKey('tool-call-group-toggle'))),
+    );
+    await tester.pumpAndSettle();
+    summaryStyle = tester.widget<AnimatedDefaultTextStyle>(
+      find.byKey(const ValueKey('tool-call-group-summary')),
+    );
+    chevronOpacity = tester.widget<AnimatedOpacity>(
+      find.byKey(const ValueKey('tool-call-group-chevron-opacity')),
+    );
+    expect(summaryStyle.style.color, AppColors.textPrimary);
+    expect(chevronOpacity.opacity, 1);
+
     final groupToggle = tester.getSemantics(
-      find.descendant(
-        of: find.byKey(const ValueKey('tool-call-group-toggle')),
-        matching: find.byType(ListTile),
-      ),
+      find.byKey(const ValueKey('tool-call-group-toggle')),
     );
     expect(
       groupToggle.getSemanticsData().hasAction(SemanticsAction.tap),
       isTrue,
     );
 
-    await tester.tap(find.text('3 tool calls'));
+    await tester.tap(find.text('Ran commands and searched'));
     await tester.pumpAndSettle();
 
-    expect(find.text('1'), findsOneWidget);
-    expect(find.text('2'), findsOneWidget);
-    expect(find.text('3'), findsOneWidget);
+    summaryStyle = tester.widget<AnimatedDefaultTextStyle>(
+      find.byKey(const ValueKey('tool-call-group-summary')),
+    );
+    chevronOpacity = tester.widget<AnimatedOpacity>(
+      find.byKey(const ValueKey('tool-call-group-chevron-opacity')),
+    );
+    final chevron = tester.widget<AnimatedRotation>(
+      find.byKey(const ValueKey('tool-call-group-chevron')),
+    );
+    expect(summaryStyle.style.color, AppColors.textSecondary);
+    expect(chevronOpacity.opacity, 1);
+    expect(chevron.turns, 0.25);
+    expect(
+      find.byKey(const ValueKey('tool-call-group-details')),
+      findsOneWidget,
+    );
     expect(find.text('call-1'), findsNothing);
-    expect(find.text('exec_command'), findsNWidgets(3));
-    expect(find.text('web_search'), findsNWidgets(2));
+    expect(find.text('exec_command'), findsNothing);
+    expect(find.text('web_search'), findsNothing);
+    expect(find.text('Ran pwd'), findsOneWidget);
+    expect(find.text('Ran ls'), findsOneWidget);
+    expect(find.text('Searched flutter ExpansionTile'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline tool groups do not count failures as pending', (
@@ -993,9 +1568,100 @@ void main() {
       ]),
     );
 
-    expect(find.text('2 tool calls'), findsOneWidget);
+    expect(find.text('Ran commands and searched'), findsOneWidget);
     expect(find.text('1 failed'), findsOneWidget);
     expect(find.text('1 pending'), findsNothing);
+  });
+
+  testWidgets('ChatTimeline summarizes mixed tool activities naturally', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'load_skill',
+          metadata: const {
+            'toolCallId': 'call-load',
+            'title': 'load_skill',
+            'status': 'completed',
+            'rawInput': {'name': 'product-design'},
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'read_file',
+          metadata: const {
+            'toolCallId': 'call-read',
+            'title': 'read_file',
+            'status': 'completed',
+            'rawInput': {'path': '/tmp/chat_timeline.dart'},
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'apply_patch',
+          metadata: const {
+            'toolCallId': 'call-edit',
+            'title': 'apply_patch',
+            'status': 'completed',
+            'rawInput': '*** Update File: lib/ui/chat_timeline_test.dart',
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'exec_command',
+          metadata: const {
+            'toolCallId': 'call-run',
+            'title': 'exec_command',
+            'status': 'completed',
+            'rawInput': {'cmd': 'flutter test --no-pub'},
+          },
+        ),
+      ]),
+    );
+
+    expect(
+      find.text('Loaded tools, edited files, read files, and ran commands'),
+      findsOneWidget,
+    );
+    expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+
+    await tester.tap(
+      find.text('Loaded tools, edited files, read files, and ran commands'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Loaded product-design'), findsOneWidget);
+    expect(find.text('Read chat_timeline.dart'), findsOneWidget);
+    expect(find.text('Edited chat_timeline_test.dart'), findsOneWidget);
+    expect(find.text('Ran flutter test --no-pub'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline uses patterned summaries for support tools', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        for (final title in ['mcp.node_repl.js', 'wait', 'Context compacted'])
+          ChatMessage(
+            role: ChatMessageRole.tool,
+            text: title,
+            metadata: {
+              'toolCallId': 'call-$title',
+              'title': title,
+              'status': 'completed',
+            },
+          ),
+      ]),
+    );
+
+    expect(
+      find.text(
+        'Controlled the app, waited for background work, and compacted context',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('ChatTimeline tool groups surface in-progress work', (
@@ -1024,7 +1690,7 @@ void main() {
       ]),
     );
 
-    expect(find.text('2 tool calls'), findsOneWidget);
+    expect(find.text('Ran commands and searched'), findsOneWidget);
     expect(find.text('1 in progress'), findsOneWidget);
     expect(find.text('1 pending'), findsNothing);
   });

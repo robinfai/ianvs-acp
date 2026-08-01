@@ -30,6 +30,7 @@ void main() {
     required bool isSending,
     required PromptSendCallback onSend,
     bool enabled = true,
+    bool promptAppearsStalled = false,
     VoidCallback? onStop,
     String agentName = 'Codex',
     List<Map<String, Object?>> availableCommands =
@@ -71,6 +72,7 @@ void main() {
       agentName: agentName,
       enabled: enabled,
       isSending: isSending,
+      promptAppearsStalled: promptAppearsStalled,
       availableCommands: availableCommands,
       availableCommandsRevision: availableCommandsRevision,
       promptCapabilities: promptCapabilities,
@@ -175,6 +177,24 @@ void main() {
     );
 
     expect(find.text('Send a prompt to Kimi Code Dev...'), findsOneWidget);
+  });
+
+  testWidgets('PromptInput shows a stoppable idle warning', (tester) async {
+    var stopped = false;
+    await tester.pumpWidget(
+      input(
+        isSending: true,
+        promptAppearsStalled: true,
+        onSend: (_, _) {},
+        onStop: () => stopped = true,
+      ),
+    );
+
+    expect(find.byKey(const Key('prompt-idle-warning')), findsOneWidget);
+    expect(find.textContaining('No agent updates'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('prompt-idle-warning-stop')));
+    expect(stopped, isTrue);
   });
 
   testWidgets('PromptInput input after typing can send', (tester) async {

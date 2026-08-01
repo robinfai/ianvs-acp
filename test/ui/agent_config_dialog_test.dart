@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/memory/memory_config.dart';
 import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
@@ -100,6 +101,7 @@ void main() {
     tester,
   ) async {
     AcpClientConfig? savedConfig;
+    AssistantAgentConfig? validatedConfig;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -109,6 +111,9 @@ void main() {
             onSaveConfig: (config) async {
               savedConfig = config;
               return config;
+            },
+            onValidateAssistantAgent: (config) async {
+              validatedConfig = config;
             },
             agentServers: const [
               AgentServerConfig(
@@ -174,7 +179,9 @@ void main() {
         ?.call();
     await tester.pump();
 
-    expect(find.text('Configuration ready'), findsOneWidget);
+    expect(find.text('Connection and model verified'), findsOneWidget);
+    expect(validatedConfig?.agentName, 'Pi');
+    expect(validatedConfig?.model, 'deepseek-v3');
     await tester.ensureVisible(find.widgetWithText(FilledButton, 'Save'));
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pump();

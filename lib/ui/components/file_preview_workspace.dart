@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -68,25 +69,44 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
       ),
     );
     if (_activeTab < 0 || _tabs.isEmpty) {
-      return Row(
-        children: [
-          Expanded(child: conversation),
-          if (widget.showInspector)
-            SizedBox(
-              width: 332,
-              height: double.infinity,
-              child: Container(
-                key: const Key('workspace-inspector-surface'),
-                decoration: const BoxDecoration(
-                  color: AppColors.surface,
-                  border: Border(
-                    left: BorderSide(color: AppColors.border),
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final inspectorHeight = constraints.maxHeight.isFinite
+              ? math
+                    .min(520.0, math.max(0.0, constraints.maxHeight - 24))
+                    .toDouble()
+              : 520.0;
+          return Row(
+            children: [
+              Expanded(child: conversation),
+              if (widget.showInspector)
+                SizedBox(
+                  width: 348,
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 18, 0),
+                      child: SizedBox(
+                        width: double.infinity,
+                        height: inspectorHeight,
+                        child: Container(
+                          key: const Key('workspace-inspector-surface'),
+                          clipBehavior: Clip.antiAlias,
+                          decoration: BoxDecoration(
+                            color: AppColors.surface,
+                            borderRadius: BorderRadius.circular(AppRadius.xl),
+                            border: Border.all(color: AppColors.border),
+                            boxShadow: AppShadows.floatingPanel,
+                          ),
+                          child: widget.inspector,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-                child: widget.inspector,
-              ),
-            ),
-        ],
+            ],
+          );
+        },
       );
     }
 

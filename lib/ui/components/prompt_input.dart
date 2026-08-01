@@ -81,6 +81,7 @@ class PromptInput extends StatefulWidget {
     this.agentName = 'Codex',
     this.enabled = true,
     required this.isSending,
+    this.promptAppearsStalled = false,
     required this.onSend,
     required this.onStop,
     this.availableCommands = const <Map<String, Object?>>[],
@@ -119,6 +120,7 @@ class PromptInput extends StatefulWidget {
   final String agentName;
   final bool enabled;
   final bool isSending;
+  final bool promptAppearsStalled;
   final PromptSendCallback onSend;
   final VoidCallback onStop;
   final List<Map<String, Object?>> availableCommands;
@@ -347,6 +349,10 @@ class _PromptInputState extends State<PromptInput> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (widget.promptAppearsStalled) ...[
+                _PromptIdleWarning(onStop: widget.onStop),
+                const SizedBox(height: 8),
+              ],
               if (widget.queuedPrompts.isNotEmpty) ...[
                 _PromptQueueTray(
                   prompts: widget.queuedPrompts,
@@ -1635,6 +1641,61 @@ String _attachmentPickerTooltip(List<PromptAttachmentKind> kinds) {
   return 'Attach ${labels.sublist(0, labels.length - 1).join(', ')} or ${labels.last}';
 }
 
+class _PromptIdleWarning extends StatelessWidget {
+  const _PromptIdleWarning({required this.onStop});
+
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('prompt-idle-warning'),
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 9, 8, 9),
+      decoration: BoxDecoration(
+        color: AppColors.warning.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: AppColors.warning.withValues(alpha: 0.28)),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.schedule_rounded,
+            size: 17,
+            color: AppColors.warning,
+          ),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'No agent updates for a while. The adapter may still be '
+              'finishing this turn.',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          TextButton(
+            key: const Key('prompt-idle-warning-stop'),
+            onPressed: onStop,
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.textPrimary,
+              minimumSize: const Size(0, 32),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              textStyle: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            child: const Text('Stop'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _PromptQueueTray extends StatelessWidget {
   const _PromptQueueTray({
     required this.prompts,
@@ -1822,8 +1883,8 @@ class _PromptQueueRow extends StatelessWidget {
             const SizedBox(width: 4),
             Tooltip(
               message: prompt.guide
-                  ? 'Guided: runs at the next safe boundary'
-                  : 'Guide at the next safe boundary',
+                  ? 'Guidance will run first after the current turn stops'
+                  : 'Stop the current turn and guide it with this message',
               child: TextButton.icon(
                 key: Key('guide-queued-prompt-${prompt.id}'),
                 onPressed: onGuide,
@@ -1839,7 +1900,7 @@ class _PromptQueueRow extends StatelessWidget {
                       : Icons.subdirectory_arrow_right_rounded,
                   size: 15,
                 ),
-                label: Text(prompt.guide ? 'Guided' : 'Guide'),
+                label: Text(prompt.guide ? 'Guiding' : 'Guide'),
               ),
             ),
             IconButton(

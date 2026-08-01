@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
@@ -21,13 +22,19 @@ const List<String> _toolCallIdMetadataKeys = [
   'call_id',
 ];
 const _userMessageSelectionColor = Color(0x3d000000);
-const int _maxRenderedTimelineMessages = 200;
+const int _maxTimelineSignatureMessages = 200;
 const int _inlineCollectionPreviewItems = 5;
 const int _contentBlockProjectionBatchItems = 16;
 const int _contentBlockVisiblePageItems = 3;
 const double _contentBlocksMaxHeight = 320;
 const double _nestedDetailsMaxHeight = 280;
 const double _commandDetailsMaxHeight = 320;
+const double _turnNavigationMarkerExtent = 14;
+const double _turnNavigationMarkerPitch = 16;
+const double _turnNavigationMarkerWidth = 38;
+const double _turnNavigationIdleBarWidth = 7;
+const double _turnNavigationHoverBarWidth = 34;
+const double _conversationContentWidth = 760;
 
 typedef MemoryFeedbackCallback =
     Future<void> Function({
@@ -73,7 +80,15 @@ class ChatTimeline extends StatefulWidget {
 
 class _ChatTimelineState extends State<ChatTimeline> {
   final ScrollController _scrollController = ScrollController();
+  final Map<String, GlobalKey> _turnItemKeys = <String, GlobalKey>{};
+  final GlobalKey _timelineViewportKey = GlobalKey();
+  final GlobalKey _timelineCenterSliverKey = GlobalKey();
   late AcpImageDecodeBudgetLedger _imageDecodeLedger;
+  int _activeTurnIndex = 0;
+  int? _lockedTurnIndex;
+  int _viewportAnchorTurnIndex = 0;
+  int? _hoveredOutlineIndex;
+  double? _hoveredMarkerGlobalY;
   late int _messageSignature = _timelineMessagesSignature(
     widget.messages,
     messageListRevision: widget.messageListRevision,
@@ -83,6 +98,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_syncActiveTurnFromScroll);
     widget.inputBudget.validate();
     _imageDecodeLedger =
         widget.imageDecodeLedger ??
@@ -107,6 +123,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
 
   @override
   void dispose() {
+    _scrollController.removeListener(_syncActiveTurnFromScroll);
     _scrollController.dispose();
     super.dispose();
   }
@@ -130,11 +147,8 @@ class _ChatTimelineState extends State<ChatTimeline> {
       );
     }
 
-    final visibleMessages = _visibleTimelineMessages(widget.messages);
-    final skippedMessageCount = widget.messages.length - visibleMessages.length;
-    final hasTrimmedHistory = skippedMessageCount > 0;
-    final turns = _timelineTurns(visibleMessages);
-    final historyNoticeCount = hasTrimmedHistory ? 1 : 0;
+    final turns = _timelineTurns(widget.messages);
+    final outlineEntries = _turnOutlineEntries(turns);
     final loadingFooterCount = widget.isLoadingSession ? 1 : 0;
 
     return _ImageDecodeScope(
@@ -143,39 +157,253 @@ class _ChatTimelineState extends State<ChatTimeline> {
       inputBudget: widget.inputBudget,
       child: ColoredBox(
         color: AppColors.surface,
-        child: ListView.separated(
-          key: const ValueKey('chat-timeline-list'),
-          controller: _scrollController,
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 18),
-          itemCount: turns.length + historyNoticeCount + loadingFooterCount,
-          separatorBuilder: (context, index) => const SizedBox(height: 10),
-          itemBuilder: (context, index) {
-            if (hasTrimmedHistory && index == turns.length) {
-              return _TrimmedHistoryNotice(
-                shownCount: visibleMessages.length,
-                totalCount: widget.messages.length,
-              );
-            }
-            if (index >= turns.length + historyNoticeCount) {
-              return const _SessionLoadingFooter();
-            }
-            final turn = turns[index];
-            return Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 820),
-                child: _TurnSectionBubble(
-                  key: ValueKey('timeline-turn-${turn.turnId}-$index'),
-                  turn: turn,
-                  inputBudget: widget.inputBudget,
-                  onTapLink: widget.onTapLink,
-                  onMemoryFeedback: widget.onMemoryFeedback,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final showNavigator =
+                outlineEntries.length > 1 && constraints.maxWidth >= 700;
+            final viewportAnchorTurnIndex = _viewportAnchorTurnIndex.clamp(
+              0,
+              turns.length - 1,
+            );
+            final activeOutlineIndex = _outlineIndexForTurn(
+              outlineEntries,
+              _activeTurnIndex.clamp(0, turns.length - 1),
+            );
+            final hoveredOutlineIndex = _hoveredOutlineIndex;
+            final hasHoveredOutline =
+                hoveredOutlineIndex != null &&
+                hoveredOutlineIndex >= 0 &&
+                hoveredOutlineIndex < outlineEntries.length;
+            return Stack(
+              key: _timelineViewportKey,
+              children: [
+                NotificationListener<ScrollNotification>(
+                  onNotification: _handleTimelineScrollNotification,
+                  child: CustomScrollView(
+                    key: const ValueKey('chat-timeline-list'),
+                    controller: _scrollController,
+                    center: _timelineCenterSliverKey,
+                    anchor: 0.08,
+                    slivers: [
+                      SliverPadding(
+                        padding: EdgeInsets.fromLTRB(
+                          showNavigator ? 62 : 22,
+                          20,
+                          24,
+                          0,
+                        ),
+                        sliver: SliverList.builder(
+                          itemCount: viewportAnchorTurnIndex,
+                          itemBuilder: (context, index) {
+                            final turnIndex =
+                                viewportAnchorTurnIndex - index - 1;
+                            return _buildTimelineTurn(turns, turnIndex);
+                          },
+                        ),
+                      ),
+                      SliverPadding(
+                        key: _timelineCenterSliverKey,
+                        padding: EdgeInsets.fromLTRB(
+                          showNavigator ? 62 : 22,
+                          0,
+                          24,
+                          22,
+                        ),
+                        sliver: SliverList.builder(
+                          itemCount:
+                              turns.length -
+                              viewportAnchorTurnIndex +
+                              loadingFooterCount,
+                          itemBuilder: (context, index) {
+                            final turnIndex = viewportAnchorTurnIndex + index;
+                            if (turnIndex >= turns.length) {
+                              return const _SessionLoadingFooter();
+                            }
+                            return _buildTimelineTurn(turns, turnIndex);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+                if (showNavigator)
+                  Positioned(
+                    left: 16,
+                    top: 20,
+                    bottom: 22,
+                    width: _turnNavigationMarkerWidth,
+                    child: _TurnNavigationRail(
+                      entries: outlineEntries,
+                      activeIndex: activeOutlineIndex,
+                      hoveredIndex: _hoveredOutlineIndex,
+                      onHover: (index, globalY) {
+                        if (_hoveredOutlineIndex == index &&
+                            _hoveredMarkerGlobalY == globalY) {
+                          return;
+                        }
+                        setState(() {
+                          _hoveredOutlineIndex = index;
+                          _hoveredMarkerGlobalY = globalY;
+                        });
+                      },
+                      onTap: (index) => _selectOutlineTurn(
+                        outlineEntries[index].turnIndex,
+                        turns,
+                      ),
+                    ),
+                  ),
+                if (showNavigator)
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOutCubic,
+                    left: 62,
+                    top: hasHoveredOutline
+                        ? _turnPreviewTop(
+                            markerGlobalY: _hoveredMarkerGlobalY,
+                            viewportHeight: constraints.maxHeight,
+                          )
+                        : 12,
+                    width: 360,
+                    child: IgnorePointer(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        reverseDuration: const Duration(milliseconds: 120),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, animation) {
+                          final offset = Tween<Offset>(
+                            begin: const Offset(-0.025, 0),
+                            end: Offset.zero,
+                          ).animate(animation);
+                          return FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: offset,
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: hasHoveredOutline
+                            ? _TurnNavigationPreview(
+                                key: ValueKey(
+                                  'turn-navigation-preview-$hoveredOutlineIndex',
+                                ),
+                                entry: outlineEntries[hoveredOutlineIndex],
+                              )
+                            : const SizedBox.shrink(
+                                key: ValueKey('turn-navigation-preview-empty'),
+                              ),
+                      ),
+                    ),
+                  ),
+              ],
             );
           },
         ),
       ),
     );
+  }
+
+  GlobalKey _turnItemKey(_TimelineTurn turn, int index) {
+    final identity = _turnItemIdentity(turn, index);
+    return _turnItemKeys.putIfAbsent(identity, GlobalKey.new);
+  }
+
+  String _turnItemIdentity(_TimelineTurn turn, int index) =>
+      '${turn.turnId ?? 'legacy'}-$index';
+
+  Widget _buildTimelineTurn(List<_TimelineTurn> turns, int index) {
+    final turn = turns[index];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: KeyedSubtree(
+        key: _turnItemKey(turn, index),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(
+              maxWidth: _conversationContentWidth,
+            ),
+            child: _TurnSectionBubble(
+              key: ValueKey('timeline-turn-${turn.turnId}-$index'),
+              turn: turn,
+              inputBudget: widget.inputBudget,
+              onTapLink: widget.onTapLink,
+              onMemoryFeedback: widget.onMemoryFeedback,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  double _turnPreviewTop({
+    required double? markerGlobalY,
+    required double viewportHeight,
+  }) {
+    final viewport = _timelineViewportKey.currentContext?.findRenderObject();
+    final markerLocalY = viewport is RenderBox && markerGlobalY != null
+        ? viewport.globalToLocal(Offset(0, markerGlobalY)).dy
+        : 68.0;
+    return (markerLocalY - 56).clamp(
+      12.0,
+      (viewportHeight - 172).clamp(12.0, double.infinity),
+    );
+  }
+
+  void _syncActiveTurnFromScroll() {
+    if (!mounted || !_scrollController.hasClients) return;
+    if (_lockedTurnIndex != null) return;
+    final turns = _timelineTurns(widget.messages);
+    if (turns.length <= 1) return;
+    final viewport = _timelineViewportKey.currentContext?.findRenderObject();
+    if (viewport is! RenderBox) return;
+    const focusY = 88.0;
+    var next = _activeTurnIndex.clamp(0, turns.length - 1);
+    var nearestDistance = double.infinity;
+    for (var index = 0; index < turns.length; index++) {
+      final item = _turnItemKeys[_turnItemIdentity(turns[index], index)]
+          ?.currentContext
+          ?.findRenderObject();
+      if (item is! RenderBox || !item.attached) continue;
+      final top = viewport.globalToLocal(item.localToGlobal(Offset.zero)).dy;
+      final distance = (top - focusY).abs();
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        next = index;
+      }
+    }
+    if (next == _activeTurnIndex) return;
+    setState(() => _activeTurnIndex = next);
+  }
+
+  bool _handleTimelineScrollNotification(ScrollNotification notification) {
+    if (_lockedTurnIndex == null) return false;
+    final isDirectDrag =
+        notification is ScrollStartNotification &&
+        notification.dragDetails != null;
+    final isUserDirection =
+        notification is UserScrollNotification &&
+        notification.direction != ScrollDirection.idle;
+    if (!isDirectDrag && !isUserDirection) return false;
+    setState(() => _lockedTurnIndex = null);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncActiveTurnFromScroll();
+    });
+    return false;
+  }
+
+  void _selectOutlineTurn(int index, List<_TimelineTurn> turns) {
+    if (turns.isEmpty) return;
+    final targetIndex = index.clamp(0, turns.length - 1);
+    if (_lockedTurnIndex == targetIndex) return;
+    setState(() {
+      _viewportAnchorTurnIndex = targetIndex;
+      _lockedTurnIndex = targetIndex;
+      _activeTurnIndex = targetIndex;
+    });
+    if (_scrollController.hasClients && _scrollController.offset != 0) {
+      _scrollController.jumpTo(0);
+    }
   }
 
   void _syncMessageSignature() {
@@ -194,6 +422,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void _scheduleScrollToBottom({int remainingPasses = 2}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
+      if (_lockedTurnIndex != null) return;
       final position = _scrollController.position;
       if (!position.hasContentDimensions) {
         _scheduleScrollToBottom(remainingPasses: remainingPasses);
@@ -202,6 +431,11 @@ class _ChatTimelineState extends State<ChatTimeline> {
       final bottom = position.maxScrollExtent;
       if (bottom.isFinite && (position.pixels - bottom).abs() > 0.5) {
         _scrollController.jumpTo(bottom);
+      }
+      final turnCount = _timelineTurns(widget.messages).length;
+      final lastTurnIndex = turnCount - 1;
+      if (lastTurnIndex >= 0 && _activeTurnIndex != lastTurnIndex) {
+        setState(() => _activeTurnIndex = lastTurnIndex);
       }
       if (remainingPasses > 0) {
         _scheduleScrollToBottom(remainingPasses: remainingPasses - 1);
@@ -241,7 +475,7 @@ int _timelineMessagesSignature(
   required int messageListRevision,
   required bool isLoadingSession,
 }) {
-  final visibleMessages = _visibleTimelineMessages(messages);
+  final visibleMessages = _signatureTimelineMessages(messages);
   return _messagesSignature(
     visibleMessages,
     messageListRevision: messageListRevision,
@@ -249,9 +483,9 @@ int _timelineMessagesSignature(
   );
 }
 
-List<ChatMessage> _visibleTimelineMessages(List<ChatMessage> messages) {
-  if (messages.length <= _maxRenderedTimelineMessages) return messages;
-  return messages.sublist(messages.length - _maxRenderedTimelineMessages);
+List<ChatMessage> _signatureTimelineMessages(List<ChatMessage> messages) {
+  if (messages.length <= _maxTimelineSignatureMessages) return messages;
+  return messages.sublist(messages.length - _maxTimelineSignatureMessages);
 }
 
 int _messagesSignature(
@@ -275,20 +509,93 @@ List<_TimelineTurn> _timelineTurns(List<ChatMessage> messages) {
   while (index < messages.length) {
     final first = messages[index];
     final turnId = _messageTurnId(first);
+    if (turnId == null && first.role != ChatMessageRole.user) {
+      if (first.role != ChatMessageRole.tool) {
+        turns.add(_TimelineTurn(turnId: null, messages: [first]));
+        index += 1;
+        continue;
+      }
+      final toolMessages = <ChatMessage>[];
+      while (index < messages.length &&
+          _messageTurnId(messages[index]) == null &&
+          messages[index].role == ChatMessageRole.tool) {
+        toolMessages.add(messages[index]);
+        index += 1;
+      }
+      turns.add(_TimelineTurn(turnId: null, messages: toolMessages));
+      continue;
+    }
     final turnMessages = <ChatMessage>[];
-    while (index < messages.length &&
-        (turnId == null
-            ? (turnMessages.isEmpty ||
-                  (first.role == ChatMessageRole.tool &&
-                      messages[index].role == ChatMessageRole.tool &&
-                      _messageTurnId(messages[index]) == null))
-            : _messageTurnId(messages[index]) == turnId)) {
+    while (index < messages.length) {
+      final candidate = messages[index];
+      final candidateTurnId = _messageTurnId(candidate);
+      if (turnId != null && candidateTurnId != turnId) break;
+      if (turnId == null && candidateTurnId != null) break;
+      if (turnId == null &&
+          turnMessages.isNotEmpty &&
+          candidate.role == ChatMessageRole.user) {
+        break;
+      }
       turnMessages.add(messages[index]);
       index += 1;
     }
     turns.add(_TimelineTurn(turnId: turnId, messages: turnMessages));
   }
   return turns;
+}
+
+List<_TurnOutlineEntry> _turnOutlineEntries(List<_TimelineTurn> turns) {
+  final entries = <_TurnOutlineEntry>[];
+  for (var turnIndex = 0; turnIndex < turns.length; turnIndex++) {
+    final turn = turns[turnIndex];
+    final prompt = _outlinePromptPreview(turn.userMessages);
+    if (prompt == null) continue;
+    entries.add(
+      _TurnOutlineEntry(
+        turnIndex: turnIndex,
+        promptPreview: prompt,
+        responsePreview: turn.responsePreview,
+      ),
+    );
+  }
+  return entries;
+}
+
+String? _outlinePromptPreview(List<ChatMessage> messages) {
+  final candidates = messages
+      .map((message) => _userPromptDisplayText(message.text))
+      .where((text) => text.isNotEmpty)
+      .toList(growable: false);
+  if (candidates.isEmpty) return null;
+  for (final text in candidates) {
+    if (!_isAttachmentProjectionText(text)) return text;
+  }
+  return null;
+}
+
+String _userPromptDisplayText(String text) {
+  const marker = '## My request for Codex:';
+  final markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return text.trim();
+  final request = text.substring(markerIndex + marker.length).trim();
+  return request.isEmpty ? text.trim() : request;
+}
+
+bool _isAttachmentProjectionText(String text) {
+  final normalized = text.trim();
+  if (!normalized.startsWith('[') || !normalized.endsWith(')')) return false;
+  return normalized.contains('](file://') ||
+      normalized.startsWith('[@image](') ||
+      normalized.startsWith('[@codex-clipboard-');
+}
+
+int _outlineIndexForTurn(List<_TurnOutlineEntry> entries, int activeTurnIndex) {
+  var activeIndex = 0;
+  for (var index = 0; index < entries.length; index++) {
+    if (entries[index].turnIndex > activeTurnIndex) break;
+    activeIndex = index;
+  }
+  return activeIndex;
 }
 
 List<_TimelineEntry> _timelineEntries(List<ChatMessage> messages) {
@@ -372,6 +679,18 @@ class _TimelineEntry {
   final List<ChatMessage>? toolMessages;
 }
 
+class _TurnOutlineEntry {
+  const _TurnOutlineEntry({
+    required this.turnIndex,
+    required this.promptPreview,
+    required this.responsePreview,
+  });
+
+  final int turnIndex;
+  final String promptPreview;
+  final String responsePreview;
+}
+
 class _TimelineTurn {
   const _TimelineTurn({required this.turnId, required this.messages});
 
@@ -385,9 +704,50 @@ class _TimelineTurn {
     return null;
   }
 
-  List<ChatMessage> get processMessages => messages
-      .where((message) => message.metadata['kind'] != 'assistant_summary')
+  ChatMessage? get finalResponse {
+    final explicitSummary = summary;
+    if (explicitSummary != null) return explicitSummary;
+    for (final message in messages.reversed) {
+      if (message.role == ChatMessageRole.assistant &&
+          message.text.trim().isNotEmpty) {
+        return message;
+      }
+    }
+    return null;
+  }
+
+  List<ChatMessage> get userMessages => messages
+      .where(
+        (message) =>
+            message.role == ChatMessageRole.user &&
+            !_isPureAttachmentProjection(message),
+      )
       .toList(growable: false);
+
+  List<ChatMessage> get resultMessages =>
+      messages.where(_isPersistentTurnResult).toList(growable: false);
+
+  List<ChatMessage> get processMessages {
+    final response = finalResponse;
+    final results = resultMessages;
+    return messages
+        .where(
+          (message) =>
+              message.role != ChatMessageRole.user &&
+              !identical(message, response) &&
+              !results.any((result) => identical(result, message)),
+        )
+        .toList(growable: false);
+  }
+
+  bool get isComplete {
+    if (summary != null) return true;
+    return messages.any(
+      (message) =>
+          message.role == ChatMessageRole.status &&
+          _stringMetadata(message.metadata, 'kind') == 'turn',
+    );
+  }
 
   String get elapsedLabel {
     if (messages.length < 2) return 'Processed';
@@ -396,35 +756,34 @@ class _TimelineTurn {
     if (first == null || last == null) return 'Processed';
     final elapsed = last.difference(first);
     if (elapsed.isNegative) return 'Processed';
+    if (elapsed.inSeconds == 0) return 'Processed';
     if (elapsed.inMinutes > 0) {
       return 'Processed ${elapsed.inMinutes}m ${elapsed.inSeconds % 60}s';
     }
     return 'Processed ${elapsed.inSeconds}s';
   }
 
-  String get promptPreview {
-    for (final message in messages) {
-      if (message.role == ChatMessageRole.user &&
-          message.text.trim().isNotEmpty) {
-        return message.text.trim();
-      }
-    }
-    return 'Turn';
-  }
-
   String get responsePreview {
-    final assistantSummary = summary?.text.trim();
-    if (assistantSummary != null && assistantSummary.isNotEmpty) {
-      return assistantSummary;
-    }
-    for (final message in messages.reversed) {
-      if (message.role == ChatMessageRole.assistant &&
-          message.text.trim().isNotEmpty) {
-        return message.text.trim();
-      }
+    final response = finalResponse?.text.trim();
+    if (response != null && response.isNotEmpty) {
+      return response;
     }
     return 'Execution in progress';
   }
+}
+
+bool _isPureAttachmentProjection(ChatMessage message) {
+  return _lazyMapCount(message.metadata['contentBlocks']) == 0 &&
+      _isAttachmentProjectionText(message.text);
+}
+
+bool _isPersistentTurnResult(ChatMessage message) {
+  if (message.role == ChatMessageRole.status) {
+    return _stringMetadata(message.metadata, 'kind') == 'diff';
+  }
+  if (message.role != ChatMessageRole.tool) return false;
+  final parsed = _ParsedTool.fromMessage(message);
+  return _toolDiffs(parsed.content).isNotEmpty;
 }
 
 int? _messageTurnId(ChatMessage message) {
@@ -465,77 +824,60 @@ class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
   late bool _expanded = _initiallyExpanded();
 
   bool _initiallyExpanded() {
-    final summary = widget.turn.summary;
-    return summary == null || summary.metadata['collapseProcess'] != true;
+    return !widget.turn.isComplete ||
+        widget.turn.finalResponse == null ||
+        widget.turn.processMessages.isEmpty;
   }
 
   @override
   void didUpdateWidget(covariant _TurnSectionBubble oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.turn.summary == null && widget.turn.summary != null) {
+    if (!oldWidget.turn.isComplete && widget.turn.isComplete) {
       _expanded = _initiallyExpanded();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final summary = widget.turn.summary;
+    final response = widget.turn.finalResponse;
+    final userEntries = _timelineEntries(widget.turn.userMessages);
     final processEntries = _timelineEntries(widget.turn.processMessages);
-    final preview = [
-      widget.turn.promptPreview,
-      '',
-      widget.turn.responsePreview,
-    ].join('\n');
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final resultEntries = _timelineEntries(widget.turn.resultMessages);
+    final hasCollapsibleProcess =
+        widget.turn.isComplete && response != null && processEntries.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(
-          width: 22,
-          child: Tooltip(
-            waitDuration: const Duration(milliseconds: 180),
-            message: preview,
-            padding: const EdgeInsets.all(12),
-            margin: const EdgeInsets.only(left: 36),
-            constraints: const BoxConstraints(maxWidth: 420),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.lg),
-              border: Border.all(color: AppColors.border),
-              boxShadow: AppShadows.raised,
-            ),
-            textStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: AppColors.textPrimary,
-              fontSize: 12,
-              height: 1.45,
-              fontWeight: FontWeight.w600,
-            ),
-            child: _TurnRail(active: summary != null),
+        for (var index = 0; index < userEntries.length; index++) ...[
+          _buildEntry(userEntries[index]),
+          if (index != userEntries.length - 1) const SizedBox(height: 8),
+        ],
+        if (userEntries.isNotEmpty &&
+            (hasCollapsibleProcess || response != null))
+          const SizedBox(height: 32),
+        if (hasCollapsibleProcess)
+          _ProcessedTurnHeader(
+            label: widget.turn.elapsedLabel,
+            expanded: _expanded,
+            onPressed: () => setState(() => _expanded = !_expanded),
           ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (summary != null)
-                _ProcessedTurnHeader(
-                  label: widget.turn.elapsedLabel,
-                  expanded: _expanded,
-                  onPressed: () => setState(() => _expanded = !_expanded),
-                ),
-              if (summary != null) const SizedBox(height: 8),
-              if (_expanded)
-                for (var index = 0; index < processEntries.length; index++) ...[
-                  _buildEntry(processEntries[index]),
-                  if (index != processEntries.length - 1)
-                    const SizedBox(height: 10),
-                ],
-              if (_expanded && processEntries.isNotEmpty && summary != null)
-                const SizedBox(height: 10),
-              if (summary != null) _buildEntry(_TimelineEntry.message(summary)),
-            ],
-          ),
-        ),
+        if (hasCollapsibleProcess) const SizedBox(height: 12),
+        if (_expanded || !hasCollapsibleProcess)
+          for (var index = 0; index < processEntries.length; index++) ...[
+            _buildEntry(processEntries[index]),
+            if (index != processEntries.length - 1) const SizedBox(height: 10),
+          ],
+        if ((_expanded || !hasCollapsibleProcess) &&
+            processEntries.isNotEmpty &&
+            response != null)
+          const SizedBox(height: 14),
+        if (response != null) _buildEntry(_TimelineEntry.message(response)),
+        if (response != null && resultEntries.isNotEmpty)
+          const SizedBox(height: 16),
+        for (var index = 0; index < resultEntries.length; index++) ...[
+          _buildEntry(resultEntries[index]),
+          if (index != resultEntries.length - 1) const SizedBox(height: 12),
+        ],
       ],
     );
   }
@@ -556,21 +898,221 @@ class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
   }
 }
 
-class _TurnRail extends StatelessWidget {
-  const _TurnRail({required this.active});
+class _TurnNavigationRail extends StatefulWidget {
+  const _TurnNavigationRail({
+    required this.entries,
+    required this.activeIndex,
+    required this.hoveredIndex,
+    required this.onHover,
+    required this.onTap,
+  });
 
-  final bool active;
+  final List<_TurnOutlineEntry> entries;
+  final int activeIndex;
+  final int? hoveredIndex;
+  final void Function(int? index, double? markerGlobalY) onHover;
+  final ValueChanged<int> onTap;
+
+  @override
+  State<_TurnNavigationRail> createState() => _TurnNavigationRailState();
+}
+
+class _TurnNavigationRailState extends State<_TurnNavigationRail> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleActiveMarkerVisibility();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TurnNavigationRail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.activeIndex != widget.activeIndex ||
+        oldWidget.entries.length != widget.entries.length) {
+      _scheduleActiveMarkerVisibility();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _scheduleActiveMarkerVisibility() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients || widget.entries.isEmpty) {
+        return;
+      }
+      final position = _controller.position;
+      final activeIndex = widget.activeIndex.clamp(
+        0,
+        widget.entries.length - 1,
+      );
+      final centeredPadding =
+          (position.viewportDimension -
+                  widget.entries.length * _turnNavigationMarkerPitch)
+              .clamp(0.0, double.infinity) /
+          2;
+      final markerCenter =
+          centeredPadding +
+          activeIndex * _turnNavigationMarkerPitch +
+          _turnNavigationMarkerPitch / 2;
+      final target = markerCenter - position.viewportDimension / 2;
+      final clampedTarget = target.clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if ((position.pixels - clampedTarget).abs() < 0.5) return;
+      _controller.animateTo(
+        clampedTarget,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Container(
-        width: active ? 4 : 3,
-        height: 34,
-        decoration: BoxDecoration(
-          color: active ? AppColors.textPrimary : AppColors.border,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-        ),
+    return Semantics(
+      container: true,
+      label: 'Conversation turn navigation',
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final contentExtent =
+              widget.entries.length * _turnNavigationMarkerPitch;
+          final centeredPadding = constraints.maxHeight.isFinite
+              ? ((constraints.maxHeight - contentExtent) / 2).clamp(
+                  0.0,
+                  double.infinity,
+                )
+              : 0.0;
+          return MouseRegion(
+            onExit: (_) => widget.onHover(null, null),
+            child: ListView.builder(
+              key: const ValueKey('turn-navigation-outline-list'),
+              controller: _controller,
+              padding: EdgeInsets.symmetric(vertical: centeredPadding),
+              physics: const ClampingScrollPhysics(),
+              itemExtent: _turnNavigationMarkerPitch,
+              itemCount: widget.entries.length,
+              itemBuilder: (context, index) {
+                final entry = widget.entries[index];
+                final hoverInfluence = _hoverInfluence(index);
+                final isActive = index == widget.activeIndex;
+                final baseColor = isActive
+                    ? AppColors.textPrimary
+                    : AppColors.border;
+                return Semantics(
+                  button: true,
+                  label:
+                      'Go to user message ${index + 1}: ${entry.promptPreview}',
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    onEnter: (event) =>
+                        widget.onHover(index, event.position.dy),
+                    child: GestureDetector(
+                      key: ValueKey('turn-navigation-marker-$index'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => widget.onTap(index),
+                      child: SizedBox(
+                        width: _turnNavigationMarkerWidth,
+                        height: _turnNavigationMarkerExtent,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: AnimatedContainer(
+                            key: ValueKey('turn-navigation-bar-$index'),
+                            duration: const Duration(milliseconds: 220),
+                            curve: Curves.easeOutQuart,
+                            width:
+                                _turnNavigationIdleBarWidth +
+                                (_turnNavigationHoverBarWidth -
+                                        _turnNavigationIdleBarWidth) *
+                                    hoverInfluence,
+                            height: isActive || hoverInfluence > 0.65 ? 3 : 2,
+                            decoration: BoxDecoration(
+                              color: Color.lerp(
+                                baseColor,
+                                AppColors.textSecondary,
+                                hoverInfluence,
+                              ),
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.pill,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  double _hoverInfluence(int index) {
+    final hoveredIndex = widget.hoveredIndex;
+    if (hoveredIndex == null) return 0;
+    return switch ((index - hoveredIndex).abs()) {
+      0 => 1,
+      1 => 0.58,
+      2 => 0.3,
+      3 => 0.12,
+      _ => 0,
+    };
+  }
+}
+
+class _TurnNavigationPreview extends StatelessWidget {
+  const _TurnNavigationPreview({super.key, required this.entry});
+
+  final _TurnOutlineEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey('turn-navigation-preview'),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.xl),
+        border: Border.all(color: AppColors.border),
+        boxShadow: AppShadows.raised,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            entry.promptPreview,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 13.5,
+              height: 1.4,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            entry.responsePreview,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12.5,
+              height: 1.5,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -598,15 +1140,16 @@ class _ProcessedTurnHeader extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.sm),
         onTap: onPressed,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(vertical: 5),
           child: Row(
             children: [
               Text(
                 label,
                 style: const TextStyle(
                   color: AppColors.textSecondary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  height: 1.35,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
               const SizedBox(width: 4),
@@ -615,7 +1158,7 @@ class _ProcessedTurnHeader extends StatelessWidget {
                 duration: const Duration(milliseconds: 160),
                 child: const Icon(
                   Icons.chevron_right_rounded,
-                  size: 17,
+                  size: 16,
                   color: AppColors.textTertiary,
                 ),
               ),
@@ -782,39 +1325,6 @@ class _SessionLoadingFooter extends StatelessWidget {
   }
 }
 
-class _TrimmedHistoryNotice extends StatelessWidget {
-  const _TrimmedHistoryNotice({
-    required this.shownCount,
-    required this.totalCount,
-  });
-
-  final int shownCount;
-  final int totalCount;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-        decoration: BoxDecoration(
-          color: AppColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-          border: Border.all(color: AppColors.borderSoft),
-        ),
-        child: Text(
-          'Showing latest $shownCount of $totalCount messages',
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _CodeCardIllustration extends StatelessWidget {
   const _CodeCardIllustration({required this.compact});
 
@@ -877,7 +1387,7 @@ class _MessageBubble extends StatelessWidget {
     final user = message.role == ChatMessageRole.user;
     final assistant = message.role == ChatMessageRole.assistant;
     final color = switch (message.role) {
-      ChatMessageRole.user => AppColors.surfaceMuted,
+      ChatMessageRole.user => AppColors.userMessageSurface,
       ChatMessageRole.assistant => Colors.transparent,
       ChatMessageRole.tool => const Color(0xfffffbeb),
       ChatMessageRole.error => const Color(0xfffef2f2),
@@ -891,30 +1401,96 @@ class _MessageBubble extends StatelessWidget {
       ChatMessageRole.status => AppColors.border,
     };
     const textColor = AppColors.textPrimary;
-    final markdownDecision = message.text.isEmpty
+    final displayText = user
+        ? _userPromptDisplayText(message.text)
+        : message.text;
+    final markdownDecision = displayText.isEmpty
         ? null
-        : scanMarkdownForRendering(message.text, budget: inputBudget);
+        : scanMarkdownForRendering(displayText, budget: inputBudget);
     final omissions = _distinctOmissions(
       message.omissions,
       markdownDecision?.omission,
     );
 
+    if (user) {
+      final hasContentBlocks =
+          _lazyMapCount(message.metadata['contentBlocks']) > 0;
+      return Align(
+        alignment: Alignment.centerRight,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (hasContentBlocks)
+                _ContentBlocksPreview(
+                  message: message,
+                  inputBudget: inputBudget,
+                  previewRevision: message.revision,
+                  beforeText: true,
+                  compactImages: true,
+                ),
+              if (hasContentBlocks &&
+                  (markdownDecision != null || omissions.isNotEmpty))
+                const SizedBox(height: 8),
+              if (markdownDecision != null || omissions.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.userMessageSurface,
+                    borderRadius: BorderRadius.circular(AppRadius.xl),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (markdownDecision != null)
+                        if (markdownDecision.useMarkdown)
+                          _SelectableMessageMarkdown(
+                            data: markdownDecision.text,
+                            user: true,
+                            styleSheet: _markdownStyle(
+                              context,
+                              textColor,
+                              true,
+                            ),
+                            onTapLink: onTapLink,
+                          )
+                        else
+                          SelectableText(
+                            markdownDecision.text,
+                            style: const TextStyle(
+                              color: textColor,
+                              fontSize: 14,
+                              height: 1.5,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                      for (final omission in omissions)
+                        _InputOmissionNotice(omission: omission, user: true),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Align(
-      alignment: user ? Alignment.centerRight : Alignment.centerLeft,
+      alignment: Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: user ? 720 : 820),
+        constraints: const BoxConstraints(maxWidth: 820),
         child: Container(
-          width: user ? null : double.infinity,
-          padding: user
-              ? const EdgeInsets.symmetric(horizontal: 14, vertical: 10)
-              : assistant
+          width: double.infinity,
+          padding: assistant
               ? const EdgeInsets.symmetric(vertical: 6)
               : const EdgeInsets.all(11),
           decoration: BoxDecoration(
             color: color,
-            borderRadius: BorderRadius.circular(
-              user ? AppRadius.xl : AppRadius.sm,
-            ),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
             border: Border.all(color: borderColor),
           ),
           child: Column(
@@ -954,7 +1530,12 @@ class _MessageBubble extends StatelessWidget {
                 else
                   SelectableText(
                     markdownDecision.text,
-                    style: TextStyle(color: textColor, height: 1.42),
+                    style: const TextStyle(
+                      color: textColor,
+                      fontSize: 14,
+                      height: 1.55,
+                      fontWeight: FontWeight.w400,
+                    ),
                   ),
               ],
               for (final omission in omissions)
@@ -980,7 +1561,12 @@ class _MessageBubble extends StatelessWidget {
     Color textColor,
     bool user,
   ) {
-    final baseTextStyle = TextStyle(color: textColor, height: 1.42);
+    final baseTextStyle = TextStyle(
+      color: textColor,
+      fontSize: 14,
+      height: 1.55,
+      fontWeight: FontWeight.w400,
+    );
     final codeBackground = user
         ? AppColors.surface.withValues(alpha: 0.72)
         : AppColors.surfaceRaised;
@@ -1002,7 +1588,7 @@ class _MessageBubble extends StatelessWidget {
       code: baseTextStyle.copyWith(
         fontFamily: 'monospace',
         backgroundColor: codeBackground,
-        fontSize: 13,
+        fontSize: 12.5,
       ),
       listBullet: baseTextStyle,
       blockSpacing: 8,
@@ -1058,38 +1644,12 @@ class _AssistantSummaryBubble extends StatelessWidget {
       message.text,
       budget: inputBudget,
     );
-    return Container(
+    return Padding(
       key: const ValueKey('assistant-turn-summary'),
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-        border: Border.all(color: AppColors.border),
-        boxShadow: AppShadows.soft,
-      ),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
-            children: [
-              Icon(
-                Icons.auto_awesome_rounded,
-                size: 15,
-                color: AppColors.textSecondary,
-              ),
-              SizedBox(width: 7),
-              Text(
-                'Task summary',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 7),
           if (decision.useMarkdown)
             _SelectableMessageMarkdown(
               data: decision.text,
@@ -1099,15 +1659,15 @@ class _AssistantSummaryBubble extends StatelessWidget {
                     p: const TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 14,
-                      height: 1.48,
-                      fontWeight: FontWeight.w600,
+                      height: 1.55,
+                      fontWeight: FontWeight.w400,
                     ),
                     listBullet: const TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 14,
-                      height: 1.48,
+                      height: 1.55,
                     ),
-                    blockSpacing: 7,
+                    blockSpacing: 8,
                     listIndent: 22,
                   ),
               onTapLink: onTapLink,
@@ -1118,8 +1678,8 @@ class _AssistantSummaryBubble extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 14,
-                height: 1.48,
-                fontWeight: FontWeight.w600,
+                height: 1.55,
+                fontWeight: FontWeight.w400,
               ),
             ),
         ],
@@ -1267,6 +1827,21 @@ class _ToolBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final parsed = _ParsedTool.fromMessage(message);
+    final images = _toolImageBlocks(parsed.content);
+    final diffs = _toolDiffs(parsed.content);
+    if (images.isNotEmpty || diffs.isNotEmpty) {
+      final statusSummary = _ToolGroupStatusSummary.from([parsed]);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (images.isNotEmpty)
+            _ToolImageActivity(images: images, statusSummary: statusSummary),
+          if (images.isNotEmpty && diffs.isNotEmpty) const SizedBox(height: 8),
+          if (diffs.isNotEmpty)
+            _ToolDiffActivity(diffs: diffs, statusSummary: statusSummary),
+        ],
+      );
+    }
     return _ToolFrame(
       child: _ToolCallCard(parsed: parsed, inputBudget: inputBudget),
     );
@@ -1282,45 +1857,412 @@ class _ToolGroupBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final parsedTools = messages.map(_ParsedTool.fromMessage).toList();
-    final counts = <String, int>{};
-    for (final parsed in parsedTools) {
-      counts.update(parsed.title, (value) => value + 1, ifAbsent: () => 1);
+    final richMessages = <ChatMessage>[];
+    final ordinaryMessages = <ChatMessage>[];
+    final imageBlocks = <Map<String, Object?>>[];
+    final diffs = <_ToolDiffProjection>[];
+    for (var index = 0; index < messages.length; index++) {
+      final images = _toolImageBlocks(parsedTools[index].content);
+      final toolDiffs = _toolDiffs(parsedTools[index].content);
+      if (images.isEmpty && toolDiffs.isEmpty) {
+        ordinaryMessages.add(messages[index]);
+      } else {
+        richMessages.add(messages[index]);
+        imageBlocks.addAll(images);
+        diffs.addAll(toolDiffs);
+      }
+    }
+    if (imageBlocks.isNotEmpty || diffs.isNotEmpty) {
+      final richTools = richMessages
+          .map(_ParsedTool.fromMessage)
+          .toList(growable: false);
+      final statusSummary = _ToolGroupStatusSummary.from(richTools);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (imageBlocks.isNotEmpty)
+            _ToolImageActivity(
+              images: imageBlocks,
+              statusSummary: statusSummary,
+            ),
+          if (imageBlocks.isNotEmpty && diffs.isNotEmpty)
+            const SizedBox(height: 8),
+          if (diffs.isNotEmpty)
+            _ToolDiffActivity(diffs: diffs, statusSummary: statusSummary),
+          if (ordinaryMessages.isNotEmpty) const SizedBox(height: 8),
+          if (ordinaryMessages.length == 1)
+            _ToolBubble(
+              message: ordinaryMessages.single,
+              inputBudget: inputBudget,
+            )
+          else if (ordinaryMessages.length > 1)
+            _ToolGroupBubble(
+              messages: ordinaryMessages,
+              inputBudget: inputBudget,
+            ),
+        ],
+      );
     }
     final statusSummary = _ToolGroupStatusSummary.from(parsedTools);
 
+    return _ToolFrame(
+      child: _ToolGroupDisclosure(
+        parsedTools: parsedTools,
+        statusSummary: statusSummary,
+      ),
+    );
+  }
+}
+
+class _ToolImageActivity extends StatefulWidget {
+  const _ToolImageActivity({required this.images, required this.statusSummary});
+
+  final List<Map<String, Object?>> images;
+  final _ToolGroupStatusSummary statusSummary;
+
+  @override
+  State<_ToolImageActivity> createState() => _ToolImageActivityState();
+}
+
+class _ToolImageActivityState extends State<_ToolImageActivity> {
+  var _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleCount = widget.images.length.clamp(0, 4);
+    final complete = widget.statusSummary.label == 'completed';
     return _ToolFrame(
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: Material(
           color: Colors.transparent,
           child: ExpansionTile(
-            key: const ValueKey('tool-call-group-toggle'),
-            tilePadding: const EdgeInsets.fromLTRB(2, 1, 2, 1),
-            childrenPadding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+            key: const ValueKey('tool-image-activity-toggle'),
             initiallyExpanded: false,
             maintainState: true,
+            tilePadding: const EdgeInsets.symmetric(horizontal: 2),
+            childrenPadding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+            onExpansionChanged: (value) => setState(() => _expanded = value),
             leading: const Icon(
-              Icons.account_tree_outlined,
+              Icons.photo_library_outlined,
+              size: 17,
               color: AppColors.textSecondary,
-              size: 16,
             ),
-            title: _ToolGroupHeader(
-              totalCount: messages.length,
-              statusSummary: statusSummary,
-              counts: counts,
+            title: Text(
+              '${complete ? 'Viewed' : 'Viewing'} ${widget.images.length} '
+              'image${widget.images.length == 1 ? '' : 's'}',
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-            children: [
-              const Divider(height: 10, color: AppColors.borderSoft),
-              for (var index = 0; index < parsedTools.length; index++) ...[
-                _ToolSequenceCard(
-                  index: index + 1,
-                  parsed: parsedTools[index],
-                  inputBudget: inputBudget,
-                ),
-                if (index != parsedTools.length - 1) const SizedBox(height: 6),
-              ],
-            ],
+            children: !_expanded
+                ? const <Widget>[]
+                : [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (var index = 0; index < visibleCount; index++)
+                            _ImageContentBlock(
+                              block: widget.images[index],
+                              compact: true,
+                            ),
+                          if (widget.images.length > visibleCount)
+                            Container(
+                              width: 116,
+                              height: 116,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: AppColors.surfaceRaised,
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.lg,
+                                ),
+                                border: Border.all(color: AppColors.border),
+                              ),
+                              child: Text(
+                                '+${widget.images.length - visibleCount}',
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolDiffActivity extends StatefulWidget {
+  const _ToolDiffActivity({required this.diffs, required this.statusSummary});
+
+  final List<_ToolDiffProjection> diffs;
+  final _ToolGroupStatusSummary statusSummary;
+
+  @override
+  State<_ToolDiffActivity> createState() => _ToolDiffActivityState();
+}
+
+class _ToolDiffActivityState extends State<_ToolDiffActivity> {
+  var _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final additionCount = widget.diffs.fold<int>(
+      0,
+      (total, diff) => total + diff.additionCount,
+    );
+    final deletionCount = widget.diffs.fold<int>(
+      0,
+      (total, diff) => total + diff.deletionCount,
+    );
+    return _ToolFrame(
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: Material(
+          color: Colors.transparent,
+          child: ExpansionTile(
+            key: const ValueKey('tool-diff-activity-toggle'),
+            initiallyExpanded: false,
+            maintainState: true,
+            tilePadding: const EdgeInsets.symmetric(horizontal: 2),
+            childrenPadding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+            onExpansionChanged: (value) => setState(() => _expanded = value),
+            leading: const Icon(
+              Icons.edit_note_outlined,
+              size: 18,
+              color: AppColors.textSecondary,
+            ),
+            title: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${widget.diffs.length} file'
+                    '${widget.diffs.length == 1 ? '' : 's'} edited',
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  '+$additionCount',
+                  style: const TextStyle(
+                    color: AppColors.success,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '-$deletionCount',
+                  style: const TextStyle(
+                    color: AppColors.danger,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+            children: !_expanded
+                ? const <Widget>[]
+                : [
+                    for (
+                      var index = 0;
+                      index < widget.diffs.length;
+                      index++
+                    ) ...[
+                      _ToolDiffCard(diff: widget.diffs[index]),
+                      if (index != widget.diffs.length - 1)
+                        const SizedBox(height: 8),
+                    ],
+                  ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolDiffCard extends StatelessWidget {
+  const _ToolDiffCard({required this.diff});
+
+  final _ToolDiffProjection diff;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = diff.visibleLines;
+    return Container(
+      width: double.infinity,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(11, 7, 5, 7),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    diff.path,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  '+${diff.additionCount}',
+                  style: const TextStyle(
+                    color: AppColors.success,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  '-${diff.deletionCount}',
+                  style: const TextStyle(
+                    color: AppColors.danger,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                IconButton(
+                  key: ValueKey('copy-tool-diff-${diff.path}'),
+                  tooltip: 'Copy diff',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 30,
+                    height: 30,
+                  ),
+                  onPressed: () => Clipboard.setData(
+                    ClipboardData(text: diff.clipboardText),
+                  ),
+                  icon: const Icon(Icons.copy_all_outlined, size: 15),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: AppColors.borderSoft),
+          SizedBox(
+            height: _boundedNestedListHeight(
+              itemCount: lines.length,
+              estimatedItemHeight: 23,
+              maxHeight: _nestedDetailsMaxHeight,
+            ),
+            child: ListView.builder(
+              key: ValueKey('tool-diff-lines-${diff.path}'),
+              primary: false,
+              itemCount: lines.length,
+              itemBuilder: (context, index) =>
+                  _UnifiedDiffLineRow(line: lines[index]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnifiedDiffLineRow extends StatelessWidget {
+  const _UnifiedDiffLineRow({required this.line});
+
+  final _UnifiedDiffLine line;
+
+  @override
+  Widget build(BuildContext context) {
+    final background = switch (line.kind) {
+      _UnifiedDiffLineKind.addition => AppColors.success.withValues(
+        alpha: 0.10,
+      ),
+      _UnifiedDiffLineKind.deletion => AppColors.danger.withValues(alpha: 0.09),
+      _UnifiedDiffLineKind.context => Colors.transparent,
+    };
+    final accent = switch (line.kind) {
+      _UnifiedDiffLineKind.addition => AppColors.success,
+      _UnifiedDiffLineKind.deletion => AppColors.danger,
+      _UnifiedDiffLineKind.context => AppColors.textTertiary,
+    };
+    final marker = switch (line.kind) {
+      _UnifiedDiffLineKind.addition => '+',
+      _UnifiedDiffLineKind.deletion => '-',
+      _UnifiedDiffLineKind.context => ' ',
+    };
+    return ColoredBox(
+      color: background,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _DiffLineNumber(value: line.oldLine),
+          _DiffLineNumber(value: line.newLine),
+          SizedBox(
+            width: 18,
+            child: Text(
+              marker,
+              style: TextStyle(
+                color: accent,
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              line.text,
+              softWrap: false,
+              overflow: TextOverflow.fade,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontFamily: 'monospace',
+                fontSize: 11,
+                height: 1.55,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiffLineNumber extends StatelessWidget {
+  const _DiffLineNumber({required this.value});
+
+  final int? value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 38,
+      padding: const EdgeInsets.only(right: 6),
+      alignment: Alignment.topRight,
+      child: Text(
+        value?.toString() ?? '',
+        style: const TextStyle(
+          color: AppColors.textTertiary,
+          fontFamily: 'monospace',
+          fontSize: 10,
+          height: 1.7,
         ),
       ),
     );
@@ -1451,97 +2393,478 @@ class _ToolCallCardState extends State<_ToolCallCard> {
   }
 }
 
-class _ToolSequenceCard extends StatelessWidget {
-  const _ToolSequenceCard({
-    required this.index,
-    required this.parsed,
-    required this.inputBudget,
+class _ToolGroupDisclosure extends StatefulWidget {
+  const _ToolGroupDisclosure({
+    required this.parsedTools,
+    required this.statusSummary,
   });
 
-  final int index;
-  final _ParsedTool parsed;
-  final AcpInputBudget inputBudget;
+  final List<_ParsedTool> parsedTools;
+  final _ToolGroupStatusSummary statusSummary;
+
+  @override
+  State<_ToolGroupDisclosure> createState() => _ToolGroupDisclosureState();
+}
+
+class _ToolGroupDisclosureState extends State<_ToolGroupDisclosure> {
+  var _hovered = false;
+  var _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
+    final foreground = _hovered && !_expanded
+        ? AppColors.textPrimary
+        : AppColors.textSecondary;
+    final showChevron = _hovered || _expanded;
+    final statusLabel = widget.statusSummary.label == 'completed'
+        ? null
+        : _humanizeStatus(widget.statusSummary.label);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 14),
-          child: _ToolCallCard(parsed: parsed, inputBudget: inputBudget),
-        ),
-        Positioned(
-          left: 0,
-          top: 18,
-          child: Container(
-            width: 22,
-            height: 22,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Text(
-              '$index',
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 10,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 0,
+        MouseRegion(
+          onEnter: (_) => setState(() => _hovered = true),
+          onExit: (_) => setState(() => _hovered = false),
+          child: Semantics(
+            button: true,
+            expanded: _expanded,
+            label: _toolGroupActivitySummary(widget.parsedTools),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                key: const ValueKey('tool-call-group-toggle'),
+                borderRadius: BorderRadius.circular(AppRadius.sm),
+                hoverColor: Colors.transparent,
+                splashColor: Colors.transparent,
+                highlightColor: Colors.transparent,
+                onTap: () => setState(() => _expanded = !_expanded),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TweenAnimationBuilder<Color?>(
+                        duration: const Duration(milliseconds: 150),
+                        curve: Curves.easeOutCubic,
+                        tween: ColorTween(end: foreground),
+                        builder: (context, color, child) => Icon(
+                          _toolGroupActivityIcon(widget.parsedTools),
+                          color: color,
+                          size: 18,
+                        ),
+                      ),
+                      const SizedBox(width: 9),
+                      Flexible(
+                        child: AnimatedDefaultTextStyle(
+                          key: const ValueKey('tool-call-group-summary'),
+                          duration: const Duration(milliseconds: 150),
+                          curve: Curves.easeOutCubic,
+                          style: TextStyle(
+                            color: foreground,
+                            fontSize: 13.5,
+                            height: 1.3,
+                            fontWeight: _hovered && !_expanded
+                                ? FontWeight.w700
+                                : FontWeight.w600,
+                            letterSpacing: 0,
+                          ),
+                          child: Text(
+                            _toolGroupActivitySummary(widget.parsedTools),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                      if (statusLabel != null) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          statusLabel,
+                          style: TextStyle(
+                            color: widget.statusSummary.color,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(width: 3),
+                      AnimatedOpacity(
+                        key: const ValueKey('tool-call-group-chevron-opacity'),
+                        duration: const Duration(milliseconds: 120),
+                        curve: Curves.easeOut,
+                        opacity: showChevron ? 1 : 0,
+                        child: AnimatedRotation(
+                          key: const ValueKey('tool-call-group-chevron'),
+                          duration: const Duration(milliseconds: 160),
+                          curve: Curves.easeOutCubic,
+                          turns: _expanded ? 0.25 : 0,
+                          child: Icon(
+                            Icons.chevron_right_rounded,
+                            size: 18,
+                            color: foreground,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: _expanded
+              ? Padding(
+                  key: const ValueKey('tool-call-group-details'),
+                  padding: const EdgeInsets.fromLTRB(0, 5, 0, 7),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final tool in widget.parsedTools)
+                        _ToolActivityRow(
+                          presentation: _toolActivityPresentation(tool),
+                          status: tool.status,
+                        ),
+                    ],
+                  ),
+                )
+              : const SizedBox.shrink(
+                  key: ValueKey('tool-call-group-details-collapsed'),
+                ),
         ),
       ],
     );
   }
 }
 
-class _ToolGroupHeader extends StatelessWidget {
-  const _ToolGroupHeader({
-    required this.totalCount,
-    required this.statusSummary,
-    required this.counts,
-  });
+class _ToolActivityRow extends StatelessWidget {
+  const _ToolActivityRow({required this.presentation, required this.status});
 
-  final int totalCount;
-  final _ToolGroupStatusSummary statusSummary;
-  final Map<String, int> counts;
+  final _ToolActivityPresentation presentation;
+  final String status;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
+    final statusKind = _toolGroupStatusKind(status);
+    final statusLabel = statusKind == _ToolGroupStatusKind.completed
+        ? null
+        : _humanizeStatus(status);
+    return Semantics(
+      label: presentation.semanticLabel,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
+            Icon(presentation.icon, size: 17, color: AppColors.textSecondary),
+            const SizedBox(width: 9),
             Expanded(
-              child: Text(
-                '$totalCount tool calls',
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0,
+              child: Tooltip(
+                message: presentation.semanticLabel,
+                waitDuration: const Duration(milliseconds: 450),
+                child: Text.rich(
+                  TextSpan(
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                      height: 1.35,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    children: [
+                      TextSpan(text: presentation.action),
+                      if (presentation.subject.isNotEmpty) ...[
+                        const TextSpan(text: ' '),
+                        TextSpan(
+                          text: presentation.subject,
+                          style: TextStyle(
+                            decoration: presentation.linkSubject
+                                ? TextDecoration.underline
+                                : TextDecoration.none,
+                            decorationColor: AppColors.textTertiary,
+                            decorationStyle: TextDecorationStyle.dotted,
+                          ),
+                        ),
+                      ],
+                      if (presentation.suffix.isNotEmpty)
+                        TextSpan(text: ' ${presentation.suffix}'),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
-            _StatusPill(label: statusSummary.label, color: statusSummary.color),
+            if (statusLabel != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                statusLabel,
+                style: TextStyle(
+                  color: _statusColor(status),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ],
         ),
-        const SizedBox(height: 5),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final entry in counts.entries)
-              _ToolCountChip(label: entry.key, count: entry.value),
-          ],
-        ),
-      ],
+      ),
     );
   }
+}
+
+enum _ToolActivityKind {
+  load,
+  read,
+  edit,
+  run,
+  search,
+  interact,
+  wait,
+  context,
+  generic,
+}
+
+class _ToolActivityPresentation {
+  const _ToolActivityPresentation({
+    required this.kind,
+    required this.icon,
+    required this.action,
+    required this.subject,
+    this.suffix = '',
+    this.linkSubject = false,
+  });
+
+  final _ToolActivityKind kind;
+  final IconData icon;
+  final String action;
+  final String subject;
+  final String suffix;
+  final bool linkSubject;
+
+  String get semanticLabel => [
+    action,
+    if (subject.isNotEmpty) subject,
+    if (suffix.isNotEmpty) suffix,
+  ].join(' ');
+}
+
+_ToolActivityPresentation _toolActivityPresentation(_ParsedTool tool) {
+  final kind = _toolActivityKind(tool);
+  final input = _objectMap(tool.input);
+  final diffs = _toolDiffs(tool.content);
+  final path = _toolFilePath(tool, input, diffs);
+  final subject = switch (kind) {
+    _ToolActivityKind.read || _ToolActivityKind.edit => path,
+    _ToolActivityKind.run => _toolCommand(tool, input),
+    _ToolActivityKind.search => _firstNonEmptyString(input, const [
+      'q',
+      'query',
+      'pattern',
+      'search_term',
+    ]),
+    _ToolActivityKind.interact => 'the app',
+    _ToolActivityKind.wait => 'for background work',
+    _ToolActivityKind.context => 'context',
+    _ToolActivityKind.load => _firstNonEmptyString(input, const [
+      'name',
+      'skill',
+      'tool',
+      'path',
+    ]),
+    _ToolActivityKind.generic => tool.title,
+  };
+  final additions = diffs.fold<int>(0, (sum, diff) => sum + diff.additionCount);
+  final deletions = diffs.fold<int>(0, (sum, diff) => sum + diff.deletionCount);
+  final suffix = additions == 0 && deletions == 0
+      ? ''
+      : '+$additions -$deletions';
+  return switch (kind) {
+    _ToolActivityKind.load => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.extension_outlined,
+      action: 'Loaded',
+      subject: subject,
+    ),
+    _ToolActivityKind.read => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.menu_book_outlined,
+      action: 'Read',
+      subject: subject,
+      linkSubject: subject.isNotEmpty,
+    ),
+    _ToolActivityKind.edit => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.edit_outlined,
+      action: 'Edited',
+      subject: subject,
+      suffix: suffix,
+      linkSubject: subject.isNotEmpty,
+    ),
+    _ToolActivityKind.run => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.terminal_rounded,
+      action: 'Ran',
+      subject: subject,
+    ),
+    _ToolActivityKind.search => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.search_rounded,
+      action: 'Searched',
+      subject: subject,
+    ),
+    _ToolActivityKind.interact => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.touch_app_outlined,
+      action: 'Controlled',
+      subject: subject,
+    ),
+    _ToolActivityKind.wait => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.schedule_rounded,
+      action: 'Waited',
+      subject: subject,
+    ),
+    _ToolActivityKind.context => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.compress_rounded,
+      action: 'Compacted',
+      subject: subject,
+    ),
+    _ToolActivityKind.generic => _ToolActivityPresentation(
+      kind: kind,
+      icon: Icons.build_outlined,
+      action: 'Used',
+      subject: subject,
+    ),
+  };
+}
+
+_ToolActivityKind _toolActivityKind(_ParsedTool tool) {
+  final title = tool.title.toLowerCase();
+  if (title.contains('node_repl') ||
+      title.contains('computer_use') ||
+      title.contains('computer-use')) {
+    return _ToolActivityKind.interact;
+  }
+  if (title == 'wait' || title.endsWith('.wait')) {
+    return _ToolActivityKind.wait;
+  }
+  if (title.contains('context compact')) {
+    return _ToolActivityKind.context;
+  }
+  if (title.contains('edit') ||
+      title.contains('write') ||
+      title.contains('patch') ||
+      title.contains('create_file')) {
+    return _ToolActivityKind.edit;
+  }
+  if (title == 'read' ||
+      title.contains('read_file') ||
+      title.contains('view_file') ||
+      title.contains('open_file')) {
+    return _ToolActivityKind.read;
+  }
+  if (title.contains('exec') ||
+      title.contains('command') ||
+      title.contains('shell') ||
+      title.contains('bash') ||
+      title.contains('terminal') ||
+      title.contains('write_stdin')) {
+    return _ToolActivityKind.run;
+  }
+  if (title.contains('search') || title == 'find' || title.contains('grep')) {
+    return _ToolActivityKind.search;
+  }
+  if (title.contains('load') ||
+      title.contains('skill') ||
+      title.contains('tool_search')) {
+    return _ToolActivityKind.load;
+  }
+  return _ToolActivityKind.generic;
+}
+
+String _toolFilePath(
+  _ParsedTool tool,
+  Map<String, Object?> input,
+  List<_ToolDiffProjection> diffs,
+) {
+  final direct = _firstNonEmptyString(input, const [
+    'path',
+    'file_path',
+    'filePath',
+    'filename',
+    'file',
+  ]);
+  final candidate = direct.isNotEmpty
+      ? direct
+      : diffs.isNotEmpty
+      ? diffs.first.path
+      : tool.locations.isNotEmpty
+      ? tool.locations.first.split(':').first
+      : _patchFilePath(tool.input);
+  if (candidate.isEmpty) return '';
+  final normalized = candidate.replaceAll('\\', '/');
+  final parts = normalized.split('/').where((part) => part.isNotEmpty).toList();
+  return parts.isEmpty ? candidate : parts.last;
+}
+
+String _patchFilePath(Object? input) {
+  if (input is! String) return '';
+  final match = RegExp(
+    r'^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$',
+    multiLine: true,
+  ).firstMatch(input);
+  return match?.group(1)?.trim() ?? '';
+}
+
+String _toolCommand(_ParsedTool tool, Map<String, Object?> input) {
+  final command = _firstNonEmptyString(input, const ['cmd', 'command']);
+  if (command.isNotEmpty) return command;
+  return tool.title;
+}
+
+String _firstNonEmptyString(Map<String, Object?> input, List<String> keys) {
+  for (final key in keys) {
+    final value = input[key];
+    if (value is String && value.trim().isNotEmpty) return value.trim();
+  }
+  return '';
+}
+
+String _toolGroupActivitySummary(List<_ParsedTool> tools) {
+  final kinds = tools.map(_toolActivityKind).toSet();
+  final activities = <String>[
+    if (kinds.contains(_ToolActivityKind.load)) 'loaded tools',
+    if (kinds.contains(_ToolActivityKind.edit)) 'edited files',
+    if (kinds.contains(_ToolActivityKind.read)) 'read files',
+    if (kinds.contains(_ToolActivityKind.run)) 'ran commands',
+    if (kinds.contains(_ToolActivityKind.search)) 'searched',
+    if (kinds.contains(_ToolActivityKind.interact)) 'controlled the app',
+    if (kinds.contains(_ToolActivityKind.wait)) 'waited for background work',
+    if (kinds.contains(_ToolActivityKind.context)) 'compacted context',
+  ];
+  if (activities.isEmpty) {
+    final titles = tools.map((tool) => tool.title).toSet();
+    if (titles.length == 1) return 'Used ${titles.single}';
+    return 'Used ${tools.length} tools';
+  }
+  final sentence = _naturalLanguageList(activities);
+  return sentence[0].toUpperCase() + sentence.substring(1);
+}
+
+String _naturalLanguageList(List<String> items) {
+  if (items.length == 1) return items.single;
+  if (items.length == 2) return '${items.first} and ${items.last}';
+  return '${items.take(items.length - 1).join(', ')}, and ${items.last}';
+}
+
+IconData _toolGroupActivityIcon(List<_ParsedTool> tools) {
+  final edited = tools.any(
+    (tool) => _toolActivityKind(tool) == _ToolActivityKind.edit,
+  );
+  return edited ? Icons.edit_outlined : Icons.build_outlined;
 }
 
 enum _ToolGroupStatusKind { pending, inProgress, completed, failed, cancelled }
@@ -1616,53 +2939,6 @@ _ToolGroupStatusKind _toolGroupStatusKind(String status) {
     'cancelled' || 'canceled' => _ToolGroupStatusKind.cancelled,
     _ => _ToolGroupStatusKind.pending,
   };
-}
-
-class _ToolCountChip extends StatelessWidget {
-  const _ToolCountChip({required this.label, required this.count});
-
-  final String label;
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 260),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceMuted,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Flexible(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            'x$count',
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _ToolHeader extends StatelessWidget {
@@ -2053,11 +3329,15 @@ class _ContentBlocksPreview extends StatefulWidget {
     required this.message,
     required this.inputBudget,
     required this.previewRevision,
+    this.beforeText = false,
+    this.compactImages = false,
   });
 
   final ChatMessage message;
   final AcpInputBudget inputBudget;
   final Object previewRevision;
+  final bool beforeText;
+  final bool compactImages;
 
   @override
   State<_ContentBlocksPreview> createState() => _ContentBlocksPreviewState();
@@ -2097,7 +3377,9 @@ class _ContentBlocksPreviewState extends State<_ContentBlocksPreview> {
     if (_projection.visibleCount == 0) {
       if (_projection.exhausted) return const SizedBox.shrink();
       return Padding(
-        padding: EdgeInsets.only(top: widget.message.text.isEmpty ? 0 : 8),
+        padding: EdgeInsets.only(
+          top: widget.beforeText || widget.message.text.isEmpty ? 0 : 8,
+        ),
         child: const _ContentProjectionPendingNotice(),
       );
     }
@@ -2106,7 +3388,9 @@ class _ContentBlocksPreviewState extends State<_ContentBlocksPreview> {
         _projection.visibleCount + (hasPendingItems ? 1 : 0);
 
     return Padding(
-      padding: EdgeInsets.only(top: widget.message.text.isEmpty ? 0 : 8),
+      padding: EdgeInsets.only(
+        top: widget.beforeText || widget.message.text.isEmpty ? 0 : 8,
+      ),
       child: SizedBox(
         height: _boundedNestedListHeight(
           itemCount: renderedItemCount,
@@ -2134,6 +3418,7 @@ class _ContentBlocksPreviewState extends State<_ContentBlocksPreview> {
                 block: block,
                 inputBudget: widget.inputBudget,
                 previewRevision: widget.previewRevision,
+                compactImage: widget.compactImages,
               ),
             );
           },
@@ -2275,17 +3560,22 @@ class _ContentBlockCard extends StatelessWidget {
     required this.block,
     required this.inputBudget,
     required this.previewRevision,
+    this.compactImage = false,
   });
 
   final Map<String, Object?> block;
   final AcpInputBudget inputBudget;
   final Object previewRevision;
+  final bool compactImage;
 
   @override
   Widget build(BuildContext context) {
     final type = _stringMetadata(block, 'type') ?? 'unknown';
     return switch (type) {
-      'image' => _ImageContentBlock(block: block),
+      'image' => Align(
+        alignment: compactImage ? Alignment.centerRight : Alignment.centerLeft,
+        child: _ImageContentBlock(block: block, compact: compactImage),
+      ),
       'audio' => _AudioContentBlock(block: block),
       'resource_link' || 'resource' => _ResourceContentBlock(
         block: block,
@@ -2302,30 +3592,46 @@ class _ContentBlockCard extends StatelessWidget {
 }
 
 class _ImageContentBlock extends StatelessWidget {
-  const _ImageContentBlock({required this.block});
+  const _ImageContentBlock({required this.block, this.compact = false});
 
   final Map<String, Object?> block;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final mimeType = _stringMetadata(block, 'mimeType') ?? 'image';
     final data = _stringMetadata(block, 'data');
     final imageDecode = _ImageDecodeScope.of(context);
+    final preview = data == null
+        ? const Center(child: Text('Image preview unavailable.'))
+        : ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            child: BoundedImagePreview(
+              data: data,
+              inputBudget: imageDecode.inputBudget,
+              imageDecodeLedger: imageDecode.ledger,
+              decoder: imageDecode.decoder,
+            ),
+          );
+    if (compact) {
+      return Container(
+        key: const ValueKey('inline-image-thumbnail'),
+        width: 116,
+        height: 116,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: preview,
+      );
+    }
     return _InlineContentFrame(
       icon: Icons.image_outlined,
       title: 'Image',
       subtitle: '$mimeType${data == null ? '' : ' · ${data.length} chars'}',
-      child: data == null
-          ? const Text('Image preview unavailable.')
-          : ClipRRect(
-              borderRadius: BorderRadius.circular(AppRadius.sm),
-              child: BoundedImagePreview(
-                data: data,
-                inputBudget: imageDecode.inputBudget,
-                imageDecodeLedger: imageDecode.ledger,
-                decoder: imageDecode.decoder,
-              ),
-            ),
+      child: preview,
     );
   }
 }
@@ -3538,6 +4844,201 @@ List<Map<String, Object?>> _mapList(Object? value) {
     if (entry is Map<String, Object?>) return entry;
     return entry.map((key, value) => MapEntry(key.toString(), value));
   }).toList();
+}
+
+List<Map<String, Object?>> _toolImageBlocks(Object? content) {
+  final images = <Map<String, Object?>>[];
+  for (final item in _mapList(content)) {
+    Map<String, Object?> block;
+    if (_stringMetadata(item, 'type') == 'content') {
+      block = _objectMap(item['content']);
+    } else {
+      block = item;
+    }
+    if (_stringMetadata(block, 'type') == 'image') {
+      images.add(block);
+    }
+  }
+  return images;
+}
+
+List<_ToolDiffProjection> _toolDiffs(Object? content) {
+  final diffs = <_ToolDiffProjection>[];
+  for (final item in _mapList(content)) {
+    if (_stringMetadata(item, 'type') != 'diff') continue;
+    final path = _stringMetadata(item, 'path') ?? 'Edited file';
+    final oldText = _nullableStringValue(
+      _firstMetadataValue(item, const ['oldText', 'old_text']),
+    );
+    final newText = _nullableStringValue(
+      _firstMetadataValue(item, const ['newText', 'new_text']),
+    );
+    diffs.add(
+      _ToolDiffProjection(path: path, oldText: oldText, newText: newText),
+    );
+  }
+  return diffs;
+}
+
+String? _nullableStringValue(Object? value) => value is String ? value : null;
+
+enum _UnifiedDiffLineKind { context, addition, deletion }
+
+class _UnifiedDiffLine {
+  const _UnifiedDiffLine({
+    required this.kind,
+    required this.text,
+    this.oldLine,
+    this.newLine,
+  });
+
+  final _UnifiedDiffLineKind kind;
+  final String text;
+  final int? oldLine;
+  final int? newLine;
+}
+
+class _ToolDiffProjection {
+  _ToolDiffProjection({
+    required this.path,
+    required this.oldText,
+    required this.newText,
+  }) {
+    final oldLines = _splitDiffText(oldText);
+    final newLines = _splitDiffText(newText);
+    var prefix = 0;
+    while (prefix < oldLines.length &&
+        prefix < newLines.length &&
+        oldLines[prefix] == newLines[prefix]) {
+      prefix += 1;
+    }
+    var suffix = 0;
+    while (suffix < oldLines.length - prefix &&
+        suffix < newLines.length - prefix &&
+        oldLines[oldLines.length - suffix - 1] ==
+            newLines[newLines.length - suffix - 1]) {
+      suffix += 1;
+    }
+
+    additionCount = newLines.length - prefix - suffix;
+    deletionCount = oldLines.length - prefix - suffix;
+    final rows = <_UnifiedDiffLine>[];
+    final contextStart = prefix > 2 ? prefix - 2 : 0;
+    for (var index = contextStart; index < prefix; index++) {
+      rows.add(
+        _UnifiedDiffLine(
+          kind: _UnifiedDiffLineKind.context,
+          text: oldLines[index],
+          oldLine: index + 1,
+          newLine: index + 1,
+        ),
+      );
+    }
+    final oldChangedEnd = oldLines.length - suffix;
+    for (var index = prefix; index < oldChangedEnd; index++) {
+      rows.add(
+        _UnifiedDiffLine(
+          kind: _UnifiedDiffLineKind.deletion,
+          text: oldLines[index],
+          oldLine: index + 1,
+        ),
+      );
+    }
+    final newChangedEnd = newLines.length - suffix;
+    for (var index = prefix; index < newChangedEnd; index++) {
+      rows.add(
+        _UnifiedDiffLine(
+          kind: _UnifiedDiffLineKind.addition,
+          text: newLines[index],
+          newLine: index + 1,
+        ),
+      );
+    }
+    final visibleSuffix = suffix > 2 ? 2 : suffix;
+    for (var offset = 0; offset < visibleSuffix; offset++) {
+      final oldIndex = oldLines.length - suffix + offset;
+      final newIndex = newLines.length - suffix + offset;
+      rows.add(
+        _UnifiedDiffLine(
+          kind: _UnifiedDiffLineKind.context,
+          text: oldLines[oldIndex],
+          oldLine: oldIndex + 1,
+          newLine: newIndex + 1,
+        ),
+      );
+    }
+    if (rows.isEmpty && oldLines.isNotEmpty) {
+      rows.add(
+        _UnifiedDiffLine(
+          kind: _UnifiedDiffLineKind.context,
+          text: oldLines.first,
+          oldLine: 1,
+          newLine: 1,
+        ),
+      );
+    }
+    visibleLines = _boundedDiffRows(rows);
+    clipboardText = _buildClipboardDiff(
+      path: path,
+      rows: rows,
+      oldText: oldText,
+      newText: newText,
+    );
+  }
+
+  final String path;
+  final String? oldText;
+  final String? newText;
+  late final int additionCount;
+  late final int deletionCount;
+  late final List<_UnifiedDiffLine> visibleLines;
+  late final String clipboardText;
+}
+
+List<String> _splitDiffText(String? text) {
+  if (text == null || text.isEmpty) return const <String>[];
+  final lines = text.split('\n');
+  if (lines.isNotEmpty && lines.last.isEmpty) lines.removeLast();
+  return lines;
+}
+
+List<_UnifiedDiffLine> _boundedDiffRows(List<_UnifiedDiffLine> rows) {
+  const maxRows = 240;
+  if (rows.length <= maxRows) return List.unmodifiable(rows);
+  final omitted = rows.length - maxRows + 1;
+  return List.unmodifiable([
+    ...rows.take(119),
+    _UnifiedDiffLine(
+      kind: _UnifiedDiffLineKind.context,
+      text: '… $omitted lines omitted …',
+    ),
+    ...rows.skip(rows.length - 120),
+  ]);
+}
+
+String _buildClipboardDiff({
+  required String path,
+  required List<_UnifiedDiffLine> rows,
+  required String? oldText,
+  required String? newText,
+}) {
+  final buffer = StringBuffer()
+    ..writeln('--- a/$path')
+    ..writeln('+++ b/$path');
+  for (final row in rows) {
+    final marker = switch (row.kind) {
+      _UnifiedDiffLineKind.addition => '+',
+      _UnifiedDiffLineKind.deletion => '-',
+      _UnifiedDiffLineKind.context => ' ',
+    };
+    buffer.writeln('$marker${row.text}');
+  }
+  if (rows.isEmpty && oldText != newText) {
+    buffer
+      ..writeln('-${oldText ?? ''}')
+      ..writeln('+${newText ?? ''}');
+  }
+  return buffer.toString();
 }
 
 int _lazyMapCount(Object? value) => value is List ? value.length : 0;

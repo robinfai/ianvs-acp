@@ -23,10 +23,7 @@ void main() {
       final client = RustAcpAgentClient(
         agentName: 'assistant-fixture',
         agentCommand: '/usr/bin/env',
-        agentArgs: <String>[
-          'IANVS_FIXTURE_SKIP_PERMISSION=1',
-          agentPath,
-        ],
+        agentArgs: <String>['IANVS_FIXTURE_SKIP_PERMISSION=1', agentPath],
         agentCwd: root,
         runtime: runtime,
       );
@@ -42,6 +39,7 @@ void main() {
       );
       addTearDown(enhancer.dispose);
 
+      await enhancer.validate();
       final title = await enhancer.generateSessionTitle(
         sessionId: 'main-session',
         firstPrompt: 'Implement the queue',

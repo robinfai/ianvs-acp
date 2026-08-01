@@ -603,7 +603,7 @@ void main() {
     final activeFillRects = find
         .byWidgetPredicate(
           (widget) =>
-              widget is Material && widget.color == AppColors.primarySoft,
+              widget is Material && widget.color == AppColors.surfaceSelected,
         )
         .evaluate()
         .map((element) {

@@ -667,32 +667,10 @@ class _ToolbarSessionActions extends StatelessWidget {
         ),
         const Divider(height: 9),
         _toolbarMenuItem(
-          WorkspaceSessionMenuAction.openInNewWindow,
-          Icons.open_in_new_rounded,
-          'Open in New Window',
+          WorkspaceSessionMenuAction.openSideTask,
+          Icons.add_circle_outline_rounded,
+          'Open Side Task',
           onSelected,
-        ),
-        SubmenuButton(
-          menuStyle: _toolbarMenuStyle(),
-          leadingIcon: const Icon(Icons.account_tree_outlined, size: 17),
-          menuChildren: [
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.forkLocally,
-              Icons.call_split_rounded,
-              'Continue in New Task',
-              onSelected,
-              enabled: canFork,
-            ),
-            if (supportsGitWorktrees)
-              _toolbarMenuItem(
-                WorkspaceSessionMenuAction.forkToNewWorktree,
-                Icons.account_tree_outlined,
-                'Continue in New Worktree',
-                onSelected,
-                enabled: canFork,
-              ),
-          ],
-          child: const Text('Continue in...'),
         ),
         SubmenuButton(
           menuStyle: _toolbarMenuStyle(),
@@ -716,8 +694,49 @@ class _ToolbarSessionActions extends StatelessWidget {
               'Copy Deep Link',
               onSelected,
             ),
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.copyMarkdown,
+              Icons.description_outlined,
+              'Copy as Markdown',
+              onSelected,
+            ),
           ],
-          child: const Text('Copy & Share'),
+          child: const Text('Copy'),
+        ),
+        SubmenuButton(
+          menuStyle: _toolbarMenuStyle(),
+          leadingIcon: const Icon(Icons.account_tree_outlined, size: 17),
+          menuChildren: [
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.forkLocally,
+              Icons.call_split_rounded,
+              'Continue in New Task',
+              onSelected,
+              enabled: canFork,
+            ),
+            if (supportsGitWorktrees)
+              _toolbarMenuItem(
+                WorkspaceSessionMenuAction.forkToNewWorktree,
+                Icons.account_tree_outlined,
+                'Continue in New Worktree',
+                onSelected,
+                enabled: canFork,
+              ),
+          ],
+          child: const Text('Continue in...'),
+        ),
+        _toolbarMenuItem(
+          WorkspaceSessionMenuAction.addScheduledTask,
+          Icons.schedule_rounded,
+          'Add Scheduled Task...',
+          onSelected,
+        ),
+        const Divider(height: 9),
+        _toolbarMenuItem(
+          WorkspaceSessionMenuAction.openInNewWindow,
+          Icons.open_in_new_rounded,
+          'Open in New Window',
+          onSelected,
         ),
       ],
       builder: (context, controller, child) {

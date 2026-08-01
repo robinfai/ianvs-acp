@@ -966,6 +966,8 @@ void main() {
         backgroundClient.lastPrompt,
         contains('Task ID: injected-background-task'),
       );
+
+      await foregroundController.stop();
     },
   );
 
@@ -2542,6 +2544,13 @@ void main() {
     addTearDown(controller.dispose);
     await controller.newSession(cwd: '/workspace/current');
     final sessionId = controller.currentSession!.id;
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Review this change'),
+      startsNewTurn: true,
+    );
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.assistant, text: 'Review complete'),
+    );
 
     await pumpWithWindowSize(
       tester,
@@ -2564,6 +2573,14 @@ void main() {
     await tester.pump();
 
     expect(clipboardText, sessionId);
+
+    await _openSidebarSessionMenu(tester, controller);
+    await tester.tap(find.text('Copy as Markdown'));
+    await tester.pump();
+
+    expect(clipboardText, contains('# fake-ses'));
+    expect(clipboardText, contains('## User\n\nReview this change'));
+    expect(clipboardText, contains('## Agent\n\nReview complete'));
 
     await _openSidebarSessionMenu(tester, controller);
     await tester.tap(find.text('Mark as Unread'));
@@ -3353,6 +3370,80 @@ void main() {
     );
   });
 
+  testWidgets('AcpClientApp opens a blank side task from the session menu', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sourceSessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Open Side Task'));
+    await tester.pumpAndSettle();
+
+    expect(controller.currentSession?.id, isNot(sourceSessionId));
+    expect(controller.currentSession?.cwd, '/workspace/current');
+    expect(
+      controller.sessions.map((session) => session.id),
+      contains(sourceSessionId),
+    );
+  });
+
+  testWidgets('AcpClientApp schedules the current session in Task Inbox', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add Scheduled Task...'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Add Scheduled Task'),
+      findsOneWidget,
+      reason: tester
+          .widgetList<Text>(find.byType(Text))
+          .map((widget) => widget.data)
+          .whereType<String>()
+          .join(' | '),
+    );
+    await tester.tap(find.byKey(const Key('create-scheduled-task')));
+    await tester.pumpAndSettle();
+    await _pumpUntil(tester, () => taskHarness.controller.tasks.isNotEmpty);
+
+    final task = taskHarness.controller.tasks.singleWhere(
+      (task) => task.metadata['source_session_id'] == sessionId,
+    );
+    expect(task.status, TaskStatus.queued);
+    expect(task.metadata['scheduled_at'], isA<String>());
+    expect(task.metadata['next_retry_at'], task.metadata['scheduled_at']);
+  });
+
   testWidgets('AcpClientApp opens session worktree fork dialog from menu', (
     tester,
   ) async {
@@ -3382,6 +3473,69 @@ void main() {
     expect(find.text('Fork to New Worktree'), findsOneWidget);
     expect(find.text('/workspace/current-fake-ses-fork'), findsOneWidget);
     expect(fake.lastForkedSessionId, isNull);
+  });
+
+  testWidgets('AcpClientApp rolls back a worktree when ACP fork fails', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(forkError: StateError('fork failed'));
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final commands = <List<String>>[];
+    final worktreePath =
+        '/private/tmp/ianvs-acp-worktree-rollback-'
+        '${DateTime.now().microsecondsSinceEpoch}';
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        controller: controller,
+        taskInboxController: taskHarness.controller,
+        gitWorkspaceDetector: (_) => true,
+        processRunner: (executable, arguments) async {
+          commands.add(<String>[executable, ...arguments]);
+          if (arguments.contains('--show-toplevel')) {
+            return ProcessResult(1, 0, '/workspace/current\n', '');
+          }
+          return ProcessResult(1, 0, '', '');
+        },
+      ),
+      const Size(1400, 900),
+    );
+
+    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continue in...'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Continue in New Worktree'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField), worktreePath);
+    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+    await tester.pumpAndSettle();
+
+    expect(
+      commands.any(
+        (command) => command.contains('worktree') && command.contains('add'),
+      ),
+      isTrue,
+    );
+    expect(
+      commands.any(
+        (command) =>
+            command.contains('worktree') &&
+            command.contains('remove') &&
+            command.contains('--force') &&
+            command.contains(worktreePath),
+      ),
+      isTrue,
+    );
+    expect(
+      commands.any(
+        (command) => command.contains('branch') && command.contains('-D'),
+      ),
+      isTrue,
+    );
   });
 
   testWidgets('AcpClientApp hides toolbar worktree action outside Git', (

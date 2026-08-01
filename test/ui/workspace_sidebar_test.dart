@@ -7,7 +7,6 @@ import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
-import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 import 'package:ianvs_acp/workspace/workspace.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
@@ -1022,10 +1021,13 @@ void main() {
     expect(find.text('Rename Conversation'), findsOneWidget);
     expect(find.text('Archive Conversation'), findsOneWidget);
     expect(find.text('Mark as Unread'), findsOneWidget);
+    expect(find.text('Open Side Task'), findsOneWidget);
     expect(find.text('Copy Session ID'), findsOneWidget);
     expect(find.text('Copy Deep Link'), findsOneWidget);
+    expect(find.text('Copy as Markdown'), findsOneWidget);
     expect(find.text('Fork Locally'), findsOneWidget);
     expect(find.text('Fork to New Worktree'), findsOneWidget);
+    expect(find.text('Add Scheduled Task...'), findsOneWidget);
     expect(find.text('Open in New Window'), findsOneWidget);
 
     await tester.tap(find.text('Copy Session ID'));
@@ -1097,6 +1099,18 @@ void main() {
     expect(
       tester.getRect(activeTile).left,
       moreOrLessEquals(tester.getRect(historyRow).left),
+    );
+    expect(
+      tester.getRect(activeTile).left,
+      moreOrLessEquals(
+        tester
+            .getRect(
+              find.byKey(
+                const Key('workspace-project-strip:/workspace/current'),
+              ),
+            )
+            .left,
+      ),
     );
     expect(
       (tester.widget<Container>(activeTile).decoration as BoxDecoration).color,
@@ -1370,7 +1384,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
   });
 
-  testWidgets('WorkspaceSidebar marks active workspace with a neutral fill', (
+  testWidgets('WorkspaceSidebar leaves project row neutral without a session', (
     tester,
   ) async {
     final workspace = WorkspaceRecord(
@@ -1407,7 +1421,7 @@ void main() {
     final stripDecoration = projectStrip.decoration! as BoxDecoration;
     final groupDecoration = groupFrame.decoration! as BoxDecoration;
 
-    expect(stripDecoration.color, AppColors.surfaceMuted);
+    expect(stripDecoration.color, Colors.transparent);
     expect(stripDecoration.border, isNull);
     expect(groupDecoration.color, Colors.transparent);
     expect(groupDecoration.border, isNull);
