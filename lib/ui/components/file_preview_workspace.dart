@@ -14,6 +14,7 @@ import '../file_preview/markdown_front_matter.dart';
 import '../theme/app_design_tokens.dart';
 import 'markdown_code_block.dart';
 import 'markdown_front_matter_card.dart';
+import 'markdown_inline_link.dart';
 import 'markdown_preview_image.dart';
 
 typedef FilePreviewLinkHandler =
@@ -967,6 +968,9 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                       ),
                       builders: <String, MarkdownElementBuilder>{
                         'pre': MarkdownCodeBlockBuilder(user: false),
+                        'a': MarkdownInlineLinkBuilder(
+                          onTapLink: widget.onTapLink,
+                        ),
                         'h1': headingBuilder,
                         'h2': headingBuilder,
                         'h3': headingBuilder,
@@ -1022,6 +1026,8 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                               vertical: 8,
                             ),
                             blockSpacing: 12,
+                            codeblockPadding: EdgeInsets.zero,
+                            codeblockDecoration: const BoxDecoration(),
                           ),
                     ),
                   ],

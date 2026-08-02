@@ -53,6 +53,15 @@ void main() {
 
     expect(find.byType(MarkdownCodeBlock), findsOneWidget);
     expect(find.text('GO'), findsOneWidget);
+    final surface = tester.widget<Container>(
+      find.byKey(const ValueKey('markdown-code-block-surface')),
+    );
+    expect((surface.decoration! as BoxDecoration).border, isNull);
+    expect((surface.foregroundDecoration! as BoxDecoration).border, isNotNull);
+    expect(
+      find.byKey(const ValueKey('markdown-code-block-toolbar')),
+      findsOneWidget,
+    );
     final selectable = tester.widget<SelectableText>(
       find.byType(SelectableText),
     );

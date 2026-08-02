@@ -127,3 +127,43 @@ Old ACP replay events do not always carry the original elapsed-time metadata or 
 - Production macOS client: hot reload completed successfully. Historical-session UI capture remains unavailable in this debug build because of the pre-existing Keychain entitlement error; exact component states were therefore captured by the 1× Flutter widget renderer rather than inferred from code.
 
 final result: passed
+
+## Markdown file references and code blocks — 2026-08-02
+
+### Visual truth and rendered evidence
+
+- Source visual truth: `/var/folders/k2/8qbf3nrs7t1749d198rw0df40000gn/T/codex-clipboard-10e9100f-d13d-44fd-83ef-0dabc3553a99.png` (1790 × 1403 px).
+- Implementation screenshot: `design-qa-artifacts/markdown-rendering-polish.png` (1000 × 600 px).
+- Implementation viewport: 1000 × 600 logical px at device pixel ratio 1.0.
+- State: an assistant response containing two local Dart-file links followed by a fenced Dart code block.
+- Rendering: Flutter widget renderer with deterministic ACP test fonts and Material icons. The Chinese fixture copy appears as fallback squares in the golden because the deterministic test font intentionally covers Latin glyphs only; the production macOS capture confirms normal Chinese fallback rendering.
+
+### Full-view and focused comparison
+
+- Full view: the implementation preserves the source hierarchy and content width while removing the heavy underline treatment and the code block's nested frame.
+- Focused file-link view: each local file is now a compact neutral reference with a real Material file icon, 6 px radius, light border, restrained weight, and hover fill. Ordinary web links retain a lighter one-pixel underline.
+- Focused code-block view: the language, wrap, and copy actions remain in one 38 px toolbar; the body and toolbar now share one 10 px card, one foreground border, and no clipped shadow or secondary Markdown frame.
+
+### Comparison history
+
+- Iteration 1 — P2: local file links used bold text, a gray text background, and a heavy underline, making punctuation and adjacent links visually run together. Fixed by introducing a dedicated inline file-reference component with explicit spacing, border, radius, icon, tooltip, and hover state.
+- Iteration 1 — P2: the Markdown library's default code-block wrapper surrounded the shared code card, creating a double edge; the inner shadow could also be clipped by that wrapper. Fixed by making the library wrapper visually empty, moving the card border to the foreground, and removing the inner shadow.
+- Iteration 2: the accepted 1000 × 600 golden shows no remaining actionable P0/P1/P2 issue.
+
+### Fidelity surfaces
+
+- Fonts and typography: file labels use a compact 12.5 px semibold treatment; code remains 12.5 px SF Mono/Menlo/Monaco with 1.5 line height; toolbar labels retain clear uppercase hierarchy.
+- Spacing and layout rhythm: file references use 5/7 px horizontal padding and 2 px vertical padding; the code toolbar is 38 px high, the body retains 14 px horizontal padding, and the card uses the shared 10 px radius.
+- Colors and visual tokens: links and code cards use the existing raised, hover, border, secondary-text, and tertiary-text tokens. No new accent color was introduced.
+- Image quality and assets: no raster assets are required. File, terminal, wrap, and copy affordances use the existing Material icon library at native vector quality.
+- Copy and content: link labels, destinations, code source, language label, copy action, wrap action, and long-code expansion behavior remain dynamic and unchanged.
+
+### Interaction and regression coverage
+
+- Local file links remain semantically links, expose their destination in a tooltip, preserve the existing link callback, and gain pointer hover feedback.
+- Ordinary external links continue through the same callback with a restrained underline treatment.
+- Copy, copied confirmation, wrap toggle, syntax highlighting, long-code collapse/expand, and Markdown file preview behavior remain covered.
+- `flutter test --no-pub test/ui/chat_timeline_test.dart test/ui/markdown_code_block_test.dart test/ui/file_preview_workspace_test.dart`: 93 tests passed before the visual golden was added.
+- The dedicated visual golden test passes at 1000 × 600 and will catch future regressions to nested borders or heavy file-link styling.
+
+final result: passed

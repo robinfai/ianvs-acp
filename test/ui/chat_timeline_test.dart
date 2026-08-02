@@ -1290,6 +1290,10 @@ Review the screenshot''',
     await tester.tap(find.text('Open file'));
 
     expect(tappedHref, 'docs/readme.md#L4');
+    expect(
+      find.byKey(const ValueKey('markdown-file-reference')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('ChatTimeline renders fenced code with the shared code block', (
@@ -1307,7 +1311,59 @@ Review the screenshot''',
     expect(find.byType(MarkdownCodeBlock), findsOneWidget);
     expect(find.text('DART'), findsOneWidget);
     expect(find.byTooltip('复制代码'), findsOneWidget);
+    final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    expect(markdown.styleSheet!.codeblockPadding, EdgeInsets.zero);
+    final wrapperDecoration =
+        markdown.styleSheet!.codeblockDecoration! as BoxDecoration;
+    expect(wrapperDecoration.color, isNull);
+    expect(wrapperDecoration.border, isNull);
   });
+
+  testWidgets(
+    'ChatTimeline markdown links and code block match accepted visuals',
+    (tester) async {
+      await tester.runAsync(_loadDiffGoldenFonts);
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 600);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+
+      await tester.pumpWidget(
+        timeline(
+          [
+            ChatMessage(
+              role: ChatMessageRole.assistant,
+              text: '''右侧面板中的文件引用：
+[file_preview_workspace.dart](lib/ui/components/file_preview_workspace.dart)、[workspace_inspector.dart](lib/ui/components/workspace_inspector.dart)。
+
+最稳妥的处理是让边框最后绘制：
+
+```dart
+decoration: BoxDecoration(
+  color: AppColors.surface,
+  borderRadius: BorderRadius.circular(AppRadius.xl),
+),
+foregroundDecoration: BoxDecoration(
+  border: Border.all(color: AppColors.border),
+),
+```''',
+            ),
+          ],
+          mediaQuerySize: const Size(1000, 600),
+          theme: ThemeData(fontFamily: 'ACPTestSans'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        find.byType(Overlay).first,
+        matchesGoldenFile(
+          '../../design-qa-artifacts/markdown-rendering-polish.png',
+        ),
+      );
+    },
+    skip: !Platform.isMacOS,
+  );
 
   testWidgets('ChatTimeline displays one typed notice per omission kind', (
     tester,

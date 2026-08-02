@@ -14,6 +14,7 @@ import '../theme/app_design_tokens.dart';
 import '../markdown_render_budget.dart';
 import 'bounded_image_preview.dart';
 import 'markdown_code_block.dart';
+import 'markdown_inline_link.dart';
 import 'scroll_fade_region.dart';
 
 const List<String> _toolCallIdMetadataKeys = [
@@ -1725,14 +1726,10 @@ class _MessageBubble extends StatelessWidget {
       p: baseTextStyle,
       a: baseTextStyle.copyWith(
         color: AppColors.textPrimary,
-        backgroundColor: user
-            ? AppColors.surface.withValues(alpha: 0.62)
-            : AppColors.primaryMist,
         decoration: TextDecoration.underline,
-        decorationColor: user
-            ? AppColors.textSecondary
-            : AppColors.primary.withValues(alpha: 0.55),
-        fontWeight: FontWeight.w700,
+        decorationColor: AppColors.textTertiary,
+        decorationThickness: 1,
+        fontWeight: FontWeight.w600,
       ),
       strong: baseTextStyle.copyWith(fontWeight: FontWeight.w700),
       em: baseTextStyle.copyWith(fontStyle: FontStyle.italic),
@@ -1744,12 +1741,8 @@ class _MessageBubble extends StatelessWidget {
       listBullet: baseTextStyle,
       blockSpacing: 8,
       listIndent: 24,
-      codeblockPadding: const EdgeInsets.all(7),
-      codeblockDecoration: BoxDecoration(
-        color: codeBackground,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.border),
-      ),
+      codeblockPadding: EdgeInsets.zero,
+      codeblockDecoration: const BoxDecoration(),
     );
   }
 
@@ -1972,6 +1965,7 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       imageBuilder: _blockedMarkdownImage,
       builders: <String, MarkdownElementBuilder>{
         'pre': MarkdownCodeBlockBuilder(user: user),
+        'a': MarkdownInlineLinkBuilder(onTapLink: onTapLink),
       },
     );
 

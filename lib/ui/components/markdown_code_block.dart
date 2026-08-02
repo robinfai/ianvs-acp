@@ -181,18 +181,21 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
     }
 
     return Container(
+      key: const ValueKey('markdown-code-block-surface'),
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 2),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: const Color(0xfffbfbfd),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      foregroundDecoration: BoxDecoration(
         border: Border.all(
           color: widget.user
               ? Colors.white.withValues(alpha: 0.34)
               : AppColors.border,
         ),
         borderRadius: BorderRadius.circular(AppRadius.md),
-        boxShadow: widget.user ? null : AppShadows.soft,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -311,24 +314,25 @@ class _CodeBlockToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(minHeight: 36),
-      padding: const EdgeInsets.only(left: 12, right: 4),
-      color: const Color(0xfff5f6fa),
+      key: const ValueKey('markdown-code-block-toolbar'),
+      constraints: const BoxConstraints(minHeight: 38),
+      padding: const EdgeInsets.only(left: 13, right: 5),
+      color: const Color(0xfff6f7f8),
       child: Row(
         children: [
           const Icon(
-            Icons.code_rounded,
-            size: 15,
+            Icons.terminal_rounded,
+            size: 14,
             color: AppColors.textTertiary,
           ),
-          const SizedBox(width: 7),
+          const SizedBox(width: 6),
           Text(
             language,
             style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 10.5,
-              fontWeight: FontWeight.w800,
-              letterSpacing: .45,
+              fontWeight: FontWeight.w700,
+              letterSpacing: .55,
             ),
           ),
           if (highlightSkipped) ...[
@@ -467,8 +471,18 @@ class _CodeToolbarButton extends StatelessWidget {
       icon: Icon(icon, size: 16),
       color: selected ? AppColors.primaryDark : AppColors.textSecondary,
       style: selected
-          ? IconButton.styleFrom(backgroundColor: AppColors.primarySoft)
-          : null,
+          ? IconButton.styleFrom(
+              backgroundColor: AppColors.primarySoft,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(7),
+              ),
+            )
+          : IconButton.styleFrom(
+              overlayColor: AppColors.surfaceHover,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(7),
+              ),
+            ),
       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
