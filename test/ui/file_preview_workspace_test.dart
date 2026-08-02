@@ -130,7 +130,11 @@ void main() {
     );
     final decoration = surface.decoration! as BoxDecoration;
     expect(decoration.borderRadius, BorderRadius.circular(18));
+    expect(decoration.border, isNull);
     expect(decoration.boxShadow, isNotEmpty);
+    final foregroundDecoration = surface.foregroundDecoration! as BoxDecoration;
+    expect(foregroundDecoration.borderRadius, BorderRadius.circular(18));
+    expect(foregroundDecoration.border, isNotNull);
   });
 
   testWidgets(

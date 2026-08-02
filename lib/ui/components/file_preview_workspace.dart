@@ -95,8 +95,11 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
                           decoration: BoxDecoration(
                             color: AppColors.surface,
                             borderRadius: BorderRadius.circular(AppRadius.xl),
-                            border: Border.all(color: AppColors.border),
                             boxShadow: AppShadows.floatingPanel,
+                          ),
+                          foregroundDecoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(AppRadius.xl),
+                            border: Border.all(color: AppColors.border),
                           ),
                           child: widget.inspector,
                         ),

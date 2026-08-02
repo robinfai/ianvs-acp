@@ -2423,6 +2423,11 @@ Review the screenshot''',
       findsOneWidget,
     );
     expect(find.byType(Image), findsOneWidget);
+    final thumbnailImage = tester.widget<Image>(find.byType(Image));
+    final thumbnailProvider = thumbnailImage.image as ResizeImage;
+    expect(thumbnailProvider.policy, ResizeImagePolicy.fit);
+    expect(thumbnailProvider.width, 232);
+    expect(thumbnailProvider.height, 232);
     expect(find.text('hover\n展开\n默认'), findsOneWidget);
     expect(find.textContaining('codex-clipboard-reference'), findsNothing);
     expect(find.textContaining('[@image]'), findsNothing);
@@ -2434,6 +2439,16 @@ Review the screenshot''',
     );
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('image-preview-modal')), findsOneWidget);
+    final modalImage = tester.widget<Image>(
+      find.descendant(
+        of: find.byKey(const ValueKey('image-preview-modal')),
+        matching: find.byType(Image),
+      ),
+    );
+    final modalProvider = modalImage.image as ResizeImage;
+    expect(modalProvider.policy, ResizeImagePolicy.fit);
+    expect(modalProvider.width, 2400);
+    expect(modalProvider.height, 1600);
   });
 
   testWidgets('ChatTimeline preserves tool disclosure state across streaming', (

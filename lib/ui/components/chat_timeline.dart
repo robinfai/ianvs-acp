@@ -1865,11 +1865,14 @@ class _LegacyUserImageThumbnails extends StatelessWidget {
                 onTap: () => _showImagePreviewDialog(
                   context,
                   title: path.split(Platform.pathSeparator).last,
-                  imageBuilder: (_, _) => Image.file(
-                    File(path),
+                  imageBuilder: (_, _) => Image(
+                    image: ResizeImage(
+                      FileImage(File(path)),
+                      width: 2400,
+                      height: 1600,
+                      policy: ResizeImagePolicy.fit,
+                    ),
                     fit: BoxFit.contain,
-                    cacheWidth: 2400,
-                    cacheHeight: 1600,
                     errorBuilder: (_, _, _) => const _ImagePreviewFailure(),
                   ),
                 ),
@@ -1880,13 +1883,19 @@ class _LegacyUserImageThumbnails extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: AppColors.surface,
                     borderRadius: BorderRadius.circular(AppRadius.lg),
+                  ),
+                  foregroundDecoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(AppRadius.lg),
                     border: Border.all(color: AppColors.border),
                   ),
-                  child: Image.file(
-                    File(path),
+                  child: Image(
+                    image: ResizeImage(
+                      FileImage(File(path)),
+                      width: 232,
+                      height: 232,
+                      policy: ResizeImagePolicy.fit,
+                    ),
                     fit: BoxFit.cover,
-                    cacheWidth: 232,
-                    cacheHeight: 232,
                     errorBuilder: (_, _, _) => const Center(
                       child: Icon(
                         Icons.broken_image_outlined,
@@ -4351,10 +4360,11 @@ class _ImageContentBlock extends StatelessWidget {
     final mimeType = _stringMetadata(block, 'mimeType') ?? 'image';
     final data = _stringMetadata(block, 'data');
     final imageDecode = _ImageDecodeScope.of(context);
+    final previewRadius = compact ? AppRadius.lg : AppRadius.md;
     final preview = data == null
         ? const Center(child: Text('Image preview unavailable.'))
         : ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderRadius: BorderRadius.circular(previewRadius),
             child: BoundedImagePreview(
               data: data,
               inputBudget: imageDecode.inputBudget,
@@ -4390,6 +4400,9 @@ class _ImageContentBlock extends StatelessWidget {
               clipBehavior: Clip.antiAlias,
               decoration: BoxDecoration(
                 color: AppColors.surface,
+                borderRadius: BorderRadius.circular(AppRadius.lg),
+              ),
+              foregroundDecoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(AppRadius.lg),
                 border: Border.all(color: AppColors.border),
               ),
