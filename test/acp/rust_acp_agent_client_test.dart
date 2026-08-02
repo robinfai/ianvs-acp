@@ -135,6 +135,41 @@ void main() {
     expect(environment['PATH']?.split(':').first, '/opt/homebrew/bin');
   });
 
+  test('preserves replayed user content block payloads', () async {
+    final native = _ClientFakeNative()
+      ..restoredUserPayload = <String, Object?>{
+        'type': 'resource_link',
+        'uri': 'file:///tmp/reference.png',
+        'name': 'reference.png',
+        'mimeType': 'image/png',
+      };
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+    await client.connect();
+
+    final history = await client.resumeSession(
+      sessionId: 'restored-session',
+      cwd: '/tmp',
+    );
+
+    expect(history.first.type, AgentEventType.userMessage);
+    expect(history.first.metadata['contentBlocks'], <Object?>[
+      <String, Object?>{
+        'type': 'resource_link',
+        'uri': 'file:///tmp/reference.png',
+        'name': 'reference.png',
+        'mimeType': 'image/png',
+      },
+    ]);
+  });
+
   test('projects Rust session catalog, restore, close, and delete', () async {
     final native = _ClientFakeNative();
     final client = RustAcpAgentClient(
@@ -501,6 +536,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   String? promptMemoryContext;
   bool completeCreates = true;
   String sessionTitle = 'Fixture session';
+  Map<String, Object?>? restoredUserPayload;
 
   void invalidatePermission({
     required String requestId,
@@ -607,6 +643,15 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
     required String cwd,
     required List<String> additionalDirectories,
   }) {
+    if (restoredUserPayload case final payload?) {
+      emit('session_update', <String, Object?>{
+        'update': <String, Object?>{
+          'sessionId': sessionId,
+          'kind': 'user_message',
+          'payload': payload,
+        },
+      });
+    }
     emit('session_update', <String, Object?>{
       'update': <String, Object?>{
         'sessionId': sessionId,

@@ -39,10 +39,11 @@ import 'package:re_highlight/styles/github.dart';
 
 import '../../mermaid/mermaid_view.dart';
 import '../theme/app_design_tokens.dart';
+import 'scroll_fade_region.dart';
 
 const int markdownCodeHighlightCharacterLimit = 200 * 1024;
 const int markdownCodeHighlightLineLimit = 2000;
-const double _collapsedCodeHeight = 480;
+const double _collapsedCodeHeight = 320;
 const int _longCodeLineThreshold = 24;
 const int _longCodeCharacterThreshold = 2400;
 
@@ -169,16 +170,13 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
       child: body,
     );
     if (_isLong && !_expanded) {
-      body = SizedBox(
-        height: _collapsedCodeHeight,
-        child: Scrollbar(
-          controller: _verticalController,
-          thumbVisibility: true,
-          child: SingleChildScrollView(
-            controller: _verticalController,
-            child: body,
-          ),
-        ),
+      body = ScrollFadeRegion(
+        key: const ValueKey('code-block-scroll-region'),
+        controller: _verticalController,
+        maxHeight: _collapsedCodeHeight,
+        backgroundColor: const Color(0xfffbfbfd),
+        showScrollbar: true,
+        child: body,
       );
     }
 

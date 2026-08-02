@@ -1,7 +1,13 @@
 import 'dart:collection';
+import 'dart:io';
 import 'dart:ui' show PointerDeviceKind, SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart'
+    show
+        debugPaintBaselinesEnabled,
+        debugPaintPointersEnabled,
+        debugPaintSizeEnabled;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,24 +35,32 @@ void main() {
     AcpInputBudget inputBudget = const AcpInputBudget(),
     AcpImageDecodeBudgetLedger? imageDecodeLedger,
     BoundedImageDecoder boundedImageDecoder = const DartUiBoundedImageDecoder(),
+    Size? mediaQuerySize,
   }) {
+    final chat = ChatTimeline(
+      messages: messages,
+      agentName: agentName,
+      hasActiveSession: hasActiveSession,
+      activeSessionLabel: activeSessionLabel,
+      isLoadingSession: isLoadingSession,
+      messageListRevision: messageListRevision,
+      onNewSession: onNewSession,
+      onTapLink: onTapLink,
+      onMemoryFeedback: onMemoryFeedback,
+      inputBudget: inputBudget,
+      imageDecodeLedger: imageDecodeLedger,
+      boundedImageDecoder: boundedImageDecoder,
+    );
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       theme: theme,
       home: Scaffold(
-        body: ChatTimeline(
-          messages: messages,
-          agentName: agentName,
-          hasActiveSession: hasActiveSession,
-          activeSessionLabel: activeSessionLabel,
-          isLoadingSession: isLoadingSession,
-          messageListRevision: messageListRevision,
-          onNewSession: onNewSession,
-          onTapLink: onTapLink,
-          onMemoryFeedback: onMemoryFeedback,
-          inputBudget: inputBudget,
-          imageDecodeLedger: imageDecodeLedger,
-          boundedImageDecoder: boundedImageDecoder,
-        ),
+        body: mediaQuerySize == null
+            ? chat
+            : MediaQuery(
+                data: MediaQueryData(size: mediaQuerySize),
+                child: chat,
+              ),
       ),
     );
   }
@@ -164,8 +178,54 @@ void main() {
 
       await tester.tap(find.byKey(const ValueKey('processed-turn-toggle')));
       await tester.pumpAndSettle();
+      expect(find.text('Inspecting files'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('tool-call-group-toggle')));
+      await tester.pumpAndSettle();
       expect(find.text('Inspecting files'), findsOneWidget);
-      expect(find.text('wait'), findsOneWidget);
+      expect(find.text('Waited for background work'), findsNWidgets(2));
+    },
+  );
+
+  testWidgets(
+    'ChatTimeline infers completed historical turns from the next prompt',
+    (tester) async {
+      await tester.pumpWidget(
+        timeline([
+          ChatMessage(role: ChatMessageRole.user, text: 'First request'),
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'I will inspect the implementation.',
+          ),
+          ChatMessage(
+            role: ChatMessageRole.tool,
+            text: 'read_file',
+            metadata: const {
+              'toolCallId': 'historical-read-1',
+              'status': 'completed',
+            },
+          ),
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'The first request is complete.',
+          ),
+          ChatMessage(role: ChatMessageRole.user, text: 'Second request'),
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text: 'Working on the second request.',
+          ),
+        ]),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('First request'), findsOneWidget);
+      expect(find.text('The first request is complete.'), findsOneWidget);
+      expect(find.text('I will inspect the implementation.'), findsNothing);
+      expect(find.text('read_file'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('processed-turn-toggle')),
+        findsOneWidget,
+      );
+      expect(find.text('Working on the second request.'), findsOneWidget);
     },
   );
 
@@ -662,6 +722,21 @@ Review the screenshot''',
       tester.getTopLeft(thumbnail).dy,
       lessThan(tester.getTopLeft(find.text('Please inspect this image')).dy),
     );
+
+    await tester.tap(thumbnail);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('image-preview-modal')), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('image-preview-modal')), findsNothing);
+
+    await tester.tap(thumbnail);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('image-preview-close')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('image-preview-modal')), findsNothing);
   });
 
   testWidgets('ChatTimeline renders ACP tool image content as viewed images', (
@@ -729,29 +804,445 @@ Review the screenshot''',
       },
     );
 
-    await tester.pumpWidget(timeline([message]));
+    await tester.pumpWidget(
+      timeline([message], mediaQuerySize: const Size(800, 300)),
+    );
     await tester.pumpAndSettle();
 
-    expect(find.text('1 file edited'), findsOneWidget);
-    expect(find.text('lib/example.dart'), findsNothing);
-    expect(find.text('+1'), findsOneWidget);
-    expect(find.text('-1'), findsOneWidget);
-    expect(find.text('old value'), findsNothing);
-    expect(find.text('new value'), findsNothing);
-
-    await tester.tap(find.text('1 file edited'));
-    await tester.pumpAndSettle();
-
+    expect(find.text('Edited 1 file'), findsOneWidget);
     expect(find.text('lib/example.dart'), findsOneWidget);
     expect(find.text('+1'), findsNWidgets(2));
     expect(find.text('-1'), findsNWidgets(2));
-    expect(find.text('old value'), findsOneWidget);
-    expect(find.text('new value'), findsOneWidget);
+    expect(find.text('old value'), findsNothing);
+    expect(find.text('new value'), findsNothing);
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer();
+    await mouse.moveTo(
+      tester.getCenter(
+        find.byKey(const ValueKey('tool-diff-file-row-lib/example.dart')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
     expect(
-      find.byKey(const ValueKey('copy-tool-diff-lib/example.dart')),
+      find.byKey(const ValueKey('tool-diff-hover-preview-lib/example.dart')),
       findsOneWidget,
     );
+    expect(find.text('old value'), findsOneWidget);
+    expect(find.text('new value'), findsOneWidget);
+
+    await mouse.moveTo(Offset.zero);
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.text('old value'), findsNothing);
+    expect(find.text('new value'), findsNothing);
   });
+
+  testWidgets('ChatTimeline summarizes several edited files as one card', (
+    tester,
+  ) async {
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'edit_files',
+      metadata: const {
+        'toolCallId': 'diff-many',
+        'title': 'Edit files',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'diff',
+            'path': 'design-qa.md',
+            'oldText': 'title\n',
+            'newText': 'title\nresult\n',
+          },
+          {
+            'type': 'diff',
+            'path': 'lib/ui/components/chat_timeline.dart',
+            'oldText': 'old\n',
+            'newText': 'new\n',
+          },
+          {
+            'type': 'diff',
+            'path': 'test/ui/chat_timeline_test.dart',
+            'oldText': '',
+            'newText': 'first\nsecond\n',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(timeline([message]));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Edited 3 files'), findsOneWidget);
+    expect(find.text('design-qa.md'), findsOneWidget);
+    expect(find.text('lib/ui/components/chat_timeline.dart'), findsOneWidget);
+    expect(find.text('test/ui/chat_timeline_test.dart'), findsOneWidget);
+    expect(find.text('+4'), findsOneWidget);
+    expect(find.text('-1'), findsNWidgets(2));
+  });
+
+  testWidgets('ChatTimeline presents workspace diff paths relatively', (
+    tester,
+  ) async {
+    final absolutePath =
+        '${Directory.current.path}/lib/ui/components/chat_timeline.dart';
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'edit_file',
+      metadata: {
+        'toolCallId': 'diff-relative-path',
+        'title': 'Edit file',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'diff',
+            'path': absolutePath,
+            'oldText': 'old\n',
+            'newText': 'new\n',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(timeline([message]));
+    await tester.pumpAndSettle();
+
+    expect(find.text('lib/ui/components/chat_timeline.dart'), findsOneWidget);
+    expect(find.text(absolutePath), findsNothing);
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(ValueKey('tool-diff-file-row-$absolutePath')),
+          )
+          .label,
+      contains('Preview diff for lib/ui/components/chat_timeline.dart'),
+    );
+  });
+
+  testWidgets('ChatTimeline opens a lower-half file preview upward', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 300));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'edit_files',
+      metadata: const {
+        'toolCallId': 'diff-direction',
+        'title': 'Edit files',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'diff',
+            'path': 'lib/first.dart',
+            'oldText': 'old\n',
+            'newText': 'new\n',
+          },
+          {
+            'type': 'diff',
+            'path': 'lib/bottom.dart',
+            'oldText': 'before\n',
+            'newText': 'after\n',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      timeline([message], mediaQuerySize: const Size(800, 300)),
+    );
+    await tester.pumpAndSettle();
+
+    final row = find.byKey(
+      const ValueKey('tool-diff-file-row-lib/bottom.dart'),
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer();
+    await mouse.moveTo(tester.getCenter(row));
+    await tester.pumpAndSettle();
+
+    final preview = find.byKey(
+      const ValueKey('tool-diff-hover-preview-lib/bottom.dart'),
+    );
+    expect(preview, findsOneWidget);
+    expect(tester.getCenter(row).dy, greaterThan(150));
+    final rowRect = tester.getRect(row);
+    final previewRect = tester.getRect(preview);
+    expect((previewRect.right - rowRect.right).abs(), lessThanOrEqualTo(1));
+    expect((previewRect.left - rowRect.left - 40).abs(), lessThanOrEqualTo(1));
+    expect(previewRect.bottom - rowRect.top, closeTo(8, 1));
+
+    await mouse.moveTo(previewRect.center);
+    await tester.pump(const Duration(milliseconds: 140));
+    expect(preview, findsOneWidget);
+    expect(
+      tester
+          .widget<Container>(
+            find.byKey(
+              const ValueKey('tool-diff-file-row-surface-lib/bottom.dart'),
+            ),
+          )
+          .color,
+      AppColors.surfaceRaised,
+    );
+  });
+
+  testWidgets('ChatTimeline opens an upper-half file preview downward', (
+    tester,
+  ) async {
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'edit_file',
+      metadata: const {
+        'toolCallId': 'diff-upper-half',
+        'title': 'Edit file',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'diff',
+            'path': 'lib/upper.dart',
+            'oldText': 'before\n',
+            'newText': 'after\n',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      timeline([message], mediaQuerySize: const Size(800, 600)),
+    );
+    await tester.pumpAndSettle();
+
+    final row = find.byKey(const ValueKey('tool-diff-file-row-lib/upper.dart'));
+    expect(tester.getCenter(row).dy, lessThan(300));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer();
+    await mouse.moveTo(tester.getCenter(row));
+    await tester.pumpAndSettle();
+
+    final preview = find.byKey(
+      const ValueKey('tool-diff-hover-preview-lib/upper.dart'),
+    );
+    expect(preview, findsOneWidget);
+    final rowRect = tester.getRect(row);
+    final previewRect = tester.getRect(preview);
+    expect((previewRect.right - rowRect.right).abs(), lessThanOrEqualTo(1));
+    expect((previewRect.left - rowRect.left - 40).abs(), lessThanOrEqualTo(1));
+    expect(rowRect.bottom - previewRect.top, closeTo(8, 1));
+  });
+
+  testWidgets('ChatTimeline switches file hover color without a dark tail', (
+    tester,
+  ) async {
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'edit_files',
+      metadata: const {
+        'toolCallId': 'diff-hover-color',
+        'title': 'Edit files',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'diff',
+            'path': 'lib/first.dart',
+            'oldText': 'old\n',
+            'newText': 'new\n',
+          },
+          {
+            'type': 'diff',
+            'path': 'lib/second.dart',
+            'oldText': 'before\n',
+            'newText': 'after\n',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(timeline([message]));
+    await tester.pumpAndSettle();
+
+    Container surface(String path) => tester.widget<Container>(
+      find.byKey(ValueKey('tool-diff-file-row-surface-$path')),
+    );
+    final firstRow = find.byKey(
+      const ValueKey('tool-diff-file-row-lib/first.dart'),
+    );
+    final secondRow = find.byKey(
+      const ValueKey('tool-diff-file-row-lib/second.dart'),
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer();
+
+    await mouse.moveTo(tester.getCenter(firstRow));
+    await tester.pump();
+    expect(surface('lib/first.dart').color, AppColors.surfaceRaised);
+    expect(surface('lib/second.dart').color, Colors.transparent);
+    expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);
+
+    await mouse.moveTo(Offset.zero);
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(surface('lib/first.dart').color, Colors.transparent);
+    expect(surface('lib/second.dart').color, Colors.transparent);
+
+    await mouse.moveTo(tester.getCenter(secondRow));
+    await tester.pump();
+    expect(surface('lib/first.dart').color, Colors.transparent);
+    expect(surface('lib/second.dart').color, AppColors.surfaceRaised);
+
+    await mouse.moveTo(Offset.zero);
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(surface('lib/first.dart').color, Colors.transparent);
+    expect(surface('lib/second.dart').color, Colors.transparent);
+    expect(find.byIcon(Icons.visibility_outlined), findsNothing);
+  });
+
+  testWidgets('ChatTimeline keeps a tall hover preview inside the viewport', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 360));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final oldLines = List.generate(30, (index) => 'old line $index').join('\n');
+    final newLines = List.generate(30, (index) => 'new line $index').join('\n');
+    final message = ChatMessage(
+      role: ChatMessageRole.tool,
+      text: 'edit_file',
+      metadata: {
+        'toolCallId': 'diff-viewport',
+        'title': 'Edit file',
+        'status': 'completed',
+        'content': [
+          {
+            'type': 'diff',
+            'path': 'lib/viewport.dart',
+            'oldText': oldLines,
+            'newText': newLines,
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      timeline([message], mediaQuerySize: const Size(800, 360)),
+    );
+    await tester.pumpAndSettle();
+
+    final row = find.byKey(
+      const ValueKey('tool-diff-file-row-lib/viewport.dart'),
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer();
+    await mouse.moveTo(tester.getCenter(row));
+    await tester.pumpAndSettle();
+
+    final preview = find.byKey(
+      const ValueKey('tool-diff-hover-preview-lib/viewport.dart'),
+    );
+    expect(preview, findsOneWidget);
+    final previewRect = tester.getRect(preview);
+    expect(previewRect.top, greaterThanOrEqualTo(0));
+    expect(previewRect.bottom, lessThanOrEqualTo(360));
+
+    await mouse.moveTo(previewRect.center);
+    await tester.pump(const Duration(milliseconds: 140));
+    final scrollable = find.descendant(
+      of: find.byKey(const ValueKey('tool-diff-lines-lib/viewport.dart')),
+      matching: find.byType(Scrollable),
+    );
+    expect(scrollable, findsOneWidget);
+    await tester.drag(scrollable, const Offset(0, -80));
+    await tester.pumpAndSettle();
+    expect(
+      tester.state<ScrollableState>(scrollable).position.pixels,
+      greaterThan(0),
+    );
+    expect(preview, findsOneWidget);
+  });
+
+  testWidgets(
+    'ChatTimeline diff card matches accepted default and hover visuals',
+    (tester) async {
+      await tester.runAsync(_loadDiffGoldenFonts);
+      debugPaintBaselinesEnabled = false;
+      debugPaintPointersEnabled = false;
+      debugPaintSizeEnabled = false;
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 600);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      final workspace = Directory.current.path;
+      final messages = [
+        ChatMessage(role: ChatMessageRole.user, text: 'Show the edited files'),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'edit_files',
+          metadata: {
+            'toolCallId': 'diff-golden',
+            'title': 'Edit files',
+            'status': 'completed',
+            'content': [
+              {
+                'type': 'diff',
+                'path': '$workspace/design-qa.md',
+                'oldText': 'status: blocked\n',
+                'newText': 'status: passed\nnotes: verified\n',
+              },
+              {
+                'type': 'diff',
+                'path': '$workspace/lib/ui/components/chat_timeline.dart',
+                'oldText':
+                    'child: Container(\n  width: 116,\n  color: oldColor,\n',
+                'newText':
+                    'child: Semantics(\n  label: displayPath,\n  color: hoverColor,\n',
+              },
+              {
+                'type': 'diff',
+                'path': '$workspace/test/ui/chat_timeline_test.dart',
+                'oldText': '',
+                'newText': 'expect(preview, findsOneWidget);\n',
+              },
+            ],
+          },
+        ),
+      ];
+
+      await tester.pumpWidget(
+        timeline(
+          messages,
+          mediaQuerySize: const Size(1000, 600),
+          theme: ThemeData(fontFamily: 'ACPTestSans'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final appOverlay = find.byType(Overlay).first;
+      await expectLater(
+        appOverlay,
+        matchesGoldenFile(
+          '../../design-qa-artifacts/file-diff-redesign-default.png',
+        ),
+      );
+
+      debugPaintBaselinesEnabled = false;
+      final row = find.byKey(
+        ValueKey(
+          'tool-diff-file-row-$workspace/lib/ui/components/chat_timeline.dart',
+        ),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer();
+      await mouse.moveTo(tester.getCenter(row));
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        appOverlay,
+        matchesGoldenFile(
+          '../../design-qa-artifacts/file-diff-redesign-hover.png',
+        ),
+      );
+    },
+    skip: !Platform.isMacOS,
+  );
 
   testWidgets('ChatTimeline never builds MarkdownBody after syntax overflow', (
     tester,
@@ -855,6 +1346,7 @@ Review the screenshot''',
           role: ChatMessageRole.tool,
           text: 'exec_command',
           metadata: const {
+            'toolCallId': 'bounded-metadata',
             'title': 'exec_command',
             'status': 'completed',
             'rawInput': {'secret': 'TOOL_METADATA_CANARY'},
@@ -864,7 +1356,9 @@ Review the screenshot''',
     );
 
     expect(find.textContaining('TOOL_METADATA_CANARY'), findsNothing);
-    await tester.tap(find.byType(ExpansionTile));
+    await tester.tap(
+      find.byKey(const ValueKey('tool-activity-toggle-bounded-metadata')),
+    );
     await tester.pumpAndSettle();
 
     expect(find.textContaining('TOOL_METADATA_CANARY'), findsNothing);
@@ -877,6 +1371,7 @@ Review the screenshot''',
     final first = _CountingPreviewMap('first');
     final second = _CountingPreviewMap('second');
     final metadata = <String, Object?>{
+      'toolCallId': 'cached-metadata',
       'title': 'exec_command',
       'status': 'completed',
       'rawInput': first,
@@ -906,7 +1401,9 @@ Review the screenshot''',
         ),
       ),
     );
-    await tester.tap(find.byType(ExpansionTile));
+    await tester.tap(
+      find.byKey(const ValueKey('tool-activity-toggle-cached-metadata')),
+    );
     await tester.pumpAndSettle();
     expect(first.entriesReads, 1);
 
@@ -1409,7 +1906,10 @@ Review the screenshot''',
     expect(find.text('boom'), findsOneWidget);
   });
 
-  testWidgets('ChatTimeline renders compact tool cards', (tester) async {
+  testWidgets('ChatTimeline renders compact single-tool rows', (tester) async {
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer(location: const Offset(799, 599));
     await tester.pumpWidget(
       timeline([
         ChatMessage(
@@ -1427,15 +1927,155 @@ Review the screenshot''',
       ]),
     );
 
-    expect(find.text('Tool'), findsOneWidget);
-    expect(find.text('exec_command'), findsOneWidget);
-    expect(find.text('Completed'), findsOneWidget);
+    expect(find.text('Ran flutter test'), findsOneWidget);
     expect(find.text('All tests passed.'), findsNothing);
+    var chevronOpacity = tester.widget<AnimatedOpacity>(
+      find.byKey(const ValueKey('tool-activity-chevron-opacity-call-1')),
+    );
+    expect(chevronOpacity.opacity, 0);
 
-    await tester.tap(find.byType(ExpansionTile));
+    await mouse.moveTo(
+      tester.getCenter(
+        find.byKey(const ValueKey('tool-activity-toggle-call-1')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('All tests passed.'), findsNothing);
+    chevronOpacity = tester.widget<AnimatedOpacity>(
+      find.byKey(const ValueKey('tool-activity-chevron-opacity-call-1')),
+    );
+    expect(chevronOpacity.opacity, 1);
+
+    await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
     await tester.pumpAndSettle();
 
     expect(find.text('All tests passed.'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline folds thought with one adjacent tool', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.user,
+          text: 'Wait for the background check',
+        ),
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'wait',
+          metadata: const {
+            'toolCallId': 'wait-1',
+            'title': 'wait',
+            'status': 'completed',
+          },
+        ),
+        ChatMessage(
+          role: ChatMessageRole.status,
+          text: 'Assessing the background result.',
+          metadata: const {'kind': 'thought'},
+        ),
+      ]),
+    );
+
+    expect(find.text('Waited for background work'), findsOneWidget);
+    expect(find.text('Assessing the background result.'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('tool-call-group-toggle')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Assessing the background result.'), findsOneWidget);
+    expect(find.text('Waited for background work'), findsNWidgets(2));
+  });
+
+  testWidgets('ChatTimeline bounds long tool output with scroll edge fades', (
+    tester,
+  ) async {
+    final output = List<String>.generate(
+      80,
+      (index) => 'output line $index',
+    ).join('\n');
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'exec_command',
+          metadata: {
+            'toolCallId': 'long-output',
+            'title': 'exec_command',
+            'status': 'completed',
+            'rawOutput': output,
+          },
+        ),
+      ]),
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('tool-activity-toggle-long-output')),
+    );
+    await tester.pumpAndSettle();
+
+    final region = find.byKey(const ValueKey('metadata-scroll-region-output'));
+    expect(region, findsOneWidget);
+    expect(tester.getSize(region).height, lessThanOrEqualTo(260));
+    final fades = find.descendant(
+      of: region,
+      matching: find.byType(AnimatedOpacity),
+    );
+    expect(tester.widget<AnimatedOpacity>(fades.first).opacity, 0);
+    expect(tester.widget<AnimatedOpacity>(fades.last).opacity, 1);
+
+    final scrollView = tester.widget<SingleChildScrollView>(
+      find.descendant(
+        of: region,
+        matching: find.byKey(const ValueKey('scroll-fade-scroll-view')),
+      ),
+    );
+    scrollView.controller!.jumpTo(
+      scrollView.controller!.position.maxScrollExtent,
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<AnimatedOpacity>(fades.first).opacity, 1);
+    expect(tester.widget<AnimatedOpacity>(fades.last).opacity, 0);
+  });
+
+  testWidgets('ChatTimeline does not truncate structured command output', (
+    tester,
+  ) async {
+    const budget = AcpInputBudget(
+      maxMetadataPreviewChars: 20,
+      maxMetadataPreviewBytes: 20,
+    );
+    const finalLine = 'FINAL_OUTPUT_LINE_MUST_REMAIN_VISIBLE';
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.tool,
+          text: 'wait',
+          metadata: const {
+            'toolCallId': 'structured-output',
+            'title': 'wait',
+            'status': 'completed',
+            'rawOutput': {
+              'output': [
+                {'type': 'input_text', 'text': 'first line\n$finalLine'},
+              ],
+            },
+          },
+        ),
+      ], inputBudget: budget),
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('tool-activity-toggle-structured-output')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining(finalLine), findsOneWidget);
+    expect(find.textContaining('metadata preview chars'), findsNothing);
+    expect(find.textContaining('Content omitted'), findsNothing);
   });
 
   testWidgets('ChatTimeline tool group has default hover and expanded states', (
@@ -1452,6 +2092,7 @@ Review the screenshot''',
             'title': 'exec_command',
             'status': 'completed',
             'rawInput': {'cmd': 'pwd'},
+            'rawOutput': 'workspace ready',
           },
         ),
         ChatMessage(
@@ -1506,6 +2147,11 @@ Review the screenshot''',
     );
     expect(summaryStyle.style.color, AppColors.textPrimary);
     expect(chevronOpacity.opacity, 1);
+    expect(
+      find.byKey(const ValueKey('tool-call-group-details-collapsed')),
+      findsOneWidget,
+    );
+    expect(find.text('Ran pwd'), findsNothing);
 
     final groupToggle = tester.getSemantics(
       find.byKey(const ValueKey('tool-call-group-toggle')),
@@ -1540,6 +2186,335 @@ Review the screenshot''',
     expect(find.text('Ran pwd'), findsOneWidget);
     expect(find.text('Ran ls'), findsOneWidget);
     expect(find.text('Searched flutter ExpansionTile'), findsOneWidget);
+    expect(find.text('workspace ready'), findsNothing);
+
+    final activitySemantics = tester.getSemantics(
+      find.byKey(const ValueKey('tool-activity-toggle-call-1')),
+    );
+    expect(
+      activitySemantics.getSemanticsData().hasAction(SemanticsAction.tap),
+      isTrue,
+    );
+    var activityChevron = tester.widget<AnimatedRotation>(
+      find.byKey(const ValueKey('tool-activity-chevron-call-1')),
+    );
+    expect(activityChevron.turns, 0);
+
+    await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('tool-activity-details-call-1')),
+      findsOneWidget,
+    );
+    expect(find.text('workspace ready'), findsOneWidget);
+    expect(find.text('Output'), findsOneWidget);
+    expect(find.text('Input'), findsOneWidget);
+    activityChevron = tester.widget<AnimatedRotation>(
+      find.byKey(const ValueKey('tool-activity-chevron-call-1')),
+    );
+    expect(activityChevron.turns, 0.25);
+
+    await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('workspace ready'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('tool-activity-details-collapsed-call-1')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('ChatTimeline folds adjacent thinking into the tool group', (
+    tester,
+  ) async {
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer(location: const Offset(799, 599));
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Check the timeline'),
+      startsNewTurn: true,
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'read_file',
+        metadata: const {
+          'toolCallId': 'call-1',
+          'title': 'read_file',
+          'status': 'completed',
+          'rawInput': {'path': '/tmp/chat_timeline.dart'},
+        },
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: 'Inspecting the implementation.',
+        metadata: const {'kind': 'thought'},
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'exec_command',
+        metadata: const {
+          'toolCallId': 'call-2',
+          'title': 'exec_command',
+          'status': 'completed',
+          'rawInput': {'cmd': 'flutter test'},
+        },
+      ),
+    );
+    await tester.pumpWidget(timeline(controller.messages));
+
+    expect(find.text('Inspecting the implementation.'), findsNothing);
+    expect(find.text('Read files and ran commands'), findsOneWidget);
+
+    await mouse.moveTo(
+      tester.getCenter(find.byKey(const ValueKey('tool-call-group-toggle'))),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Inspecting the implementation.'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('tool-call-group-toggle')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Thought'), findsOneWidget);
+    expect(find.text('Inspecting the implementation.'), findsOneWidget);
+    expect(find.text('Read chat_timeline.dart'), findsOneWidget);
+    expect(find.text('Ran flutter test'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Read chat_timeline.dart')).dy,
+      lessThan(
+        tester.getTopLeft(find.text('Inspecting the implementation.')).dy,
+      ),
+    );
+    expect(
+      tester.getTopLeft(find.text('Inspecting the implementation.')).dy,
+      lessThan(tester.getTopLeft(find.text('Ran flutter test')).dy),
+    );
+
+    await mouse.moveTo(const Offset(799, 599));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Inspecting the implementation.'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('tool-call-group-details')),
+      findsOneWidget,
+    );
+    final chevronOpacity = tester.widget<AnimatedOpacity>(
+      find.byKey(const ValueKey('tool-call-group-chevron-opacity')),
+    );
+    expect(chevronOpacity.opacity, 0);
+  });
+
+  testWidgets('ChatTimeline keeps assistant commentary outside tool groups', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Inspect the timeline'),
+      startsNewTurn: true,
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'read_file',
+        metadata: const {
+          'toolCallId': 'read-1',
+          'title': 'read_file',
+          'status': 'completed',
+        },
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'read_file',
+        metadata: const {
+          'toolCallId': 'read-2',
+          'title': 'read_file',
+          'status': 'completed',
+        },
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.assistant,
+        text: 'Now I will edit the implementation.',
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'apply_patch',
+        metadata: const {
+          'toolCallId': 'edit-1',
+          'title': 'apply_patch',
+          'status': 'completed',
+        },
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'exec_command',
+        metadata: const {
+          'toolCallId': 'run-1',
+          'title': 'exec_command',
+          'status': 'completed',
+        },
+      ),
+    );
+    await tester.pumpWidget(timeline(controller.messages));
+
+    expect(find.text('Read files'), findsOneWidget);
+    expect(find.text('Edited files and ran commands'), findsOneWidget);
+    expect(find.text('Now I will edit the implementation.'), findsOneWidget);
+    expect(find.text('Thought'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('tool-call-group-toggle')),
+      findsNWidgets(2),
+    );
+  });
+
+  testWidgets('ChatTimeline preserves soft line breaks in user prompts', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(role: ChatMessageRole.user, text: 'hover\n展开\n默认'),
+      ]),
+    );
+
+    expect(find.text('hover\n展开\n默认'), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline restores legacy user image markers as thumbnails', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.user,
+          text: '''hover
+展开
+默认
+
+[@codex-clipboard-reference.png](file:///tmp/reference.png)[@image](/tmp/reference.png)''',
+        ),
+      ]),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('legacy-user-image-thumbnails')),
+      findsOneWidget,
+    );
+    expect(find.byType(Image), findsOneWidget);
+    expect(find.text('hover\n展开\n默认'), findsOneWidget);
+    expect(find.textContaining('codex-clipboard-reference'), findsNothing);
+    expect(find.textContaining('[@image]'), findsNothing);
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey('legacy-user-image-thumbnail:/tmp/reference.png'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('image-preview-modal')), findsOneWidget);
+  });
+
+  testWidgets('ChatTimeline preserves tool disclosure state across streaming', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Run checks'),
+      startsNewTurn: true,
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'exec_command',
+        metadata: const {
+          'toolCallId': 'call-1',
+          'title': 'exec_command',
+          'status': 'in_progress',
+          'rawInput': {'cmd': 'flutter test'},
+          'rawOutput': 'starting',
+        },
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'read_file',
+        metadata: const {
+          'toolCallId': 'call-2',
+          'title': 'read_file',
+          'status': 'completed',
+          'rawInput': {'path': '/tmp/result.txt'},
+        },
+      ),
+    );
+    await tester.pumpWidget(timeline(controller.messages));
+
+    await tester.tap(find.byKey(const ValueKey('tool-call-group-toggle')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('starting'), findsOneWidget);
+
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.status,
+        text: 'Checking the streamed result.',
+        metadata: const {'kind': 'thought'},
+      ),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(
+        role: ChatMessageRole.tool,
+        text: 'exec_command',
+        metadata: const {
+          'toolCallId': 'call-1',
+          'title': 'exec_command',
+          'status': 'completed',
+          'rawOutput': 'finished',
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      timeline(controller.messages, messageListRevision: 1),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('tool-call-group-details')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('tool-activity-details-call-1')),
+      findsOneWidget,
+    );
+    expect(find.text('finished'), findsOneWidget);
+    expect(find.text('Checking the streamed result.'), findsOneWidget);
   });
 
   testWidgets('ChatTimeline tool groups do not count failures as pending', (
@@ -1735,15 +2710,14 @@ Review the screenshot''',
     );
 
     expect(find.text('3 tool calls'), findsNothing);
-    expect(find.text('Bash'), findsOneWidget);
-    expect(find.text('Completed'), findsOneWidget);
+    expect(find.text('Ran echo hi'), findsOneWidget);
     expect(find.text('call-1'), findsNothing);
 
-    await tester.tap(find.byType(ExpansionTile));
+    await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
     await tester.pumpAndSettle();
 
     expect(find.text('call-1'), findsOneWidget);
-    expect(find.textContaining('echo hi'), findsOneWidget);
+    expect(find.textContaining('echo hi'), findsNWidgets(2));
     expect(find.text('hi'), findsOneWidget);
     expect(find.text('{"command"'), findsNothing);
   });
@@ -1777,11 +2751,10 @@ Review the screenshot''',
     );
 
     expect(find.text('2 tool calls'), findsNothing);
-    expect(find.text('Bash'), findsOneWidget);
-    expect(find.text('Completed'), findsOneWidget);
+    expect(find.text('Ran Bash'), findsOneWidget);
     expect(find.text('call-1'), findsNothing);
 
-    await tester.tap(find.byType(ExpansionTile));
+    await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
     await tester.pumpAndSettle();
 
     expect(find.text('call-1'), findsOneWidget);
@@ -1821,15 +2794,16 @@ Review the screenshot''',
       );
 
       expect(find.text('2 tool calls'), findsNothing);
-      expect(find.text('Bash'), findsOneWidget);
-      expect(find.text('Completed'), findsOneWidget);
+      expect(find.text('Ran echo hi'), findsOneWidget);
       expect(find.text('call-1'), findsNothing);
 
-      await tester.tap(find.byType(ExpansionTile));
+      await tester.tap(
+        find.byKey(const ValueKey('tool-activity-toggle-call-1')),
+      );
       await tester.pumpAndSettle();
 
       expect(find.text('call-1'), findsOneWidget);
-      expect(find.textContaining('echo hi'), findsOneWidget);
+      expect(find.textContaining('echo hi'), findsNWidgets(2));
       expect(find.text('hi'), findsOneWidget);
     },
   );
@@ -2647,6 +3621,54 @@ Review the screenshot''',
     expect(find.text('Output'), findsOneWidget);
     expect(find.text('terminal-output'), findsOneWidget);
   });
+}
+
+var _diffGoldenFontsLoaded = false;
+
+Future<void> _loadDiffGoldenFonts() async {
+  if (_diffGoldenFontsLoaded) return;
+  Future<ByteData> fontData(String path) async =>
+      ByteData.sublistView(await File(path).readAsBytes());
+  var flutterRoot = File(Platform.resolvedExecutable).parent;
+  while (!Directory(
+    '${flutterRoot.path}/bin/cache/artifacts/material_fonts',
+  ).existsSync()) {
+    final parent = flutterRoot.parent;
+    if (parent.path == flutterRoot.path) {
+      throw StateError('Unable to locate the Flutter SDK font cache.');
+    }
+    flutterRoot = parent;
+  }
+  final sans = FontLoader('ACPTestSans')
+    ..addFont(
+      fontData(
+        '${flutterRoot.path}/bin/cache/artifacts/material_fonts/'
+        'Roboto-Regular.ttf',
+      ),
+    );
+  final mono = FontLoader('monospace')
+    ..addFont(
+      fontData(
+        '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/assets/'
+        'fonts/Roboto_Mono/RobotoMono-Regular.ttf',
+      ),
+    );
+  final sfMono = FontLoader('SF Mono')
+    ..addFont(
+      fontData(
+        '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/assets/'
+        'fonts/Roboto_Mono/RobotoMono-Regular.ttf',
+      ),
+    );
+  final icons = FontLoader('MaterialIcons')
+    ..addFont(
+      fontData(
+        '${flutterRoot.path}/bin/cache/artifacts/material_fonts/'
+        'MaterialIcons-Regular.otf',
+      ),
+    );
+  await Future.wait([sans.load(), mono.load(), sfMono.load(), icons.load()]);
+  _diffGoldenFontsLoaded = true;
 }
 
 final class _RejectingImageDecoder implements BoundedImageDecoder {

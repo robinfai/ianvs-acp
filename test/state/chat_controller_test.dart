@@ -8987,6 +8987,45 @@ void main() {
     ]);
   });
 
+  test('resume session merges ACP user text and attachment chunks', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(
+        resumeEvents: const [
+          AgentEvent(
+            type: AgentEventType.userMessage,
+            text: 'Review this image',
+            metadata: {'_acpUserChunk': true},
+          ),
+          AgentEvent(
+            type: AgentEventType.userMessage,
+            text: '',
+            metadata: {
+              '_acpUserChunk': true,
+              'contentBlocks': [
+                {
+                  'type': 'resource_link',
+                  'uri': 'file:///tmp/reference.png',
+                  'name': 'reference.png',
+                  'mimeType': 'image/png',
+                },
+              ],
+            },
+          ),
+        ],
+      ),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    await controller.resumeSession('resumed-session-user-chunks');
+
+    expect(controller.messages, hasLength(1));
+    expect(controller.messages.single.role, ChatMessageRole.user);
+    expect(controller.messages.single.text, 'Review this image');
+    expect(controller.messages.single.metadata['_acpUserChunk'], isNull);
+    expect(controller.messages.single.metadata['contentBlocks'], hasLength(1));
+  });
+
   test('resume session uses selected project cwd', () async {
     final fake = FakeAgentClient();
     final controller = ChatController(client: fake, cwd: '/workspace');

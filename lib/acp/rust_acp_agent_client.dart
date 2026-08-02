@@ -914,6 +914,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
       'user_message' => AgentEvent(
         type: AgentEventType.userMessage,
         text: text,
+        metadata: <String, Object?>{
+          '_acpUserChunk': true,
+          if (payload != null) 'contentBlocks': <Map<String, Object?>>[payload],
+        },
         timestamp: DateTime.now(),
       ),
       'agent_message_delta' => AgentEvent(

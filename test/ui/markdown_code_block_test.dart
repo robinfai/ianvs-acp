@@ -80,6 +80,17 @@ void main() {
     );
 
     expect(find.text('展开'), findsOneWidget);
+    final region = find.byKey(const ValueKey('code-block-scroll-region'));
+    expect(region, findsOneWidget);
+    expect(tester.getSize(region).height, lessThanOrEqualTo(320));
+    final fades = find.descendant(
+      of: region,
+      matching: find.byType(AnimatedOpacity),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.widget<AnimatedOpacity>(fades.first).opacity, 0);
+    expect(tester.widget<AnimatedOpacity>(fades.last).opacity, 1);
+
     await tester.tap(find.text('展开'));
     await tester.pump();
     expect(find.text('收起'), findsOneWidget);

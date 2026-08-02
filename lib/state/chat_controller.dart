@@ -2492,6 +2492,22 @@ class _TurnMessageProjection {
   final List<acp.AcpInputOmission> omissions;
 }
 
+Map<String, Object?> _mergeReplayUserMetadata(
+  Map<String, Object?> existing,
+  Map<String, Object?> update,
+) {
+  final merged = <String, Object?>{...existing, ...update};
+  final contentBlocks = <Object?>[];
+  final existingBlocks = existing['contentBlocks'];
+  final updateBlocks = update['contentBlocks'];
+  if (existingBlocks is List) contentBlocks.addAll(existingBlocks);
+  if (updateBlocks is List) contentBlocks.addAll(updateBlocks);
+  if (contentBlocks.isNotEmpty) {
+    merged['contentBlocks'] = List<Object?>.unmodifiable(contentBlocks);
+  }
+  return Map<String, Object?>.unmodifiable(merged);
+}
+
 class ChatController extends ChangeNotifier {
   ChatController({
     required this.client,
@@ -3144,6 +3160,7 @@ class ChatController extends ChangeNotifier {
     _finishTurnBudget();
     var pendingText = StringBuffer();
     Map<String, Object?> pendingTextMetadata = const <String, Object?>{};
+    AgentEvent? pendingUserMessage;
 
     void flushPendingText() {
       if (pendingText.isEmpty) return;
@@ -3159,13 +3176,59 @@ class ChatController extends ChangeNotifier {
       pendingTextMetadata = const <String, Object?>{};
     }
 
+    void flushPendingUserMessage() {
+      final pending = pendingUserMessage;
+      if (pending == null) return;
+      final metadata = <String, Object?>{...pending.metadata}
+        ..remove('_acpUserChunk');
+      _handleAgentEvent(
+        AgentEvent(
+          type: pending.type,
+          text: pending.text,
+          timestamp: pending.timestamp,
+          metadata: Map<String, Object?>.unmodifiable(metadata),
+          omissions: pending.omissions,
+        ),
+        notify: false,
+      );
+      pendingUserMessage = null;
+    }
+
+    void appendPendingUserMessage(AgentEvent event) {
+      final pending = pendingUserMessage;
+      if (pending == null) {
+        pendingUserMessage = event;
+        return;
+      }
+      pendingUserMessage = AgentEvent(
+        type: AgentEventType.userMessage,
+        text: '${pending.text}${event.text}',
+        timestamp: pending.timestamp,
+        metadata: _mergeReplayUserMetadata(pending.metadata, event.metadata),
+        omissions: <acp.AcpInputOmission>[
+          ...pending.omissions,
+          ...event.omissions,
+        ],
+      );
+    }
+
     for (var index = 0; index < replay.length; index += 1) {
       final event = replay[index];
-      if (event.type == AgentEventType.agentTextDelta &&
+      if (event.type == AgentEventType.userMessage &&
+          event.metadata['_acpUserChunk'] == true) {
+        flushPendingText();
+        appendPendingUserMessage(event);
+      } else if (event.type == AgentEventType.userMessage) {
+        flushPendingUserMessage();
+        flushPendingText();
+        _handleAgentEvent(event, notify: false);
+      } else if (event.type == AgentEventType.agentTextDelta &&
           event.metadata.isEmpty &&
           event.omissions.isEmpty) {
+        flushPendingUserMessage();
         pendingText.write(event.text);
       } else {
+        flushPendingUserMessage();
         flushPendingText();
         _handleAgentEvent(event, notify: false);
       }
@@ -3176,6 +3239,7 @@ class ChatController extends ChangeNotifier {
         await Future<void>.delayed(Duration.zero);
       }
     }
+    flushPendingUserMessage();
     flushPendingText();
     _finishTurnBudget();
   }
