@@ -88,6 +88,13 @@ impl DaemonHost {
         )
     }
 
+    /// Binds the daemon with an explicit durable storage policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe paths, an already-owned database, socket
+    /// setup failures, storage initialization failures, or invalid workflow
+    /// state.
     pub fn bind_with_storage_policy(
         database_path: impl AsRef<Path>,
         socket_path: impl AsRef<Path>,

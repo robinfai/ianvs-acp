@@ -19,6 +19,7 @@ import '../acp/prompt_attachment.dart';
 import '../acp/session_title.dart';
 import '../config/assistant_agent_config.dart';
 import '../memory/acp_memory_middleware.dart';
+import '../storage/session_transcript_cache.dart';
 import 'connection_state.dart';
 import '../tasks/permission_context.dart';
 
@@ -33,6 +34,46 @@ enum ChatPromptSubmissionResult {
   busy,
   sessionUnavailable,
   failed,
+}
+
+final class SessionLoadMetrics {
+  const SessionLoadMetrics({
+    required this.cacheReadElapsed,
+    required this.restoreElapsed,
+    required this.projectionElapsed,
+    required this.totalElapsed,
+    required this.firstEventElapsed,
+    required this.eventSpan,
+    required this.cacheHit,
+    required this.cacheMessageCount,
+    required this.replayedHistory,
+    required this.replayEventCount,
+  });
+
+  final Duration cacheReadElapsed;
+  final Duration restoreElapsed;
+  final Duration projectionElapsed;
+  final Duration totalElapsed;
+  final Duration? firstEventElapsed;
+  final Duration? eventSpan;
+  final bool cacheHit;
+  final int cacheMessageCount;
+  final bool? replayedHistory;
+  final int replayEventCount;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'cacheReadMs': cacheReadElapsed.inMicroseconds / 1000,
+    'restoreMs': restoreElapsed.inMicroseconds / 1000,
+    'projectionMs': projectionElapsed.inMicroseconds / 1000,
+    'totalMs': totalElapsed.inMicroseconds / 1000,
+    if (firstEventElapsed != null)
+      'firstEventMs': firstEventElapsed!.inMicroseconds / 1000,
+    if (eventSpan != null) 'eventSpanMs': eventSpan!.inMicroseconds / 1000,
+    'cacheHit': cacheHit,
+    'cacheMessages': cacheMessageCount,
+    'replayedHistory': replayedHistory,
+    'replayEvents': replayEventCount,
+  };
 }
 
 class ChatQueuedPrompt {
@@ -74,7 +115,6 @@ const List<String> _toolCallIdMetadataKeys = [
   'callId',
   'call_id',
 ];
-const int _sessionReplayBatchSize = 32;
 // Conservative carrier accounting: every typed model includes at least a
 // 64-byte model node plus 32 bytes per field and space for fixed labels. Real
 // List/Map containers and their references are added separately below.
@@ -2492,22 +2532,6 @@ class _TurnMessageProjection {
   final List<acp.AcpInputOmission> omissions;
 }
 
-Map<String, Object?> _mergeReplayUserMetadata(
-  Map<String, Object?> existing,
-  Map<String, Object?> update,
-) {
-  final merged = <String, Object?>{...existing, ...update};
-  final contentBlocks = <Object?>[];
-  final existingBlocks = existing['contentBlocks'];
-  final updateBlocks = update['contentBlocks'];
-  if (existingBlocks is List) contentBlocks.addAll(existingBlocks);
-  if (updateBlocks is List) contentBlocks.addAll(updateBlocks);
-  if (contentBlocks.isNotEmpty) {
-    merged['contentBlocks'] = List<Object?>.unmodifiable(contentBlocks);
-  }
-  return Map<String, Object?>.unmodifiable(merged);
-}
-
 class ChatController extends ChangeNotifier {
   ChatController({
     required this.client,
@@ -2528,6 +2552,7 @@ class ChatController extends ChangeNotifier {
     this.assistantAgentEnhancer,
     this.enableAutomaticSessionTitles = false,
     this.promptIdleWarningDelay = defaultPromptIdleWarningDelay,
+    this.sessionTranscriptCache,
   }) : permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     if (permissionHistoryLimit <= 0) {
       throw ArgumentError.value(
@@ -2589,6 +2614,7 @@ class ChatController extends ChangeNotifier {
   final AssistantAgentEnhancer? assistantAgentEnhancer;
   final bool enableAutomaticSessionTitles;
   final Duration promptIdleWarningDelay;
+  final SessionTranscriptCache? sessionTranscriptCache;
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? _currentSession;
@@ -2604,6 +2630,11 @@ class ChatController extends ChangeNotifier {
   late final UnmodifiableListView<ChatMessage> _messagesView =
       UnmodifiableListView<ChatMessage>(_messages);
   UnmodifiableListView<ChatMessage> get messages => _messagesView;
+  List<ChatMessage> get visibleMessages =>
+      isSessionReplayLoading && !_cachedSessionTranscriptVisible
+      ? const <ChatMessage>[]
+      : _messagesView;
+  SessionLoadMetrics? lastSessionLoadMetrics;
   final List<ChatQueuedPrompt> _queuedPrompts = <ChatQueuedPrompt>[];
   late final UnmodifiableListView<ChatQueuedPrompt> _queuedPromptsView =
       UnmodifiableListView<ChatQueuedPrompt>(_queuedPrompts);
@@ -2686,6 +2717,7 @@ class ChatController extends ChangeNotifier {
   bool isSessionOperationRunning = false;
   Completer<void>? _sessionOperationIdleCompleter;
   bool isSessionReplayLoading = false;
+  bool _cachedSessionTranscriptVisible = false;
   bool _isDisposed = false;
   bool _changeNotifierDisposed = false;
   int _notificationDepth = 0;
@@ -2997,6 +3029,21 @@ class ChatController extends ChangeNotifier {
       return;
     }
     _finishTurnBudget();
+    final totalLoadTimer = Stopwatch()..start();
+    final transcriptIdentity = updatedAt == null
+        ? null
+        : SessionTranscriptIdentity(
+            agentName: agentName,
+            sessionId: trimmedSessionId,
+            cwd: workspaceCwd,
+            additionalDirectories: List<String>.unmodifiable(
+              workspaceAdditionalDirectories,
+            ),
+            updatedAt: updatedAt,
+          );
+    final transcriptCacheFuture = _loadCachedSessionTranscript(
+      transcriptIdentity,
+    );
 
     final operationGeneration = _beginSessionOperationGeneration();
     await _runSessionOperation(() async {
@@ -3010,6 +3057,9 @@ class ChatController extends ChangeNotifier {
       final previousSessionSettingsLoading = sessionSettingsLoading;
       final previousSettingsLoadId = _activeSessionSettingsLoadId;
       final previousSessionReplayLoading = isSessionReplayLoading;
+      final previousCachedSessionTranscriptVisible =
+          _cachedSessionTranscriptVisible;
+      final previousSessionLoadMetrics = lastSessionLoadMetrics;
       final previousSessionViewSnapshots = Map<String, _SessionViewSnapshot>.of(
         _sessionViewSnapshots,
       );
@@ -3034,6 +3084,7 @@ class ChatController extends ChangeNotifier {
         var activatedLocal = false;
         var loadLocalSettings = false;
         await _runUiStateTransaction(() {
+          lastSessionLoadMetrics = null;
           _snapshotCurrentSession();
           if (targetSnapshot case final snapshot?) {
             _activateSessionViewSnapshot(
@@ -3073,6 +3124,7 @@ class ChatController extends ChangeNotifier {
           sessionUsage = null;
           sessionSettingsLoading = false;
           _activeSessionSettingsLoadId = null;
+          _cachedSessionTranscriptVisible = false;
           final session = _copyAgentSessionStrict(
             AgentSession(
               id: trimmedSessionId,
@@ -3113,22 +3165,103 @@ class ChatController extends ChangeNotifier {
         await Future<void>.delayed(Duration.zero);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
 
-        final replay = await client.resumeSession(
+        final cacheResult = await transcriptCacheFuture;
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        final cachedMessages = cacheResult.snapshot == null
+            ? null
+            : await _chatMessagesFromTranscript(
+                cacheResult.snapshot!,
+                operationGeneration: operationGeneration,
+              );
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        final cacheHit =
+            cachedMessages != null &&
+            cachedMessages.isNotEmpty &&
+            client.capabilities?.session.resume == true;
+        if (cacheHit) {
+          _replaceAllMessages(cachedMessages);
+          _cachedSessionTranscriptVisible = true;
+          // This is the complete transcript for the exact catalog revision,
+          // not a recent-message preview. Make it visible atomically while
+          // session/resume finishes reconnecting in the background.
+          _notifyListeners();
+        }
+
+        final projectionTimer = Stopwatch();
+        Duration? firstEventElapsed;
+        Duration? lastEventElapsed;
+        _finishTurnBudget();
+        final restoreTimer = Stopwatch()..start();
+        final restore = await client.restoreSession(
           sessionId: trimmedSessionId,
           cwd: workspaceCwd,
           additionalDirectories: workspaceAdditionalDirectories,
+          replayHistory: !cacheHit,
+          onEvent: (event) {
+            if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+              return;
+            }
+            firstEventElapsed ??= totalLoadTimer.elapsed;
+            lastEventElapsed = totalLoadTimer.elapsed;
+            projectionTimer.start();
+            try {
+              _handleAgentEvent(event, notify: false);
+            } finally {
+              projectionTimer.stop();
+            }
+          },
         );
+        restoreTimer.stop();
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        if (cacheHit && restore.replayedHistory != false) {
+          throw StateError(
+            'Session resume unexpectedly replayed history after a transcript '
+            'cache hit.',
+          );
+        }
         _removeLocalUnstartedSessionId(trimmedSessionId);
-        await _replaySessionEvents(replay);
+        projectionTimer.start();
+        try {
+          _finishTurnBudget();
+        } finally {
+          projectionTimer.stop();
+        }
+        final replayedHistory = restore.replayedHistory;
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         await _loadSessionSettings(trimmedSessionId, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         isSessionReplayLoading = false;
+        _cachedSessionTranscriptVisible = false;
         if (status != ConnectionStatus.error) {
           status = ConnectionStatus.sessionReady;
         }
+        totalLoadTimer.stop();
+        lastSessionLoadMetrics = SessionLoadMetrics(
+          cacheReadElapsed: cacheResult.elapsed,
+          restoreElapsed: restoreTimer.elapsed,
+          projectionElapsed: projectionTimer.elapsed,
+          totalElapsed: totalLoadTimer.elapsed,
+          firstEventElapsed: firstEventElapsed,
+          eventSpan: firstEventElapsed == null || lastEventElapsed == null
+              ? null
+              : lastEventElapsed! - firstEventElapsed!,
+          cacheHit: cacheHit && replayedHistory == false,
+          cacheMessageCount: cacheHit ? cachedMessages.length : 0,
+          replayedHistory: replayedHistory,
+          replayEventCount: restore.eventCount,
+        );
+        if (kDebugMode && totalLoadTimer.elapsedMilliseconds >= 100) {
+          debugPrint('[session-load] ${lastSessionLoadMetrics!.toJson()}');
+        }
         _notifyListeners();
+        if (replayedHistory == true && transcriptIdentity != null) {
+          unawaited(
+            _saveCachedSessionTranscript(
+              transcriptIdentity,
+              List<ChatMessage>.of(_messages),
+            ),
+          );
+        }
       } catch (error) {
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         await _runUiStateTransaction(() {
@@ -3150,98 +3283,154 @@ class ChatController extends ChangeNotifier {
           sessionSettingsLoading = previousSessionSettingsLoading;
           _activeSessionSettingsLoadId = previousSettingsLoadId;
           isSessionReplayLoading = previousSessionReplayLoading;
+          _cachedSessionTranscriptVisible =
+              previousCachedSessionTranscriptVisible;
+          lastSessionLoadMetrics = previousSessionLoadMetrics;
         });
         _setError(error);
       }
     });
   }
 
-  Future<void> _replaySessionEvents(List<AgentEvent> replay) async {
-    _finishTurnBudget();
-    var pendingText = StringBuffer();
-    Map<String, Object?> pendingTextMetadata = const <String, Object?>{};
-    AgentEvent? pendingUserMessage;
+  Future<({SessionTranscriptSnapshot? snapshot, Duration elapsed})>
+  _loadCachedSessionTranscript(SessionTranscriptIdentity? identity) async {
+    final cache = sessionTranscriptCache;
+    if (identity == null || cache == null) {
+      return (snapshot: null, elapsed: Duration.zero);
+    }
+    final timer = Stopwatch()..start();
+    try {
+      final loaded = await cache.load(identity);
+      final snapshot = loaded != null && loaded.identity.matches(identity)
+          ? loaded
+          : null;
+      timer.stop();
+      return (snapshot: snapshot, elapsed: timer.elapsed);
+    } on Object {
+      timer.stop();
+      return (snapshot: null, elapsed: timer.elapsed);
+    }
+  }
 
-    void flushPendingText() {
-      if (pendingText.isEmpty) return;
-      _handleAgentEvent(
-        AgentEvent(
-          type: AgentEventType.agentTextDelta,
-          text: pendingText.toString(),
-          metadata: pendingTextMetadata,
+  Future<List<ChatMessage>?> _chatMessagesFromTranscript(
+    SessionTranscriptSnapshot snapshot, {
+    required int operationGeneration,
+  }) async {
+    try {
+      final restored = <ChatMessage>[];
+      final sliceTimer = Stopwatch()..start();
+      for (final raw in snapshot.messages) {
+        final role = switch (raw['role']) {
+          'user' => ChatMessageRole.user,
+          'assistant' => ChatMessageRole.assistant,
+          'tool' => ChatMessageRole.tool,
+          'error' => ChatMessageRole.error,
+          'status' => ChatMessageRole.status,
+          _ => throw const FormatException('Invalid cached message role.'),
+        };
+        final text = raw['text'];
+        final timestamp = raw['timestamp'];
+        final rawMetadata = raw['metadata'];
+        final rawOmissions = raw['omissions'];
+        if (text is! String ||
+            timestamp is! String ||
+            rawMetadata is! Map ||
+            rawOmissions is! List) {
+          return null;
+        }
+        final parsedTimestamp = DateTime.tryParse(timestamp);
+        if (parsedTimestamp == null) return null;
+        final omissions = <acp.AcpInputOmission>[];
+        for (final rawOmission in rawOmissions) {
+          if (rawOmission is! Map) return null;
+          final reason = switch (rawOmission['reason']) {
+            'input_limit' => acp.AcpInputOmissionReason.inputLimit,
+            'invalid_encoding' => acp.AcpInputOmissionReason.invalidEncoding,
+            'invalid_image' => acp.AcpInputOmissionReason.invalidImage,
+            'invalid_structure' => acp.AcpInputOmissionReason.invalidStructure,
+            _ => null,
+          };
+          final resource = rawOmission['resource'];
+          final truncated = rawOmission['truncated'];
+          if (reason == null || resource is! String || truncated is! bool) {
+            return null;
+          }
+          omissions.add(
+            acp.AcpInputOmission(
+              reason: reason,
+              resource: resource,
+              truncated: truncated,
+              limit: rawOmission['limit'] as int?,
+              observedAtLeast: rawOmission['observedAtLeast'] as int?,
+            ),
+          );
+        }
+        final message = ChatMessage(
+          role: role,
+          text: text,
+          timestamp: parsedTimestamp,
+          metadata: <String, Object?>{
+            for (final entry in rawMetadata.entries)
+              if (entry.key is String) entry.key as String: entry.value,
+          },
+          omissions: omissions,
+          inputBudget: inputBudget,
+        );
+        final turnId = raw['turnId'];
+        if (turnId is int && turnId > 0) message._turnId = turnId;
+        restored.add(message);
+        if (sliceTimer.elapsed >= const Duration(milliseconds: 4)) {
+          // Cache validation and metadata guarding can traverse tens of MiB.
+          // Yield on a frame-sized budget so loading never becomes one long
+          // synchronous UI-isolate task.
+          await Future<void>.delayed(Duration.zero);
+          if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+            return null;
+          }
+          sliceTimer.reset();
+        }
+      }
+      return restored;
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<void> _saveCachedSessionTranscript(
+    SessionTranscriptIdentity identity,
+    List<ChatMessage> sourceMessages,
+  ) async {
+    final cache = sessionTranscriptCache;
+    if (cache == null || sourceMessages.isEmpty) return;
+    await Future<void>.delayed(Duration.zero);
+    try {
+      final encodedMessages = <Map<String, Object?>>[];
+      final sliceTimer = Stopwatch()..start();
+      for (final message in sourceMessages) {
+        encodedMessages.add(<String, Object?>{
+          'role': message.role.name,
+          'text': message.text,
+          'timestamp': message.timestamp.toUtc().toIso8601String(),
+          'metadata': message.metadata,
+          'omissions': message.omissions
+              .map((omission) => omission.toJson())
+              .toList(growable: false),
+          if (message.turnId != null) 'turnId': message.turnId,
+        });
+        if (sliceTimer.elapsed >= const Duration(milliseconds: 4)) {
+          await Future<void>.delayed(Duration.zero);
+          sliceTimer.reset();
+        }
+      }
+      await cache.save(
+        SessionTranscriptSnapshot(
+          identity: identity,
+          messages: encodedMessages,
         ),
-        notify: false,
       );
-      pendingText = StringBuffer();
-      pendingTextMetadata = const <String, Object?>{};
+    } on Object {
+      // A cache write is optional; ACP remains the canonical recovery path.
     }
-
-    void flushPendingUserMessage() {
-      final pending = pendingUserMessage;
-      if (pending == null) return;
-      final metadata = <String, Object?>{...pending.metadata}
-        ..remove('_acpUserChunk');
-      _handleAgentEvent(
-        AgentEvent(
-          type: pending.type,
-          text: pending.text,
-          timestamp: pending.timestamp,
-          metadata: Map<String, Object?>.unmodifiable(metadata),
-          omissions: pending.omissions,
-        ),
-        notify: false,
-      );
-      pendingUserMessage = null;
-    }
-
-    void appendPendingUserMessage(AgentEvent event) {
-      final pending = pendingUserMessage;
-      if (pending == null) {
-        pendingUserMessage = event;
-        return;
-      }
-      pendingUserMessage = AgentEvent(
-        type: AgentEventType.userMessage,
-        text: '${pending.text}${event.text}',
-        timestamp: pending.timestamp,
-        metadata: _mergeReplayUserMetadata(pending.metadata, event.metadata),
-        omissions: <acp.AcpInputOmission>[
-          ...pending.omissions,
-          ...event.omissions,
-        ],
-      );
-    }
-
-    for (var index = 0; index < replay.length; index += 1) {
-      final event = replay[index];
-      if (event.type == AgentEventType.userMessage &&
-          event.metadata['_acpUserChunk'] == true) {
-        flushPendingText();
-        appendPendingUserMessage(event);
-      } else if (event.type == AgentEventType.userMessage) {
-        flushPendingUserMessage();
-        flushPendingText();
-        _handleAgentEvent(event, notify: false);
-      } else if (event.type == AgentEventType.agentTextDelta &&
-          event.metadata.isEmpty &&
-          event.omissions.isEmpty) {
-        flushPendingUserMessage();
-        pendingText.write(event.text);
-      } else {
-        flushPendingUserMessage();
-        flushPendingText();
-        _handleAgentEvent(event, notify: false);
-      }
-      final shouldYield =
-          (index + 1) % _sessionReplayBatchSize == 0 &&
-          index + 1 < replay.length;
-      if (shouldYield) {
-        await Future<void>.delayed(Duration.zero);
-      }
-    }
-    flushPendingUserMessage();
-    flushPendingText();
-    _finishTurnBudget();
   }
 
   Future<List<AcpProjectSessions>> listSessions() async {
@@ -4625,6 +4814,7 @@ class ChatController extends ChangeNotifier {
   }
 
   AgentEvent _safeAgentEvent(AgentEvent event) {
+    if (event.trustedRenderProjection) return event;
     final snapshot = _snapshotChatMessageMetadata(event.metadata, inputBudget);
     final stableMetadata = snapshot.metadata;
     final guarded = stableMetadata == null

@@ -37,12 +37,12 @@ use crate::{
     AgentLaunchConfig, AuthMethodProjection, CapabilityProjection, FilesystemApproval,
     FilesystemConfig, FilesystemManager, FilesystemOperationKind, FilesystemOperationResult,
     McpServerLaunchConfig, PermissionDecision, PermissionOptionProjection,
-    PermissionRequestProjection, PersistedSession, PromptAttachmentInput, RuntimeEvent,
-    RuntimeEventEnvelope, RuntimeStateMachine, RuntimeStatus, SessionCatalogEntryProjection,
-    SessionConfigChoiceProjection, SessionConfigOptionProjection, SessionConfigValueProjection,
-    SessionModeProjection, SessionModesProjection, SessionUpdate, SessionUpdateKind,
-    SqliteSessionStore, TerminalCreateSpec, TerminalEnvironmentVariable, TerminalExit,
-    TerminalManager, TerminalRuntimeEvent, WorkspaceScope,
+    PermissionRequestProjection, PersistedSession, PromptAttachmentInput, RenderUpdate,
+    RenderUpdateKind, RuntimeEvent, RuntimeEventEnvelope, RuntimeStateMachine, RuntimeStatus,
+    SessionCatalogEntryProjection, SessionConfigChoiceProjection, SessionConfigOptionProjection,
+    SessionConfigValueProjection, SessionModeProjection, SessionModesProjection, SessionUpdate,
+    SessionUpdateKind, SqliteSessionStore, TerminalCreateSpec, TerminalEnvironmentVariable,
+    TerminalExit, TerminalManager, TerminalRuntimeEvent, WorkspaceScope,
 };
 
 const COMMAND_CAPACITY: usize = 256;
@@ -56,6 +56,14 @@ const SESSION_LIST_MAX_CURSOR_BYTES: usize = 8 * 1024;
 const SESSION_TITLE_MAX_CHARACTERS: usize = 256;
 const SESSION_CONFIG_MAX_OPTIONS: usize = 256;
 const SESSION_CONFIG_MAX_CHOICES: usize = 4_096;
+// Keep replay projection work below a frame-sized slice once it crosses FFI.
+// The Dart host cooperatively drains several chunks instead of projecting a
+// whole restored transcript in one event-loop turn.
+const RENDER_SNAPSHOT_CHUNK_TARGET_BYTES: usize = 64 * 1024;
+const RENDER_SNAPSHOT_CHUNK_MAX_UPDATES: usize = 16;
+const RENDER_COALESCED_TEXT_TARGET_BYTES: usize = RENDER_SNAPSHOT_CHUNK_TARGET_BYTES / 2;
+const RENDER_TOOL_DETAIL_MAX_BYTES: usize = 128 * 1024;
+const RENDER_TOOL_CONTENT_MAX_BYTES: usize = 512 * 1024;
 const TERMINAL_ALLOW_ONCE_OPTION_ID: &str = "ianvs_terminal_allow_once";
 const TERMINAL_REJECT_ONCE_OPTION_ID: &str = "ianvs_terminal_reject_once";
 const FILESYSTEM_ALLOW_ONCE_OPTION_ID: &str = "ianvs_filesystem_allow_once";
@@ -93,6 +101,7 @@ enum RuntimeCommand {
         session_id: String,
         cwd: String,
         additional_directories: Vec<String>,
+        replay_history: bool,
     },
     ListSessions {
         request_id: String,
@@ -290,7 +299,7 @@ impl SessionRecoveryRegistry {
                         .session_store_retention_days
                         .unwrap_or(defaults.retention_days()),
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(std::string::ToString::to_string)?;
                 SqliteSessionStore::open_with_policy(path, policy)
                     .map_err(|error| error.to_string())
             })
@@ -381,6 +390,214 @@ impl EventSink {
     }
 }
 
+#[derive(Default)]
+struct ReplayRenderProjection {
+    request_id: String,
+    updates: Vec<RenderUpdate>,
+}
+
+impl ReplayRenderProjection {
+    fn push(&mut self, update: RenderUpdate) {
+        if self.coalesce_adjacent_text(&update) || self.merge_tool_update(&update) {
+            return;
+        }
+        self.updates.push(update);
+    }
+
+    fn coalesce_adjacent_text(&mut self, update: &RenderUpdate) -> bool {
+        let Some(previous) = self.updates.last_mut() else {
+            return false;
+        };
+        if previous.kind != update.kind
+            || !matches!(
+                update.kind,
+                RenderUpdateKind::UserMessage
+                    | RenderUpdateKind::AssistantText
+                    | RenderUpdateKind::Thought
+            )
+        {
+            return false;
+        }
+        let text_target = if update.kind == RenderUpdateKind::UserMessage {
+            RENDER_TOOL_DETAIL_MAX_BYTES * 2
+        } else {
+            RENDER_COALESCED_TEXT_TARGET_BYTES
+        };
+        if previous.text.len().saturating_add(update.text.len()) > text_target {
+            return false;
+        }
+        previous.text.push_str(&update.text);
+        if update.kind == RenderUpdateKind::UserMessage {
+            merge_content_block_metadata(&mut previous.metadata, update.metadata.as_ref());
+        }
+        true
+    }
+
+    fn merge_tool_update(&mut self, update: &RenderUpdate) -> bool {
+        if update.kind != RenderUpdateKind::ToolCall {
+            return false;
+        }
+        let Some(tool_call_id) = render_tool_call_id(update) else {
+            return false;
+        };
+        for previous in self.updates.iter_mut().rev() {
+            if previous.kind == RenderUpdateKind::UserMessage {
+                break;
+            }
+            if previous.kind != RenderUpdateKind::ToolCall
+                || render_tool_call_id(previous) != Some(tool_call_id)
+            {
+                continue;
+            }
+            if !update.text.trim().is_empty() {
+                previous.text.clone_from(&update.text);
+            }
+            merge_render_metadata(&mut previous.metadata, update.metadata.as_ref());
+            return true;
+        }
+        false
+    }
+}
+
+#[derive(Clone)]
+struct RenderRouter {
+    sink: EventSink,
+    replay: Arc<Mutex<HashMap<String, ReplayRenderProjection>>>,
+}
+
+impl RenderRouter {
+    fn new(sink: EventSink) -> Self {
+        Self {
+            sink,
+            replay: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn begin_replay(&self, session_id: String, request_id: String) {
+        self.replay
+            .lock()
+            .expect("render replay mutex poisoned")
+            .insert(
+                session_id,
+                ReplayRenderProjection {
+                    request_id,
+                    updates: Vec::new(),
+                },
+            );
+    }
+
+    fn route(&self, update: RenderUpdate) {
+        let mut replay = self.replay.lock().expect("render replay mutex poisoned");
+        if let Some(projection) = replay.get_mut(&update.session_id) {
+            projection.push(update);
+            return;
+        }
+        std::mem::drop(replay);
+        self.sink.emit(RuntimeEvent::RenderUpdate { update });
+    }
+
+    fn finish_replay(&self, session_id: &str, request_id: &str) {
+        let projection = self
+            .replay
+            .lock()
+            .expect("render replay mutex poisoned")
+            .remove(session_id);
+        let Some(projection) = projection else {
+            return;
+        };
+        if projection.request_id != request_id {
+            return;
+        }
+        self.emit_snapshot_chunks(request_id, session_id, projection.updates);
+    }
+
+    fn abort_replay(&self, request_id: &str) {
+        self.replay
+            .lock()
+            .expect("render replay mutex poisoned")
+            .retain(|_, projection| projection.request_id != request_id);
+    }
+
+    fn emit_snapshot_chunks(&self, request_id: &str, session_id: &str, updates: Vec<RenderUpdate>) {
+        if updates.is_empty() {
+            return;
+        }
+        let mut chunks = Vec::<Vec<RenderUpdate>>::new();
+        let mut chunk = Vec::<RenderUpdate>::new();
+        let mut chunk_bytes = 0_usize;
+        for update in updates {
+            let update_bytes = serde_json::to_vec(&update).map_or(0, |encoded| encoded.len());
+            if !chunk.is_empty()
+                && (chunk.len() >= RENDER_SNAPSHOT_CHUNK_MAX_UPDATES
+                    || chunk_bytes.saturating_add(update_bytes)
+                        > RENDER_SNAPSHOT_CHUNK_TARGET_BYTES)
+            {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_bytes = 0;
+            }
+            chunk_bytes = chunk_bytes.saturating_add(update_bytes);
+            chunk.push(update);
+        }
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+        let last_index = chunks.len().saturating_sub(1);
+        for (index, updates) in chunks.into_iter().enumerate() {
+            self.sink.emit(RuntimeEvent::RenderSnapshotChunk {
+                request_id: request_id.to_string(),
+                session_id: session_id.to_string(),
+                chunk_index: u32::try_from(index).unwrap_or(u32::MAX),
+                is_last: index == last_index,
+                updates,
+            });
+        }
+    }
+}
+
+fn render_tool_call_id(update: &RenderUpdate) -> Option<&str> {
+    update.metadata.as_ref()?.get("toolCallId")?.as_str()
+}
+
+fn merge_render_metadata(
+    existing: &mut Option<serde_json::Value>,
+    update: Option<&serde_json::Value>,
+) {
+    let Some(update) = update.and_then(serde_json::Value::as_object) else {
+        return;
+    };
+    let existing = existing.get_or_insert_with(|| serde_json::json!({}));
+    let Some(existing) = existing.as_object_mut() else {
+        return;
+    };
+    for (key, value) in update {
+        if !value.is_null() {
+            existing.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn merge_content_block_metadata(
+    existing: &mut Option<serde_json::Value>,
+    update: Option<&serde_json::Value>,
+) {
+    let Some(update_blocks) = update
+        .and_then(|value| value.get("contentBlocks"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    let existing = existing.get_or_insert_with(|| serde_json::json!({"contentBlocks": []}));
+    let Some(existing) = existing.as_object_mut() else {
+        return;
+    };
+    let blocks = existing
+        .entry("contentBlocks")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if let Some(blocks) = blocks.as_array_mut() {
+        blocks.extend(update_blocks.iter().cloned());
+    }
+}
+
 /// Thread-safe command handle plus a single-consumer event queue.
 ///
 /// The worker owns a current-thread Tokio runtime and the ACP subprocess. No
@@ -461,12 +678,14 @@ impl RuntimeHandle {
         session_id: impl Into<String>,
         cwd: impl Into<String>,
         additional_directories: Vec<String>,
+        replay_history: bool,
     ) -> Result<(), RuntimeError> {
         self.send(RuntimeCommand::RestoreSession {
             request_id: checked_request_id(request_id.into())?,
             session_id: checked_session_id(session_id.into())?,
             cwd: cwd.into(),
             additional_directories,
+            replay_history,
         })
     }
 
@@ -910,6 +1129,8 @@ async fn run_agent(
         .permission_timeout_ms
         .map_or(DEFAULT_PERMISSION_TIMEOUT, Duration::from_millis);
     let notification_sink = sink.clone();
+    let render_router = RenderRouter::new(sink.clone());
+    let notification_render_router = render_router.clone();
     let notification_internal = internal_sender.clone();
     let cleanup_pending = Arc::clone(&pending_permissions);
     let cleanup_sink = sink.clone();
@@ -943,7 +1164,10 @@ async fn run_agent(
         .on_receive_notification(
             async move |notification: SessionNotification, _connection| {
                 match project_session_notification(notification) {
-                    Ok(Some(ProjectedSessionNotification::Update(update))) => {
+                    Ok(Some(ProjectedSessionNotification::Render(update))) => {
+                        notification_render_router.route(update);
+                    }
+                    Ok(Some(ProjectedSessionNotification::Control(update))) => {
                         notification_sink.emit(RuntimeEvent::SessionUpdate { update });
                     }
                     Ok(Some(ProjectedSessionNotification::Config {
@@ -1297,6 +1521,7 @@ async fn run_agent(
                         &sink,
                         state,
                         &mcp_servers,
+                        &render_router,
                     )
                     .await
                     .map_err(|message| AcpError::new(-32603, message))?;
@@ -1331,6 +1556,7 @@ async fn run_agent(
                     session_registry,
                     recovered,
                     mcp_servers,
+                    render_router,
                 )
                 .await
                 .map_err(|message| AcpError::new(-32603, message))
@@ -1411,6 +1637,7 @@ async fn recover_registered_sessions(
     sink: &EventSink,
     state: &mut RuntimeStateMachine,
     mcp_servers: &[AcpMcpServer],
+    render_router: &RenderRouter,
 ) -> Result<RecoveredRuntimeSessions, String> {
     let sessions = registry.sessions();
     if !sessions.is_empty() && !support.load && !support.resume {
@@ -1422,8 +1649,22 @@ async fn recover_registered_sessions(
     let mut recovered = RecoveredRuntimeSessions::default();
     for session in sessions {
         let scope = session.scope().map_err(|error| error.to_string())?;
+        let recovery_request_id = format!("recovery:{}", session.session_id);
+        if support.load {
+            render_router.begin_replay(session.session_id.clone(), recovery_request_id.clone());
+        }
         let restored =
-            restore_wire_session(connection, &session, &scope, support, mcp_servers).await?;
+            match restore_wire_session(connection, &session, &scope, support, mcp_servers).await {
+                Ok(restored) => restored,
+                Err(error) => {
+                    render_router.abort_replay(&recovery_request_id);
+                    return Err(error);
+                }
+            };
+        // Recovery re-establishes protocol state; the existing UI transcript
+        // remains authoritative. Never transfer a replay with no foreground
+        // restore consumer.
+        render_router.abort_replay(&recovery_request_id);
         if let Some(manager) = terminal_manager {
             manager
                 .register_session(&restored.session_id, scope.clone())
@@ -1485,6 +1726,7 @@ async fn command_loop(
     session_registry: &mut SessionRecoveryRegistry,
     recovered: RecoveredRuntimeSessions,
     mcp_servers: Vec<AcpMcpServer>,
+    render_router: RenderRouter,
 ) -> Result<(), String> {
     let mut scopes = recovered.scopes;
     let mut config_options_by_session = recovered.config_options;
@@ -1566,6 +1808,7 @@ async fn command_loop(
                         session_id,
                         cwd,
                         additional_directories,
+                        replay_history,
                     } => {
                         if !session_support.load && !session_support.resume {
                             sink.error(
@@ -1604,8 +1847,13 @@ async fn command_loop(
                         let terminal_manager = terminal_manager.clone();
                         let filesystem_manager = filesystem_manager.clone();
                         let restore_mcp_servers = mcp_servers.clone();
+                        let will_replay_history =
+                            (replay_history && session_support.load) || !session_support.resume;
+                        if will_replay_history {
+                            render_router.begin_replay(session_id.clone(), request_id.clone());
+                        }
                         connection.spawn(async move {
-                            let result = if session_support.load {
+                            let result = if replay_history && session_support.load {
                                 agent
                                     .send_request(
                                         LoadSessionRequest::new(
@@ -1626,7 +1874,7 @@ async fn command_loop(
                                             response.config_options.as_deref(),
                                         )?,
                                     }))
-                            } else {
+                            } else if session_support.resume {
                                 agent
                                     .send_request(
                                         ResumeSessionRequest::new(
@@ -1643,6 +1891,27 @@ async fn command_loop(
                                         session_id: requested_session_id.clone(),
                                         modes: response.modes.as_ref().map(project_session_modes),
                                         replayed_history: false,
+                                        config_options: project_session_config_options(
+                                            response.config_options.as_deref(),
+                                        )?,
+                                    }))
+                            } else {
+                                agent
+                                    .send_request(
+                                        LoadSessionRequest::new(
+                                            requested_session_id.clone(),
+                                            request_scope.cwd().to_path_buf(),
+                                        )
+                                        .additional_directories(request_scope.roots()[1..].to_vec())
+                                        .mcp_servers(restore_mcp_servers),
+                                    )
+                                    .block_task()
+                                    .await
+                                    .map_err(|error| error.to_string())
+                                    .and_then(|response| Ok(RestoredSession {
+                                        session_id: requested_session_id.clone(),
+                                        modes: response.modes.as_ref().map(project_session_modes),
+                                        replayed_history: true,
                                         config_options: project_session_config_options(
                                             response.config_options.as_deref(),
                                         )?,
@@ -2192,6 +2461,11 @@ async fn command_loop(
                                 session_id.clone(),
                                 restored.config_options.clone(),
                             );
+                            if restored.replayed_history {
+                                render_router.finish_replay(&session_id, &request_id);
+                            } else {
+                                render_router.abort_replay(&request_id);
+                            }
                             sink.emit(RuntimeEvent::SessionUpdate {
                                 update: SessionUpdate {
                                     session_id: session_id.clone(),
@@ -2211,7 +2485,10 @@ async fn command_loop(
                                 emit_config_changed(&sink, session_id, None, &options);
                             }
                         }
-                        Err(message) => sink.error(Some(request_id), "restore_session_failed", message, true),
+                        Err(message) => {
+                            render_router.abort_replay(&request_id);
+                            sink.error(Some(request_id), "restore_session_failed", message, true);
+                        }
                     },
                     InternalEvent::SessionCataloged { request_id, result } => match result {
                         Ok(sessions) => sink.emit(RuntimeEvent::SessionCatalog {
@@ -2340,18 +2617,14 @@ async fn command_loop(
                             sink.error(Some(request_id.clone()), "invalid_session_state", error.to_string(), false);
                         }
                         match result {
-                            Ok(stop_reason) => sink.emit(RuntimeEvent::SessionUpdate {
-                                update: SessionUpdate {
-                                    session_id,
-                                    kind: if stop_reason == "cancelled" {
-                                        SessionUpdateKind::Cancelled
-                                    } else {
-                                        SessionUpdateKind::PromptCompleted
-                                    },
-                                    text: None,
-                                    request_id: Some(request_id),
-                                    payload: Some(serde_json::json!({ "stopReason": stop_reason })),
-                                },
+                            Ok(stop_reason) => render_router.route(RenderUpdate {
+                                session_id,
+                                kind: RenderUpdateKind::TurnCompleted,
+                                text: String::new(),
+                                metadata: Some(serde_json::json!({
+                                    "stopReason": stop_reason,
+                                    "requestId": request_id,
+                                })),
                             }),
                             Err(message) => sink.error(Some(request_id), "prompt_failed", message, true),
                         }
@@ -2830,27 +3103,6 @@ fn normalize_session_title(value: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn bounded_session_info_payload<T: serde::Serialize>(value: T) -> Option<serde_json::Value> {
-    let mut payload = serde_json::to_value(value).ok()?;
-    let Some(fields) = payload.as_object_mut() else {
-        return Some(payload);
-    };
-    let Some(raw_title) = fields.remove("title") else {
-        return Some(payload);
-    };
-    match raw_title {
-        serde_json::Value::String(title) => {
-            if let Some(title) = normalize_session_title(&title) {
-                fields.insert("title".to_string(), serde_json::Value::String(title));
-            }
-        }
-        value => {
-            fields.insert("title".to_string(), value);
-        }
-    }
-    Some(payload)
-}
-
 fn capability_projection(
     capabilities: &agent_client_protocol::schema::v1::AgentCapabilities,
     session_support: SessionSupport,
@@ -3213,7 +3465,8 @@ fn permission_option_kind(kind: PermissionOptionKind) -> &'static str {
 }
 
 enum ProjectedSessionNotification {
-    Update(SessionUpdate),
+    Render(RenderUpdate),
+    Control(SessionUpdate),
     Config {
         session_id: String,
         options: Vec<SessionConfigOptionProjection>,
@@ -3224,47 +3477,73 @@ fn project_session_notification(
     notification: SessionNotification,
 ) -> Result<Option<ProjectedSessionNotification>, String> {
     let session_id = notification.session_id.to_string();
-    let (kind, text, payload) = match notification.update {
-        AcpSessionUpdate::UserMessageChunk(chunk) => (
-            SessionUpdateKind::UserMessage,
-            content_text(&chunk.content),
-            content_payload(&chunk.content),
-        ),
-        AcpSessionUpdate::AgentMessageChunk(chunk) => (
-            SessionUpdateKind::AgentMessageDelta,
-            content_text(&chunk.content),
-            content_payload(&chunk.content),
-        ),
-        AcpSessionUpdate::AgentThoughtChunk(chunk) => (
-            SessionUpdateKind::AgentThoughtDelta,
-            content_text(&chunk.content),
-            content_payload(&chunk.content),
-        ),
-        AcpSessionUpdate::ToolCall(value) => (
-            SessionUpdateKind::ToolCall,
-            Some(value.title.clone()),
-            serde_json::to_value(value).ok(),
-        ),
-        AcpSessionUpdate::ToolCallUpdate(value) => (
-            SessionUpdateKind::ToolCallUpdate,
-            value.fields.title.clone(),
-            serde_json::to_value(value).ok(),
-        ),
-        AcpSessionUpdate::Plan(value) => (
-            SessionUpdateKind::Plan,
-            None,
-            serde_json::to_value(value).ok(),
-        ),
-        AcpSessionUpdate::AvailableCommandsUpdate(value) => (
-            SessionUpdateKind::AvailableCommands,
-            None,
-            serde_json::to_value(value).ok(),
-        ),
-        AcpSessionUpdate::CurrentModeUpdate(value) => (
-            SessionUpdateKind::ModeChanged,
-            None,
-            serde_json::to_value(value).ok(),
-        ),
+    let projection = match notification.update {
+        AcpSessionUpdate::UserMessageChunk(chunk) => {
+            let (text, metadata) = render_content(&chunk.content);
+            ProjectedSessionNotification::Render(RenderUpdate {
+                session_id,
+                kind: RenderUpdateKind::UserMessage,
+                text,
+                metadata,
+            })
+        }
+        AcpSessionUpdate::AgentMessageChunk(chunk) => {
+            let (text, metadata) = render_content(&chunk.content);
+            ProjectedSessionNotification::Render(RenderUpdate {
+                session_id,
+                kind: RenderUpdateKind::AssistantText,
+                text,
+                metadata,
+            })
+        }
+        AcpSessionUpdate::AgentThoughtChunk(chunk) => {
+            let (text, _) = render_content(&chunk.content);
+            ProjectedSessionNotification::Render(RenderUpdate {
+                session_id,
+                kind: RenderUpdateKind::Thought,
+                text,
+                metadata: None,
+            })
+        }
+        AcpSessionUpdate::ToolCall(value) => {
+            let title = value.title.clone();
+            ProjectedSessionNotification::Render(RenderUpdate {
+                session_id,
+                kind: RenderUpdateKind::ToolCall,
+                text: title,
+                metadata: project_tool_render_metadata(value),
+            })
+        }
+        AcpSessionUpdate::ToolCallUpdate(value) => {
+            let title = value.fields.title.clone().unwrap_or_default();
+            ProjectedSessionNotification::Render(RenderUpdate {
+                session_id,
+                kind: RenderUpdateKind::ToolCall,
+                text: title,
+                metadata: project_tool_render_metadata(value),
+            })
+        }
+        AcpSessionUpdate::Plan(value) => {
+            let mut metadata = serde_json::json!({ "entries": value.entries });
+            strip_non_render_fields(&mut metadata);
+            ProjectedSessionNotification::Render(RenderUpdate {
+                session_id,
+                kind: RenderUpdateKind::Plan,
+                text: String::new(),
+                metadata: Some(metadata),
+            })
+        }
+        AcpSessionUpdate::CurrentModeUpdate(value) => {
+            ProjectedSessionNotification::Control(SessionUpdate {
+                session_id,
+                kind: SessionUpdateKind::ModeChanged,
+                text: None,
+                request_id: None,
+                payload: Some(serde_json::json!({
+                    "modeId": value.current_mode_id,
+                })),
+            })
+        }
         AcpSessionUpdate::ConfigOptionUpdate(value) => {
             let options = project_session_config_options(Some(&value.config_options))?;
             return Ok(Some(ProjectedSessionNotification::Config {
@@ -3272,25 +3551,10 @@ fn project_session_notification(
                 options,
             }));
         }
-        AcpSessionUpdate::SessionInfoUpdate(value) => (
-            SessionUpdateKind::SessionInfoChanged,
-            None,
-            bounded_session_info_payload(value),
-        ),
-        AcpSessionUpdate::UsageUpdate(value) => (
-            SessionUpdateKind::UsageChanged,
-            None,
-            serde_json::to_value(value).ok(),
-        ),
+        // Protocol notifications without a UI consumer never cross FFI.
         _ => return Ok(None),
     };
-    Ok(Some(ProjectedSessionNotification::Update(SessionUpdate {
-        session_id,
-        kind,
-        text,
-        request_id: None,
-        payload,
-    })))
+    Ok(Some(projection))
 }
 
 fn emit_config_changed(
@@ -3310,18 +3574,82 @@ fn emit_config_changed(
     });
 }
 
-fn content_text(content: &ContentBlock) -> Option<String> {
-    match content {
-        ContentBlock::Text(text) => Some(text.text.clone()),
-        _ => None,
+fn render_content(content: &ContentBlock) -> (String, Option<serde_json::Value>) {
+    if let ContentBlock::Text(text) = content {
+        (text.text.clone(), None)
+    } else {
+        let mut block = serde_json::to_value(content).ok();
+        if let Some(block) = block.as_mut() {
+            strip_non_render_fields(block);
+        }
+        (
+            String::new(),
+            block.map(|block| serde_json::json!({ "contentBlocks": [block] })),
+        )
     }
 }
 
-fn content_payload(content: &ContentBlock) -> Option<serde_json::Value> {
-    if matches!(content, ContentBlock::Text(_)) {
-        None
-    } else {
-        serde_json::to_value(content).ok()
+fn project_tool_render_metadata<T: serde::Serialize>(value: T) -> Option<serde_json::Value> {
+    const TOOL_RENDER_FIELDS: [&str; 8] = [
+        "toolCallId",
+        "title",
+        "kind",
+        "status",
+        "content",
+        "locations",
+        "rawInput",
+        "rawOutput",
+    ];
+    let mut value = serde_json::to_value(value).ok()?;
+    strip_non_render_fields(&mut value);
+    let fields = value.as_object_mut()?;
+    fields.retain(|key, _| TOOL_RENDER_FIELDS.contains(&key.as_str()));
+    bound_render_field(fields, "rawInput", RENDER_TOOL_DETAIL_MAX_BYTES);
+    bound_render_field(fields, "rawOutput", RENDER_TOOL_DETAIL_MAX_BYTES);
+    bound_render_field(fields, "locations", RENDER_TOOL_DETAIL_MAX_BYTES);
+    bound_render_field(fields, "content", RENDER_TOOL_CONTENT_MAX_BYTES);
+    Some(value)
+}
+
+fn bound_render_field(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    limit: usize,
+) {
+    let Some(value) = fields.get(field) else {
+        return;
+    };
+    let encoded_bytes = serde_json::to_vec(value).map_or(usize::MAX, |encoded| encoded.len());
+    if encoded_bytes <= limit {
+        return;
+    }
+    fields.insert(
+        field.to_string(),
+        serde_json::json!({
+            "type": "omitted",
+            "reason": "input_limit",
+            "resource": format!("tool_{field}"),
+            "limit": limit,
+            "observedAtLeast": encoded_bytes,
+        }),
+    );
+}
+
+fn strip_non_render_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            fields.remove("_meta");
+            fields.remove("annotations");
+            for value in fields.values_mut() {
+                strip_non_render_fields(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                strip_non_render_fields(value);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -3419,8 +3747,13 @@ impl ConnectTo<agent_client_protocol::Client> for LocalAgentTransport {
 #[cfg(test)]
 mod tests {
     use super::{
-        SESSION_TITLE_MAX_CHARACTERS, bounded_session_info_payload, normalize_session_title,
+        EventSink, RENDER_SNAPSHOT_CHUNK_MAX_UPDATES, RENDER_SNAPSHOT_CHUNK_TARGET_BYTES,
+        RenderRouter, RenderUpdate, RenderUpdateKind, ReplayRenderProjection, RuntimeEvent,
+        RuntimeEventEnvelope, SESSION_TITLE_MAX_CHARACTERS, normalize_session_title,
+        strip_non_render_fields,
     };
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn session_titles_are_normalized_and_bounded() {
@@ -3441,16 +3774,146 @@ mod tests {
     }
 
     #[test]
-    fn session_info_update_titles_are_bounded_before_projection() {
-        let payload = bounded_session_info_payload(serde_json::json!({
-            "title": "会".repeat(SESSION_TITLE_MAX_CHARACTERS + 44),
-            "updatedAt": "2026-07-29T08:00:00Z",
-        }))
-        .expect("payload");
-        let title = payload["title"].as_str().expect("title");
+    fn render_projection_removes_protocol_only_fields_recursively() {
+        let mut value = serde_json::json!({
+            "toolCallId": "tool-1",
+            "_meta": {"huge": "invisible"},
+            "content": [{
+                "type": "content",
+                "annotations": {"audience": ["assistant"]},
+                "content": {
+                    "type": "image",
+                    "data": "AA==",
+                    "mimeType": "image/png",
+                    "_meta": {"private": true}
+                }
+            }]
+        });
 
-        assert_eq!(title.chars().count(), SESSION_TITLE_MAX_CHARACTERS);
-        assert!(title.ends_with('…'));
-        assert_eq!(payload["updatedAt"], "2026-07-29T08:00:00Z");
+        strip_non_render_fields(&mut value);
+
+        let encoded = serde_json::to_string(&value).unwrap();
+        assert!(!encoded.contains("_meta"));
+        assert!(!encoded.contains("annotations"));
+        assert_eq!(value["toolCallId"], "tool-1");
+        assert_eq!(value["content"][0]["content"]["data"], "AA==");
+    }
+
+    #[test]
+    fn replay_projection_coalesces_text_and_merges_tool_updates_in_rust() {
+        let mut projection = ReplayRenderProjection {
+            request_id: "restore-1".to_string(),
+            updates: Vec::new(),
+        };
+        for text in ["hel", "lo"] {
+            projection.push(RenderUpdate {
+                session_id: "session-1".to_string(),
+                kind: RenderUpdateKind::AssistantText,
+                text: text.to_string(),
+                metadata: None,
+            });
+        }
+        projection.push(RenderUpdate {
+            session_id: "session-1".to_string(),
+            kind: RenderUpdateKind::ToolCall,
+            text: "Read file".to_string(),
+            metadata: Some(serde_json::json!({
+                "toolCallId": "tool-1",
+                "status": "in_progress"
+            })),
+        });
+        projection.push(RenderUpdate {
+            session_id: "session-1".to_string(),
+            kind: RenderUpdateKind::ToolCall,
+            text: String::new(),
+            metadata: Some(serde_json::json!({
+                "toolCallId": "tool-1",
+                "status": "completed",
+                "rawOutput": "done"
+            })),
+        });
+
+        assert_eq!(projection.updates.len(), 2);
+        assert_eq!(projection.updates[0].text, "hello");
+        assert_eq!(projection.updates[1].text, "Read file");
+        assert_eq!(
+            projection.updates[1].metadata.as_ref().unwrap()["status"],
+            "completed"
+        );
+        assert_eq!(
+            projection.updates[1].metadata.as_ref().unwrap()["rawOutput"],
+            "done"
+        );
+    }
+
+    #[test]
+    fn replay_snapshot_is_split_before_the_ffi_queue() {
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let sink = EventSink {
+            sender,
+            next_sequence: Arc::new(Mutex::new(1)),
+        };
+        let router = RenderRouter::new(sink);
+        let updates = (0..=(RENDER_SNAPSHOT_CHUNK_MAX_UPDATES * 2))
+            .map(|index| RenderUpdate {
+                session_id: "session-1".to_string(),
+                kind: RenderUpdateKind::AssistantText,
+                text: index.to_string(),
+                metadata: None,
+            })
+            .collect();
+
+        router.emit_snapshot_chunks("restore-1", "session-1", updates);
+
+        let envelopes = receiver.try_iter().collect::<Vec<RuntimeEventEnvelope>>();
+        assert_eq!(envelopes.len(), 3);
+        for (index, envelope) in envelopes.iter().enumerate() {
+            let RuntimeEvent::RenderSnapshotChunk {
+                chunk_index,
+                is_last,
+                updates,
+                ..
+            } = &envelope.event
+            else {
+                panic!("unexpected event: {:?}", envelope.event);
+            };
+            assert_eq!(*chunk_index as usize, index);
+            assert_eq!(*is_last, index == 2);
+            assert!(updates.len() <= RENDER_SNAPSHOT_CHUNK_MAX_UPDATES);
+            let encoded_bytes = serde_json::to_vec(updates).unwrap().len();
+            assert!(encoded_bytes <= RENDER_SNAPSHOT_CHUNK_TARGET_BYTES);
+        }
+    }
+
+    #[test]
+    fn replay_snapshot_is_split_by_render_byte_budget() {
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let sink = EventSink {
+            sender,
+            next_sequence: Arc::new(Mutex::new(1)),
+        };
+        let router = RenderRouter::new(sink);
+        let updates = (0..4)
+            .map(|_| RenderUpdate {
+                session_id: "session-1".to_string(),
+                kind: RenderUpdateKind::AssistantText,
+                text: "x".repeat(RENDER_SNAPSHOT_CHUNK_TARGET_BYTES / 3),
+                metadata: None,
+            })
+            .collect();
+
+        router.emit_snapshot_chunks("restore-1", "session-1", updates);
+
+        let envelopes = receiver.try_iter().collect::<Vec<RuntimeEventEnvelope>>();
+        assert_eq!(envelopes.len(), 2);
+        for envelope in envelopes {
+            let RuntimeEvent::RenderSnapshotChunk { updates, .. } = envelope.event else {
+                panic!("unexpected runtime event");
+            };
+            assert_eq!(updates.len(), 2);
+            assert!(
+                serde_json::to_vec(&updates).unwrap().len() <= RENDER_SNAPSHOT_CHUNK_TARGET_BYTES
+            );
+        }
     }
 }

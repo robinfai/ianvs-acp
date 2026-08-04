@@ -13,14 +13,16 @@ use std::time::Duration;
 
 use ianvs_acp_core::{
     AgentLaunchConfig, DurableWorkflow, ExecutorLeaseCommand, ExecutorTakeoverRequest,
-    ExecutorTaskInboxCommand, PermissionDecision, PromptAttachmentInput, RuntimeHandle,
-    SchedulerClaimRequest, SchedulerConfig, SchedulerRuntimeStatus, SessionConfigValueProjection,
-    TASK_INBOX_SCHEMA, TaskInboxCommand, TaskInboxSnapshot, WorkflowCommand,
+    ExecutorTaskInboxCommand, PermissionDecision, PromptAttachmentInput, RuntimeEventEnvelope,
+    RuntimeHandle, SchedulerClaimRequest, SchedulerConfig, SchedulerRuntimeStatus,
+    SessionConfigValueProjection, TASK_INBOX_SCHEMA, TaskInboxCommand, TaskInboxSnapshot,
+    WorkflowCommand,
 };
 
 /// Opaque native runtime owned by the Dart host.
 pub struct IanvsRuntime {
     runtime: Option<RuntimeHandle>,
+    pending_event: Mutex<Option<RuntimeEventEnvelope>>,
     last_error: Mutex<Option<String>>,
 }
 
@@ -28,6 +30,7 @@ impl IanvsRuntime {
     fn new() -> Self {
         Self {
             runtime: Some(RuntimeHandle::new()),
+            pending_event: Mutex::new(None),
             last_error: Mutex::new(None),
         }
     }
@@ -99,7 +102,7 @@ impl IanvsWorkflow {
 /// ABI version for compatibility checks before any other call.
 #[unsafe(no_mangle)]
 pub extern "C" fn ianvs_acp_ffi_version() -> u32 {
-    7
+    9
 }
 
 /// Allocate a new, stopped runtime.
@@ -193,6 +196,7 @@ pub unsafe extern "C" fn ianvs_acp_restore_session(
     session_id: *const c_char,
     cwd: *const c_char,
     additional_directories_json: *const c_char,
+    replay_history: bool,
 ) -> bool {
     let Some(runtime) = (unsafe { runtime.as_ref() }) else {
         return false;
@@ -208,6 +212,7 @@ pub unsafe extern "C" fn ianvs_acp_restore_session(
                 unsafe { read_string(session_id, "sessionId") }?,
                 unsafe { read_string(cwd, "cwd") }?,
                 directories,
+                replay_history,
             )
             .map_err(|error| error.to_string())
     })
@@ -545,7 +550,12 @@ pub unsafe extern "C" fn ianvs_acp_dispose(runtime: *mut IanvsRuntime) -> bool {
     runtime.run(|handle| handle.dispose().map_err(|error| error.to_string()))
 }
 
-/// Poll one versioned ianvs event envelope. Returns null on timeout/no event.
+/// Poll a bounded batch of versioned ianvs event envelopes.
+///
+/// The batch is pull-based: Rust retains ownership of an event that would
+/// exceed `max_bytes` and returns it on the next call. The first event is
+/// always returned even when it alone exceeds the byte target, so a valid
+/// protocol event cannot deadlock the queue. Returns null on timeout/no event.
 /// The returned string must be released with [`ianvs_acp_string_free`].
 ///
 /// # Safety
@@ -553,36 +563,107 @@ pub unsafe extern "C" fn ianvs_acp_dispose(runtime: *mut IanvsRuntime) -> bool {
 /// `runtime` must be a live pointer returned by [`ianvs_acp_runtime_new`].
 /// Calls must be single-consumer; do not poll a runtime concurrently.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ianvs_acp_poll_event(
+pub unsafe extern "C" fn ianvs_acp_poll_events(
     runtime: *mut IanvsRuntime,
+    max_events: u32,
+    max_bytes: u64,
     timeout_ms: u32,
 ) -> *mut c_char {
+    const MAX_EVENTS: u32 = 4096;
+    const MAX_BYTES: u64 = 64 * 1024 * 1024;
     let Some(runtime) = (unsafe { runtime.as_ref() }) else {
         return ptr::null_mut();
     };
+    if max_events == 0 || max_events > MAX_EVENTS || max_bytes == 0 || max_bytes > MAX_BYTES {
+        *runtime
+            .last_error
+            .lock()
+            .expect("last error mutex poisoned") = Some(format!(
+            "invalid event batch limits: maxEvents={max_events}, maxBytes={max_bytes}"
+        ));
+        return ptr::null_mut();
+    }
     let Some(handle) = runtime.runtime.as_ref() else {
         return ptr::null_mut();
     };
-    let event = if timeout_ms == 0 {
-        handle.try_recv_event()
-    } else {
-        handle.recv_event_timeout(Duration::from_millis(u64::from(timeout_ms.min(60_000))))
-    };
-    match event {
-        Ok(Some(event)) => {
-            into_c_string(serde_json::to_string(&event).unwrap_or_else(|error| {
-                format!(r#"{{"type":"runtime_error","message":"{error}"}}"#)
-            }))
+    let mut pending = runtime
+        .pending_event
+        .lock()
+        .expect("pending event mutex poisoned");
+    let mut encoded_events = Vec::<String>::new();
+    let mut encoded_bytes = 2_u64;
+    let mut has_more = false;
+
+    while encoded_events.len() < max_events as usize {
+        let event = if let Some(event) = pending.take() {
+            Ok(Some(event))
+        } else if encoded_events.is_empty() && timeout_ms > 0 {
+            handle.recv_event_timeout(Duration::from_millis(u64::from(timeout_ms.min(60_000))))
+        } else {
+            handle.try_recv_event()
+        };
+        let event = match event {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(error) => {
+                *runtime
+                    .last_error
+                    .lock()
+                    .expect("last error mutex poisoned") = Some(error.to_string());
+                break;
+            }
+        };
+        let encoded = match serde_json::to_string(&event) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                *runtime
+                    .last_error
+                    .lock()
+                    .expect("last error mutex poisoned") =
+                    Some(format!("failed to encode runtime event: {error}"));
+                break;
+            }
+        };
+        let delimiter_bytes = u64::from(!encoded_events.is_empty());
+        let next_bytes = encoded_bytes
+            .saturating_add(delimiter_bytes)
+            .saturating_add(encoded.len() as u64);
+        if !encoded_events.is_empty() && next_bytes > max_bytes {
+            *pending = Some(event);
+            has_more = true;
+            break;
         }
-        Ok(None) => ptr::null_mut(),
-        Err(error) => {
-            *runtime
-                .last_error
-                .lock()
-                .expect("last error mutex poisoned") = Some(error.to_string());
-            ptr::null_mut()
-        }
+        encoded_bytes = next_bytes;
+        encoded_events.push(encoded);
     }
+    if encoded_events.len() == max_events as usize {
+        has_more = true;
+    }
+    if encoded_events.is_empty() {
+        return ptr::null_mut();
+    }
+
+    let capacity = usize::try_from(encoded_bytes)
+        .unwrap_or(usize::MAX)
+        .saturating_add(32);
+    let mut encoded = String::with_capacity(capacity);
+    encoded.push_str(r#"{"events":["#);
+    for (index, event) in encoded_events.into_iter().enumerate() {
+        if index > 0 {
+            encoded.push(',');
+        }
+        encoded.push_str(&event);
+    }
+    encoded.push_str(if has_more {
+        r#"],"hasMore":true}"#
+    } else {
+        r#"],"hasMore":false}"#
+    });
+    *runtime
+        .last_error
+        .lock()
+        .expect("last error mutex poisoned") = None;
+    into_c_string(encoded)
 }
 
 /// Copy the last synchronous host-adapter error, or return null if none.

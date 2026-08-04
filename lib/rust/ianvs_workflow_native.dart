@@ -149,7 +149,7 @@ final class IanvsRustWorkflow implements IanvsWorkflowAuthority {
     _workflow = _native.createWorkflow();
   }
 
-  static const int expectedFfiVersion = 7;
+  static const int expectedFfiVersion = 9;
 
   final IanvsWorkflowNativeApi _native;
   late final Object _workflow;

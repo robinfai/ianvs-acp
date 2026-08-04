@@ -2,6 +2,8 @@ import 'dart:collection';
 
 enum IanvsRuntimeEventType {
   sessionUpdate,
+  renderUpdate,
+  renderSnapshotChunk,
   sessionCatalog,
   authenticationChanged,
   permissionRequest,
@@ -41,6 +43,8 @@ final class IanvsRuntimeEvent {
     }
     final type = switch (rawType) {
       'session_update' => IanvsRuntimeEventType.sessionUpdate,
+      'render_update' => IanvsRuntimeEventType.renderUpdate,
+      'render_snapshot_chunk' => IanvsRuntimeEventType.renderSnapshotChunk,
       'session_catalog' => IanvsRuntimeEventType.sessionCatalog,
       'authentication_changed' => IanvsRuntimeEventType.authenticationChanged,
       'permission_request' => IanvsRuntimeEventType.permissionRequest,
@@ -61,7 +65,7 @@ final class IanvsRuntimeEvent {
     );
   }
 
-  static const int supportedSchemaVersion = 3;
+  static const int supportedSchemaVersion = 4;
 
   final int schemaVersion;
   final int sequence;
@@ -69,6 +73,14 @@ final class IanvsRuntimeEvent {
   final Map<String, Object?> data;
 
   Map<String, Object?>? get update => _objectMap(data['update']);
+
+  Map<String, Object?>? get renderUpdate => _objectMap(data['update']);
+
+  List<Map<String, Object?>> get renderUpdates =>
+      (data['updates'] as List? ?? const <Object?>[])
+          .map(_objectMap)
+          .whereType<Map<String, Object?>>()
+          .toList(growable: false);
 
   Map<String, Object?>? get permissionRequest => _objectMap(data['request']);
 

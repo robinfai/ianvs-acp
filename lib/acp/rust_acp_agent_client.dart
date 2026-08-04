@@ -101,6 +101,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final Map<String, String> _restoreRequestBySession = <String, String>{};
   final Map<String, List<AgentEvent>> _restoreEvents =
       <String, List<AgentEvent>>{};
+  final Map<String, int> _restoreNextSnapshotChunk = <String, int>{};
+  final Map<String, AcpSessionRestoreEventObserver> _restoreStreamObservers =
+      <String, AcpSessionRestoreEventObserver>{};
+  final Map<String, int> _restoreStreamEventCounts = <String, int>{};
   final Map<String, Completer<List<AcpProjectSessions>>> _pendingCatalogs =
       <String, Completer<List<AcpProjectSessions>>>{};
   final Map<String, Completer<void>> _pendingSessionLifecycle =
@@ -127,6 +131,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   int _nextRequestId = 1;
   bool _connected = false;
   bool _disposed = false;
+  bool? _lastRestoreReplayedHistory;
 
   IanvsRustRuntime get _runtimeInstance {
     final existing = _runtime;
@@ -394,6 +399,9 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _restoreContexts.clear();
     _restoreRequestBySession.clear();
     _restoreEvents.clear();
+    _restoreNextSnapshotChunk.clear();
+    _restoreStreamObservers.clear();
+    _restoreStreamEventCounts.clear();
     _pendingCatalogs.clear();
     _pendingSessionLifecycle.clear();
     _pendingAuthentication.clear();
@@ -408,11 +416,11 @@ final class RustAcpAgentClient implements AcpAgentClient {
     await _permissionInvalidations.close();
   }
 
-  @override
-  Future<List<AgentEvent>> resumeSession({
+  Future<List<AgentEvent>> _resumeSessionWithHistoryPreference({
     required String sessionId,
     required String cwd,
-    List<String> additionalDirectories = const <String>[],
+    required List<String> additionalDirectories,
+    required bool replayHistory,
   }) {
     _ensureConnected();
     if (_capabilities?.loadSession != true &&
@@ -439,18 +447,51 @@ final class RustAcpAgentClient implements AcpAgentClient {
     );
     _restoreRequestBySession[sessionId] = requestId;
     _restoreEvents[requestId] = <AgentEvent>[];
+    _restoreNextSnapshotChunk[requestId] = 0;
+    _lastRestoreReplayedHistory = null;
     try {
       _runtimeInstance.restoreSession(
         requestId: requestId,
         sessionId: sessionId,
         cwd: cwd,
         additionalDirectories: directories,
+        replayHistory: replayHistory,
       );
     } on Object {
       _clearPendingRestore(requestId);
       rethrow;
     }
     return completer.future;
+  }
+
+  @override
+  Future<AcpSessionRestoreSummary> restoreSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+    bool replayHistory = true,
+    required AcpSessionRestoreEventObserver onEvent,
+  }) async {
+    if (_restoreStreamObservers.containsKey(sessionId)) {
+      throw StateError('Session $sessionId is already being streamed.');
+    }
+    _restoreStreamObservers[sessionId] = onEvent;
+    _restoreStreamEventCounts[sessionId] = 0;
+    try {
+      await _resumeSessionWithHistoryPreference(
+        sessionId: sessionId,
+        cwd: cwd,
+        additionalDirectories: additionalDirectories,
+        replayHistory: replayHistory,
+      );
+      return AcpSessionRestoreSummary(
+        eventCount: _restoreStreamEventCounts[sessionId] ?? 0,
+        replayedHistory: _lastRestoreReplayedHistory,
+      );
+    } finally {
+      _restoreStreamObservers.remove(sessionId);
+      _restoreStreamEventCounts.remove(sessionId);
+    }
   }
 
   @override
@@ -602,6 +643,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
         _handleStatus(event);
       case IanvsRuntimeEventType.sessionUpdate:
         _handleSessionUpdate(event.update!);
+      case IanvsRuntimeEventType.renderUpdate:
+        _handleRenderUpdate(event.renderUpdate!);
+      case IanvsRuntimeEventType.renderSnapshotChunk:
+        _handleRenderSnapshotChunk(event);
       case IanvsRuntimeEventType.sessionCatalog:
         _handleSessionCatalog(event);
       case IanvsRuntimeEventType.authenticationChanged:
@@ -749,6 +794,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       final completer = _pendingRestores.remove(requestId);
       final context = _restoreContexts.remove(requestId);
       final events = _restoreEvents.remove(requestId) ?? const <AgentEvent>[];
+      _restoreNextSnapshotChunk.remove(requestId);
       if (context != null &&
           _restoreRequestBySession[context.sessionId] == requestId) {
         _restoreRequestBySession.remove(context.sessionId);
@@ -776,6 +822,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _settings[sessionId] = _settingsFromSessionCreated(
         _objectMap(update['payload']),
       );
+      final payload = _objectMap(update['payload']);
+      _lastRestoreReplayedHistory = payload?['replayedHistory'] as bool?;
       completer.complete(List<AgentEvent>.unmodifiable(events));
       return;
     }
@@ -854,19 +902,65 @@ final class RustAcpAgentClient implements AcpAgentClient {
       }
       return;
     }
+  }
+
+  void _handleRenderSnapshotChunk(IanvsRuntimeEvent envelope) {
+    final requestId = envelope.requestId;
+    final sessionId = envelope.data['sessionId'];
+    final chunkIndex = envelope.data['chunkIndex'];
+    if (requestId == null || sessionId is! String || chunkIndex is! int) {
+      throw const FormatException('Invalid Rust render snapshot chunk.');
+    }
+    final context = _restoreContexts[requestId];
+    if (context == null || context.sessionId != sessionId) return;
+    final expected = _restoreNextSnapshotChunk[requestId] ?? 0;
+    if (chunkIndex != expected) {
+      throw StateError(
+        'Rust render snapshot chunk sequence for $requestId jumped from '
+        '$expected to $chunkIndex.',
+      );
+    }
+    _restoreNextSnapshotChunk[requestId] = expected + 1;
+    for (final update in envelope.renderUpdates) {
+      _dispatchRenderUpdate(update, expectedSessionId: sessionId);
+    }
+  }
+
+  void _handleRenderUpdate(Map<String, Object?> update) {
+    _dispatchRenderUpdate(update);
+  }
+
+  void _dispatchRenderUpdate(
+    Map<String, Object?> update, {
+    String? expectedSessionId,
+  }) {
+    final sessionId = update['sessionId'];
+    if (sessionId is! String || sessionId.isEmpty) {
+      throw const FormatException('Rust render update has no sessionId.');
+    }
+    if (expectedSessionId != null && sessionId != expectedSessionId) {
+      throw StateError(
+        'Rust render snapshot for $expectedSessionId contained $sessionId.',
+      );
+    }
+    final event = _agentEventFromRenderUpdate(update);
+    if (event == null) return;
     final restoreRequestId = _restoreRequestBySession[sessionId];
     if (restoreRequestId != null) {
-      final event = _agentEventFromUpdate(kind, update);
-      if (event != null) _restoreEvents[restoreRequestId]?.add(event);
+      final observer = _restoreStreamObservers[sessionId];
+      if (observer == null) {
+        _restoreEvents[restoreRequestId]?.add(event);
+      } else {
+        observer(event);
+        _restoreStreamEventCounts[sessionId] =
+            (_restoreStreamEventCounts[sessionId] ?? 0) + 1;
+      }
       return;
     }
     final output = _promptStreams[sessionId];
     if (output == null) return;
-    final event = _agentEventFromUpdate(kind, update);
-    if (event != null) output.add(event);
-    if (kind == 'prompt_completed' || kind == 'cancelled' || kind == 'failed') {
-      _finishPrompt(sessionId);
-    }
+    output.add(event);
+    if (update['kind'] == 'turn_completed') _finishPrompt(sessionId);
   }
 
   void _handleSessionCatalog(IanvsRuntimeEvent event) {
@@ -907,51 +1001,55 @@ final class RustAcpAgentClient implements AcpAgentClient {
     }
   }
 
-  AgentEvent? _agentEventFromUpdate(String kind, Map<String, Object?> update) {
+  AgentEvent? _agentEventFromRenderUpdate(Map<String, Object?> update) {
+    final kind = update['kind'] as String? ?? '';
     final text = update['text'] as String? ?? '';
-    final payload = _objectMap(update['payload']);
+    final metadata = _objectMap(update['metadata']);
     return switch (kind) {
       'user_message' => AgentEvent(
         type: AgentEventType.userMessage,
         text: text,
-        metadata: <String, Object?>{
-          '_acpUserChunk': true,
-          if (payload != null) 'contentBlocks': <Map<String, Object?>>[payload],
-        },
+        metadata: metadata ?? const <String, Object?>{},
         timestamp: DateTime.now(),
+        trustedRenderProjection: true,
       ),
-      'agent_message_delta' => AgentEvent(
+      'assistant_text' => AgentEvent(
         type: AgentEventType.agentTextDelta,
         text: text,
-        metadata: payload ?? const <String, Object?>{},
+        metadata: metadata ?? const <String, Object?>{},
         timestamp: DateTime.now(),
+        trustedRenderProjection: true,
       ),
-      'agent_thought_delta' => AgentEvent(
+      'thought' => AgentEvent(
         type: AgentEventType.status,
         text: text,
-        metadata: <String, Object?>{'kind': 'thought', ...?payload},
+        metadata: const <String, Object?>{'kind': 'thought'},
         timestamp: DateTime.now(),
+        trustedRenderProjection: true,
       ),
-      'tool_call' || 'tool_call_update' => AgentEvent(
+      'tool_call' => AgentEvent(
         type: AgentEventType.toolCall,
         text: text.isEmpty ? 'Tool call' : text,
-        metadata: payload ?? const <String, Object?>{},
+        metadata: metadata ?? const <String, Object?>{},
         timestamp: DateTime.now(),
+        trustedRenderProjection: true,
       ),
       'plan' => AgentEvent(
         type: AgentEventType.status,
         text: text.isEmpty ? 'Plan update' : text,
-        metadata: <String, Object?>{'kind': 'plan', ...?payload},
+        metadata: <String, Object?>{'kind': 'plan', ...?metadata},
         timestamp: DateTime.now(),
+        trustedRenderProjection: true,
       ),
-      'prompt_completed' || 'cancelled' => AgentEvent(
+      'turn_completed' => AgentEvent(
         type: AgentEventType.agentTextDone,
         text: '',
         metadata: <String, Object?>{
           'kind': 'turn',
-          ..._normalizedTurnPayload(payload, kind: kind),
+          ..._normalizedTurnPayload(metadata, kind: kind),
         },
         timestamp: DateTime.now(),
+        trustedRenderProjection: true,
       ),
       _ => null,
     };
@@ -1092,6 +1190,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _restoreContexts.clear();
     _restoreRequestBySession.clear();
     _restoreEvents.clear();
+    _restoreStreamObservers.clear();
+    _restoreStreamEventCounts.clear();
     _pendingCatalogs.clear();
     _pendingSessionLifecycle.clear();
     _pendingAuthentication.clear();
@@ -1151,6 +1251,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _restoreRequestBySession.remove(context.sessionId);
     }
     _restoreEvents.remove(requestId);
+    _restoreNextSnapshotChunk.remove(requestId);
   }
 
   StreamController<AgentEvent>? get _activeOutput {

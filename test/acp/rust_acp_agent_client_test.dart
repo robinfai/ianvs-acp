@@ -154,9 +154,11 @@ void main() {
     addTearDown(client.dispose);
     await client.connect();
 
-    final history = await client.resumeSession(
+    final history = <AgentEvent>[];
+    await client.restoreSession(
       sessionId: 'restored-session',
       cwd: '/tmp',
+      onEvent: history.add,
     );
 
     expect(history.first.type, AgentEventType.userMessage);
@@ -194,12 +196,26 @@ void main() {
     expect(catalog.single.cwd, '/tmp');
     expect(catalog.single.sessions.single.title, 'Fixture session');
 
-    final history = await client.resumeSession(
+    final streamedHistory = <AgentEvent>[];
+    final restore = await client.restoreSession(
       sessionId: 'restored-session',
       cwd: '/tmp',
+      onEvent: streamedHistory.add,
     );
-    expect(history.single.type, AgentEventType.agentTextDelta);
-    expect(history.single.text, 'restored history');
+    expect(streamedHistory.single.text, 'restored history');
+    expect(restore.eventCount, 1);
+    expect(restore.replayedHistory, isTrue);
+    final resumedEvents = <AgentEvent>[];
+    final resumed = await client.restoreSession(
+      sessionId: 'resumed-session',
+      cwd: '/tmp',
+      replayHistory: false,
+      onEvent: resumedEvents.add,
+    );
+    expect(native.lastRestoreReplayHistory, isFalse);
+    expect(resumedEvents, isEmpty);
+    expect(resumed.eventCount, 0);
+    expect(resumed.replayedHistory, isFalse);
     final initialSettings = await client.sessionSettings('restored-session');
     expect(initialSettings.configOptions.single.currentValue, 'fast');
     final updatedOptions = await client.setConfigOption(
@@ -537,6 +553,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   bool completeCreates = true;
   String sessionTitle = 'Fixture session';
   Map<String, Object?>? restoredUserPayload;
+  bool? lastRestoreReplayHistory;
 
   void invalidatePermission({
     required String requestId,
@@ -556,7 +573,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   void emit(String type, Map<String, Object?> data) {
     events.add(
       jsonEncode(<String, Object?>{
-        'schemaVersion': 3,
+        'schemaVersion': 4,
         'sequence': _sequence++,
         'type': type,
         ...data,
@@ -565,7 +582,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   }
 
   @override
-  int get ffiVersion => 7;
+  int get ffiVersion => 9;
 
   @override
   Object createRuntime() => handle;
@@ -642,23 +659,32 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
     required String sessionId,
     required String cwd,
     required List<String> additionalDirectories,
+    bool replayHistory = true,
   }) {
-    if (restoredUserPayload case final payload?) {
-      emit('session_update', <String, Object?>{
-        'update': <String, Object?>{
-          'sessionId': sessionId,
-          'kind': 'user_message',
-          'payload': payload,
-        },
+    lastRestoreReplayHistory = replayHistory;
+    if (replayHistory) {
+      emit('render_snapshot_chunk', <String, Object?>{
+        'requestId': requestId,
+        'sessionId': sessionId,
+        'chunkIndex': 0,
+        'isLast': true,
+        'updates': <Object?>[
+          if (restoredUserPayload case final payload?)
+            <String, Object?>{
+              'sessionId': sessionId,
+              'kind': 'user_message',
+              'metadata': <String, Object?>{
+                'contentBlocks': <Object?>[payload],
+              },
+            },
+          <String, Object?>{
+            'sessionId': sessionId,
+            'kind': 'assistant_text',
+            'text': 'restored history',
+          },
+        ],
       });
     }
-    emit('session_update', <String, Object?>{
-      'update': <String, Object?>{
-        'sessionId': sessionId,
-        'kind': 'agent_message_delta',
-        'text': 'restored history',
-      },
-    });
     emit('session_update', <String, Object?>{
       'update': <String, Object?>{
         'sessionId': sessionId,
@@ -666,7 +692,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
         'requestId': requestId,
         'payload': <String, Object?>{
           'cwd': cwd,
-          'replayedHistory': true,
+          'replayedHistory': replayHistory,
           'configOptions': _fakeConfigOptions('fast'),
         },
       },
@@ -784,19 +810,21 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
     required Map<String, Object?> decision,
   }) {
     permissionDecision = decision;
-    emit('session_update', <String, Object?>{
+    emit('render_update', <String, Object?>{
       'update': <String, Object?>{
         'sessionId': 'session-1',
-        'kind': 'agent_message_delta',
+        'kind': 'assistant_text',
         'text': 'allowed',
       },
     });
-    emit('session_update', <String, Object?>{
+    emit('render_update', <String, Object?>{
       'update': <String, Object?>{
         'sessionId': 'session-1',
-        'kind': 'prompt_completed',
-        'requestId': 'prompt-3',
-        'payload': <String, Object?>{'stopReason': 'end_turn'},
+        'kind': 'turn_completed',
+        'metadata': <String, Object?>{
+          'stopReason': 'end_turn',
+          'requestId': 'prompt-3',
+        },
       },
     });
     return true;
@@ -841,8 +869,26 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   }
 
   @override
-  String? pollEvent(Object runtime, {int timeoutMs = 0}) {
-    return events.isEmpty ? null : events.removeAt(0);
+  String? pollEvents(
+    Object runtime, {
+    required int maxEvents,
+    required int maxBytes,
+    int timeoutMs = 0,
+  }) {
+    if (events.isEmpty) return null;
+    final batch = <Object?>[];
+    var bytes = 2;
+    while (batch.length < maxEvents && events.isNotEmpty) {
+      final next = events.first;
+      if (batch.isNotEmpty && bytes + 1 + next.length > maxBytes) break;
+      events.removeAt(0);
+      batch.add(jsonDecode(next));
+      bytes += (batch.length == 1 ? 0 : 1) + next.length;
+    }
+    return jsonEncode(<String, Object?>{
+      'events': batch,
+      'hasMore': events.isNotEmpty,
+    });
   }
 
   @override

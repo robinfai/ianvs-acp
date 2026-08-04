@@ -372,10 +372,13 @@ class AppShell extends StatelessWidget {
                               ),
                               Expanded(
                                 child: ChatTimeline(
+                                  key: ValueKey(
+                                    'chat-timeline-${controller.currentSession?.id ?? 'empty'}',
+                                  ),
                                   inputBudget: inputBudget,
                                   imageDecodeLedger: imageDecodeLedger,
                                   boundedImageDecoder: boundedImageDecoder,
-                                  messages: controller.messages,
+                                  messages: controller.visibleMessages,
                                   messageListRevision:
                                       controller.messagesRevision,
                                   agentName: agentName,

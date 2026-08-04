@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:ianvs_acp/acp/acp_input_budget.dart' as acp;
+import 'package:ianvs_acp/acp/acp_agent_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
@@ -16,6 +17,7 @@ import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/memory/acp_memory_middleware.dart';
+import 'package:ianvs_acp/storage/session_transcript_cache.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 
@@ -8934,6 +8936,179 @@ void main() {
     expect(controller.messages, isNotEmpty);
   });
 
+  test('replayed messages stay hidden until restore completes', () async {
+    final fake = _ControlledRestoreAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    final pending = controller.resumeSession('hidden-until-complete');
+    await fake.firstEventDelivered.future;
+
+    expect(controller.isSessionReplayLoading, isTrue);
+    expect(controller.messages, hasLength(1));
+    expect(controller.visibleMessages, isEmpty);
+
+    fake.releaseRestore.complete();
+    await pending;
+
+    expect(controller.isSessionReplayLoading, isFalse);
+    expect(controller.visibleMessages, same(controller.messages));
+    expect(controller.messages.single.text, 'canonical tool');
+    expect(controller.lastSessionLoadMetrics?.replayedHistory, isTrue);
+    expect(controller.lastSessionLoadMetrics?.replayEventCount, 2);
+    expect(controller.lastSessionLoadMetrics?.firstEventElapsed, isNotNull);
+    expect(controller.lastSessionLoadMetrics?.eventSpan, isNotNull);
+  });
+
+  test(
+    'fresh transcript cache resumes without replay and displays once',
+    () async {
+      final updatedAt = DateTime.utc(2026, 8, 4, 12);
+      final cache = _MemoryTranscriptCache(
+        SessionTranscriptSnapshot(
+          identity: SessionTranscriptIdentity(
+            agentName: 'Codex',
+            sessionId: 'cached-session',
+            cwd: '/workspace',
+            additionalDirectories: const <String>[],
+            updatedAt: updatedAt,
+          ),
+          messages: <Map<String, Object?>>[
+            <String, Object?>{
+              'role': 'user',
+              'text': 'cached request',
+              'timestamp': '2026-08-04T11:59:00.000Z',
+              'metadata': <String, Object?>{},
+              'omissions': <Object?>[],
+              'turnId': 1,
+            },
+            <String, Object?>{
+              'role': 'assistant',
+              'text': 'cached answer',
+              'timestamp': '2026-08-04T12:00:00.000Z',
+              'metadata': <String, Object?>{},
+              'omissions': <Object?>[],
+              'turnId': 1,
+            },
+          ],
+        ),
+      );
+      final controller = ChatController(
+        client: FakeAgentClient(
+          supportsResumeSession: true,
+          resumeEvents: const <AgentEvent>[
+            AgentEvent(
+              type: AgentEventType.agentTextDelta,
+              text: 'must not replay',
+            ),
+          ],
+        ),
+        cwd: '/workspace',
+        sessionTranscriptCache: cache,
+      );
+      addTearDown(controller.dispose);
+      final visibleDuringLoad = <List<String>>[];
+      controller.addListener(() {
+        if (controller.isSessionReplayLoading) {
+          visibleDuringLoad.add(
+            controller.visibleMessages
+                .map((message) => message.text)
+                .toList(growable: false),
+          );
+        }
+      });
+
+      await controller.resumeSession('cached-session', updatedAt: updatedAt);
+
+      expect(visibleDuringLoad.first, isEmpty);
+      expect(
+        visibleDuringLoad,
+        everyElement(
+          anyOf(isEmpty, <String>['cached request', 'cached answer']),
+        ),
+      );
+      expect(
+        visibleDuringLoad,
+        contains(equals(<String>['cached request', 'cached answer'])),
+      );
+      expect(controller.messages.map((message) => message.text), <String>[
+        'cached request',
+        'cached answer',
+      ]);
+      expect(controller.lastSessionLoadMetrics?.cacheHit, isTrue);
+      expect(controller.lastSessionLoadMetrics?.cacheMessageCount, 2);
+      expect(controller.lastSessionLoadMetrics?.replayedHistory, isFalse);
+      expect(controller.lastSessionLoadMetrics?.replayEventCount, 0);
+    },
+  );
+
+  test(
+    'large cached transcript reconstruction yields before display',
+    () async {
+      final updatedAt = DateTime.utc(2026, 8, 4, 12);
+      var eventLoopAdvanced = false;
+      var visibleAfterYield = false;
+      final cache = _MemoryTranscriptCache(
+        SessionTranscriptSnapshot(
+          identity: SessionTranscriptIdentity(
+            agentName: 'Codex',
+            sessionId: 'cooperative-cache',
+            cwd: '/workspace',
+            additionalDirectories: const <String>[],
+            updatedAt: updatedAt,
+          ),
+          messages: <Map<String, Object?>>[
+            <String, Object?>{
+              'role': 'assistant',
+              'text': 'complete cached transcript',
+              'timestamp': '2026-08-04T12:00:00.000Z',
+              'metadata': _YieldProbeMetadataMap(() {
+                Timer.run(() => eventLoopAdvanced = true);
+              }),
+              'omissions': <Object?>[],
+            },
+          ],
+        ),
+      );
+      final controller = ChatController(
+        client: FakeAgentClient(supportsResumeSession: true),
+        cwd: '/workspace',
+        sessionTranscriptCache: cache,
+      );
+      addTearDown(controller.dispose);
+      controller.addListener(() {
+        if (controller.visibleMessages.isNotEmpty) {
+          visibleAfterYield = eventLoopAdvanced;
+        }
+      });
+
+      await controller.resumeSession('cooperative-cache', updatedAt: updatedAt);
+
+      expect(visibleAfterYield, isTrue);
+      expect(controller.messages.single.text, 'complete cached transcript');
+    },
+  );
+
+  test(
+    'history-free session resume completes with an empty visible transcript',
+    () async {
+      final fake = FakeAgentClient(
+        supportsLoadSession: false,
+        supportsResumeSession: true,
+        restoreReplayedHistory: false,
+        resumeEvents: const <AgentEvent>[],
+      );
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.resumeSession('history-free-resume');
+
+      expect(controller.messages, isEmpty);
+      expect(controller.visibleMessages, isEmpty);
+      expect(controller.lastSessionLoadMetrics?.replayedHistory, isFalse);
+    },
+  );
+
   test(
     'resume session does not notify partial replay text while loading',
     () async {
@@ -8987,44 +9162,43 @@ void main() {
     ]);
   });
 
-  test('resume session merges ACP user text and attachment chunks', () async {
-    final controller = ChatController(
-      client: FakeAgentClient(
-        resumeEvents: const [
-          AgentEvent(
-            type: AgentEventType.userMessage,
-            text: 'Review this image',
-            metadata: {'_acpUserChunk': true},
-          ),
-          AgentEvent(
-            type: AgentEventType.userMessage,
-            text: '',
-            metadata: {
-              '_acpUserChunk': true,
-              'contentBlocks': [
-                {
-                  'type': 'resource_link',
-                  'uri': 'file:///tmp/reference.png',
-                  'name': 'reference.png',
-                  'mimeType': 'image/png',
-                },
-              ],
-            },
-          ),
-        ],
-      ),
-      cwd: '/workspace',
-    );
-    addTearDown(controller.dispose);
+  test(
+    'resume session accepts one Rust-projected user render message',
+    () async {
+      final controller = ChatController(
+        client: FakeAgentClient(
+          resumeEvents: const [
+            AgentEvent(
+              type: AgentEventType.userMessage,
+              text: 'Review this image',
+              metadata: {
+                'contentBlocks': [
+                  {
+                    'type': 'resource_link',
+                    'uri': 'file:///tmp/reference.png',
+                    'name': 'reference.png',
+                    'mimeType': 'image/png',
+                  },
+                ],
+              },
+            ),
+          ],
+        ),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
 
-    await controller.resumeSession('resumed-session-user-chunks');
+      await controller.resumeSession('resumed-session-user-chunks');
 
-    expect(controller.messages, hasLength(1));
-    expect(controller.messages.single.role, ChatMessageRole.user);
-    expect(controller.messages.single.text, 'Review this image');
-    expect(controller.messages.single.metadata['_acpUserChunk'], isNull);
-    expect(controller.messages.single.metadata['contentBlocks'], hasLength(1));
-  });
+      expect(controller.messages, hasLength(1));
+      expect(controller.messages.single.role, ChatMessageRole.user);
+      expect(controller.messages.single.text, 'Review this image');
+      expect(
+        controller.messages.single.metadata['contentBlocks'],
+        hasLength(1),
+      );
+    },
+  );
 
   test('resume session uses selected project cwd', () async {
     final fake = FakeAgentClient();
@@ -14521,6 +14695,85 @@ class _StatefulWasCurrentArchivedSnapshot extends ArchivedSessionSnapshot {
     }
     return true;
   }
+}
+
+final class _ControlledRestoreAgentClient extends FakeAgentClient {
+  final Completer<void> firstEventDelivered = Completer<void>();
+  final Completer<void> releaseRestore = Completer<void>();
+
+  @override
+  Future<AcpSessionRestoreSummary> restoreSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+    bool replayHistory = true,
+    required AcpSessionRestoreEventObserver onEvent,
+  }) async {
+    onEvent(
+      const AgentEvent(type: AgentEventType.toolCall, text: 'canonical tool'),
+    );
+    firstEventDelivered.complete();
+    await releaseRestore.future;
+    onEvent(const AgentEvent(type: AgentEventType.agentTextDone, text: ''));
+    return const AcpSessionRestoreSummary(eventCount: 2, replayedHistory: true);
+  }
+}
+
+final class _MemoryTranscriptCache implements SessionTranscriptCache {
+  _MemoryTranscriptCache(this.snapshot);
+
+  SessionTranscriptSnapshot? snapshot;
+
+  @override
+  Future<SessionTranscriptSnapshot?> load(
+    SessionTranscriptIdentity identity,
+  ) async {
+    final current = snapshot;
+    return current != null && current.identity.matches(identity)
+        ? current
+        : null;
+  }
+
+  @override
+  Future<void> save(SessionTranscriptSnapshot snapshot) async {
+    this.snapshot = snapshot;
+  }
+}
+
+final class _YieldProbeMetadataMap extends MapBase<String, Object?> {
+  _YieldProbeMetadataMap(this._onEntriesRead);
+
+  final void Function() _onEntriesRead;
+  final Map<String, Object?> _values = <String, Object?>{
+    'probe': 'cooperative reconstruction',
+  };
+  bool _didProbe = false;
+
+  @override
+  Iterable<MapEntry<String, Object?>> get entries {
+    if (!_didProbe) {
+      _didProbe = true;
+      _onEntriesRead();
+      final timer = Stopwatch()..start();
+      while (timer.elapsed < const Duration(milliseconds: 6)) {}
+    }
+    return _values.entries;
+  }
+
+  @override
+  Object? operator [](Object? key) => _values[key];
+
+  @override
+  void operator []=(String key, Object? value) => _values[key] = value;
+
+  @override
+  void clear() => _values.clear();
+
+  @override
+  Iterable<String> get keys => _values.keys;
+
+  @override
+  Object? remove(Object? key) => _values.remove(key);
 }
 
 AcpSessionSettings _settingsWithMode(String modeId) {

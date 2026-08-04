@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use ianvs_acp_core::{
     AgentLaunchConfig, McpServerLaunchConfig, PermissionDecision, PromptAttachmentInput,
-    RuntimeEvent, RuntimeEventEnvelope, RuntimeHandle, RuntimeStatus, SessionConfigValueProjection,
-    SessionUpdateKind,
+    RenderUpdateKind, RuntimeEvent, RuntimeEventEnvelope, RuntimeHandle, RuntimeStatus,
+    SessionConfigValueProjection, SessionUpdateKind,
 };
 
 #[test]
@@ -148,22 +148,23 @@ fn subprocess_handshake_prompt_permission_and_projection_are_rust_owned() {
     let message = wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::AgentMessageDelta
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText
         )
     });
     match message.event {
-        RuntimeEvent::SessionUpdate { update } => {
-            assert_eq!(update.text.as_deref(), Some("permission:allow-once"));
+        RuntimeEvent::RenderUpdate { update } => {
+            assert_eq!(update.text, "permission:allow-once");
         }
         other => panic!("unexpected message event: {other:?}"),
     }
     wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::PromptCompleted
-                    && update.request_id.as_deref() == Some("prompt-1")
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
+                    && update.metadata.as_ref().and_then(|value| value["requestId"].as_str())
+                        == Some("prompt-1")
         )
     });
 
@@ -285,22 +286,22 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
     let message = wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::AgentMessageDelta
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText
         )
     });
     match message.event {
-        RuntimeEvent::SessionUpdate { update } => assert_eq!(
-            update.text.as_deref(),
-            Some("content:text,image,audio,resource,resource,resource_link")
+        RuntimeEvent::RenderUpdate { update } => assert_eq!(
+            update.text,
+            "content:text,image,audio,resource,resource,resource_link"
         ),
         other => panic!("unexpected attachment response: {other:?}"),
     }
     wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::PromptCompleted
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
         )
     });
 
@@ -317,21 +318,21 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
     let path_only_message = wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::AgentMessageDelta
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText
         )
     });
     match path_only_message.event {
-        RuntimeEvent::SessionUpdate { update } => {
-            assert_eq!(update.text.as_deref(), Some("content:text,resource_link"))
+        RuntimeEvent::RenderUpdate { update } => {
+            assert_eq!(update.text, "content:text,resource_link");
         }
         other => panic!("unexpected path-only image response: {other:?}"),
     }
     wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::PromptCompleted
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
         )
     });
 
@@ -367,21 +368,21 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
     let approved_message = wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::AgentMessageDelta
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText
         )
     });
     match approved_message.event {
-        RuntimeEvent::SessionUpdate { update } => {
-            assert_eq!(update.text.as_deref(), Some("content:text,resource"))
+        RuntimeEvent::RenderUpdate { update } => {
+            assert_eq!(update.text, "content:text,resource");
         }
         other => panic!("unexpected approved external response: {other:?}"),
     }
     wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::PromptCompleted
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
         )
     });
 
@@ -502,21 +503,21 @@ fn filesystem_reverse_requests_use_permissions_and_core_scope() {
     let message = wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::AgentMessageDelta
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText
         )
     });
     match message.event {
-        RuntimeEvent::SessionUpdate { update } => {
-            assert_eq!(update.text.as_deref(), Some("filesystem:second"));
+        RuntimeEvent::RenderUpdate { update } => {
+            assert_eq!(update.text, "filesystem:second");
         }
         other => panic!("unexpected filesystem response: {other:?}"),
     }
     wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::PromptCompleted
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
         )
     });
     assert_eq!(std::fs::read_to_string(&output).unwrap(), "copy:second\n");
@@ -604,9 +605,10 @@ fn permission_timeout_is_resolved_and_projected_by_rust() {
     wait_for(&runtime, |event| {
         matches!(
             event,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::PromptCompleted
-                    && update.payload == Some(serde_json::json!({ "stopReason": "end_turn" }))
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
+                    && update.metadata.as_ref().and_then(|value| value["stopReason"].as_str())
+                        == Some("end_turn")
         )
     });
     runtime.dispose().unwrap();
@@ -964,6 +966,7 @@ fn session_catalog_restore_close_and_delete_are_rust_owned() {
             "fixture-session",
             cwd.display().to_string(),
             vec![],
+            true,
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -976,11 +979,22 @@ fn session_catalog_restore_close_and_delete_are_rust_owned() {
         else {
             continue;
         };
-        if let RuntimeEvent::SessionUpdate { update } = event.event {
-            if update.kind == SessionUpdateKind::AgentMessageDelta {
-                assert_eq!(update.text.as_deref(), Some("loaded fixture history"));
-                history = true;
-            } else if update.kind == SessionUpdateKind::SessionRestored {
+        match event.event {
+            RuntimeEvent::RenderSnapshotChunk {
+                updates, is_last, ..
+            } => {
+                assert!(is_last);
+                if let Some(update) = updates
+                    .iter()
+                    .find(|update| update.kind == RenderUpdateKind::AssistantText)
+                {
+                    assert_eq!(update.text, "loaded fixture history");
+                    history = true;
+                }
+            }
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionRestored =>
+            {
                 assert_eq!(update.request_id.as_deref(), Some("restore-1"));
                 assert_eq!(
                     update
@@ -998,6 +1012,7 @@ fn session_catalog_restore_close_and_delete_are_rust_owned() {
                 );
                 restored = true;
             }
+            _ => {}
         }
     }
     assert!(history && restored);
@@ -1060,6 +1075,46 @@ fn session_catalog_restore_close_and_delete_are_rust_owned() {
             RuntimeEvent::SessionUpdate { update }
                 if update.kind == SessionUpdateKind::SessionClosed
                     && update.request_id.as_deref() == Some("close-1")
+        )
+    });
+    runtime
+        .restore_session(
+            "resume-1",
+            "fixture-resume-session",
+            cwd.display().to_string(),
+            vec![],
+            false,
+        )
+        .unwrap();
+    let resumed = wait_for(&runtime, |event| match event {
+        RuntimeEvent::RenderUpdate { update } if update.kind == RenderUpdateKind::AssistantText => {
+            panic!("history was replayed for an explicit resume")
+        }
+        RuntimeEvent::SessionUpdate { update } => {
+            update.kind == SessionUpdateKind::SessionRestored
+                && update.request_id.as_deref() == Some("resume-1")
+        }
+        _ => false,
+    });
+    match resumed.event {
+        RuntimeEvent::SessionUpdate { update } => assert_eq!(
+            update
+                .payload
+                .as_ref()
+                .and_then(|value| value["replayedHistory"].as_bool()),
+            Some(false)
+        ),
+        other => panic!("unexpected resumed event: {other:?}"),
+    }
+    runtime
+        .close_session("close-2", "fixture-resume-session")
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionClosed
+                    && update.request_id.as_deref() == Some("close-2")
         )
     });
     runtime
@@ -1205,17 +1260,14 @@ fn terminal_reverse_requests_use_real_pty_and_generic_permissions() {
                 exited = true;
             }
             RuntimeEvent::TerminalReleased { .. } => released = true,
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::AgentMessageDelta =>
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText =>
             {
-                assert_eq!(
-                    update.text.as_deref(),
-                    Some("terminal:fixture-terminal:0:false")
-                );
+                assert_eq!(update.text, "terminal:fixture-terminal:0:false");
                 message = true;
             }
-            RuntimeEvent::SessionUpdate { update }
-                if update.kind == SessionUpdateKind::PromptCompleted =>
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted =>
             {
                 completed = true;
             }

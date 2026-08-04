@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 
@@ -27,6 +28,7 @@ abstract interface class IanvsAcpNativeApi {
     required String sessionId,
     required String cwd,
     required List<String> additionalDirectories,
+    bool replayHistory = true,
   });
 
   bool listSessions(Object runtime, {required String requestId});
@@ -87,7 +89,12 @@ abstract interface class IanvsAcpNativeApi {
     required Map<String, Object?> value,
   });
 
-  String? pollEvent(Object runtime, {int timeoutMs = 0});
+  String? pollEvents(
+    Object runtime, {
+    required int maxEvents,
+    required int maxBytes,
+    int timeoutMs = 0,
+  });
 
   String? lastError(Object runtime);
 
@@ -100,7 +107,9 @@ final class IanvsRustRuntime {
   IanvsRustRuntime({
     IanvsAcpNativeApi? native,
     this.pollInterval = const Duration(milliseconds: 16),
-    this.maxEventsPerPoll = 64,
+    this.maxEventsPerPoll = 4,
+    this.maxBytesPerPoll = 128 * 1024,
+    this.backlogDrainDelay = const Duration(milliseconds: 4),
   }) : _native = native ?? FfiIanvsAcpNativeApi.open() {
     if (_native.ffiVersion != expectedFfiVersion) {
       throw StateError(
@@ -115,26 +124,51 @@ final class IanvsRustRuntime {
         'must be positive',
       );
     }
-    if (maxEventsPerPoll < 1) {
+    if (maxEventsPerPoll < 1 || maxEventsPerPoll > maxNativeEventsPerPoll) {
       throw ArgumentError.value(
         maxEventsPerPoll,
         'maxEventsPerPoll',
-        'must be positive',
+        'must be between 1 and $maxNativeEventsPerPoll',
+      );
+    }
+    if (maxBytesPerPoll < 1 || maxBytesPerPoll > maxNativeBytesPerPoll) {
+      throw ArgumentError.value(
+        maxBytesPerPoll,
+        'maxBytesPerPoll',
+        'must be between 1 and $maxNativeBytesPerPoll',
+      );
+    }
+    if (backlogDrainDelay < Duration.zero) {
+      throw ArgumentError.value(
+        backlogDrainDelay,
+        'backlogDrainDelay',
+        'must not be negative',
       );
     }
     _runtime = _native.createRuntime();
-    _pollTimer = Timer.periodic(pollInterval, (_) => _drainEvents());
+    _pollTimer = Timer.periodic(pollInterval, (_) {
+      // A backlog drain already owns the next slice. Do not let the periodic
+      // poll bypass its cooperative delay and monopolize the UI isolate.
+      if (_backlogDrainTimer == null) unawaited(_drainEvents());
+    });
   }
 
-  static const int expectedFfiVersion = 7;
+  static const int expectedFfiVersion = 9;
+  static const int maxNativeEventsPerPoll = 4096;
+  static const int maxNativeBytesPerPoll = 64 * 1024 * 1024;
+  static const int _backgroundDecodeThresholdBytes = 128 * 1024;
 
   final IanvsAcpNativeApi _native;
   final Duration pollInterval;
   final int maxEventsPerPoll;
+  final int maxBytesPerPoll;
+  final Duration backlogDrainDelay;
   final StreamController<IanvsRuntimeEvent> _events =
       StreamController<IanvsRuntimeEvent>.broadcast(sync: true);
   late final Object _runtime;
   Timer? _pollTimer;
+  Timer? _backlogDrainTimer;
+  Future<void>? _activeDrain;
   int _lastSequence = 0;
   bool _disposed = false;
 
@@ -211,6 +245,7 @@ final class IanvsRustRuntime {
     required String sessionId,
     required String cwd,
     List<String> additionalDirectories = const <String>[],
+    bool replayHistory = true,
   }) {
     _ensureOpen();
     _check(
@@ -220,6 +255,7 @@ final class IanvsRustRuntime {
         sessionId: sessionId,
         cwd: cwd,
         additionalDirectories: additionalDirectories,
+        replayHistory: replayHistory,
       ),
       'restoreSession',
     );
@@ -355,8 +391,11 @@ final class IanvsRustRuntime {
     _disposed = true;
     _pollTimer?.cancel();
     _pollTimer = null;
+    _backlogDrainTimer?.cancel();
+    _backlogDrainTimer = null;
+    await _activeDrain;
     final disposed = _native.dispose(_runtime);
-    _drainEvents(allowDisposed: true);
+    await _drainEvents(allowDisposed: true);
     final disposeError = disposed ? null : _native.lastError(_runtime);
     _native.freeRuntime(_runtime);
     await _events.close();
@@ -367,18 +406,50 @@ final class IanvsRustRuntime {
     }
   }
 
-  void _drainEvents({bool allowDisposed = false}) {
+  Future<void> _drainEvents({bool allowDisposed = false}) {
+    final activeDrain = _activeDrain;
+    if (activeDrain != null) return activeDrain;
+    if (_disposed && !allowDisposed) return Future<void>.value();
+    late final Future<void> drain;
+    drain = _drainEventsOnce(allowDisposed: allowDisposed).whenComplete(() {
+      if (identical(_activeDrain, drain)) _activeDrain = null;
+    });
+    _activeDrain = drain;
+    return drain;
+  }
+
+  Future<void> _drainEventsOnce({required bool allowDisposed}) async {
     if (_disposed && !allowDisposed) return;
-    for (var count = 0; count < maxEventsPerPoll; count += 1) {
-      final encoded = _native.pollEvent(_runtime);
-      if (encoded == null) return;
-      try {
-        final decoded = jsonDecode(encoded);
-        if (decoded is! Map) {
+    final encoded = _native.pollEvents(
+      _runtime,
+      maxEvents: maxEventsPerPoll,
+      maxBytes: maxBytesPerPoll,
+    );
+    if (encoded == null) return;
+    var hasMore = false;
+    try {
+      // A protocol event may legitimately exceed the target batch size. Keep
+      // UTF-8 transfer synchronous at the FFI boundary, but move expensive
+      // parsing of oversized JSON away from Flutter's UI isolate.
+      final decoded = encoded.length >= _backgroundDecodeThresholdBytes
+          ? await Isolate.run<Object?>(_BackgroundJsonDecoder(encoded).decode)
+          : jsonDecode(encoded);
+      if (decoded is! Map) {
+        throw const FormatException('Rust event batch must be an object.');
+      }
+      final rawEvents = decoded['events'];
+      if (rawEvents is! List || rawEvents.isEmpty) {
+        throw const FormatException(
+          'Rust event batch must contain at least one event.',
+        );
+      }
+      hasMore = decoded['hasMore'] == true;
+      for (final rawEvent in rawEvents) {
+        if (rawEvent is! Map) {
           throw const FormatException('Rust event envelope must be an object.');
         }
         final event = IanvsRuntimeEvent.fromJson(
-          decoded.map((key, value) => MapEntry(key.toString(), value)),
+          rawEvent.map((key, value) => MapEntry(key.toString(), value)),
         );
         if (event.sequence <= _lastSequence) {
           throw StateError(
@@ -388,9 +459,18 @@ final class IanvsRustRuntime {
         }
         _lastSequence = event.sequence;
         _events.add(event);
-      } on Object catch (error, stackTrace) {
-        _events.addError(error, stackTrace);
       }
+    } on Object catch (error, stackTrace) {
+      _events.addError(error, stackTrace);
+    }
+    // Pull a non-empty native remainder in bounded, cooperative slices. A real
+    // delay (rather than an immediate timer) lets a due vsync/frame callback
+    // run between JSON decode and synchronous event projection bursts.
+    if (hasMore && !_disposed && _backlogDrainTimer == null) {
+      _backlogDrainTimer = Timer(backlogDrainDelay, () {
+        _backlogDrainTimer = null;
+        unawaited(_drainEvents());
+      });
     }
   }
 
@@ -404,6 +484,14 @@ final class IanvsRustRuntime {
   void _ensureOpen() {
     if (_disposed) throw StateError('Rust ACP runtime is disposed.');
   }
+}
+
+final class _BackgroundJsonDecoder {
+  const _BackgroundJsonDecoder(this.source);
+
+  final String source;
+
+  Object? decode() => jsonDecode(source);
 }
 
 final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
@@ -448,6 +536,7 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
             Pointer<Utf8>,
             Pointer<Utf8>,
             Pointer<Utf8>,
+            Bool,
           ),
           bool Function(
             Pointer<Void>,
@@ -455,6 +544,7 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
             Pointer<Utf8>,
             Pointer<Utf8>,
             Pointer<Utf8>,
+            bool,
           )
         >('ianvs_acp_restore_session');
     _listSessions = _library
@@ -580,11 +670,11 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
           Bool Function(Pointer<Void>),
           bool Function(Pointer<Void>)
         >('ianvs_acp_dispose');
-    _pollEvent = _library
+    _pollEvents = _library
         .lookupFunction<
-          Pointer<Utf8> Function(Pointer<Void>, Uint32),
-          Pointer<Utf8> Function(Pointer<Void>, int)
-        >('ianvs_acp_poll_event');
+          Pointer<Utf8> Function(Pointer<Void>, Uint32, Uint64, Uint32),
+          Pointer<Utf8> Function(Pointer<Void>, int, int, int)
+        >('ianvs_acp_poll_events');
     _lastError = _library
         .lookupFunction<
           Pointer<Utf8> Function(Pointer<Void>),
@@ -645,6 +735,7 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
     Pointer<Utf8>,
     Pointer<Utf8>,
     Pointer<Utf8>,
+    bool,
   )
   _restoreSession;
   late final bool Function(Pointer<Void>, Pointer<Utf8>) _listSessions;
@@ -698,7 +789,7 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
   )
   _setConfigOption;
   late final bool Function(Pointer<Void>) _dispose;
-  late final Pointer<Utf8> Function(Pointer<Void>, int) _pollEvent;
+  late final Pointer<Utf8> Function(Pointer<Void>, int, int, int) _pollEvents;
   late final Pointer<Utf8> Function(Pointer<Void>) _lastError;
   late final void Function(Pointer<Utf8>) _stringFree;
 
@@ -744,6 +835,7 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
     required String sessionId,
     required String cwd,
     required List<String> additionalDirectories,
+    bool replayHistory = true,
   }) {
     return _withFourUtf8(
       requestId,
@@ -756,6 +848,7 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
         session,
         directory,
         additional,
+        replayHistory,
       ),
     );
   }
@@ -934,8 +1027,15 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
   }
 
   @override
-  String? pollEvent(Object runtime, {int timeoutMs = 0}) {
-    return _takeNativeString(_pollEvent(_pointer(runtime), timeoutMs));
+  String? pollEvents(
+    Object runtime, {
+    required int maxEvents,
+    required int maxBytes,
+    int timeoutMs = 0,
+  }) {
+    return _takeNativeString(
+      _pollEvents(_pointer(runtime), maxEvents, maxBytes, timeoutMs),
+    );
   }
 
   @override

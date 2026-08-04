@@ -8,9 +8,9 @@ use std::time::{Duration, Instant, SystemTime};
 use chrono::{DateTime, SecondsFormat, Utc};
 use ianvs_acp_core::{
     AgentLaunchConfig, ExecutorCommandContext, ExecutorLeaseCommand, ExecutorLeaseOperation,
-    ExecutorTaskInboxCommand, InboxEventKind, InboxEventRecord, RuntimeEvent, RuntimeHandle,
-    RuntimeStatus, SchedulerCapacityReservation, SchedulerClaim, SchedulerClaimRequest,
-    SchedulerConfig, SchedulerRuntimeAvailability, SchedulerRuntimeStatus, SessionUpdate,
+    ExecutorTaskInboxCommand, InboxEventKind, InboxEventRecord, RenderUpdate, RenderUpdateKind,
+    RuntimeEvent, RuntimeHandle, RuntimeStatus, SchedulerCapacityReservation, SchedulerClaim,
+    SchedulerClaimRequest, SchedulerConfig, SchedulerRuntimeAvailability, SchedulerRuntimeStatus,
     SessionUpdateKind, TaskInboxCommand, TaskInboxRunTransition,
 };
 use serde_json::Value;
@@ -298,8 +298,8 @@ fn collect_prompt(
             continue;
         };
         match event.event {
-            RuntimeEvent::SessionUpdate { update } if update.session_id == session_id => {
-                if handle_session_update(state, claim, prompt_request_id, update, &mut assistant)? {
+            RuntimeEvent::RenderUpdate { update } if update.session_id == session_id => {
+                if handle_render_update(state, claim, prompt_request_id, update, &mut assistant)? {
                     return Ok(());
                 }
             }
@@ -346,38 +346,51 @@ fn collect_prompt(
     Err("agent prompt timed out".to_string())
 }
 
-fn handle_session_update(
+fn handle_render_update(
     state: &Arc<Mutex<DaemonState>>,
     claim: &SchedulerClaim,
     prompt_request_id: &str,
-    update: SessionUpdate,
+    update: RenderUpdate,
     assistant: &mut String,
 ) -> Result<bool, String> {
     match update.kind {
-        SessionUpdateKind::AgentMessageDelta | SessionUpdateKind::AgentThoughtDelta => {
-            if let Some(text) = update.text {
-                assistant.push_str(&text);
-            }
+        RenderUpdateKind::AssistantText | RenderUpdateKind::Thought => {
+            assistant.push_str(&update.text);
             if assistant.len() >= MAX_ASSISTANT_BUFFER_BYTES {
                 flush_assistant(state, claim, assistant)?;
             }
         }
-        SessionUpdateKind::ToolCall | SessionUpdateKind::ToolCallUpdate => {
+        RenderUpdateKind::ToolCall => {
             flush_assistant(state, claim, assistant)?;
             append_event(
                 state,
                 claim,
                 InboxEventKind::Tool,
-                update.text.as_deref().unwrap_or("Agent tool activity"),
-                update
-                    .payload
-                    .map(|payload| BTreeMap::from([("payload".to_string(), payload)]))
-                    .unwrap_or_default(),
+                if update.text.is_empty() {
+                    "Agent tool activity"
+                } else {
+                    &update.text
+                },
+                update.metadata.map_or_else(BTreeMap::new, |metadata| {
+                    BTreeMap::from([("payload".to_string(), metadata)])
+                }),
             )?;
         }
-        SessionUpdateKind::PromptCompleted
-            if update.request_id.as_deref() == Some(prompt_request_id) =>
+        RenderUpdateKind::TurnCompleted
+            if update
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata["requestId"].as_str())
+                == Some(prompt_request_id) =>
         {
+            if update
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata["stopReason"].as_str())
+                == Some("cancelled")
+            {
+                return Err("agent prompt was cancelled".to_string());
+            }
             flush_assistant(state, claim, assistant)?;
             transition(state, claim, TaskInboxRunTransition::CollectArtifacts, None)?;
             transition(
@@ -387,14 +400,6 @@ fn handle_session_update(
                 None,
             )?;
             return Ok(true);
-        }
-        SessionUpdateKind::Failed if update.request_id.as_deref() == Some(prompt_request_id) => {
-            return Err(update
-                .text
-                .unwrap_or_else(|| "agent prompt failed".to_string()));
-        }
-        SessionUpdateKind::Cancelled if update.request_id.as_deref() == Some(prompt_request_id) => {
-            return Err("agent prompt was cancelled".to_string());
         }
         _ => {}
     }

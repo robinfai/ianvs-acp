@@ -73,11 +73,13 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   }) => _failure<void>();
 
   @override
-  Future<List<AgentEvent>> resumeSession({
+  Future<AcpSessionRestoreSummary> restoreSession({
     required String sessionId,
     required String cwd,
     List<String> additionalDirectories = const <String>[],
-  }) => _failure<List<AgentEvent>>();
+    bool replayHistory = true,
+    required AcpSessionRestoreEventObserver onEvent,
+  }) => _failure<AcpSessionRestoreSummary>();
 
   @override
   Stream<AgentEvent> sendPrompt({

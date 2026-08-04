@@ -6,6 +6,18 @@ import 'agent_event.dart';
 import 'agent_session.dart';
 import 'prompt_attachment.dart';
 
+typedef AcpSessionRestoreEventObserver = void Function(AgentEvent event);
+
+final class AcpSessionRestoreSummary {
+  const AcpSessionRestoreSummary({
+    required this.eventCount,
+    required this.replayedHistory,
+  });
+
+  final int eventCount;
+  final bool? replayedHistory;
+}
+
 abstract class AcpAgentClient {
   AcpAgentCapabilities? get capabilities;
 
@@ -20,10 +32,15 @@ abstract class AcpAgentClient {
     List<String> additionalDirectories = const <String>[],
   });
 
-  Future<List<AgentEvent>> resumeSession({
+  /// Restores a session while allowing consumers to project events without
+  /// retaining a second complete replay list. Implementations must honor
+  /// `replayHistory: false` whenever `session.resume` is advertised.
+  Future<AcpSessionRestoreSummary> restoreSession({
     required String sessionId,
     required String cwd,
     List<String> additionalDirectories = const <String>[],
+    bool replayHistory = true,
+    required AcpSessionRestoreEventObserver onEvent,
   });
 
   Future<List<AcpProjectSessions>> listSessions();

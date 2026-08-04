@@ -32,7 +32,7 @@ pub struct AgentLaunchConfig {
     /// Optional dedicated `SQLite` file for durable ACP session recovery.
     #[serde(default)]
     pub session_store_path: Option<String>,
-    /// Capacity limit for the dedicated ACP session-recovery SQLite file.
+    /// Capacity limit for the dedicated ACP session-recovery `SQLite` file.
     #[serde(default)]
     pub session_store_max_bytes: Option<u64>,
     /// Inactive session recovery metadata retention in days.
@@ -457,21 +457,9 @@ pub enum SessionUpdateKind {
     SessionRestored,
     SessionClosed,
     SessionDeleted,
-    UserMessage,
-    AgentMessageDelta,
-    AgentThoughtDelta,
-    ToolCall,
-    ToolCallUpdate,
-    Plan,
-    AvailableCommands,
     ModeChanged,
     ConfigChanged,
-    SessionInfoChanged,
-    UsageChanged,
     PermissionInvalidated,
-    PromptCompleted,
-    Cancelled,
-    Failed,
 }
 
 /// Stable session event. `payload` follows ianvs projection schemas and never
@@ -487,6 +475,31 @@ pub struct SessionUpdate {
     pub request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
+}
+
+/// A UI-facing session content update. Unlike [`SessionUpdate`], this is a
+/// deliberately small render protocol: ACP extension metadata and wire-only
+/// fields are removed before the value can cross a host boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderUpdateKind {
+    UserMessage,
+    AssistantText,
+    Thought,
+    ToolCall,
+    Plan,
+    TurnCompleted,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderUpdate {
+    pub session_id: String,
+    pub kind: RenderUpdateKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// Bounded, normalized entry returned by the Rust-owned session catalog.
@@ -515,6 +528,19 @@ pub struct SessionCatalogEntryProjection {
 pub enum RuntimeEvent {
     SessionUpdate {
         update: SessionUpdate,
+    },
+    RenderUpdate {
+        update: RenderUpdate,
+    },
+    /// A replay projection is chunked before it reaches FFI. Chunks are not
+    /// independently visible: the host accumulates them until the following
+    /// `session_restored` control event commits the complete transcript.
+    RenderSnapshotChunk {
+        request_id: String,
+        session_id: String,
+        chunk_index: u32,
+        is_last: bool,
+        updates: Vec<RenderUpdate>,
     },
     PermissionRequest {
         request: PermissionRequestProjection,
@@ -579,7 +605,7 @@ pub struct RuntimeEventEnvelope {
 }
 
 impl RuntimeEventEnvelope {
-    pub const SCHEMA_VERSION: u16 = 3;
+    pub const SCHEMA_VERSION: u16 = 4;
 
     #[must_use]
     pub fn new(sequence: u64, event: RuntimeEvent) -> Self {

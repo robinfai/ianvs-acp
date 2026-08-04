@@ -77,17 +77,20 @@ void main() {
       final message = await _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'agent_message_delta',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'assistant_text',
       );
-      expect(message.update?['text'], 'permission:allow-once');
+      expect(message.renderUpdate?['text'], 'permission:allow-once');
       final completed = await _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'prompt_completed',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'turn_completed',
       );
-      expect(completed.update?['requestId'], 'prompt-from-dart');
+      expect(
+        (completed.renderUpdate?['metadata'] as Map?)?['requestId'],
+        'prompt-from-dart',
+      );
     },
     skip: artifactsAvailable
         ? false
@@ -163,12 +166,15 @@ void main() {
       Map<Object?, Object?>? restoredPayload;
       while (await iterator.moveNext()) {
         final event = iterator.current;
-        if (event.type != IanvsRuntimeEventType.sessionUpdate) continue;
-        final update = event.update!;
-        if (update['kind'] == 'agent_message_delta') {
+        if (event.type == IanvsRuntimeEventType.renderSnapshotChunk) {
+          final update = event.renderUpdates.singleWhere(
+            (update) => update['kind'] == 'assistant_text',
+          );
           expect(update['text'], 'loaded fixture history');
           history = true;
-        } else if (update['kind'] == 'session_restored') {
+        } else if (event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'session_restored') {
+          final update = event.update!;
           expect(update['requestId'], 'restore-from-dart');
           restoredPayload = update['payload'] as Map<Object?, Object?>?;
           restored = true;
@@ -376,14 +382,17 @@ void main() {
             exited = true;
           case IanvsRuntimeEventType.terminalReleased:
             released = true;
-          case IanvsRuntimeEventType.sessionUpdate:
-            final update = event.update!;
-            if (update['kind'] == 'agent_message_delta') {
+          case IanvsRuntimeEventType.renderUpdate:
+            final update = event.renderUpdate!;
+            if (update['kind'] == 'assistant_text') {
               expect(update['text'], 'terminal:fixture-terminal:0:false');
               message = true;
-            } else if (update['kind'] == 'prompt_completed') {
+            } else if (update['kind'] == 'turn_completed') {
               completed = true;
             }
+          case IanvsRuntimeEventType.sessionUpdate ||
+              IanvsRuntimeEventType.renderSnapshotChunk:
+            break;
           case IanvsRuntimeEventType.permissionRequest ||
               IanvsRuntimeEventType.sessionCatalog ||
               IanvsRuntimeEventType.authenticationChanged ||
@@ -470,15 +479,15 @@ void main() {
       final message = await _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'agent_message_delta',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'assistant_text',
       );
-      expect(message.update?['text'], 'content:text,resource');
+      expect(message.renderUpdate?['text'], 'content:text,resource');
       await _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'prompt_completed',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'turn_completed',
       );
     },
     skip: artifactsAvailable
@@ -537,15 +546,17 @@ void main() {
       await _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'agent_message_delta',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'assistant_text',
       );
 
       final cancelled = _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'cancelled',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'turn_completed' &&
+            (event.renderUpdate?['metadata'] as Map?)?['stopReason'] ==
+                'cancelled',
       );
       runtime.cancel(
         requestId: 'cancel-from-dart',
@@ -553,7 +564,7 @@ void main() {
       );
       final cancelledEvent = await cancelled;
       expect(
-        (cancelledEvent.update?['payload'] as Map?)?['stopReason'],
+        (cancelledEvent.renderUpdate?['metadata'] as Map?)?['stopReason'],
         'cancelled',
       );
     },
@@ -650,15 +661,15 @@ void main() {
       final message = await _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'agent_message_delta',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'assistant_text',
       );
-      expect(message.update?['text'], 'filesystem:second');
+      expect(message.renderUpdate?['text'], 'filesystem:second');
       await _nextWhere(
         iterator,
         (event) =>
-            event.type == IanvsRuntimeEventType.sessionUpdate &&
-            event.update?['kind'] == 'prompt_completed',
+            event.type == IanvsRuntimeEventType.renderUpdate &&
+            event.renderUpdate?['kind'] == 'turn_completed',
       );
       expect(output.readAsStringSync(), 'copy:second\n');
     },

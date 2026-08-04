@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -5,22 +6,51 @@ import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
 import 'package:ianvs_acp/rust/ianvs_runtime_event.dart';
 
 void main() {
+  test('uses frame-friendly default FFI drain budgets', () async {
+    final runtime = IanvsRustRuntime(
+      native: _FakeNativeApi(),
+      pollInterval: const Duration(hours: 1),
+    );
+    addTearDown(runtime.dispose);
+
+    expect(runtime.maxEventsPerPoll, 4);
+    expect(runtime.maxBytesPerPoll, 128 * 1024);
+    expect(runtime.backlogDrainDelay, const Duration(milliseconds: 4));
+  });
+
+  test('rejects FFI batch limits outside the native ABI bounds', () {
+    expect(
+      () => IanvsRustRuntime(
+        native: _FakeNativeApi(),
+        maxEventsPerPoll: IanvsRustRuntime.maxNativeEventsPerPoll + 1,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => IanvsRustRuntime(
+        native: _FakeNativeApi(),
+        maxBytesPerPoll: IanvsRustRuntime.maxNativeBytesPerPoll + 1,
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('projects versioned Rust events in strict sequence', () async {
     final native = _FakeNativeApi()
       ..events.addAll(<String>[
         jsonEncode(<String, Object?>{
-          'schemaVersion': 3,
+          'schemaVersion': 4,
           'sequence': 1,
           'type': 'status_changed',
           'status': 'ready',
         }),
         jsonEncode(<String, Object?>{
-          'schemaVersion': 3,
+          'schemaVersion': 4,
           'sequence': 2,
-          'type': 'session_update',
+          'type': 'render_update',
           'update': <String, Object?>{
             'sessionId': 'session-1',
-            'kind': 'agent_message_delta',
+            'kind': 'assistant_text',
             'text': 'hello',
           },
         }),
@@ -34,6 +64,63 @@ void main() {
     expect(events.map((event) => event.sequence), <int>[1, 2]);
     expect(events.first.type, IanvsRuntimeEventType.statusChanged);
     expect(events.last.update?['text'], 'hello');
+  });
+
+  test('decodes an oversized FFI event off the event loop', () async {
+    var eventLoopAdvanced = false;
+    final native = _FakeNativeApi()
+      ..onPoll = () {
+        Timer.run(() => eventLoopAdvanced = true);
+      }
+      ..events.add(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 4,
+          'sequence': 1,
+          'type': 'status_changed',
+          'status': 'ready',
+          'padding': 'x' * (300 * 1024),
+        }),
+      );
+    final runtime = IanvsRustRuntime(
+      native: native,
+      pollInterval: const Duration(milliseconds: 1),
+    );
+    addTearDown(runtime.dispose);
+
+    await runtime.events.first;
+
+    expect(eventLoopAdvanced, isTrue);
+  });
+
+  test('drains a native backlog in cooperative slices', () async {
+    final native = _FakeNativeApi();
+    for (var sequence = 1; sequence <= 9; sequence += 1) {
+      native.events.add(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 4,
+          'sequence': sequence,
+          'type': 'status_changed',
+          'status': 'ready',
+        }),
+      );
+    }
+    final runtime = IanvsRustRuntime(
+      native: native,
+      pollInterval: const Duration(milliseconds: 100),
+      maxEventsPerPoll: 2,
+      backlogDrainDelay: const Duration(milliseconds: 4),
+    );
+    addTearDown(runtime.dispose);
+
+    final stopwatch = Stopwatch()..start();
+    final events = await runtime.events.take(9).toList();
+    stopwatch.stop();
+
+    expect(
+      events.map((event) => event.sequence),
+      orderedEquals(<int>[1, 2, 3, 4, 5, 6, 7, 8, 9]),
+    );
+    expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 350)));
   });
 
   test('sends stable product commands instead of ACP JSON-RPC', () async {
@@ -128,7 +215,7 @@ void main() {
     var sequence = 1;
     for (final entry in types.entries) {
       final event = IanvsRuntimeEvent.fromJson(<String, Object?>{
-        'schemaVersion': 3,
+        'schemaVersion': 4,
         'sequence': sequence++,
         'type': entry.key,
         'sessionId': 'session-1',
@@ -159,9 +246,10 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
   Map<String, String>? lastPrompt;
   bool disposed = false;
   bool freed = false;
+  void Function()? onPoll;
 
   @override
-  int get ffiVersion => 7;
+  int get ffiVersion => 9;
 
   @override
   Object createRuntime() => handle;
@@ -188,6 +276,7 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
     required String sessionId,
     required String cwd,
     required List<String> additionalDirectories,
+    bool replayHistory = true,
   }) => true;
 
   @override
@@ -266,8 +355,29 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
   }) => true;
 
   @override
-  String? pollEvent(Object runtime, {int timeoutMs = 0}) {
-    return events.isEmpty ? null : events.removeAt(0);
+  String? pollEvents(
+    Object runtime, {
+    required int maxEvents,
+    required int maxBytes,
+    int timeoutMs = 0,
+  }) {
+    if (events.isEmpty) return null;
+    final pollCallback = onPoll;
+    onPoll = null;
+    pollCallback?.call();
+    final batch = <Object?>[];
+    var bytes = 2;
+    while (batch.length < maxEvents && events.isNotEmpty) {
+      final next = events.first;
+      if (batch.isNotEmpty && bytes + 1 + next.length > maxBytes) break;
+      events.removeAt(0);
+      batch.add(jsonDecode(next));
+      bytes += (batch.length == 1 ? 0 : 1) + next.length;
+    }
+    return jsonEncode(<String, Object?>{
+      'events': batch,
+      'hasMore': events.isNotEmpty,
+    });
   }
 
   @override

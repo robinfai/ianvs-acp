@@ -40,6 +40,7 @@ import 'platform/file_manager.dart';
 import 'startup/deep_link_request.dart';
 import 'startup/startup_options.dart';
 import 'storage/sqlite_storage_config.dart';
+import 'storage/session_transcript_cache.dart';
 import 'state/chat_controller.dart';
 import 'state/workspace_controller.dart';
 import 'tasks/task_agent_pool.dart';
@@ -1502,6 +1503,16 @@ class _AcpClientAppState extends State<AcpClientApp>
       assistantAgentConfig: config.assistantAgent,
       assistantAgentEnhancer: _assistantAgentEnhancer(config),
       enableAutomaticSessionTitles: true,
+      sessionTranscriptCache: _sessionTranscriptCache(config),
+    );
+  }
+
+  SessionTranscriptCache? _sessionTranscriptCache(AcpClientConfig config) {
+    final configPath = config.configPath?.trim();
+    if (configPath == null || configPath.isEmpty) return null;
+    return FileSessionTranscriptCache(
+      directoryPath:
+          '${File(configPath).parent.path}${Platform.pathSeparator}session_transcripts',
     );
   }
 

@@ -68,10 +68,10 @@ pub use idempotency::{
 pub use model::{
     AgentLaunchConfig, AuthMethodProjection, CapabilityProjection, CommandKind,
     McpServerLaunchConfig, PermissionDecision, PermissionOptionProjection,
-    PermissionRequestProjection, PromptAttachmentInput, RuntimeEvent, RuntimeEventEnvelope,
-    RuntimeStatus, SessionCatalogEntryProjection, SessionConfigChoiceProjection,
-    SessionConfigOptionProjection, SessionConfigValueProjection, SessionModeProjection,
-    SessionModesProjection, SessionStatus, SessionUpdate, SessionUpdateKind,
+    PermissionRequestProjection, PromptAttachmentInput, RenderUpdate, RenderUpdateKind,
+    RuntimeEvent, RuntimeEventEnvelope, RuntimeStatus, SessionCatalogEntryProjection,
+    SessionConfigChoiceProjection, SessionConfigOptionProjection, SessionConfigValueProjection,
+    SessionModeProjection, SessionModesProjection, SessionStatus, SessionUpdate, SessionUpdateKind,
 };
 pub use persistence::{
     RecoveryReport, SqliteWorkflowStore, VersionedWorkflowSnapshot, WorkflowMigrationMetadata,

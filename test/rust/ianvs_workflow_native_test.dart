@@ -232,7 +232,7 @@ final class _FakeWorkflowNative implements IanvsWorkflowNativeApi {
   String _migrationPhase = 'native';
 
   @override
-  int get ffiVersion => 7;
+  int get ffiVersion => 9;
 
   @override
   Object createWorkflow() => handle;

@@ -9,7 +9,7 @@ use ianvs_acp_ffi::{
 
 #[test]
 fn abi_rejects_invalid_host_dto_without_panicking() {
-    assert_eq!(ianvs_acp_ffi_version(), 7);
+    assert_eq!(ianvs_acp_ffi_version(), 9);
     let runtime = ianvs_acp_runtime_new();
     assert!(!runtime.is_null());
     let invalid = CString::new(r#"{"agentName":"fixture"}"#).unwrap();

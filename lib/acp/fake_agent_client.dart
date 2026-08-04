@@ -25,6 +25,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.supportsListSessions = true,
     this.supportsLoadSession = true,
     this.supportsResumeSession = false,
+    this.restoreReplayedHistory = true,
     this.supportsLogout = true,
     this.supportsDelete = false,
     this.chunkDelay = Duration.zero,
@@ -78,6 +79,7 @@ class FakeAgentClient implements AcpAgentClient {
   final bool supportsListSessions;
   final bool supportsLoadSession;
   final bool supportsResumeSession;
+  final bool restoreReplayedHistory;
   final bool supportsLogout;
   final bool supportsDelete;
   final Duration chunkDelay;
@@ -110,6 +112,7 @@ class FakeAgentClient implements AcpAgentClient {
   String? lastPrompt;
   String? lastMemoryContext;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
+  bool? _lastRestoreReplayedHistory;
 
   final StreamController<AcpPermissionRequest> _permissionRequests =
       StreamController<AcpPermissionRequest>.broadcast(sync: true);
@@ -231,7 +234,6 @@ class FakeAgentClient implements AcpAgentClient {
     );
   }
 
-  @override
   Future<List<AgentEvent>> resumeSession({
     required String sessionId,
     required String cwd,
@@ -247,7 +249,36 @@ class FakeAgentClient implements AcpAgentClient {
       await Future<void>.delayed(resumeDelay);
     }
     lastResumeCwd = cwd;
+    _lastRestoreReplayedHistory = restoreReplayedHistory;
     return resumeEvents;
+  }
+
+  @override
+  Future<AcpSessionRestoreSummary> restoreSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+    bool replayHistory = true,
+    required AcpSessionRestoreEventObserver onEvent,
+  }) async {
+    final events = await resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
+    final restoredEvents = !replayHistory && supportsResumeSession
+        ? const <AgentEvent>[]
+        : events;
+    if (!replayHistory && supportsResumeSession) {
+      _lastRestoreReplayedHistory = false;
+    }
+    for (final event in restoredEvents) {
+      onEvent(event);
+    }
+    return AcpSessionRestoreSummary(
+      eventCount: restoredEvents.length,
+      replayedHistory: _lastRestoreReplayedHistory,
+    );
   }
 
   @override
