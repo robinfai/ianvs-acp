@@ -142,18 +142,29 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
           'Memory',
           style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0),
         ),
+        leading: IconButton(
+          tooltip: 'Back',
+          onPressed: () => Navigator.of(context).maybePop(),
+          icon: const Icon(Icons.arrow_back_rounded, semanticLabel: 'Back'),
+        ),
         actions: [
           if (widget.actions?.importBackup != null)
             IconButton(
               tooltip: 'Import JSONL backup',
               onPressed: _transferringData ? null : _importMemoryBackup,
-              icon: const Icon(Icons.upload_file_rounded),
+              icon: const Icon(
+                Icons.upload_file_rounded,
+                semanticLabel: 'Import memory backup',
+              ),
             ),
           if (widget.actions?.exportBackup != null)
             IconButton(
               tooltip: 'Export JSONL backup',
               onPressed: _transferringData ? null : _exportMemoryBackup,
-              icon: const Icon(Icons.download_rounded),
+              icon: const Icon(
+                Icons.download_rounded,
+                semanticLabel: 'Export memory backup',
+              ),
             ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
@@ -233,9 +244,8 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
         if (snapshot.hasError) {
           return _ErrorPane(message: '${snapshot.error}');
         }
-        final items = _filterMemoryRecords(
-          snapshot.data ?? const <MemoryRecord>[],
-        );
+        final records = snapshot.data ?? const <MemoryRecord>[];
+        final items = _filterMemoryRecords(records);
         return _ListSurface(
           children: [
             _MemoryPaneHeader(
@@ -255,6 +265,9 @@ class _MemoryExplorerPageState extends State<MemoryExplorerPage>
                 message: _hasSearchQuery
                     ? 'No matching memory records.'
                     : 'No memory records yet.',
+                detail: _hasSearchQuery
+                    ? 'Try a different search term.'
+                    : 'Memory created from conversations or imported backups will appear here.',
               )
             else
               for (final item in items)
@@ -1309,23 +1322,51 @@ class _AuditFilterBar extends StatelessWidget {
 }
 
 class _InlineEmptyState extends StatelessWidget {
-  const _InlineEmptyState({required this.message});
+  const _InlineEmptyState({required this.message, this.detail});
 
   final String message;
+  final String? detail;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 64),
       child: Center(
-        child: Text(
-          message,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0,
-          ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.memory_rounded,
+              size: 30,
+              color: AppColors.textTertiary,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              message,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0,
+              ),
+            ),
+            if (detail?.trim().isNotEmpty == true) ...[
+              const SizedBox(height: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: Text(
+                  detail!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

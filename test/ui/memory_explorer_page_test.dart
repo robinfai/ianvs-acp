@@ -24,6 +24,46 @@ void main() {
     );
   });
 
+  testWidgets('empty memory explains where records will appear', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MemoryExplorerPage(
+          actions: MemoryExplorerActions(
+            loadMemory: () async => const <MemoryRecord>[],
+            loadCandidates: () async => const <MemoryCandidate>[],
+            loadChangeRequests: () async => const <MemoryChangeRequest>[],
+            loadAudit: () async => const <MemoryAuditEvent>[],
+            approveCandidate: (_) async {},
+            rejectCandidate: (_) async {},
+            approveChangeRequest: (_) async {},
+            rejectChangeRequest: (_) async {},
+            runMaintenance: () async => const MaintenanceRunResult(
+              autoApplied: 0,
+              needsReview: 0,
+              skipped: 0,
+              changeRequests: <MemoryChangeRequest>[],
+            ),
+            clearData: (_) async => const MemoryClearResult(
+              clearedMemory: 0,
+              rejectedCandidates: 0,
+              rejectedChangeRequests: 0,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'Memory created from conversations or imported backups will appear here.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('clear data button calls provided callback', (tester) async {
     var cleared = false;
     await tester.pumpWidget(

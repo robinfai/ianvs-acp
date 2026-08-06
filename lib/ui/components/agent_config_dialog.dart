@@ -49,6 +49,7 @@ class AgentConfigDialog extends StatefulWidget {
 }
 
 class _AgentConfigDialogState extends State<AgentConfigDialog> {
+  final ScrollController _contentScrollController = ScrollController();
   late final List<AgentServerConfig> _agentServers = List.of(
     widget.agentServers,
   );
@@ -201,6 +202,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
 
   @override
   void dispose() {
+    _contentScrollController.dispose();
     _reviewServerNameController.dispose();
     _reviewToolNameController.dispose();
     _reviewModelController.dispose();
@@ -238,103 +240,118 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         ),
         child: SizedBox(
           width: 640,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _ConfigPathPanel(path: widget.configPath),
-                if (_error != null) ...[
+          child: RawScrollbar(
+            key: const Key('agent-config-scrollbar'),
+            controller: _contentScrollController,
+            thumbVisibility: true,
+            trackVisibility: true,
+            thumbColor: AppColors.textTertiary,
+            trackColor: AppColors.surfaceMuted,
+            trackBorderColor: AppColors.border,
+            thickness: 5,
+            minThumbLength: 48,
+            radius: const Radius.circular(4),
+            child: SingleChildScrollView(
+              key: const Key('agent-config-scroll-view'),
+              controller: _contentScrollController,
+              padding: const EdgeInsets.only(right: 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _ConfigPathPanel(path: widget.configPath),
+                  if (_error != null) ...[
+                    const SizedBox(height: 10),
+                    _ErrorPanel(message: _error!),
+                  ],
                   const SizedBox(height: 10),
-                  _ErrorPanel(message: _error!),
-                ],
-                const SizedBox(height: 10),
-                _buildDirectoriesSection(),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'MCP Servers',
-                        style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 0,
-                        ),
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: _saving ? null : _addMcpServer,
-                      icon: const Icon(Icons.add_rounded),
-                      label: const Text('Add MCP Server'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_mcpServers.isNotEmpty)
-                  _McpServersPanel(
-                    servers: _mcpServers,
-                    onEdit: _saving ? null : _editMcpServer,
-                    onDelete: _saving ? null : _deleteMcpServer,
-                  ),
-                const SizedBox(height: 10),
-                _buildAssistantAgentSection(),
-                const SizedBox(height: 10),
-                _buildClientProvidersSection(),
-                const SizedBox(height: 10),
-                _buildMemorySection(),
-                const SizedBox(height: 10),
-                _buildStorageSection(),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'Agents',
-                        style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 0,
-                        ),
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: _saving ? null : _addAgent,
-                      icon: const Icon(Icons.add_rounded),
-                      label: const Text('Add Agent'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (_agentServers.isEmpty)
-                  const _EmptyState()
-                else
-                  Column(
+                  _buildDirectoriesSection(),
+                  const SizedBox(height: 10),
+                  Row(
                     children: [
-                      for (final server in _agentServers) ...[
-                        _AgentServerPanel(
-                          server: server,
-                          selected: server.name == widget.activeAgentName,
-                          isDefault: server.name == _defaultAgentName,
-                          onSetDefault:
-                              server.name == _defaultAgentName || _saving
-                              ? null
-                              : () => setState(() {
-                                  _defaultAgentName = server.name;
-                                  _error = null;
-                                }),
-                          onEdit: _saving ? null : () => _editAgent(server),
-                          onDelete:
-                              server.name == widget.activeAgentName || _saving
-                              ? null
-                              : () => _deleteAgent(server),
+                      const Expanded(
+                        child: Text(
+                          'MCP Servers',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0,
+                          ),
                         ),
-                        if (server != _agentServers.last)
-                          const SizedBox(height: 8),
-                      ],
+                      ),
+                      TextButton.icon(
+                        onPressed: _saving ? null : _addMcpServer,
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Add MCP Server'),
+                      ),
                     ],
                   ),
-              ],
+                  const SizedBox(height: 8),
+                  if (_mcpServers.isNotEmpty)
+                    _McpServersPanel(
+                      servers: _mcpServers,
+                      onEdit: _saving ? null : _editMcpServer,
+                      onDelete: _saving ? null : _deleteMcpServer,
+                    ),
+                  const SizedBox(height: 10),
+                  _buildAssistantAgentSection(),
+                  const SizedBox(height: 10),
+                  _buildClientProvidersSection(),
+                  const SizedBox(height: 10),
+                  _buildMemorySection(),
+                  const SizedBox(height: 10),
+                  _buildStorageSection(),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Agents',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: _saving ? null : _addAgent,
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Add Agent'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (_agentServers.isEmpty)
+                    const _EmptyState()
+                  else
+                    Column(
+                      children: [
+                        for (final server in _agentServers) ...[
+                          _AgentServerPanel(
+                            server: server,
+                            selected: server.name == widget.activeAgentName,
+                            isDefault: server.name == _defaultAgentName,
+                            onSetDefault:
+                                server.name == _defaultAgentName || _saving
+                                ? null
+                                : () => setState(() {
+                                    _defaultAgentName = server.name;
+                                    _error = null;
+                                  }),
+                            onEdit: _saving ? null : () => _editAgent(server),
+                            onDelete:
+                                server.name == widget.activeAgentName || _saving
+                                ? null
+                                : () => _deleteAgent(server),
+                          ),
+                          if (server != _agentServers.last)
+                            const SizedBox(height: 8),
+                        ],
+                      ],
+                    ),
+                ],
+              ),
             ),
           ),
         ),

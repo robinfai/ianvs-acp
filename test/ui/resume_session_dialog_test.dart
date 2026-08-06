@@ -390,7 +390,9 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.textContaining('local file and terminal access roots'),
+      find.textContaining(
+        'folders this session can use for local files and terminal commands',
+      ),
       findsOneWidget,
     );
 

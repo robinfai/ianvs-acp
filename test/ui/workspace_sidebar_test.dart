@@ -303,6 +303,7 @@ void main() {
   testWidgets('WorkspaceSidebar filters workspaces from the search field', (
     tester,
   ) async {
+    final semantics = tester.ensureSemantics();
     final currentWorkspace = WorkspaceRecord(
       path: '/workspace/current',
       name: 'current',
@@ -337,6 +338,17 @@ void main() {
       find.widgetWithText(TextField, 'Search workspaces...'),
       findsOneWidget,
     );
+    expect(
+      tester
+          .getSize(find.widgetWithText(TextField, 'Search workspaces...'))
+          .height,
+      34,
+    );
+    expect(find.bySemanticsLabel('2 workspaces'), findsOneWidget);
+    expect(
+      find.bySemanticsLabel(RegExp(r'current.*0 sessions')),
+      findsOneWidget,
+    );
 
     await tester.enterText(
       find.widgetWithText(TextField, 'Search workspaces...'),
@@ -346,6 +358,7 @@ void main() {
 
     expect(find.text('other'), findsNWidgets(2));
     expect(find.text('current'), findsNothing);
+    semantics.dispose();
   });
 
   testWidgets('WorkspaceSidebar restores and saves expanded workspaces', (
@@ -1126,6 +1139,10 @@ void main() {
   testWidgets(
     'WorkspaceSidebar lists sessions flat and exposes agent in preview',
     (tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final currentSession = AgentSession(
         id: 'current-session',
         cwd: '/workspace/current',
@@ -1324,6 +1341,10 @@ void main() {
   testWidgets('WorkspaceSidebar shows relative time in session preview', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime(2026, 7, 8, 12);
     debugSessionTimeNow = () => now;
     addTearDown(() {
@@ -1602,6 +1623,10 @@ void main() {
   testWidgets('WorkspaceSidebar shows Codex-style session preview on hover', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final currentSession = AgentSession(
       id: 'current-session',
       cwd: '/workspace/current',
@@ -1691,6 +1716,65 @@ void main() {
     await mouse.moveTo(Offset.zero);
     await tester.pump(const Duration(milliseconds: 150));
     expect(preview, findsNothing);
+  });
+
+  testWidgets('WorkspaceSidebar avoids covering narrow content with preview', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final historySession = AgentSession(
+      id: 'history-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 9),
+      title: 'Evaluate main branch',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [historySession],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Row(
+            children: [
+              SizedBox(
+                width: 300,
+                child: WorkspaceSidebar(
+                  agentName: 'Codex',
+                  workspaces: [workspace],
+                  currentWorkspace: workspace,
+                  currentSession: null,
+                  onNewSession: () {},
+                  onResumeSession: () {},
+                ),
+              ),
+              const Expanded(child: SizedBox()),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(
+      tester.getCenter(
+        find.byKey(const Key('workspace-session-history:history-session')),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(
+      find.byKey(const Key('workspace-session-preview:history-session')),
+      findsNothing,
+    );
   });
 
   testWidgets('WorkspaceSidebar keeps inactive session menu actions mounted', (

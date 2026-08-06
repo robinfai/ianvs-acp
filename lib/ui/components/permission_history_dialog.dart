@@ -40,10 +40,7 @@ class _PermissionHistoryDialogState extends State<PermissionHistoryDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (widget.entries.isEmpty)
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('No permission requests yet.'),
-              )
+              const _PermissionHistoryEmptyState()
             else
               ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 460),
@@ -119,6 +116,50 @@ class _PermissionHistoryDialogState extends State<PermissionHistoryDialog> {
         });
       }
     }
+  }
+}
+
+class _PermissionHistoryEmptyState extends StatelessWidget {
+  const _PermissionHistoryEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: const Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.shield_outlined, size: 30, color: AppColors.textTertiary),
+          SizedBox(height: 12),
+          Text(
+            'No permission requests yet.',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0,
+            ),
+          ),
+          SizedBox(height: 6),
+          Text(
+            'Requests that need your approval will be recorded here.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

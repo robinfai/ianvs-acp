@@ -642,13 +642,13 @@ class _ToolbarSessionActions extends StatelessWidget {
         _toolbarMenuItem(
           WorkspaceSessionMenuAction.togglePinned,
           session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-          session.pinned ? 'Unpin Task' : 'Pin Task',
+          session.pinned ? 'Unpin Conversation' : 'Pin Conversation',
           onSelected,
         ),
         _toolbarMenuItem(
           WorkspaceSessionMenuAction.rename,
           Icons.edit_outlined,
-          'Rename Task',
+          'Rename Conversation',
           onSelected,
         ),
         _toolbarMenuItem(
@@ -662,7 +662,7 @@ class _ToolbarSessionActions extends StatelessWidget {
         _toolbarMenuItem(
           WorkspaceSessionMenuAction.archive,
           Icons.archive_outlined,
-          'Archive Task',
+          'Archive Conversation',
           onSelected,
         ),
         const Divider(height: 9),
@@ -873,8 +873,8 @@ class _ToolbarAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.pill),
         onTap: onPressed,
         child: Container(
-          width: label == null ? 28 : null,
-          height: 28,
+          width: label == null ? 32 : null,
+          height: 32,
           padding: label == null
               ? EdgeInsets.zero
               : const EdgeInsets.symmetric(horizontal: 8),
@@ -882,7 +882,7 @@ class _ToolbarAction extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, color: _color, size: 16),
+              Icon(icon, color: _color, size: 17),
               if (label != null) ...[
                 const SizedBox(width: 5),
                 Text(
@@ -927,12 +927,12 @@ class _PrimaryToolbarAction extends StatelessWidget {
       backgroundColor: AppColors.surfaceMuted,
       disabledBackgroundColor: AppColors.surfaceRaised,
       elevation: 0,
-      minimumSize: Size(compact ? 30 : 106, 30),
+      minimumSize: Size(compact ? 32 : 108, 32),
       padding: compact
           ? EdgeInsets.zero
           : const EdgeInsets.symmetric(horizontal: 12),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
+      visualDensity: VisualDensity.standard,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.md),
         side: const BorderSide(color: AppColors.border),

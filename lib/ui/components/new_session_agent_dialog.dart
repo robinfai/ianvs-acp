@@ -241,61 +241,74 @@ class _AgentChoiceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        onTap: onTap,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: selected ? AppColors.primaryMist : AppColors.surfaceRaised,
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${server.name}, ${server.displayTarget}',
+      onTap: onTap,
+      child: ExcludeSemantics(
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
             borderRadius: BorderRadius.circular(AppRadius.md),
-            border: Border.all(
-              color: selected
-                  ? AppColors.primary.withValues(alpha: 0.22)
-                  : AppColors.border,
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                selected ? Icons.check_circle_rounded : Icons.hub_outlined,
-                size: 20,
-                color: selected ? AppColors.success : AppColors.primaryDark,
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      server.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      server.displayTarget,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textTertiary,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ],
+            onTap: onTap,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: selected
+                    ? AppColors.primaryMist
+                    : AppColors.surfaceRaised,
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                border: Border.all(
+                  color: selected
+                      ? AppColors.primary.withValues(alpha: 0.22)
+                      : AppColors.border,
                 ),
               ),
-            ],
+              child: Row(
+                children: [
+                  Icon(
+                    selected ? Icons.check_circle_rounded : Icons.hub_outlined,
+                    size: 20,
+                    color: selected ? AppColors.success : AppColors.primaryDark,
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          server.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Tooltip(
+                          message: server.displayTarget,
+                          child: Text(
+                            server.displayTarget,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textTertiary,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -326,7 +339,8 @@ Iterable<String> newSessionPathSuggestions(String raw) {
   final suggestions =
       entries.whereType<Directory>().map((entry) => entry.path).where((path) {
         final name = _basename(path).toLowerCase();
-        return prefix.isEmpty || name.startsWith(prefix);
+        return path != target.path &&
+            (prefix.isEmpty || name.startsWith(prefix));
       }).toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
   return suggestions.take(12);
@@ -336,10 +350,10 @@ _CompletionTarget? _completionTarget(String path) {
   if (!File(path).isAbsolute) return null;
   final separator = Platform.pathSeparator;
   if (path == separator) {
-    return _CompletionTarget(directory: separator, prefix: '');
+    return _CompletionTarget(directory: separator, prefix: '', path: path);
   }
   if (path.endsWith(separator)) {
-    return _CompletionTarget(directory: path, prefix: '');
+    return _CompletionTarget(directory: path, prefix: '', path: path);
   }
 
   final index = path.lastIndexOf(separator);
@@ -347,6 +361,7 @@ _CompletionTarget? _completionTarget(String path) {
   return _CompletionTarget(
     directory: index == 0 ? separator : path.substring(0, index),
     prefix: path.substring(index + 1),
+    path: path,
   );
 }
 
@@ -380,8 +395,13 @@ String _basename(String path) {
 }
 
 class _CompletionTarget {
-  const _CompletionTarget({required this.directory, required this.prefix});
+  const _CompletionTarget({
+    required this.directory,
+    required this.prefix,
+    required this.path,
+  });
 
   final String directory;
   final String prefix;
+  final String path;
 }

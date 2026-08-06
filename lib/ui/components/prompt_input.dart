@@ -2156,6 +2156,8 @@ class _ToolCallPolicySelector extends StatelessWidget {
     return PopupMenuButton<AcpToolCallExecutionPolicy>(
       tooltip: 'Tool call execution policy',
       enabled: enabled,
+      offset: const Offset(80, 0),
+      constraints: const BoxConstraints(minWidth: 240, maxWidth: 280),
       onSelected: onChanged,
       itemBuilder: (context) => [
         for (final policy in AcpToolCallExecutionPolicy.values)
@@ -3519,7 +3521,7 @@ String _policyDescription(
     AcpToolCallExecutionPolicy.defaultPermissions => '所有请求都由你确认',
     AcpToolCallExecutionPolicy.autoReview =>
       hasPermissionReviewer ? '旁路 agent 审查，未决时再确认' : '使用信任规则，未命中时再确认',
-    AcpToolCallExecutionPolicy.fullAccess => '自动允许所有 tool call',
+    AcpToolCallExecutionPolicy.fullAccess => '自动允许所有工具调用',
   };
 }
 

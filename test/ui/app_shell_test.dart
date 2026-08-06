@@ -338,6 +338,57 @@ void main() {
     expect(find.byIcon(Icons.add_rounded), findsOneWidget);
     expect(find.text('Agents'), findsNothing);
     expect(find.text('New Session'), findsNothing);
+
+    final resumeButton = find
+        .ancestor(
+          of: find.byIcon(Icons.play_circle_outline),
+          matching: find.byType(InkWell),
+        )
+        .first;
+    final newSessionButton = find
+        .ancestor(
+          of: find.byIcon(Icons.add_rounded),
+          matching: find.byType(FilledButton),
+        )
+        .first;
+    final resumeSize = tester.getSize(resumeButton);
+    final newSessionSize = tester.getSize(newSessionButton);
+    expect(resumeSize.width, 32);
+    expect(newSessionSize.width, 32);
+    expect(resumeSize.height, greaterThanOrEqualTo(31));
+    expect(newSessionSize.height, resumeSize.height);
+  });
+
+  testWidgets('AgentToolbar uses conversation labels for session actions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentToolbar(
+            title: 'UI review',
+            status: app_state.ConnectionStatus.sessionReady,
+            onNewSession: _noop,
+            onResumeSession: _noop,
+            onReconnect: null,
+            currentSession: AgentSession(
+              id: 'session-1',
+              cwd: '/workspace/app',
+              createdAt: DateTime(2026, 8, 7),
+            ),
+            onSessionMenuAction: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('Session actions'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pin Conversation'), findsOneWidget);
+    expect(find.text('Rename Conversation'), findsOneWidget);
+    expect(find.text('Archive Conversation'), findsOneWidget);
+    expect(find.text('Pin Task'), findsNothing);
   });
 
   testWidgets('AppShell loads session catalogs for every controller', (
@@ -519,6 +570,34 @@ void main() {
 
     expect(find.text('ACP Client'), findsOneWidget);
     expect(find.text('New Session'), findsOneWidget);
+  });
+
+  testWidgets('AppShell keeps an explicit New Session action when compact', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+
+    tester.view.physicalSize = const Size(800, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.widgetWithText(FilledButton, 'New Session'), findsOneWidget);
   });
 
   testWidgets('AppShell keeps sidebar mode labels on one line', (tester) async {
@@ -703,6 +782,16 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Review Session Workspace'), findsOneWidget);
+    expect(
+      tester.getSize(find.widgetWithText(TextButton, 'Cancel')).height,
+      greaterThanOrEqualTo(40),
+    );
+    expect(
+      tester
+          .getSize(find.widgetWithText(FilledButton, 'Resume Session'))
+          .height,
+      greaterThanOrEqualTo(40),
+    );
     expect(client.lastResumeCwd, isNull);
 
     await tester.tap(find.widgetWithText(TextButton, 'Cancel'));

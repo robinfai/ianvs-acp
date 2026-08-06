@@ -330,11 +330,8 @@ class AppShell extends StatelessWidget {
                                         _showAuthenticateDialog(context),
                                       )
                                     : null,
-                                onShowPermissionHistory:
-                                    controller.permissionHistory.isNotEmpty
-                                    ? () =>
-                                          _showPermissionHistoryDialog(context)
-                                    : null,
+                                onShowPermissionHistory: () =>
+                                    _showPermissionHistoryDialog(context),
                                 onLogout: controller.canLogout
                                     ? () => unawaited(_confirmLogout(context))
                                     : null,
@@ -385,7 +382,14 @@ class AppShell extends StatelessWidget {
                                       controller.currentSession?.displayTitle,
                                   isLoadingSession:
                                       controller.isSessionReplayLoading,
-                                  onNewSession: null,
+                                  // In compact windows the toolbar collapses the
+                                  // action to an unlabeled icon. Keep one explicit
+                                  // entry point next to the empty-state guidance.
+                                  showNewSessionAction:
+                                      constraints.maxWidth < 1120,
+                                  onNewSession: constraints.maxWidth < 1120
+                                      ? startNewSession
+                                      : null,
                                   onTapLink: onTapLink,
                                   onMemoryFeedback:
                                       controller.submitMemoryFeedback,
