@@ -28,6 +28,7 @@ void main() {
     String? activeSessionLabel,
     bool isLoadingSession = false,
     int messageListRevision = 0,
+    bool? showNewSessionAction,
     VoidCallback? onNewSession,
     MarkdownTapLinkCallback? onTapLink,
     ThemeData? theme,
@@ -43,6 +44,7 @@ void main() {
       activeSessionLabel: activeSessionLabel,
       isLoadingSession: isLoadingSession,
       messageListRevision: messageListRevision,
+      showNewSessionAction: showNewSessionAction ?? onNewSession != null,
       onNewSession: onNewSession,
       onTapLink: onTapLink,
       inputBudget: inputBudget,
@@ -1492,6 +1494,21 @@ foregroundDecoration: BoxDecoration(
     await tester.pump();
 
     expect(starts, 1);
+  });
+
+  testWidgets('ChatTimeline preserves a disabled compact session affordance', (
+    tester,
+  ) async {
+    await tester.pumpWidget(timeline(const [], showNewSessionAction: true));
+
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'New Session'),
+    );
+    expect(button.onPressed, isNull);
+    expect(
+      find.byTooltip('New session is temporarily unavailable'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('ChatTimeline empty state renders custom agent name', (

@@ -37,25 +37,27 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
             ),
             child: SizedBox(
               width: 780,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _Overview(
-                      connected: controller.capabilities != null,
-                      implementedCount: features
-                          .where((feature) => feature.status.isImplemented)
-                          .length,
-                      totalCount: features.length,
-                      configPath: configPath,
-                    ),
-                    const SizedBox(height: 10),
-                    for (final feature in features) ...[
-                      _FeaturePanel(feature: feature),
-                      if (feature != features.last) const SizedBox(height: 8),
+              child: Scrollbar(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _Overview(
+                        connected: controller.capabilities != null,
+                        implementedCount: features
+                            .where((feature) => feature.status.isImplemented)
+                            .length,
+                        totalCount: features.length,
+                        configPath: configPath,
+                      ),
+                      const SizedBox(height: 10),
+                      for (final feature in features) ...[
+                        _FeaturePanel(feature: feature),
+                        if (feature != features.last) const SizedBox(height: 8),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),

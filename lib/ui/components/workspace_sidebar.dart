@@ -140,20 +140,23 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 10, 7),
+            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
             child: Row(
               children: [
                 Text(
                   'Workspaces',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textTertiary,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textSecondary,
                     fontSize: 12,
                     letterSpacing: .1,
                   ),
                 ),
                 const Spacer(),
-                _CountPill(count: workspaces.length),
+                _CountPill(
+                  count: workspaces.length,
+                  semanticsLabel: '${workspaces.length} workspaces',
+                ),
                 const SizedBox(width: 4),
                 IconButton(
                   key: const Key('add-workspace-button'),
@@ -679,23 +682,23 @@ class _WorkspaceSearchField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 30,
+      height: 34,
       child: TextField(
         controller: controller,
         onChanged: onChanged,
         textInputAction: TextInputAction.search,
         style: const TextStyle(
           color: AppColors.textPrimary,
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
           letterSpacing: 0,
         ),
         decoration: InputDecoration(
           hintText: 'Search workspaces...',
           hintStyle: const TextStyle(
-            color: AppColors.textTertiary,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
+            color: AppColors.textSecondary,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
             letterSpacing: 0,
           ),
           prefixIcon: const Icon(
@@ -718,22 +721,25 @@ class _WorkspaceSearchField extends StatelessWidget {
                 ),
           isDense: true,
           filled: true,
-          fillColor: AppColors.bg,
+          fillColor: AppColors.surface,
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 8,
             vertical: 6,
           ),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(AppRadius.sm),
-            borderSide: const BorderSide(color: AppColors.borderSoft),
+            borderSide: const BorderSide(color: AppColors.border),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(AppRadius.sm),
-            borderSide: const BorderSide(color: AppColors.borderSoft),
+            borderSide: const BorderSide(color: AppColors.border),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(AppRadius.sm),
-            borderSide: const BorderSide(color: AppColors.textTertiary),
+            borderSide: const BorderSide(
+              color: AppColors.textSecondary,
+              width: 1.2,
+            ),
           ),
         ),
       ),
@@ -1042,7 +1048,7 @@ class _WorkspaceTile extends StatelessWidget {
     return Semantics(
       button: onPressed != null,
       selected: selected,
-      label: displayName,
+      label: '$displayName, ${workspace.sessionCount} sessions',
       child: Material(
         color: Colors.transparent,
         child: GestureDetector(
@@ -1419,6 +1425,7 @@ class _SessionTileState extends State<_SessionTile> {
   static const Duration _previewHideDelay = Duration(milliseconds: 120);
   static const double _previewWidth = 320;
   static const double _previewEstimatedHeight = 142;
+  static const double _previewMinimumOverlayWidth = 900;
 
   final GlobalKey _previewAnchorKey = GlobalKey();
   bool _hovered = false;
@@ -1593,6 +1600,7 @@ class _SessionTileState extends State<_SessionTile> {
     final overlayState = Overlay.of(context);
     final overlayBox = overlayState.context.findRenderObject();
     if (anchorBox is! RenderBox || overlayBox is! RenderBox) return;
+    if (overlayBox.size.width < _previewMinimumOverlayWidth) return;
 
     final anchorTopLeft = overlayBox.globalToLocal(
       anchorBox.localToGlobal(Offset.zero),
@@ -2232,13 +2240,14 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
 }
 
 class _CountPill extends StatelessWidget {
-  const _CountPill({required this.count});
+  const _CountPill({required this.count, this.semanticsLabel});
 
   final int count;
+  final String? semanticsLabel;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final pill = Container(
       constraints: const BoxConstraints(minWidth: 22),
       height: 20,
       alignment: Alignment.center,
@@ -2258,5 +2267,8 @@ class _CountPill extends StatelessWidget {
         ),
       ),
     );
+    final label = semanticsLabel;
+    if (label == null) return ExcludeSemantics(child: pill);
+    return Semantics(label: label, excludeSemantics: true, child: pill);
   }
 }

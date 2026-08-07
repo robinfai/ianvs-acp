@@ -24,9 +24,23 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
     final additionalDirectories = _visibleAdditionalDirectories(session);
     final agentName = session.agentName?.trim();
     return AlertDialog(
-      title: const Text('Review Session Workspace'),
+      clipBehavior: Clip.antiAlias,
+      surfaceTintColor: Colors.transparent,
+      titlePadding: const EdgeInsets.fromLTRB(24, 22, 24, 0),
+      contentPadding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+      actionsPadding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+      actionsAlignment: MainAxisAlignment.end,
+      title: const Text(
+        'Review Session Workspace',
+        style: TextStyle(
+          color: AppColors.textPrimary,
+          fontSize: 17,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0,
+        ),
+      ),
       content: SizedBox(
-        width: 620,
+        width: 560,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -53,7 +67,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
               ],
               const SizedBox(height: 12),
               const Text(
-                'These paths will become this session\'s local file and terminal access roots.',
+                'Confirm the folders this session can use for local files and terminal commands.',
                 style: TextStyle(
                   color: AppColors.textSecondary,
                   fontSize: 13,
@@ -73,10 +87,31 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
+          style: TextButton.styleFrom(
+            foregroundColor: AppColors.textSecondary,
+            minimumSize: const Size(88, 40),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md),
+            ),
+            textStyle: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           child: const Text('Cancel'),
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(true),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(148, 40),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md),
+            ),
+            textStyle: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           child: const Text('Resume Session'),
         ),
       ],

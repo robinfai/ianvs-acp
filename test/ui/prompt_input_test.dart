@@ -2174,7 +2174,7 @@ void main() {
     expect(find.text('完全访问权限'), findsOneWidget);
     expect(find.text('所有请求都由你确认'), findsOneWidget);
     expect(find.text('使用信任规则，未命中时再确认'), findsOneWidget);
-    expect(find.text('自动允许所有 tool call'), findsOneWidget);
+    expect(find.text('自动允许所有工具调用'), findsOneWidget);
 
     await tester.tap(find.text('完全访问权限'));
     await tester.pumpAndSettle();

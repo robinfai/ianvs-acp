@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' show SemanticsAction;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -63,6 +64,16 @@ void main() {
     expect(find.text('/usr/local/bin/npx'), findsOneWidget);
     expect(find.text('Remote HTTP Agent'), findsOneWidget);
     expect(find.text('https://agent.example.com/acp'), findsOneWidget);
+    final codexChoice = find.bySemanticsLabel('Codex, /usr/local/bin/npx');
+    expect(codexChoice, findsOneWidget);
+    expect(
+      tester
+          .getSemantics(codexChoice)
+          .getSemanticsData()
+          .hasAction(SemanticsAction.tap),
+      isTrue,
+    );
+    expect(find.byTooltip('/usr/local/bin/kimi'), findsOneWidget);
 
     await tester.tap(find.text('Codex'));
     await tester.pump();
@@ -86,5 +97,8 @@ void main() {
     expect(suggestions, contains(alpha.path));
     expect(suggestions, contains('${temp.path}/alpine'));
     expect(suggestions, isNot(contains('${temp.path}/beta')));
+
+    final exactSuggestions = newSessionPathSuggestions(alpha.path).toList();
+    expect(exactSuggestions, isNot(contains(alpha.path)));
   });
 }

@@ -49,6 +49,7 @@ class ChatTimeline extends StatefulWidget {
     this.activeSessionLabel,
     this.isLoadingSession = false,
     this.messageListRevision = 0,
+    this.showNewSessionAction = false,
     this.onNewSession,
     this.onTapLink,
     this.inputBudget = const AcpInputBudget(),
@@ -62,6 +63,7 @@ class ChatTimeline extends StatefulWidget {
   final String? activeSessionLabel;
   final bool isLoadingSession;
   final int messageListRevision;
+  final bool showNewSessionAction;
   final VoidCallback? onNewSession;
   final MarkdownTapLinkCallback? onTapLink;
   final AcpInputBudget inputBudget;
@@ -135,6 +137,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
             hasActiveSession: widget.hasActiveSession,
             activeSessionLabel: widget.activeSessionLabel,
             isLoadingSession: widget.isLoadingSession,
+            showNewSessionAction: widget.showNewSessionAction,
             onNewSession: widget.onNewSession,
           ),
         ),
@@ -1300,6 +1303,7 @@ class _EmptyTimeline extends StatelessWidget {
     required this.hasActiveSession,
     this.activeSessionLabel,
     required this.isLoadingSession,
+    required this.showNewSessionAction,
     this.onNewSession,
   });
 
@@ -1307,6 +1311,7 @@ class _EmptyTimeline extends StatelessWidget {
   final bool hasActiveSession;
   final String? activeSessionLabel;
   final bool isLoadingSession;
+  final bool showNewSessionAction;
   final VoidCallback? onNewSession;
 
   @override
@@ -1365,24 +1370,31 @@ class _EmptyTimeline extends StatelessWidget {
                       height: 1.4,
                     ),
                   ),
-                  if (!hasActiveSession && onNewSession != null) ...[
+                  if (!hasActiveSession && showNewSessionAction) ...[
                     SizedBox(height: compact ? 12 : 16),
-                    FilledButton.icon(
-                      onPressed: onNewSession,
-                      icon: const Icon(Icons.add_rounded, size: 18),
-                      label: const Text('New Session'),
-                      style: FilledButton.styleFrom(
-                        foregroundColor: AppColors.primaryDark,
-                        backgroundColor: AppColors.primarySoft,
-                        elevation: 0,
-                        minimumSize: Size(154, compact ? 36 : 40),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppRadius.pill),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0,
+                    Tooltip(
+                      message: onNewSession == null
+                          ? 'New session is temporarily unavailable'
+                          : 'Start a new session',
+                      child: FilledButton.icon(
+                        onPressed: onNewSession,
+                        icon: const Icon(Icons.add_rounded, size: 18),
+                        label: const Text('New Session'),
+                        style: FilledButton.styleFrom(
+                          foregroundColor: AppColors.primaryDark,
+                          backgroundColor: AppColors.primarySoft,
+                          disabledForegroundColor: AppColors.textTertiary,
+                          disabledBackgroundColor: AppColors.surfaceMuted,
+                          elevation: 0,
+                          minimumSize: Size(154, compact ? 36 : 40),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(AppRadius.pill),
+                          ),
+                          textStyle: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0,
+                          ),
                         ),
                       ),
                     ),

@@ -120,6 +120,8 @@ void main() {
     await _pumpFrames(tester);
 
     expect(find.text('New Task'), findsOneWidget);
+    expect(find.text('Description (optional)'), findsOneWidget);
+    expect(find.byIcon(Icons.title_rounded), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp('Task title')), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp('Task description')), findsOneWidget);
     expect(

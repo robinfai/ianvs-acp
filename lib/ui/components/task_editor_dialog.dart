@@ -93,7 +93,7 @@ class _TaskEditorDialogState extends State<TaskEditorDialog> {
                   autofocus: true,
                   decoration: _inputDecoration(
                     labelText: 'Title',
-                    icon: Icons.task_alt_rounded,
+                    icon: Icons.title_rounded,
                     errorText: _titleError,
                   ),
                   textInputAction: TextInputAction.next,
@@ -111,7 +111,7 @@ class _TaskEditorDialogState extends State<TaskEditorDialog> {
                   minLines: 3,
                   maxLines: 5,
                   decoration: _inputDecoration(
-                    labelText: 'Description',
+                    labelText: 'Description (optional)',
                     icon: Icons.subject_rounded,
                   ),
                 ),

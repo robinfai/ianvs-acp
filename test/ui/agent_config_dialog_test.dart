@@ -245,6 +245,13 @@ void main() {
     );
 
     expect(find.text('Agent Configuration'), findsOneWidget);
+    final scrollbar = tester.widget<RawScrollbar>(
+      find.byKey(const Key('agent-config-scrollbar')),
+    );
+    expect(scrollbar.thumbVisibility, isTrue);
+    expect(scrollbar.trackVisibility, isTrue);
+    expect(scrollbar.thickness, 5);
+    expect(scrollbar.minThumbLength, 48);
     expect(
       find.text('/Users/example/.config/ianvs-acp/settings.json'),
       findsOneWidget,

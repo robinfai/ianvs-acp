@@ -76,5 +76,9 @@ void main() {
     );
     expect(exportButton.onPressed, isNull);
     expect(find.text('No permission requests yet.'), findsOneWidget);
+    expect(
+      find.text('Requests that need your approval will be recorded here.'),
+      findsOneWidget,
+    );
   });
 }
