@@ -197,8 +197,6 @@ assert_static_release_contract() {
   test "${assess_line}" -lt "${final_archive_line}"
   grep -q 'notary_archive' "${package_script}"
   grep -q '/bin/mv -f --' "${package_script}"
-  grep -q 'memory-core' "${rust_build_script}"
-  grep -q 'Contents/Resources/memory-core' "${bundle_verify_script}"
   grep -q 'Contents/Resources' "${sign_script}"
 
   grep -q 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' \

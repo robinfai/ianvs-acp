@@ -2620,7 +2620,6 @@ class _HangingPromptAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     lastPrompt = prompt;
@@ -2648,7 +2647,6 @@ class _AssistantThenHangingPromptAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     lastPrompt = prompt;
@@ -2713,7 +2711,6 @@ class _DeltaThenErrorPromptAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     lastPrompt = prompt;
@@ -2736,7 +2733,6 @@ class _NeverCancellingPromptAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     lastPrompt = prompt;
@@ -2800,7 +2796,6 @@ class _ThrowingPromptAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     throw StateError('prompt setup failed');
@@ -2812,7 +2807,6 @@ class _ThrowingSecretPromptAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     throw StateError('Bearer failure-secret');

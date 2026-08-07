@@ -4,7 +4,6 @@ import '../../acp/acp_session_settings.dart';
 import '../../acp/acp_session_usage.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
-import '../../memory/memory_runtime_status.dart';
 import '../../workspace/workspace.dart';
 import 'session_time_label.dart';
 import '../theme/app_design_tokens.dart';
@@ -22,8 +21,6 @@ class WorkspaceInspector extends StatelessWidget {
     this.sessionSettings = const AcpSessionSettings(),
     this.sessionUsage,
     this.lastLatency,
-    this.memoryStatus = MemoryRuntimeStatus.disabled,
-    this.memoryPendingCount = 0,
     this.onConfigOptionSelected,
     this.onShowSessionSettings,
     this.onShowCapabilities,
@@ -39,8 +36,6 @@ class WorkspaceInspector extends StatelessWidget {
   final AcpSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final Duration? lastLatency;
-  final MemoryRuntimeStatus memoryStatus;
-  final int memoryPendingCount;
   final void Function(String configId, Object value)? onConfigOptionSelected;
   final VoidCallback? onShowSessionSettings;
   final VoidCallback? onShowCapabilities;
@@ -125,8 +120,6 @@ class WorkspaceInspector extends StatelessWidget {
                     sessionSettings: sessionSettings,
                     sessionUsage: sessionUsage,
                     lastLatency: lastLatency,
-                    memoryStatus: memoryStatus,
-                    memoryPendingCount: memoryPendingCount,
                     onConfigOptionSelected: onConfigOptionSelected,
                     onShowSessionSettings: onShowSessionSettings,
                     onShowCapabilities: onShowCapabilities,
@@ -196,8 +189,6 @@ class _ContextPane extends StatelessWidget {
     required this.sessionSettings,
     required this.sessionUsage,
     required this.lastLatency,
-    required this.memoryStatus,
-    required this.memoryPendingCount,
     required this.onConfigOptionSelected,
     required this.onShowSessionSettings,
     required this.onShowCapabilities,
@@ -213,8 +204,6 @@ class _ContextPane extends StatelessWidget {
   final AcpSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final Duration? lastLatency;
-  final MemoryRuntimeStatus memoryStatus;
-  final int memoryPendingCount;
   final void Function(String configId, Object value)? onConfigOptionSelected;
   final VoidCallback? onShowSessionSettings;
   final VoidCallback? onShowCapabilities;
@@ -253,8 +242,6 @@ class _ContextPane extends StatelessWidget {
         const SizedBox(height: 3),
         _DiagnosticsSection(
           lastLatency: lastLatency,
-          memoryStatus: memoryStatus,
-          memoryPendingCount: memoryPendingCount,
           onShowSessionSettings: onShowSessionSettings,
           onShowCapabilities: onShowCapabilities,
         ),
@@ -503,15 +490,11 @@ class _UsageRow extends StatelessWidget {
 class _DiagnosticsSection extends StatelessWidget {
   const _DiagnosticsSection({
     required this.lastLatency,
-    required this.memoryStatus,
-    required this.memoryPendingCount,
     required this.onShowSessionSettings,
     required this.onShowCapabilities,
   });
 
   final Duration? lastLatency;
-  final MemoryRuntimeStatus memoryStatus;
-  final int memoryPendingCount;
   final VoidCallback? onShowSessionSettings;
   final VoidCallback? onShowCapabilities;
 
@@ -547,10 +530,6 @@ class _DiagnosticsSection extends StatelessWidget {
                   ? 'Not measured'
                   : '${lastLatency!.inMilliseconds} ms',
             ),
-            _InfoRow(
-              label: 'Memory',
-              value: _memoryLabel(memoryStatus, memoryPendingCount),
-            ),
             if (onShowSessionSettings != null)
               _InspectorActionRow(
                 icon: Icons.settings_outlined,
@@ -567,16 +546,6 @@ class _DiagnosticsSection extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  String _memoryLabel(MemoryRuntimeStatus status, int pendingCount) {
-    return switch (status) {
-      MemoryRuntimeStatus.disabled => 'Off',
-      MemoryRuntimeStatus.starting => 'Starting',
-      MemoryRuntimeStatus.running =>
-        pendingCount > 0 ? 'On · $pendingCount pending' : 'On',
-      MemoryRuntimeStatus.error => 'Error',
-    };
   }
 }
 

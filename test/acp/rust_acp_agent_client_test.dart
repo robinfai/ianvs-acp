@@ -43,8 +43,6 @@ void main() {
           .sendPrompt(
             sessionId: session.id,
             prompt: 'hello',
-            memoryContext:
-                '<memory_context>reviewed preference</memory_context>',
             attachments: const <PromptAttachment>[
               PromptAttachment(
                 path: '/tmp/example.png',
@@ -85,10 +83,6 @@ void main() {
           'forceResourceLink': true,
         },
       ]);
-      expect(
-        native.promptMemoryContext,
-        '<memory_context>reviewed preference</memory_context>',
-      );
     },
   );
 
@@ -549,7 +543,6 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   Map<String, Object?>? permissionDecision;
   Map<String, Object?>? startedConfig;
   List<Map<String, Object?>>? promptAttachments;
-  String? promptMemoryContext;
   bool completeCreates = true;
   String sessionTitle = 'Fixture session';
   Map<String, Object?>? restoredUserPayload;
@@ -777,10 +770,8 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
     required String requestId,
     required String sessionId,
     required String text,
-    String? memoryContext,
     List<Map<String, Object?>> attachments = const <Map<String, Object?>>[],
   }) {
-    promptMemoryContext = memoryContext;
     promptAttachments = attachments
         .map((attachment) => Map<String, Object?>.from(attachment))
         .toList(growable: false);

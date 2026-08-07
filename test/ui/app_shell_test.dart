@@ -4,7 +4,6 @@ import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
-import 'package:ianvs_acp/memory/memory_runtime_status.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
@@ -26,7 +25,6 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onShowProtocolCoverage,
-    VoidCallback? onShowMemoryExplorer,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onLogout,
@@ -41,7 +39,6 @@ void main() {
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
           onShowProtocolCoverage: onShowProtocolCoverage,
-          onShowMemoryExplorer: onShowMemoryExplorer,
           onAuthenticate: onAuthenticate,
           onShowPermissionHistory: onShowPermissionHistory,
           onLogout: onLogout,
@@ -62,7 +59,6 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onShowProtocolCoverage,
-    VoidCallback? onShowMemoryExplorer,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onLogout,
@@ -80,7 +76,6 @@ void main() {
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
         onShowProtocolCoverage: onShowProtocolCoverage,
-        onShowMemoryExplorer: onShowMemoryExplorer,
         onAuthenticate: onAuthenticate,
         onShowPermissionHistory: onShowPermissionHistory,
         onLogout: onLogout,
@@ -296,26 +291,6 @@ void main() {
     expect(openedProtocolCoverage, isTrue);
   });
 
-  testWidgets('AgentToolbar exposes memory explorer', (tester) async {
-    var openedMemoryExplorer = false;
-    await pumpToolbar(
-      tester,
-      app_state.ConnectionStatus.connected,
-      onShowMemoryExplorer: () {
-        openedMemoryExplorer = true;
-      },
-    );
-
-    await tester.tap(find.byTooltip('Agents'));
-    await tester.pumpAndSettle();
-    expect(find.text('Memory'), findsOneWidget);
-
-    await tester.tap(find.text('Memory'));
-    await tester.pumpAndSettle();
-
-    expect(openedMemoryExplorer, isTrue);
-  });
-
   testWidgets('AgentToolbar renders connecting state', (tester) async {
     await pumpToolbar(tester, app_state.ConnectionStatus.connecting);
 
@@ -461,36 +436,6 @@ void main() {
       await tester.runAsync(controller.stop);
     },
   );
-
-  testWidgets('AppShell renders memory status in inspector diagnostics', (
-    tester,
-  ) async {
-    final controller = ChatController(
-      client: FakeAgentClient(),
-      cwd: '/workspace/app',
-    );
-    addTearDown(controller.dispose);
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: AppShell(
-          controller: controller,
-          memoryStatus: MemoryRuntimeStatus.running,
-        ),
-      ),
-    );
-
-    await tester.tap(find.text('Context'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Diagnostics'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('On'), findsOneWidget);
-  });
 
   testWidgets('AppShell keeps one visible New Session entry on desktop', (
     tester,

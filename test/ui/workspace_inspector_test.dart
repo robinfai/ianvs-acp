@@ -4,7 +4,6 @@ import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/acp_session_usage.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
-import 'package:ianvs_acp/memory/memory_runtime_status.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/workspace/workspace.dart';
@@ -62,8 +61,6 @@ void main() {
               ),
               sessionUsage: const AcpSessionUsage(used: 2000, size: 8000),
               lastLatency: const Duration(milliseconds: 42),
-              memoryStatus: MemoryRuntimeStatus.running,
-              memoryPendingCount: 2,
               onConfigOptionSelected: (configId, value) {
                 selectedConfigId = configId;
                 selectedConfigValue = value;
@@ -114,7 +111,6 @@ void main() {
     await tester.tap(find.text('Diagnostics'));
     await tester.pumpAndSettle();
     expect(find.text('42 ms'), findsOneWidget);
-    expect(find.text('On · 2 pending'), findsOneWidget);
   });
 
   testWidgets('WorkspaceInspector shows relative recent session times', (

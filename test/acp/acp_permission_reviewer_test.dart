@@ -1636,7 +1636,6 @@ class _ReviewFakeAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     lastPrompt = prompt;
@@ -1689,7 +1688,6 @@ class _ControllableReviewAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     _promptCalls += 1;
@@ -1739,7 +1737,6 @@ class _NonCooperativeReviewAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     if (!promptStarted.isCompleted) promptStarted.complete();
@@ -1771,7 +1768,6 @@ class _QueueReviewAgentClient extends _ReviewFakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     promptCalls += 1;
@@ -1812,7 +1808,6 @@ class _DelayedCleanupReviewAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     if (!promptStarted.isCompleted) promptStarted.complete();
@@ -1877,7 +1872,6 @@ class _BindingReviewAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     records.add('$name:prompt:${_workspaceRoot!}:$sessionId');

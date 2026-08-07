@@ -232,7 +232,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     _ensureConnected();
@@ -251,7 +250,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
         requestId: requestId,
         sessionId: sessionId,
         text: prompt,
-        memoryContext: memoryContext,
         attachments: attachments
             .map(
               (attachment) => <String, Object?>{

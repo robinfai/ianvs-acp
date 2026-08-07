@@ -1,13 +1,12 @@
 # SQLite storage policy
 
-ianvs uses four independent SQLite files. The application setting
+ianvs uses three independent SQLite files. The application setting
 `storage.max_size_gb` is a shared budget, not a per-file limit. It defaults to
 50 GB and is allocated as follows:
 
 | Store | File | Budget | Retained data |
 | --- | --- | ---: | --- |
-| Workflow authority | `task_inbox_workflow.sqlite3` | 85% | Tasks, runs, current TaskInbox projection, runtime events, workflow definitions/runs, leases, recovery and idempotency records |
-| Memory | `memory.sqlite` | 10% | Memories, candidates, change requests, audit/access/feedback history, entities, episodes and vector index |
+| Workflow authority | `task_inbox_workflow.sqlite3` | 95% | Tasks, runs, current TaskInbox projection, runtime events, workflow definitions/runs, leases, recovery and idempotency records |
 | Legacy TaskInbox migration store | `task_inbox_state.sqlite3` | 4% | Normalized legacy tasks/runs/events/artifacts/approvals used during migration |
 | ACP session recovery | `acp_sessions.sqlite3` | 1% | Agent/session/workspace metadata needed to resume active ACP sessions |
 
@@ -26,10 +25,6 @@ deleted pages are reused.
   batches before inserting a new result. Resolved recovery records and terminal
   leases also expire. Cleanup is deliberately batched so a very large existing
   database cannot create an equally large WAL file during one startup.
-- Memory runs cleanup at daemon startup and on the configured interval.
-  Reviewed candidates/change requests and operational audit, prompt-injection,
-  access, and feedback history expire. Pending review items and active memories
-  do not expire.
 - The legacy TaskInbox store sanitizes old prompt, event metadata, and artifact
   previews using the configured retention window. Active task identity and
   status rows remain.
@@ -38,7 +33,7 @@ deleted pages are reused.
 
 WAL files are checkpointed after maintenance. Logical cleanup frees pages for
 reuse, but shrinking an oversized database file requires a separate offline
-compaction because SQLite cannot safely rewrite an open, daemon-owned file.
+compaction because SQLite cannot safely rewrite an open database file.
 
 ## Configuration
 

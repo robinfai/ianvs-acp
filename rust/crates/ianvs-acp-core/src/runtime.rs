@@ -125,7 +125,6 @@ enum RuntimeCommand {
         request_id: String,
         session_id: String,
         text: String,
-        memory_context: Option<String>,
         attachments: Vec<PromptAttachmentInput>,
     },
     Cancel {
@@ -750,24 +749,12 @@ impl RuntimeHandle {
         text: impl Into<String>,
         attachments: Vec<PromptAttachmentInput>,
     ) -> Result<(), RuntimeError> {
-        self.prompt_with_context_and_attachments(request_id, session_id, text, None, attachments)
-    }
-
-    pub fn prompt_with_context_and_attachments(
-        &self,
-        request_id: impl Into<String>,
-        session_id: impl Into<String>,
-        text: impl Into<String>,
-        memory_context: Option<String>,
-        attachments: Vec<PromptAttachmentInput>,
-    ) -> Result<(), RuntimeError> {
         let request_id = checked_request_id(request_id.into())?;
         let session_id = checked_session_id(session_id.into())?;
         self.send(RuntimeCommand::Prompt {
             request_id,
             session_id,
             text: text.into(),
-            memory_context,
             attachments,
         })
     }
@@ -2071,7 +2058,6 @@ async fn command_loop(
                         request_id,
                         session_id,
                         text,
-                        memory_context,
                         attachments,
                     } => {
                         let Some(scope) = scopes.get(&session_id) else {
@@ -2080,7 +2066,6 @@ async fn command_loop(
                         };
                         let content = match project_prompt_content(
                             &text,
-                            memory_context.as_deref(),
                             &attachments,
                             scope,
                             prompt_support,

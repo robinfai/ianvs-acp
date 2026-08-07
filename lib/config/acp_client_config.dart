@@ -4,7 +4,6 @@ import 'dart:io';
 import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
-import '../memory/memory_config.dart';
 import '../storage/sqlite_storage_config.dart';
 import 'assistant_agent_config.dart';
 import 'secret_field_policy.dart';
@@ -16,7 +15,6 @@ class AcpClientConfig {
     this.mcpServers = const <McpServerConfig>[],
     this.additionalDirectories = const <String>[],
     this.clientProviders = const AcpClientProviderConfig(),
-    this.memory = const MemoryConfig(),
     this.storage = const SqliteStorageConfig(),
     this.assistantAgent = const AssistantAgentConfig(),
     this.configPath,
@@ -32,7 +30,6 @@ class AcpClientConfig {
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
-  final MemoryConfig memory;
   final SqliteStorageConfig storage;
   final AssistantAgentConfig assistantAgent;
   final String? configPath;
@@ -72,7 +69,6 @@ class AcpClientConfig {
       mcpServers: mcpServers,
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
-      memory: memory,
       storage: storage,
       assistantAgent: assistantAgent,
       configPath: configPath,
@@ -154,12 +150,6 @@ class AcpClientConfig {
         'clientProviders',
       ], fieldName: 'client_providers'),
     );
-    final memory = MemoryConfig.fromJson(
-      _aliasedValue(json, const <String>[
-        'memory',
-        'memoryConfig',
-      ], fieldName: 'memory'),
-    );
     final storage = SqliteStorageConfig.fromJson(
       _aliasedValue(json, const <String>[
         'storage',
@@ -182,7 +172,6 @@ class AcpClientConfig {
         mcpServers: mcpServers,
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
-        memory: memory,
         storage: storage,
         assistantAgent: assistantAgent,
       );
@@ -209,7 +198,6 @@ class AcpClientConfig {
         mcpServers: mcpServers,
         additionalDirectories: additionalDirectories,
         clientProviders: clientProviders,
-        memory: memory,
         storage: storage,
         assistantAgent: assistantAgent,
       );
@@ -233,7 +221,6 @@ class AcpClientConfig {
       mcpServers: mcpServers,
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
-      memory: memory,
       storage: storage,
       assistantAgent: assistantAgent,
       configPath: configPath,

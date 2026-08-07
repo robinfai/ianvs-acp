@@ -18,7 +18,6 @@ import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
 import '../acp/session_title.dart';
 import '../config/assistant_agent_config.dart';
-import '../memory/acp_memory_middleware.dart';
 import '../storage/session_transcript_cache.dart';
 import 'connection_state.dart';
 import '../tasks/permission_context.dart';
@@ -2546,7 +2545,6 @@ class ChatController extends ChangeNotifier {
     this.inputBudget = const acp.AcpInputBudget(),
     List<AcpPermissionTrustRule> permissionTrustRules =
         const <AcpPermissionTrustRule>[],
-    this.memoryMiddleware,
     this.permissionReviewer,
     this.assistantAgentConfig = const AssistantAgentConfig(),
     this.assistantAgentEnhancer,
@@ -2608,7 +2606,6 @@ class ChatController extends ChangeNotifier {
   final int permissionHistoryEncodedByteLimit;
   final acp.AcpInputBudget inputBudget;
   final List<AcpPermissionTrustRule> permissionTrustRules;
-  final AcpMemoryMiddleware? memoryMiddleware;
   final AcpPermissionReviewer? permissionReviewer;
   final AssistantAgentConfig assistantAgentConfig;
   final AssistantAgentEnhancer? assistantAgentEnhancer;
@@ -2871,14 +2868,6 @@ class ChatController extends ChangeNotifier {
   late final StreamSubscription<AcpPermissionInvalidation>
   _permissionInvalidationSubscription;
   DateTime? _lastPromptStartedAt;
-  String? _pendingMemoryUserPrompt;
-  StringBuffer? _pendingMemoryAssistantAnswer;
-  String? _pendingMemorySessionId;
-  String? _pendingMemoryCwd;
-  String? _pendingMemoryTurnId;
-  List<MemoryUsedItem> _pendingMemoryUsedMemories = const <MemoryUsedItem>[];
-  bool _pendingMemoryHadError = false;
-  int _memoryTurnSequence = 0;
   Duration? _lastLatency;
   Duration? get lastLatency => _lastLatency;
   set lastLatency(Duration? value) {
@@ -4221,17 +4210,6 @@ class ChatController extends ChangeNotifier {
         ? prompt
         : attachments.map((attachment) => attachment.name).join(' ');
 
-    final memoryTurnId = _nextMemoryTurnId();
-    final prepared = await memoryMiddleware?.preparePrompt(
-      prompt,
-      sessionId: session.id,
-      cwd: session.cwd,
-      turnId: memoryTurnId,
-    );
-    final agentPrompt = prepared?.prompt ?? prompt;
-    final memoryContext = prepared?.memoryContext;
-    final usedMemories = prepared?.usedMemories ?? const <MemoryUsedItem>[];
-
     _finishTurnBudget();
     _startLocalTurn();
     _turnBudget = _TurnBudgetState(inputBudget);
@@ -4245,12 +4223,6 @@ class ChatController extends ChangeNotifier {
     final userMetadata = <String, Object?>{};
     if (contentBlocks.isNotEmpty) {
       userMetadata['contentBlocks'] = contentBlocks;
-    }
-    if (usedMemories.isNotEmpty) {
-      userMetadata['memoryTurnId'] = memoryTurnId;
-      userMetadata['memoryUsed'] = usedMemories
-          .map((memory) => memory.toJson())
-          .toList(growable: false);
     }
     _addTurnMessage(
       ChatMessage(
@@ -4271,13 +4243,6 @@ class ChatController extends ChangeNotifier {
     status = ConnectionStatus.streaming;
     lastError = null;
     _lastPromptStartedAt = DateTime.now();
-    _pendingMemoryUserPrompt = prompt;
-    _pendingMemoryAssistantAnswer = StringBuffer();
-    _pendingMemorySessionId = session.id;
-    _pendingMemoryCwd = session.cwd;
-    _pendingMemoryTurnId = memoryTurnId;
-    _pendingMemoryUsedMemories = List.unmodifiable(usedMemories);
-    _pendingMemoryHadError = false;
     _recordPromptActivity();
     _notifyListeners();
 
@@ -4286,18 +4251,15 @@ class ChatController extends ChangeNotifier {
       _promptSubscription = client
           .sendPrompt(
             sessionId: session.id,
-            prompt: agentPrompt,
-            memoryContext: memoryContext,
+            prompt: prompt,
             attachments: attachments,
           )
           .listen(
             (event) {
               _recordPromptActivity();
-              _recordMemoryExtractionEvent(event);
               _handleAgentEvent(event);
             },
             onError: (Object error, StackTrace stackTrace) {
-              _pendingMemoryHadError = true;
               _handleAgentEvent(
                 AgentEvent(
                   type: AgentEventType.error,
@@ -4310,30 +4272,11 @@ class ChatController extends ChangeNotifier {
           );
       return ChatPromptSubmissionResult.submitted;
     } catch (error) {
-      _pendingMemoryHadError = true;
       _handleAgentEvent(
         AgentEvent(type: AgentEventType.error, text: _messageForError(error)),
       );
       _finishStreaming();
       return ChatPromptSubmissionResult.failed;
-    }
-  }
-
-  Future<void> submitMemoryFeedback({
-    required String memoryId,
-    required String rating,
-    String? turnId,
-    String? reason,
-  }) async {
-    try {
-      await memoryMiddleware?.submitFeedback(
-        memoryId: memoryId,
-        rating: rating,
-        turnId: turnId,
-        reason: reason,
-      );
-    } catch (error) {
-      _setActionError(error, preserveConnectionStatus: true);
     }
   }
 
@@ -5110,17 +5053,6 @@ class ChatController extends ChangeNotifier {
       } else {
         _notifyListeners();
       }
-    }
-  }
-
-  void _recordMemoryExtractionEvent(AgentEvent event) {
-    if (event.type == AgentEventType.error) {
-      _pendingMemoryHadError = true;
-      return;
-    }
-    if (event.type == AgentEventType.agentTextDelta ||
-        event.type == AgentEventType.agentTextDone) {
-      _pendingMemoryAssistantAnswer?.write(event.text);
     }
   }
 
@@ -7622,10 +7554,6 @@ class ChatController extends ChangeNotifier {
     if (startedAt != null) {
       lastLatency = DateTime.now().difference(startedAt);
     }
-    final extractionContext = _takePendingMemoryExtraction();
-    if (extractionContext != null) {
-      unawaited(memoryMiddleware?.extractTurn(extractionContext));
-    }
     if (enhancementTurnId != null &&
         enhancementPrompt != null &&
         enhancementSessionId != null) {
@@ -7683,6 +7611,7 @@ class ChatController extends ChangeNotifier {
     scheduleMicrotask(() async {
       if (_isDisposed) return;
       ChatQueuedPrompt? item;
+      var shouldContinueDispatch = false;
       try {
         final guideIndex = _queuedPrompts.indexWhere((queued) => queued.guide);
         final index = guideIndex == -1 ? 0 : guideIndex;
@@ -7692,6 +7621,9 @@ class ChatController extends ChangeNotifier {
           item.text,
           attachments: item.attachments,
         );
+        shouldContinueDispatch =
+            result == ChatPromptSubmissionResult.submitted ||
+            result == ChatPromptSubmissionResult.empty;
         if (result != ChatPromptSubmissionResult.submitted &&
             result != ChatPromptSubmissionResult.empty) {
           _queuedPrompts.insert(0, item);
@@ -7705,6 +7637,7 @@ class ChatController extends ChangeNotifier {
         }
       } finally {
         _dispatchingQueuedPrompt = false;
+        if (shouldContinueDispatch) _scheduleQueuedPromptDispatch();
       }
     });
   }
@@ -7813,46 +7746,6 @@ class ChatController extends ChangeNotifier {
     }
     _mutateMessages(() => _messages.insert(insertionIndex, message));
     _notifyListeners();
-  }
-
-  MemoryTurnContext? _takePendingMemoryExtraction() {
-    final userPrompt = _pendingMemoryUserPrompt;
-    final assistantAnswer = _pendingMemoryAssistantAnswer?.toString();
-    final sessionId = _pendingMemorySessionId;
-    final cwd = _pendingMemoryCwd;
-    final turnId = _pendingMemoryTurnId;
-    final usedMemories = _pendingMemoryUsedMemories;
-    final hadError = _pendingMemoryHadError;
-    _clearPendingMemoryExtraction();
-    if (hadError ||
-        userPrompt == null ||
-        assistantAnswer == null ||
-        assistantAnswer.trim().isEmpty) {
-      return null;
-    }
-    return MemoryTurnContext(
-      userPrompt: userPrompt,
-      assistantAnswer: assistantAnswer,
-      sessionId: sessionId,
-      cwd: cwd,
-      turnId: turnId,
-      usedMemories: usedMemories,
-    );
-  }
-
-  void _clearPendingMemoryExtraction() {
-    _pendingMemoryUserPrompt = null;
-    _pendingMemoryAssistantAnswer = null;
-    _pendingMemorySessionId = null;
-    _pendingMemoryCwd = null;
-    _pendingMemoryTurnId = null;
-    _pendingMemoryUsedMemories = const <MemoryUsedItem>[];
-    _pendingMemoryHadError = false;
-  }
-
-  String _nextMemoryTurnId() {
-    _memoryTurnSequence += 1;
-    return 'turn_${DateTime.now().microsecondsSinceEpoch}_$_memoryTurnSequence';
   }
 
   void _setError(Object error) {
@@ -8018,7 +7911,6 @@ class ChatController extends ChangeNotifier {
     await _ignoreCleanup(client.dispose);
     await _ignoreCleanup(() => assistantAgentEnhancer?.dispose());
     await _ignoreCleanup(() => permissionReviewer?.dispose());
-    memoryMiddleware?.dispose();
   }
 
   Future<void> _ignoreCleanup(Future<void>? Function() action) async {

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../memory/memory_runtime_status.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart' as app_state;
 import '../theme/app_design_tokens.dart';
@@ -9,15 +8,11 @@ class StatusBar extends StatelessWidget {
   const StatusBar({
     super.key,
     required this.controller,
-    this.memoryStatus = MemoryRuntimeStatus.disabled,
-    this.memoryPendingCount = 0,
     required this.onShowCapabilities,
     required this.onShowSessionSettings,
   });
 
   final ChatController controller;
-  final MemoryRuntimeStatus memoryStatus;
-  final int memoryPendingCount;
   final VoidCallback onShowCapabilities;
   final VoidCallback onShowSessionSettings;
 
@@ -47,13 +42,6 @@ class StatusBar extends StatelessWidget {
                   _StatusItem(
                     icon: Icons.bolt_outlined,
                     label: controller.isStreaming ? 'streaming' : 'idle',
-                  ),
-                  const SizedBox(width: 9),
-                  _StatusItem(
-                    icon: _memoryStatusIcon(memoryStatus),
-                    label: _memoryStatusLabel(memoryStatus, memoryPendingCount),
-                    tooltip: _memoryStatusTooltip(memoryStatus),
-                    color: _memoryStatusColor(memoryStatus),
                   ),
                   const SizedBox(width: 9),
                   _StatusItem(
@@ -198,37 +186,6 @@ class StatusBar extends StatelessWidget {
     if (percent >= 0.75) return const Color(0xffa16207);
     return AppColors.textSecondary;
   }
-
-  String _memoryStatusLabel(MemoryRuntimeStatus status, int pendingCount) {
-    return switch (status) {
-      MemoryRuntimeStatus.disabled => 'memory off',
-      MemoryRuntimeStatus.starting => 'memory starting',
-      MemoryRuntimeStatus.running =>
-        pendingCount > 0 ? 'memory on · $pendingCount pending' : 'memory on',
-      MemoryRuntimeStatus.error => 'memory error',
-    };
-  }
-
-  String _memoryStatusTooltip(MemoryRuntimeStatus status) => switch (status) {
-    MemoryRuntimeStatus.disabled => 'Memory disabled',
-    MemoryRuntimeStatus.starting => 'Memory enabled and starting',
-    MemoryRuntimeStatus.running => 'Memory enabled and running',
-    MemoryRuntimeStatus.error => 'Memory enabled but failed to start',
-  };
-
-  IconData _memoryStatusIcon(MemoryRuntimeStatus status) => switch (status) {
-    MemoryRuntimeStatus.disabled => Icons.memory_outlined,
-    MemoryRuntimeStatus.starting => Icons.sync_rounded,
-    MemoryRuntimeStatus.running => Icons.memory_rounded,
-    MemoryRuntimeStatus.error => Icons.error_outline,
-  };
-
-  Color _memoryStatusColor(MemoryRuntimeStatus status) => switch (status) {
-    MemoryRuntimeStatus.disabled => AppColors.textTertiary,
-    MemoryRuntimeStatus.starting => AppColors.warning,
-    MemoryRuntimeStatus.running => AppColors.success,
-    MemoryRuntimeStatus.error => AppColors.danger,
-  };
 
   String _compactTokens(int value) {
     final abs = value.abs();

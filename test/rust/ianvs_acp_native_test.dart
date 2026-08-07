@@ -312,7 +312,6 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
     required String requestId,
     required String sessionId,
     required String text,
-    String? memoryContext,
     List<Map<String, Object?>> attachments = const <Map<String, Object?>>[],
   }) {
     lastPrompt = <String, String>{

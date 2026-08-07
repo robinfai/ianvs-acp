@@ -203,7 +203,6 @@ class AcpConfigStore {
       if (config.additionalDirectories.isNotEmpty)
         'additional_directories': config.additionalDirectories,
       if (clientProviders.isNotEmpty) 'client_providers': clientProviders,
-      'memory': config.memory.toJson(),
       'storage': config.storage.toJson(),
       'assistant_agent': config.assistantAgent.toJson(),
     };
@@ -434,15 +433,6 @@ String _camelCaseKey(String key) {
   return buffer.toString();
 }
 
-const Set<String> _deprecatedMemoryConfigKeys = <String>{
-  'daemon_base_url',
-  'daemonBaseUrl',
-  'daemon_token_env',
-  'daemonTokenEnv',
-  'auto_start_daemon',
-  'autoStartDaemon',
-};
-
 Map<String, dynamic> _persistEditedConfig(
   Map<String, dynamic> raw,
   AcpClientConfig resolved,
@@ -532,22 +522,6 @@ Map<String, dynamic> _persistEditedConfig(
     'client_providers',
     'clientProviders',
   ], mergedProviders.isEmpty ? null : mergedProviders);
-  final currentMemory = _valueForAliases(result, const <String>[
-    'memory',
-    'memoryConfig',
-  ], fieldName: 'memory');
-  final desiredMemory = desired['memory'];
-  final mergedMemory = currentMemory is Map && desiredMemory is Map
-      ? _mergeConfigMapPreservingUnknown(
-          currentMemory,
-          desiredMemory,
-          deprecatedKeys: _deprecatedMemoryConfigKeys,
-        )
-      : desiredMemory;
-  _writeAliasedValue(result, const <String>[
-    'memory',
-    'memoryConfig',
-  ], mergedMemory);
   final currentStorage = _valueForAliases(result, const <String>[
     'storage',
     'sqliteStorage',
@@ -987,7 +961,6 @@ AcpClientConfig _withConfigPath(AcpClientConfig config, String path) {
     mcpServers: config.mcpServers,
     additionalDirectories: config.additionalDirectories,
     clientProviders: config.clientProviders,
-    memory: config.memory,
     storage: config.storage,
     assistantAgent: config.assistantAgent,
     configPath: path,
@@ -1041,7 +1014,6 @@ AcpClientConfig _inheritCurrentSecretReferences(
         ),
       ),
     ),
-    memory: proposal.memory,
     storage: proposal.storage,
     assistantAgent: proposal.assistantAgent,
     configPath: proposal.configPath,

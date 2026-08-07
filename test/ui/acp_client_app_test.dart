@@ -4678,7 +4678,6 @@ class _TrackingHangingAgentClient extends FakeAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) {
     lastPrompt = prompt;

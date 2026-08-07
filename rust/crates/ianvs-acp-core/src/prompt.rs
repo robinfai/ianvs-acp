@@ -40,7 +40,6 @@ impl PromptSupport {
 
 pub(crate) fn project_prompt_content(
     text: &str,
-    memory_context: Option<&str>,
     attachments: &[PromptAttachmentInput],
     scope: &WorkspaceScope,
     support: PromptSupport,
@@ -51,16 +50,7 @@ pub(crate) fn project_prompt_content(
         ));
     }
     let mut budget = PromptBudget::default();
-    let mut blocks = Vec::with_capacity(attachments.len().saturating_add(2));
-    if let Some(memory_context) = memory_context.map(str::trim)
-        && !memory_context.is_empty()
-    {
-        push_required(
-            &mut blocks,
-            &mut budget,
-            ContentBlock::Text(TextContent::new(memory_context)),
-        )?;
-    }
+    let mut blocks = Vec::with_capacity(attachments.len().saturating_add(1));
     if !text.is_empty() || attachments.is_empty() {
         push_required(
             &mut blocks,
@@ -557,34 +547,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reviewed_memory_is_a_separate_text_block_before_the_user_prompt() {
-        let scope = WorkspaceScope::new(
-            std::env::current_dir().expect("current directory"),
-            std::iter::empty::<&Path>(),
-        )
-        .expect("workspace scope");
-        let blocks = project_prompt_content(
-            "What should I run?",
-            Some("<agent_memory_context>Use make verify.</agent_memory_context>"),
-            &[],
-            &scope,
-            PromptSupport {
-                image: false,
-                audio: false,
-                embedded_context: false,
-            },
-        )
-        .expect("prompt content");
-        let encoded = serde_json::to_value(blocks).expect("serialize prompt blocks");
-
-        assert_eq!(
-            encoded[0]["text"],
-            "<agent_memory_context>Use make verify.</agent_memory_context>"
-        );
-        assert_eq!(encoded[1]["text"], "What should I run?");
-    }
-
-    #[test]
     fn inline_clipboard_image_is_projected_without_a_workspace_file() {
         let scope = WorkspaceScope::new(
             std::env::current_dir().expect("current directory"),
@@ -604,7 +566,6 @@ mod tests {
 
         let blocks = project_prompt_content(
             "inspect this",
-            None,
             &[attachment],
             &scope,
             PromptSupport {
@@ -640,7 +601,6 @@ mod tests {
 
         let error = project_prompt_content(
             "",
-            None,
             &[attachment],
             &scope,
             PromptSupport {

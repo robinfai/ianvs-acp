@@ -40,14 +40,6 @@ const double _turnNavigationIdleBarWidth = 7;
 const double _turnNavigationHoverBarWidth = 34;
 const double _conversationContentWidth = 760;
 
-typedef MemoryFeedbackCallback =
-    Future<void> Function({
-      required String memoryId,
-      required String rating,
-      String? turnId,
-      String? reason,
-    });
-
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
     super.key,
@@ -59,7 +51,6 @@ class ChatTimeline extends StatefulWidget {
     this.messageListRevision = 0,
     this.onNewSession,
     this.onTapLink,
-    this.onMemoryFeedback,
     this.inputBudget = const AcpInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
@@ -73,7 +64,6 @@ class ChatTimeline extends StatefulWidget {
   final int messageListRevision;
   final VoidCallback? onNewSession;
   final MarkdownTapLinkCallback? onTapLink;
-  final MemoryFeedbackCallback? onMemoryFeedback;
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
@@ -334,7 +324,6 @@ class _ChatTimelineState extends State<ChatTimeline> {
                   index < turns.length - 1 && turn.userMessages.isNotEmpty,
               inputBudget: widget.inputBudget,
               onTapLink: widget.onTapLink,
-              onMemoryFeedback: widget.onMemoryFeedback,
             ),
           ),
         ),
@@ -931,14 +920,12 @@ class _TurnSectionBubble extends StatefulWidget {
     required this.inferredComplete,
     required this.inputBudget,
     required this.onTapLink,
-    this.onMemoryFeedback,
   });
 
   final _TimelineTurn turn;
   final bool inferredComplete;
   final AcpInputBudget inputBudget;
   final MarkdownTapLinkCallback? onTapLink;
-  final MemoryFeedbackCallback? onMemoryFeedback;
 
   @override
   State<_TurnSectionBubble> createState() => _TurnSectionBubbleState();
@@ -1028,7 +1015,6 @@ class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
       message: entry.message!,
       inputBudget: widget.inputBudget,
       onTapLink: widget.onTapLink,
-      onMemoryFeedback: widget.onMemoryFeedback,
       emphasizeAssistant: process,
     );
   }
@@ -1490,14 +1476,12 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.inputBudget,
     required this.onTapLink,
-    this.onMemoryFeedback,
     this.emphasizeAssistant = false,
   });
 
   final ChatMessage message;
   final AcpInputBudget inputBudget;
   final MarkdownTapLinkCallback? onTapLink;
-  final MemoryFeedbackCallback? onMemoryFeedback;
   final bool emphasizeAssistant;
 
   @override
@@ -1695,10 +1679,6 @@ class _MessageBubble extends StatelessWidget {
                 message: message,
                 inputBudget: inputBudget,
                 previewRevision: message.revision,
-              ),
-              _MemoryUsedPreview(
-                message: message,
-                onMemoryFeedback: onMemoryFeedback,
               ),
             ],
           ),
@@ -3884,194 +3864,6 @@ class _TurnStatus extends StatelessWidget {
             color: _stopReasonColor(stopReason),
           ),
       ],
-    );
-  }
-}
-
-class _MemoryUsedPreview extends StatelessWidget {
-  const _MemoryUsedPreview({
-    required this.message,
-    required this.onMemoryFeedback,
-  });
-
-  final ChatMessage message;
-  final MemoryFeedbackCallback? onMemoryFeedback;
-
-  @override
-  Widget build(BuildContext context) {
-    final memories = _mapList(message.metadata['memoryUsed'])
-        .where((item) => _stringMetadata(item, 'id') != null)
-        .toList(growable: false);
-    if (memories.isEmpty) return const SizedBox.shrink();
-
-    final turnId = _stringMetadata(message.metadata, 'memoryTurnId');
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.96),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: const Color(0xffddd6fe)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.memory_outlined,
-                size: 15,
-                color: AppColors.primary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                'Memory used · ${memories.length}',
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          for (final memory in memories) ...[
-            _MemoryUsedRow(
-              memory: memory,
-              turnId: turnId,
-              onMemoryFeedback: onMemoryFeedback,
-            ),
-            if (memory != memories.last) const SizedBox(height: 8),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _MemoryUsedRow extends StatelessWidget {
-  const _MemoryUsedRow({
-    required this.memory,
-    required this.turnId,
-    required this.onMemoryFeedback,
-  });
-
-  final Map<String, Object?> memory;
-  final String? turnId;
-  final MemoryFeedbackCallback? onMemoryFeedback;
-
-  @override
-  Widget build(BuildContext context) {
-    final memoryId = _stringMetadata(memory, 'id') ?? '';
-    final kind = _stringMetadata(memory, 'kind') ?? 'memory';
-    final scope = _stringMetadata(memory, 'scope') ?? 'scope';
-    final text = _stringMetadata(memory, 'text') ?? memoryId;
-    final score = memory['score'];
-    final scoreLabel = score is num ? ' · ${(score * 100).round()}%' : '';
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '$kind · $scope$scoreLabel',
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0,
-          ),
-        ),
-        const SizedBox(height: 3),
-        Text(
-          text,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 12,
-            height: 1.35,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 6,
-          runSpacing: 4,
-          children: [
-            _MemoryFeedbackButton(
-              label: 'Helpful',
-              memoryId: memoryId,
-              rating: 'helpful',
-              turnId: turnId,
-              onMemoryFeedback: onMemoryFeedback,
-            ),
-            _MemoryFeedbackButton(
-              label: 'Not relevant',
-              memoryId: memoryId,
-              rating: 'not_relevant',
-              turnId: turnId,
-              reason: 'Marked not relevant from chat timeline.',
-              onMemoryFeedback: onMemoryFeedback,
-            ),
-            _MemoryFeedbackButton(
-              label: 'Stale',
-              memoryId: memoryId,
-              rating: 'stale',
-              turnId: turnId,
-              reason: 'Marked stale from chat timeline.',
-              onMemoryFeedback: onMemoryFeedback,
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _MemoryFeedbackButton extends StatelessWidget {
-  const _MemoryFeedbackButton({
-    required this.label,
-    required this.memoryId,
-    required this.rating,
-    required this.turnId,
-    required this.onMemoryFeedback,
-    this.reason,
-  });
-
-  final String label;
-  final String memoryId;
-  final String rating;
-  final String? turnId;
-  final String? reason;
-  final MemoryFeedbackCallback? onMemoryFeedback;
-
-  @override
-  Widget build(BuildContext context) {
-    final callback = onMemoryFeedback;
-    return OutlinedButton(
-      style: OutlinedButton.styleFrom(
-        minimumSize: const Size(0, 30),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        textStyle: const TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0,
-        ),
-        side: const BorderSide(color: Color(0xffc4b5fd)),
-      ),
-      onPressed: callback == null || memoryId.isEmpty
-          ? null
-          : () {
-              unawaited(
-                callback(
-                  memoryId: memoryId,
-                  rating: rating,
-                  turnId: turnId,
-                  reason: reason,
-                ),
-              );
-            },
-      child: Text(label),
     );
   }
 }

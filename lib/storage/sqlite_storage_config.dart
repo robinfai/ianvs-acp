@@ -1,4 +1,4 @@
-enum SqliteStoreKind { workflow, memory, taskInboxLegacy, acpSessions }
+enum SqliteStoreKind { workflow, taskInboxLegacy, acpSessions }
 
 /// Application-wide retention and capacity policy for SQLite-backed data.
 ///
@@ -28,13 +28,11 @@ class SqliteStorageConfig {
 
   int budgetBytesFor(SqliteStoreKind kind) {
     final total = maxBytes;
-    final memory = total ~/ 10;
     final legacy = total * 4 ~/ 100;
     final sessions = total ~/ 100;
-    final workflow = total - memory - legacy - sessions;
+    final workflow = total - legacy - sessions;
     return switch (kind) {
       SqliteStoreKind.workflow => workflow,
-      SqliteStoreKind.memory => memory,
       SqliteStoreKind.taskInboxLegacy => legacy,
       SqliteStoreKind.acpSessions => sessions,
     };

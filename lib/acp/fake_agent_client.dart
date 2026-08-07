@@ -110,7 +110,6 @@ class FakeAgentClient implements AcpAgentClient {
   String? lastDeletedSessionId;
   String? lastAuthenticatedMethodId;
   String? lastPrompt;
-  String? lastMemoryContext;
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
   bool? _lastRestoreReplayedHistory;
 
@@ -430,11 +429,9 @@ class FakeAgentClient implements AcpAgentClient {
   Stream<AgentEvent> sendPrompt({
     required String sessionId,
     required String prompt,
-    String? memoryContext,
     List<PromptAttachment> attachments = const <PromptAttachment>[],
   }) async* {
     lastPrompt = prompt;
-    lastMemoryContext = memoryContext;
     lastAttachments = attachments;
     if (promptError != null) {
       throw promptError!;

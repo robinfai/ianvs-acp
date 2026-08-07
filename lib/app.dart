@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:crypto/crypto.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -25,17 +24,6 @@ import 'config/acp_config_store.dart';
 import 'config/assistant_agent_config.dart';
 import 'config/macos_keychain_secret_store.dart';
 import 'config/secret_store.dart';
-import 'memory/acp_memory_middleware.dart';
-import 'memory/acp_sidecar_memory_extractor.dart';
-import 'memory/memory_api_client.dart';
-import 'memory/memory_config.dart';
-import 'memory/memory_context_builder.dart';
-import 'memory/memory_daemon_manager.dart';
-import 'memory/memory_extraction.dart';
-import 'memory/memory_mcp_server_config.dart';
-import 'memory/memory_post_turn_automation.dart';
-import 'memory/memory_runtime_status.dart';
-import 'memory/openai_compatible_memory_extractor.dart';
 import 'platform/file_manager.dart';
 import 'startup/deep_link_request.dart';
 import 'startup/startup_options.dart';
@@ -58,7 +46,6 @@ import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/bounded_image_preview.dart';
 import 'ui/components/deep_link_confirmation_dialog.dart';
-import 'ui/components/memory_explorer_page.dart';
 import 'ui/components/new_session_agent_dialog.dart';
 import 'ui/components/session_workspace_review_dialog.dart';
 import 'ui/components/workspace_sidebar.dart';
@@ -272,14 +259,6 @@ class _AcpClientAppState extends State<AcpClientApp>
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
   final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
-  MemoryDaemonManager? _memoryDaemonManager;
-  String? _memoryDaemonSignature;
-  MemoryRuntimeStatus _memoryStatus = MemoryRuntimeStatus.disabled;
-  int _memoryPendingCount = 0;
-  int _memoryPendingChangeRequestCount = 0;
-  int _memoryTurnsSinceMaintenance = 0;
-  int _memoryAutomationNoticeSequence = 0;
-  MemoryAutomationNotice? _memoryAutomationNotice;
   final Map<ChatController, VoidCallback> _sessionIndexListeners =
       <ChatController, VoidCallback>{};
   final Set<String> _handledDeepLinks = <String>{};
@@ -345,8 +324,6 @@ class _AcpClientAppState extends State<AcpClientApp>
     } else {
       _controller = widget.controller!;
     }
-    _memoryStatus = _initialMemoryStatus(_config.memory);
-    _ensureMemoryDaemonIfEnabled(_config.memory, _config.storage);
     _configureTaskInboxController();
     final initialStartupOptions = _initialStartupOptions;
     if (initialStartupOptions.hasResumeSession) {
@@ -408,14 +385,6 @@ class _AcpClientAppState extends State<AcpClientApp>
             foregroundAgentFactoryChanged);
     final taskInboxControllerChanged =
         oldWidget.taskInboxController != widget.taskInboxController;
-    if (configChanged || controllerChanged) {
-      _reconcileMemoryDaemon(nextWidgetConfig.memory, nextWidgetConfig.storage);
-      _ensureMemoryDaemonIfEnabled(
-        nextWidgetConfig.memory,
-        nextWidgetConfig.storage,
-      );
-    }
-
     if (controllerChanged) {
       Future<void>? previousTaskCleanup;
       final foregroundChangesInboxAvailability =
@@ -545,7 +514,6 @@ class _AcpClientAppState extends State<AcpClientApp>
     } else {
       _ignoreTaskCleanup(taskCleanup);
     }
-    _disposeMemoryDaemon();
     super.dispose();
   }
 
@@ -1378,14 +1346,8 @@ class _AcpClientAppState extends State<AcpClientApp>
         mcpServers: _config.mcpServers,
         additionalDirectories: _config.additionalDirectories,
         clientProviders: _clientProviderConfig(_config),
-        memory: _config.memory,
         storage: _config.storage,
         assistantAgent: _config.assistantAgent,
-        memoryStatus: _memoryStatus,
-        memoryPendingCount: _memoryPendingCount,
-        memoryPendingChangeRequestCount: _memoryPendingChangeRequestCount,
-        memoryAutomationNotice: _memoryAutomationNotice,
-        memoryExplorerActions: _memoryExplorerActions(),
         configPath: _config.configPath,
         workspaceStateStore: _workspaceStateStore,
         defaultAgentName: _config.defaultAgentServerName,
@@ -1499,7 +1461,6 @@ class _AcpClientAppState extends State<AcpClientApp>
       agentName: config.agentName,
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
-      memoryMiddleware: _memoryMiddleware(config),
       assistantAgentConfig: config.assistantAgent,
       assistantAgentEnhancer: _assistantAgentEnhancer(config),
       enableAutomaticSessionTitles: true,
@@ -1525,11 +1486,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       final helperConfig = config.withActiveAgentServer(agentName);
       final helperClient =
           widget.createAgentClient?.call(helperConfig) ??
-          _defaultAgentClient(
-            helperConfig,
-            includeMemoryMcp: false,
-            restrictedAssistant: true,
-          );
+          _defaultAgentClient(helperConfig, restrictedAssistant: true);
       return AcpAssistantAgentEnhancer(helperClient, _cwd, config: assistant);
     } on Object {
       return null;
@@ -1544,11 +1501,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     final helperConfig = _config.withActiveAgentServer(agentName);
     final helperClient =
         widget.createAgentClient?.call(helperConfig) ??
-        _defaultAgentClient(
-          helperConfig,
-          includeMemoryMcp: false,
-          restrictedAssistant: true,
-        );
+        _defaultAgentClient(helperConfig, restrictedAssistant: true);
     final enhancer = AcpAssistantAgentEnhancer(
       helperClient,
       _cwd,
@@ -1559,858 +1512,6 @@ class _AcpClientAppState extends State<AcpClientApp>
     } finally {
       await enhancer.dispose();
     }
-  }
-
-  AcpMemoryMiddleware? _memoryMiddleware(AcpClientConfig config) {
-    final memory = config.memory;
-    if (!memory.enabled) return null;
-
-    final daemonManager = _memoryDaemonManagerFor(memory, config.storage);
-    MemoryApiClient? client;
-    MemoryDaemonEndpoint? endpoint;
-    Future<MemoryApiClient> memoryClient() async {
-      final nextEndpoint = await _ensureMemoryEndpoint(daemonManager);
-      if (client == null ||
-          endpoint?.baseUrl != nextEndpoint.baseUrl ||
-          endpoint?.token != nextEndpoint.token) {
-        client?.close(force: true);
-        endpoint = nextEndpoint;
-        client = MemoryApiClient(
-          baseUrl: nextEndpoint.baseUrl,
-          token: nextEndpoint.token,
-        );
-      }
-      return client!;
-    }
-
-    return AcpMemoryMiddleware(
-      search: (context) async {
-        final client = await memoryClient();
-        final cwd = context.cwd?.trim().isNotEmpty == true
-            ? context.cwd!.trim()
-            : _cwd;
-        return client.searchContext(
-          MemorySearchRequest(
-            query: context.prompt,
-            scope: MemoryScopeData(
-              userId: _memoryUserId(),
-              workspaceId: cwd,
-              repoId: cwd,
-              agentId: config.agentName,
-              sessionId: context.sessionId,
-            ),
-            turnId: context.turnId,
-            pinnedProfileLimit: memory.profile.maxItems,
-          ),
-        );
-      },
-      searchDetails: (context) async {
-        final client = await memoryClient();
-        final cwd = context.cwd?.trim().isNotEmpty == true
-            ? context.cwd!.trim()
-            : _cwd;
-        final items = await client.search(
-          MemorySearchRequest(
-            query: context.prompt,
-            scope: MemoryScopeData(
-              userId: _memoryUserId(),
-              workspaceId: cwd,
-              repoId: cwd,
-              agentId: config.agentName,
-              sessionId: context.sessionId,
-            ),
-            turnId: context.turnId,
-            pinnedProfileLimit: memory.profile.maxItems,
-          ),
-        );
-        final memoryContext = items.isEmpty
-            ? null
-            : MemoryContextBuilder.build(
-                items
-                    .map(
-                      (item) => MemoryContextItem(
-                        kind: item.kind,
-                        scope: item.scope,
-                        text: item.text,
-                        score: item.score,
-                        metadata: item.metadata,
-                      ),
-                    )
-                    .toList(growable: false),
-                pinnedProfileLimit: memory.profile.maxItems,
-              );
-        return MemoryPromptResult(
-          memoryContext: memoryContext,
-          usedMemories: items
-              .map(
-                (item) => MemoryUsedItem(
-                  id: item.id,
-                  kind: item.kind,
-                  scope: item.scope,
-                  text: item.text,
-                  score: item.score,
-                  metadata: item.metadata,
-                ),
-              )
-              .toList(growable: false),
-        );
-      },
-      extract: (context) async {
-        final client = await memoryClient();
-        final cwd = context.cwd?.trim().isNotEmpty == true
-            ? context.cwd!.trim()
-            : _cwd;
-        final candidates = await _extractMemoryCandidates(config, context, cwd);
-        final scope = MemoryScopeData(
-          userId: _memoryUserId(),
-          workspaceId: cwd,
-          repoId: cwd,
-          agentId: config.agentName,
-          sessionId: context.sessionId,
-        );
-        final extractionResult = await client.createCandidates(
-          scope: scope,
-          candidates: candidates,
-          sourceTurnId: context.turnId,
-        );
-        final automationResult = await MemoryPostTurnAutomation.apply(
-          memory: memory,
-          candidates: extractionResult.candidates,
-          autoAppliedChangeRequests: extractionResult.autoAppliedChangeRequests,
-          usedMemoryCount: context.usedMemories.length,
-          pendingReviewCount: _memoryPendingCount,
-          turnsSinceMaintenance: _memoryTurnsSinceMaintenance + 1,
-          approveCandidate: (candidate) async {
-            await client.approveCandidate(candidate, actor: 'extractor');
-          },
-          runMaintenance: () => client.runMaintenance(
-            scope: scope,
-            enabled: memory.maintenance.enabled,
-            mode: memory.maintenance.mode,
-            costMode: memory.maintenance.costMode,
-            highConfidenceThreshold: memory.maintenance.highConfidenceThreshold,
-            reviewThreshold: memory.maintenance.reviewThreshold,
-            maxItemsPerBatch: memory.maintenance.maxItemsPerBatch,
-            manualOnlyActions: memory.maintenance.manualOnlyActions,
-          ),
-        );
-        _recordMemoryPostTurnAutomation(automationResult);
-      },
-      onTurnComplete: (_) async {
-        await _refreshMemoryPendingCount(daemonManager);
-      },
-      feedback: (context) async {
-        final client = await memoryClient();
-        await client.submitFeedback(
-          memoryId: context.memoryId,
-          rating: context.rating,
-          turnId: context.turnId,
-          reason: context.reason,
-        );
-      },
-      onDispose: () => client?.close(force: true),
-    );
-  }
-
-  MemoryDaemonManager _memoryDaemonManagerFor(
-    MemoryConfig memory,
-    SqliteStorageConfig storage,
-  ) {
-    final signature = _memoryDaemonSignatureFor(memory, storage);
-    final existing = _memoryDaemonManager;
-    if (existing != null && _memoryDaemonSignature == signature) {
-      return existing;
-    }
-    _disposeMemoryDaemon();
-    final manager = MemoryDaemonManager(
-      launch: _memoryDaemonLaunch(memory, storage),
-    );
-    _memoryDaemonManager = manager;
-    _memoryDaemonSignature = signature;
-    return manager;
-  }
-
-  void _reconcileMemoryDaemon(
-    MemoryConfig memory,
-    SqliteStorageConfig storage,
-  ) {
-    if (widget.controller != null ||
-        !memory.enabled ||
-        _memoryDaemonSignature != _memoryDaemonSignatureFor(memory, storage)) {
-      _disposeMemoryDaemon();
-      if (widget.controller != null || !memory.enabled) {
-        _setMemoryStatus(MemoryRuntimeStatus.disabled);
-        _setMemoryPendingCount(0);
-        _memoryTurnsSinceMaintenance = 0;
-        _clearMemoryAutomationNotice();
-      }
-    }
-  }
-
-  void _ensureMemoryDaemonIfEnabled(
-    MemoryConfig memory,
-    SqliteStorageConfig storage,
-  ) {
-    if (widget.controller != null || !memory.enabled) {
-      _setMemoryStatus(MemoryRuntimeStatus.disabled);
-      _setMemoryPendingCount(0);
-      _memoryTurnsSinceMaintenance = 0;
-      _clearMemoryAutomationNotice();
-      return;
-    }
-    final manager = _memoryDaemonManagerFor(memory, storage);
-    unawaited(
-      _ensureMemoryEndpoint(
-        manager,
-      ).then<void>((_) => _refreshMemoryPendingCount(manager), onError: (_) {}),
-    );
-  }
-
-  Future<MemoryDaemonEndpoint> _ensureMemoryEndpoint(
-    MemoryDaemonManager manager,
-  ) async {
-    if (_memoryStatus != MemoryRuntimeStatus.running) {
-      _setMemoryStatus(MemoryRuntimeStatus.starting);
-    }
-    try {
-      final endpoint = await manager.ensureStarted();
-      if (identical(_memoryDaemonManager, manager)) {
-        _setMemoryStatus(MemoryRuntimeStatus.running);
-      }
-      return endpoint;
-    } catch (_) {
-      if (identical(_memoryDaemonManager, manager)) {
-        _setMemoryStatus(MemoryRuntimeStatus.error);
-      }
-      rethrow;
-    }
-  }
-
-  MemoryRuntimeStatus _initialMemoryStatus(MemoryConfig memory) {
-    if (widget.controller != null || !memory.enabled) {
-      return MemoryRuntimeStatus.disabled;
-    }
-    return MemoryRuntimeStatus.starting;
-  }
-
-  void _setMemoryStatus(MemoryRuntimeStatus status) {
-    if (_memoryStatus == status) return;
-    if (!mounted) {
-      _memoryStatus = status;
-      return;
-    }
-    setState(() => _memoryStatus = status);
-  }
-
-  void _setMemoryPendingCount(int count) {
-    var changeRequestCount = _memoryPendingChangeRequestCount;
-    if (count <= 0) {
-      changeRequestCount = 0;
-    } else if (changeRequestCount > count) {
-      changeRequestCount = count;
-    }
-    if (_memoryPendingCount == count &&
-        _memoryPendingChangeRequestCount == changeRequestCount) {
-      return;
-    }
-    if (!mounted) {
-      _memoryPendingCount = count;
-      _memoryPendingChangeRequestCount = changeRequestCount;
-      return;
-    }
-    setState(() {
-      _memoryPendingCount = count;
-      _memoryPendingChangeRequestCount = changeRequestCount;
-    });
-  }
-
-  void _setMemoryPendingCounts({
-    required int candidateCount,
-    required int changeRequestCount,
-  }) {
-    final nextPendingCount = candidateCount + changeRequestCount;
-    if (_memoryPendingCount == nextPendingCount &&
-        _memoryPendingChangeRequestCount == changeRequestCount) {
-      return;
-    }
-    if (!mounted) {
-      _memoryPendingCount = nextPendingCount;
-      _memoryPendingChangeRequestCount = changeRequestCount;
-      return;
-    }
-    setState(() {
-      _memoryPendingCount = nextPendingCount;
-      _memoryPendingChangeRequestCount = changeRequestCount;
-    });
-  }
-
-  void _setMemoryAutomationNotice(MemoryPostTurnAutomationResult result) {
-    final maintenance = result.maintenanceResult;
-    final nextSequence = _memoryAutomationNoticeSequence + 1;
-    final notice = MemoryAutomationNotice(
-      sequence: nextSequence,
-      approvedCandidates: result.approvedCandidates,
-      pendingCandidateReviews: result.pendingCandidateReviews,
-      autoAppliedChangeRequests: result.autoAppliedChangeRequests,
-      maintenanceAutoApplied: maintenance?.autoApplied ?? 0,
-      maintenanceNeedsReview: maintenance?.needsReview ?? 0,
-      maintenanceSkipped: maintenance?.skipped ?? 0,
-      maintenanceAutoRejectedCandidates:
-          maintenance?.autoRejectedCandidates ?? 0,
-      maintenanceAutoRejectedChangeRequests:
-          maintenance?.autoRejectedChangeRequests ?? 0,
-    );
-    if (!notice.shouldPrompt) return;
-    _memoryAutomationNoticeSequence = nextSequence;
-    if (!mounted) {
-      _memoryAutomationNotice = notice;
-      return;
-    }
-    setState(() => _memoryAutomationNotice = notice);
-  }
-
-  void _recordMemoryPostTurnAutomation(MemoryPostTurnAutomationResult result) {
-    if (result.maintenanceTrigger != null) {
-      _memoryTurnsSinceMaintenance = 0;
-    } else {
-      _memoryTurnsSinceMaintenance += 1;
-    }
-    if (result.pendingReviewDelta != 0) {
-      final currentCandidateCount =
-          _memoryPendingCount - _memoryPendingChangeRequestCount;
-      final nextCandidateCount =
-          currentCandidateCount + result.pendingCandidateReviewDelta;
-      final nextChangeRequestCount =
-          _memoryPendingChangeRequestCount +
-          result.pendingChangeRequestReviewDelta;
-      _setMemoryPendingCounts(
-        candidateCount: nextCandidateCount < 0 ? 0 : nextCandidateCount,
-        changeRequestCount: nextChangeRequestCount < 0
-            ? 0
-            : nextChangeRequestCount,
-      );
-    }
-    _setMemoryAutomationNotice(result);
-  }
-
-  void _clearMemoryAutomationNotice() {
-    if (_memoryAutomationNotice == null) return;
-    if (!mounted) {
-      _memoryAutomationNotice = null;
-      return;
-    }
-    setState(() => _memoryAutomationNotice = null);
-  }
-
-  MemoryExplorerActions? _memoryExplorerActions() {
-    if (widget.controller != null || !_config.memory.enabled) return null;
-    return MemoryExplorerActions(
-      loadMemory: _loadMemoryRecords,
-      loadCandidates: _loadMemoryCandidates,
-      loadChangeRequests: _loadMemoryChangeRequests,
-      loadAudit: _loadMemoryAuditEvents,
-      approveCandidate: _approveMemoryCandidate,
-      rejectCandidate: _rejectMemoryCandidate,
-      approveChangeRequest: _approveMemoryChangeRequest,
-      rejectChangeRequest: _rejectMemoryChangeRequest,
-      updateChangeRequest: _updateMemoryChangeRequest,
-      updateMemory: _updateMemoryRecord,
-      disableMemory: _disableMemoryRecord,
-      restoreMemory: _restoreMemoryRecord,
-      submitFeedback: _submitMemoryRecordFeedback,
-      exportBackup: _exportMemoryBackup,
-      importBackup: _importMemoryBackup,
-      runMaintenance: _runMemoryMaintenance,
-      clearData: _clearMemoryData,
-      maintenanceEnabled: _config.memory.maintenance.enabled,
-      maintenanceMaxItemsPerBatch: _config.memory.maintenance.maxItemsPerBatch,
-    );
-  }
-
-  Future<List<MemoryRecord>> _loadMemoryRecords() async {
-    return _withMemoryClient((client) {
-      return Future.wait([
-        client.listMemory(
-          userId: _memoryUserId(),
-          workspaceId: _memoryScopeCwd(),
-          repoId: _memoryScopeCwd(),
-          status: 'active',
-        ),
-        client.listMemory(
-          userId: _memoryUserId(),
-          workspaceId: _memoryScopeCwd(),
-          repoId: _memoryScopeCwd(),
-          status: 'disabled',
-        ),
-      ]).then(
-        (groups) => [
-          for (final group in groups)
-            for (final record in group) record,
-        ],
-      );
-    });
-  }
-
-  Future<List<MemoryCandidate>> _loadMemoryCandidates() async {
-    return _withMemoryClient((client) {
-      return client.listCandidates(
-        userId: _memoryUserId(),
-        workspaceId: _memoryScopeCwd(),
-        repoId: _memoryScopeCwd(),
-        agentId: _config.agentName,
-        sessionId: _controller.currentSession?.id,
-        status: null,
-      );
-    });
-  }
-
-  Future<List<MemoryChangeRequest>> _loadMemoryChangeRequests() async {
-    return _withMemoryClient((client) {
-      return client.listChangeRequests(
-        userId: _memoryUserId(),
-        workspaceId: _memoryScopeCwd(),
-        repoId: _memoryScopeCwd(),
-        agentId: _config.agentName,
-        sessionId: _controller.currentSession?.id,
-        status: null,
-      );
-    });
-  }
-
-  Future<List<MemoryAuditEvent>> _loadMemoryAuditEvents() async {
-    return _withMemoryClient((client) {
-      return client.listAudit(
-        userId: _memoryUserId(),
-        workspaceId: _memoryScopeCwd(),
-        repoId: _memoryScopeCwd(),
-        agentId: _config.agentName,
-        sessionId: _controller.currentSession?.id,
-      );
-    });
-  }
-
-  Future<void> _approveMemoryCandidate(MemoryCandidate candidate) async {
-    await _withMemoryClient((client) => client.approveCandidate(candidate));
-    unawaited(_refreshMemoryPendingCount());
-  }
-
-  Future<void> _rejectMemoryCandidate(MemoryCandidate candidate) async {
-    await _withMemoryClient((client) => client.rejectCandidate(candidate.id));
-    unawaited(_refreshMemoryPendingCount());
-  }
-
-  Future<void> _updateMemoryRecord(MemoryRecord record) async {
-    await _withMemoryClient((client) => client.updateMemory(record));
-  }
-
-  Future<void> _disableMemoryRecord(MemoryRecord record) async {
-    await _withMemoryClient((client) => client.disableMemory(record.id));
-  }
-
-  Future<void> _restoreMemoryRecord(MemoryRecord record) async {
-    await _withMemoryClient((client) => client.restoreMemory(record.id));
-  }
-
-  Future<void> _submitMemoryRecordFeedback(
-    MemoryRecord record,
-    String rating,
-    String? reason,
-  ) async {
-    await _withMemoryClient(
-      (client) => client.submitFeedback(
-        memoryId: record.id,
-        rating: rating,
-        reason: reason,
-      ),
-    );
-  }
-
-  Future<void> _approveMemoryChangeRequest(MemoryChangeRequest request) async {
-    await _withMemoryClient((client) => client.approveChangeRequest(request));
-    unawaited(_refreshMemoryPendingCount());
-  }
-
-  Future<void> _rejectMemoryChangeRequest(MemoryChangeRequest request) async {
-    await _withMemoryClient((client) => client.rejectChangeRequest(request.id));
-    unawaited(_refreshMemoryPendingCount());
-  }
-
-  Future<MemoryChangeRequest> _updateMemoryChangeRequest(
-    MemoryChangeRequest request,
-  ) async {
-    final updated = await _withMemoryClient(
-      (client) => client.updateChangeRequest(request),
-    );
-    unawaited(_refreshMemoryPendingCount());
-    return updated;
-  }
-
-  Future<MaintenanceRunResult> _runMemoryMaintenance() async {
-    final maintenance = _config.memory.maintenance;
-    final result = await _withMemoryClient(
-      (client) => client.runMaintenance(
-        scope: MemoryScopeData(
-          userId: _memoryUserId(),
-          workspaceId: _memoryScopeCwd(),
-          repoId: _memoryScopeCwd(),
-        ),
-        enabled: maintenance.enabled,
-        mode: maintenance.mode,
-        costMode: maintenance.costMode,
-        highConfidenceThreshold: maintenance.highConfidenceThreshold,
-        reviewThreshold: maintenance.reviewThreshold,
-        maxItemsPerBatch: maintenance.maxItemsPerBatch,
-        manualOnlyActions: maintenance.manualOnlyActions,
-      ),
-    );
-    unawaited(_refreshMemoryPendingCount());
-    return result;
-  }
-
-  Future<MemoryClearResult> _clearMemoryData(String level) async {
-    final result = await _withMemoryClient(
-      (client) => client.clearMemory(
-        scope: MemoryScopeData(
-          userId: _memoryUserId(),
-          workspaceId: _memoryScopeCwd(),
-          repoId: _memoryScopeCwd(),
-          agentId: _config.agentName,
-          sessionId: _controller.currentSession?.id,
-        ),
-        level: level,
-      ),
-    );
-    unawaited(_refreshMemoryPendingCount());
-    return result;
-  }
-
-  Future<MemoryExportResult?> _exportMemoryBackup() async {
-    final result = await _withMemoryClient(
-      (client) => client.exportMemory(
-        scope: MemoryScopeData(
-          userId: _memoryUserId(),
-          workspaceId: _memoryScopeCwd(),
-          repoId: _memoryScopeCwd(),
-          agentId: _config.agentName,
-          sessionId: _controller.currentSession?.id,
-        ),
-      ),
-    );
-    final path = await FilePicker.platform.saveFile(
-      dialogTitle: 'Export Memory Backup',
-      fileName: _memoryBackupFileName(DateTime.now()),
-      type: FileType.custom,
-      allowedExtensions: const ['jsonl'],
-      bytes: Uint8List.fromList(utf8.encode(result.jsonl)),
-    );
-    return path == null ? null : result;
-  }
-
-  Future<MemoryImportResult?> _importMemoryBackup(String mode) async {
-    final picked = await FilePicker.platform.pickFiles(
-      dialogTitle: 'Import Memory Backup',
-      type: FileType.custom,
-      allowedExtensions: const ['jsonl'],
-      allowMultiple: false,
-      withData: true,
-    );
-    if (picked == null || picked.files.isEmpty) return null;
-    final file = picked.files.single;
-    if (file.size > 20 * 1024 * 1024) {
-      throw const FormatException('Memory backup exceeds the 20 MB limit.');
-    }
-    final bytes =
-        file.bytes ??
-        (file.path == null ? null : await File(file.path!).readAsBytes());
-    if (bytes == null) {
-      throw const FileSystemException('Unable to read the selected backup.');
-    }
-    final result = await _withMemoryClient(
-      (client) => client.importMemory(jsonl: utf8.decode(bytes), mode: mode),
-    );
-    unawaited(_refreshMemoryPendingCount());
-    return result;
-  }
-
-  String _memoryBackupFileName(DateTime value) {
-    final utc = value.toUtc();
-    return 'ianvs-acp-memory-'
-        '${utc.year.toString().padLeft(4, '0')}'
-        '${utc.month.toString().padLeft(2, '0')}'
-        '${utc.day.toString().padLeft(2, '0')}-'
-        '${utc.hour.toString().padLeft(2, '0')}'
-        '${utc.minute.toString().padLeft(2, '0')}'
-        '${utc.second.toString().padLeft(2, '0')}.jsonl';
-  }
-
-  Future<T> _withMemoryClient<T>(
-    Future<T> Function(MemoryApiClient client) action,
-  ) async {
-    if (!_config.memory.enabled) {
-      throw StateError('Memory is disabled.');
-    }
-    final manager = _memoryDaemonManagerFor(_config.memory, _config.storage);
-    final endpoint = await _ensureMemoryEndpoint(manager);
-    final client = MemoryApiClient(
-      baseUrl: endpoint.baseUrl,
-      token: endpoint.token,
-    );
-    try {
-      return await action(client);
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  Future<void> _refreshMemoryPendingCount([
-    MemoryDaemonManager? expectedManager,
-  ]) async {
-    if (widget.controller != null || !_config.memory.enabled) {
-      _setMemoryPendingCount(0);
-      return;
-    }
-    final manager = expectedManager ?? _memoryDaemonManager;
-    if (manager == null) {
-      _setMemoryPendingCount(0);
-      return;
-    }
-
-    try {
-      final endpoint = await _ensureMemoryEndpoint(manager);
-      if (!identical(_memoryDaemonManager, manager)) return;
-      final client = MemoryApiClient(
-        baseUrl: endpoint.baseUrl,
-        token: endpoint.token,
-      );
-      try {
-        final candidates = await client.listCandidates(
-          userId: _memoryUserId(),
-          workspaceId: _memoryScopeCwd(),
-          repoId: _memoryScopeCwd(),
-          agentId: _config.agentName,
-          sessionId: _controller.currentSession?.id,
-          status: 'pending',
-        );
-        final changeRequests = await client.listChangeRequests(
-          userId: _memoryUserId(),
-          workspaceId: _memoryScopeCwd(),
-          repoId: _memoryScopeCwd(),
-          agentId: _config.agentName,
-          sessionId: _controller.currentSession?.id,
-          status: 'pending',
-        );
-        if (identical(_memoryDaemonManager, manager)) {
-          _setMemoryPendingCounts(
-            candidateCount: candidates.length,
-            changeRequestCount: changeRequests.length,
-          );
-        }
-      } finally {
-        client.close(force: true);
-      }
-    } catch (_) {
-      if (identical(_memoryDaemonManager, manager)) {
-        _setMemoryPendingCount(0);
-      }
-    }
-  }
-
-  void _disposeMemoryDaemon() {
-    final manager = _memoryDaemonManager;
-    _memoryDaemonManager = null;
-    _memoryDaemonSignature = null;
-    _memoryTurnsSinceMaintenance = 0;
-    if (manager != null) unawaited(manager.dispose());
-  }
-
-  MemoryDaemonLaunch _memoryDaemonLaunch(
-    MemoryConfig memory,
-    SqliteStorageConfig storage,
-  ) {
-    final dataDir = memory.dataDir?.trim();
-    return MemoryDaemonLaunch(
-      executable: MemoryDaemonLaunch.resolveExecutable(currentDirectory: _cwd),
-      dataDir: dataDir == null || dataDir.isEmpty
-          ? MemoryDaemonLaunch.defaultDataDir()
-          : dataDir,
-      token: MemoryDaemonLaunch.generateToken(),
-      extraEnv: _memoryDaemonEnvironment(memory, storage),
-    );
-  }
-
-  String _memoryDaemonSignatureFor(
-    MemoryConfig memory,
-    SqliteStorageConfig storage,
-  ) {
-    return jsonEncode(<String, Object?>{
-      'dataDir': memory.dataDir?.trim(),
-      'embedding': memory.embedding.toJson(),
-      'llm': memory.llm.toJson(),
-      'maintenance': memory.maintenance.toJson(),
-      'storage': storage.toJson(),
-      'executable': MemoryDaemonLaunch.resolveExecutable(
-        currentDirectory: _cwd,
-      ),
-    });
-  }
-
-  Map<String, String> _memoryDaemonEnvironment(
-    MemoryConfig memory,
-    SqliteStorageConfig storage,
-  ) {
-    final embedding = memory.embedding;
-    final llm = memory.llm;
-    final maintenance = memory.maintenance;
-    return <String, String>{
-      'MEMORY_EMBEDDING_PROVIDER': embedding.provider,
-      'MEMORY_EMBEDDING_MODEL': embedding.model,
-      'MEMORY_EMBEDDING_VARIANT': embedding.variant,
-      'MEMORY_EMBEDDING_DIMENSION': embedding.dimension.toString(),
-      'MEMORY_EMBEDDING_DOWNLOAD_POLICY': embedding.downloadPolicy,
-      'MEMORY_LLM_PROVIDER': llm.provider,
-      'MEMORY_LLM_BASE_URL': llm.baseUrl,
-      'MEMORY_LLM_MODEL': llm.model,
-      'MEMORY_LLM_API_KEY_ENV': llm.apiKeyEnv,
-      'MEMORY_MAINTENANCE_ENABLED': maintenance.enabled.toString(),
-      'MEMORY_MAINTENANCE_MODE': maintenance.mode,
-      'MEMORY_MAINTENANCE_COST_MODE': maintenance.costMode,
-      'MEMORY_MAINTENANCE_HIGH_CONFIDENCE_THRESHOLD': maintenance
-          .highConfidenceThreshold
-          .toString(),
-      'MEMORY_MAINTENANCE_REVIEW_THRESHOLD': maintenance.reviewThreshold
-          .toString(),
-      'MEMORY_MAINTENANCE_MAX_ITEMS_PER_BATCH': maintenance.maxItemsPerBatch
-          .toString(),
-      'MEMORY_MAINTENANCE_MANUAL_ONLY_ACTIONS': maintenance.manualOnlyActions
-          .join(','),
-      'MEMORY_SQLITE_MAX_BYTES': storage
-          .budgetBytesFor(SqliteStoreKind.memory)
-          .toString(),
-      'MEMORY_SQLITE_RETENTION_DAYS': storage.retentionDays.toString(),
-      'MEMORY_SQLITE_CLEANUP_INTERVAL_HOURS': storage.cleanupIntervalHours
-          .toString(),
-    };
-  }
-
-  Future<List<ExtractedMemoryCandidate>> _extractMemoryCandidates(
-    AcpClientConfig config,
-    MemoryTurnContext context,
-    String cwd,
-  ) async {
-    final memory = config.memory;
-    final provider = memory.extractor.provider.trim();
-    if (provider == 'openai-compatible' || provider == 'llm') {
-      final apiKeyEnv = memory.llm.apiKeyEnv.trim();
-      final apiKey = apiKeyEnv.isEmpty
-          ? null
-          : Platform.environment[apiKeyEnv]?.trim();
-      final extractor = OpenAiCompatibleMemoryExtractor(
-        baseUrl: memory.llm.baseUrl,
-        model: memory.llm.model,
-        apiKey: apiKey,
-        globalInstructions: memory.extractor.globalInstructions,
-        workspaceInstructions: memory.extractor.workspaceInstructions,
-        repoInstructions: memory.extractor.repoInstructions,
-      );
-      try {
-        return await _extractWithExplicitFallback(
-          context,
-          () => extractor.extract(
-            userPrompt: context.userPrompt,
-            assistantAnswer: context.assistantAnswer,
-          ),
-        );
-      } finally {
-        extractor.close();
-      }
-    }
-
-    final agentName = memory.extractor.agent.trim().isEmpty
-        ? config.agentName
-        : memory.extractor.agent.trim();
-    final sidecarConfig = _configForAgent(config, agentName) ?? config;
-    final extractor = AcpSidecarMemoryExtractor(
-      clientFactory: () =>
-          _defaultAgentClient(sidecarConfig, includeMemoryMcp: false),
-    );
-    return _extractWithExplicitFallback(
-      context,
-      () => extractor.extract(
-        userPrompt: context.userPrompt,
-        assistantAnswer: context.assistantAnswer,
-        cwd: cwd,
-        model: memory.extractor.model,
-        globalInstructions: memory.extractor.globalInstructions,
-        workspaceInstructions: memory.extractor.workspaceInstructions,
-        repoInstructions: memory.extractor.repoInstructions,
-      ),
-    );
-  }
-
-  Future<List<ExtractedMemoryCandidate>> _extractWithExplicitFallback(
-    MemoryTurnContext context,
-    Future<List<ExtractedMemoryCandidate>> Function() extract,
-  ) async {
-    final fallback = localMemoryFallbackCandidates(
-      userPrompt: context.userPrompt,
-      assistantAnswer: context.assistantAnswer,
-    );
-    try {
-      final extracted = await extract();
-      if (extracted.isEmpty) return fallback;
-      return mergeExtractedMemoryCandidates(extracted, fallback);
-    } catch (_) {
-      if (fallback.isNotEmpty) return fallback;
-      rethrow;
-    }
-  }
-
-  Future<List<Map<String, Object?>>> _memoryMcpServers(
-    MemoryConfig memory,
-    SqliteStorageConfig storage,
-  ) async {
-    try {
-      final manager = _memoryDaemonManagerFor(memory, storage);
-      final endpoint = await _ensureMemoryEndpoint(manager);
-      final config = buildMemoryMcpServerConfig(
-        command: MemoryDaemonLaunch.resolveExecutable(currentDirectory: _cwd),
-        daemonUrl: endpoint.baseUrl,
-        token: endpoint.token,
-        review: memory.review,
-        maintenance: memory.maintenance,
-      );
-      final environment = <String, String>{};
-      final rawEnvironment = config['env'];
-      if (rawEnvironment is List) {
-        for (final item in rawEnvironment.whereType<Map>()) {
-          final name = item['name'];
-          final value = item['value'];
-          if (name is String && value is String) environment[name] = value;
-        }
-      }
-      return <Map<String, Object?>>[
-        <String, Object?>{
-          'name': config['name'],
-          'type': config['type'],
-          'command': config['command'],
-          'args': config['args'],
-          'environment': environment,
-        },
-      ];
-    } catch (_) {
-      return const <Map<String, Object?>>[];
-    }
-  }
-
-  String _memoryScopeCwd() {
-    final sessionCwd = _controller.currentSession?.cwd.trim();
-    if (sessionCwd != null && sessionCwd.isNotEmpty) return sessionCwd;
-    return _cwd;
-  }
-
-  String _memoryUserId() {
-    final user = Platform.environment['USER']?.trim();
-    return user == null || user.isEmpty ? 'local-user' : user;
   }
 
   void _ensureControllersForSelectableAgents(AcpClientConfig config) {
@@ -2576,7 +1677,6 @@ class _AcpClientAppState extends State<AcpClientApp>
     AcpClientConfig nextConfig, {
     bool rebuild = true,
   }) {
-    _reconcileMemoryDaemon(nextConfig.memory, nextConfig.storage);
     final taskCleanup = _stopTaskInboxTransition();
     final staleControllers = _takeCachedControllers();
     _config = nextConfig;
@@ -2591,7 +1691,6 @@ class _AcpClientAppState extends State<AcpClientApp>
       );
     }
     _configureTaskInboxController(previousCleanup: taskCleanup);
-    _ensureMemoryDaemonIfEnabled(nextConfig.memory, nextConfig.storage);
     if (rebuild && mounted) setState(() {});
   }
 
@@ -3739,14 +2838,12 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   ChatController _activateAgent(AcpClientConfig nextConfig) {
-    _reconcileMemoryDaemon(nextConfig.memory, nextConfig.storage);
     final controller = _cachedControllerFor(nextConfig);
     _ensureControllersForSelectableAgents(nextConfig);
     setState(() {
       _config = nextConfig;
       _controller = controller;
     });
-    _ensureMemoryDaemonIfEnabled(nextConfig.memory, nextConfig.storage);
     return controller;
   }
 
@@ -3804,7 +2901,6 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   AcpAgentClient _defaultAgentClient(
     AcpClientConfig config, {
-    bool includeMemoryMcp = true,
     bool restrictedAssistant = false,
   }) {
     final server = config.activeAgentServer;
@@ -3844,10 +2940,6 @@ class _AcpClientAppState extends State<AcpClientApp>
           : config.mcpServers
                 .map(_rustMcpServerProjection)
                 .toList(growable: false),
-      mcpServersProvider:
-          !restrictedAssistant && includeMemoryMcp && config.memory.enabled
-          ? () => _memoryMcpServers(config.memory, config.storage)
-          : null,
       envOverrides: server.env,
       additionalDirectories: restrictedAssistant
           ? const <String>[]
@@ -3971,7 +3063,6 @@ class _AcpClientAppState extends State<AcpClientApp>
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
-      'memory': config.memory.toJson(),
       'storage': config.storage.toJson(),
       'configPath': config.configPath,
       'defaultAgentServerName': config.defaultAgentServerName,
@@ -3988,7 +3079,6 @@ class _AcpClientAppState extends State<AcpClientApp>
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
-      'memory': config.memory.toJson(),
       'runtimeSecretGeneration': config.runtimeSecretGeneration,
     });
   }
