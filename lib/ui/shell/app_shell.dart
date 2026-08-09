@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
@@ -54,6 +55,7 @@ class AppShell extends StatelessWidget {
     this.workspaceStateStore,
     this.defaultAgentName,
     this.startupError,
+    this.onRetryStartup,
     this.canSwitchAgent = true,
     this.autoLoadWorkspaceSessions = true,
     this.onSelectAgent,
@@ -87,6 +89,7 @@ class AppShell extends StatelessWidget {
   final WorkspaceSidebarStateStore? workspaceStateStore;
   final String? defaultAgentName;
   final String? startupError;
+  final VoidCallback? onRetryStartup;
   final bool canSwitchAgent;
   final bool autoLoadWorkspaceSessions;
   final ValueChanged<String>? onSelectAgent;
@@ -240,16 +243,131 @@ class AppShell extends StatelessWidget {
           body: SafeArea(
             child: Column(
               children: [
-                if (startupError != null) ErrorBanner(message: startupError!),
+                if (startupError != null)
+                  ErrorBanner(
+                    message: startupError!,
+                    detail: configPath,
+                    onOpen: configPath == null || configPath!.trim().isEmpty
+                        ? null
+                        : () => unawaited(_openConfig(context)),
+                    onRetry: onRetryStartup,
+                    onCopy: () => unawaited(
+                      _copyDiagnostics(
+                        context,
+                        message: startupError!,
+                        detail: configPath,
+                      ),
+                    ),
+                  ),
                 if (controller.lastError != null)
-                  ErrorBanner(message: controller.lastError!),
+                  ErrorBanner(
+                    message: controller.lastError!,
+                    onRetry: canReconnect ? controller.reconnect : null,
+                    onCopy: () => unawaited(
+                      _copyDiagnostics(context, message: controller.lastError!),
+                    ),
+                  ),
                 Expanded(
                   child: ColoredBox(
                     color: AppColors.surface,
                     child: LayoutBuilder(
                       builder: (context, constraints) {
-                        final hideSidebar = constraints.maxWidth < 760;
-                        final hideInspector = constraints.maxWidth < 1120;
+                        final hideSidebar = constraints.maxWidth < 780;
+                        final hideInspector = constraints.maxWidth < 1180;
+                        Widget buildInspector() => WorkspaceInspector(
+                          workspace: currentWorkspace,
+                          agentName: agentName,
+                          currentSession: controller.currentSession,
+                          sessionSettings: controller.sessionSettings,
+                          sessionUsage: controller.sessionUsage,
+                          lastLatency: controller.lastLatency,
+                          onConfigOptionSelected:
+                              controller.currentSession != null &&
+                                  sessionActionsEnabled
+                              ? (configId, value) => unawaited(
+                                  controller.setConfigOption(configId, value),
+                                )
+                              : null,
+                          onShowSessionSettings: () =>
+                              _showSessionSettingsDialog(context),
+                          onShowCapabilities: () =>
+                              _showCapabilitiesDialog(context),
+                          mcpServers: mcpServers,
+                          additionalDirectories: additionalDirectories,
+                          clientProviders: clientProviders,
+                          configPath: configPath,
+                        );
+                        Widget buildSidebar() => _ShellSidebar(
+                          agentName: agentName,
+                          workspaceSidebar: WorkspaceSidebar(
+                            agentName: agentName,
+                            workspaces: workspaceController.workspaces,
+                            currentWorkspace: currentWorkspace,
+                            currentSession: controller.currentSession,
+                            onNewSession: startNewSession,
+                            onNewSessionInWorkspace: startNewSessionInWorkspace,
+                            onResumeSession: canResumeSessions
+                                ? () => _showResumeDialog(context)
+                                : null,
+                            onSelectSession: onSelectSession,
+                            canForkSession: canForkSession,
+                            onSessionMenuAction: onSessionMenuAction == null
+                                ? null
+                                : (session, action) => onSessionMenuAction!(
+                                    context,
+                                    session,
+                                    action,
+                                  ),
+                            onLoadWorkspaceSessions: canLoadWorkspaceSessions
+                                ? (_) async {
+                                    final loader = onLoadSessionCatalogs;
+                                    if (loader != null) {
+                                      await loader();
+                                    } else {
+                                      await _loadSessionCatalogs(
+                                        sessionControllerList,
+                                      );
+                                    }
+                                  }
+                                : null,
+                            onRevealWorkspace: (workspace) => unawaited(
+                              _revealWorkspaceInFinder(context, workspace),
+                            ),
+                            onCreateWorkspaceWorktree:
+                                onCreateWorkspaceWorktree == null
+                                ? null
+                                : (workspace) => onCreateWorkspaceWorktree!(
+                                    context,
+                                    workspace,
+                                  ),
+                            onArchiveWorkspaceSessions:
+                                onArchiveWorkspaceSessions == null
+                                ? null
+                                : (workspace) => onArchiveWorkspaceSessions!(
+                                    context,
+                                    workspace,
+                                  ),
+                            stateStore: workspaceStateStore,
+                            gitWorkspaceDetector: gitWorkspaceDetector,
+                          ),
+                        );
+                        void showCompactPanel({
+                          required String title,
+                          required WidgetBuilder builder,
+                        }) {
+                          unawaited(
+                            showModalBottomSheet<void>(
+                              context: context,
+                              isScrollControlled: true,
+                              backgroundColor: Colors.transparent,
+                              builder: (sheetContext) => _CompactPanelSheet(
+                                title: title,
+                                child: builder(sheetContext),
+                              ),
+                            ),
+                          );
+                        }
+
                         Widget conversationColumn(
                           BuildContext context,
                           FilePreviewLinkHandler onTapLink,
@@ -316,6 +434,23 @@ class AppShell extends StatelessWidget {
                                     ? controller.reconnect
                                     : null,
                               ),
+                              if (hideSidebar || hideInspector)
+                                _CompactShellNavigation(
+                                  showWorkspaces: hideSidebar,
+                                  showContext: hideInspector,
+                                  onShowWorkspaces: hideSidebar
+                                      ? () => showCompactPanel(
+                                          title: 'Workspaces',
+                                          builder: (_) => buildSidebar(),
+                                        )
+                                      : null,
+                                  onShowContext: hideInspector
+                                      ? () => showCompactPanel(
+                                          title: 'Context',
+                                          builder: (_) => buildInspector(),
+                                        )
+                                      : null,
+                                ),
                               Expanded(
                                 child: ChatTimeline(
                                   key: ValueKey(
@@ -334,14 +469,11 @@ class AppShell extends StatelessWidget {
                                       controller.currentSession?.displayTitle,
                                   isLoadingSession:
                                       controller.isSessionReplayLoading,
-                                  // In compact windows the toolbar collapses the
-                                  // action to an unlabeled icon. Keep one explicit
-                                  // entry point next to the empty-state guidance.
-                                  showNewSessionAction:
-                                      constraints.maxWidth < 1120,
-                                  onNewSession: constraints.maxWidth < 1120
-                                      ? startNewSession
-                                      : null,
+                                  // The empty state owns an explicit primary
+                                  // action at every width. The toolbar remains a
+                                  // persistent shortcut for experienced users.
+                                  showNewSessionAction: true,
+                                  onNewSession: startNewSession,
                                   onTapLink: onTapLink,
                                 ),
                               ),
@@ -356,29 +488,7 @@ class AppShell extends StatelessWidget {
                           conversationBuilder: conversationColumn,
                           showInspector: !hideInspector,
                           processRunner: processRunner,
-                          inspector: WorkspaceInspector(
-                            workspace: currentWorkspace,
-                            agentName: agentName,
-                            currentSession: controller.currentSession,
-                            sessionSettings: controller.sessionSettings,
-                            sessionUsage: controller.sessionUsage,
-                            lastLatency: controller.lastLatency,
-                            onConfigOptionSelected:
-                                controller.currentSession != null &&
-                                    sessionActionsEnabled
-                                ? (configId, value) => unawaited(
-                                    controller.setConfigOption(configId, value),
-                                  )
-                                : null,
-                            onShowSessionSettings: () =>
-                                _showSessionSettingsDialog(context),
-                            onShowCapabilities: () =>
-                                _showCapabilitiesDialog(context),
-                            mcpServers: mcpServers,
-                            additionalDirectories: additionalDirectories,
-                            clientProviders: clientProviders,
-                            configPath: configPath,
-                          ),
+                          inspector: buildInspector(),
                         );
 
                         if (hideSidebar) return previewWorkspace;
@@ -386,73 +496,7 @@ class AppShell extends StatelessWidget {
                         return Row(
                           children: [
                             if (!hideSidebar) ...[
-                              SizedBox(
-                                width: 312,
-                                child: _ShellSidebar(
-                                  agentName: agentName,
-                                  workspaceSidebar: WorkspaceSidebar(
-                                    agentName: agentName,
-                                    workspaces: workspaceController.workspaces,
-                                    currentWorkspace: currentWorkspace,
-                                    currentSession: controller.currentSession,
-                                    onNewSession: startNewSession,
-                                    onNewSessionInWorkspace:
-                                        startNewSessionInWorkspace,
-                                    onResumeSession: canResumeSessions
-                                        ? () => _showResumeDialog(context)
-                                        : null,
-                                    onSelectSession: onSelectSession,
-                                    canForkSession: canForkSession,
-                                    onSessionMenuAction:
-                                        onSessionMenuAction == null
-                                        ? null
-                                        : (session, action) =>
-                                              onSessionMenuAction!(
-                                                context,
-                                                session,
-                                                action,
-                                              ),
-                                    onLoadWorkspaceSessions:
-                                        canLoadWorkspaceSessions
-                                        ? (_) async {
-                                            final loader =
-                                                onLoadSessionCatalogs;
-                                            if (loader != null) {
-                                              await loader();
-                                            } else {
-                                              await _loadSessionCatalogs(
-                                                sessionControllerList,
-                                              );
-                                            }
-                                          }
-                                        : null,
-                                    onRevealWorkspace: (workspace) => unawaited(
-                                      _revealWorkspaceInFinder(
-                                        context,
-                                        workspace,
-                                      ),
-                                    ),
-                                    onCreateWorkspaceWorktree:
-                                        onCreateWorkspaceWorktree == null
-                                        ? null
-                                        : (workspace) =>
-                                              onCreateWorkspaceWorktree!(
-                                                context,
-                                                workspace,
-                                              ),
-                                    onArchiveWorkspaceSessions:
-                                        onArchiveWorkspaceSessions == null
-                                        ? null
-                                        : (workspace) =>
-                                              onArchiveWorkspaceSessions!(
-                                                context,
-                                                workspace,
-                                              ),
-                                    stateStore: workspaceStateStore,
-                                    gitWorkspaceDetector: gitWorkspaceDetector,
-                                  ),
-                                ),
-                              ),
+                              SizedBox(width: 320, child: buildSidebar()),
                               const VerticalDivider(
                                 width: 1,
                                 color: AppColors.border,
@@ -471,6 +515,35 @@ class AppShell extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _openConfig(BuildContext context) async {
+    final path = configPath?.trim();
+    if (path == null || path.isEmpty) return;
+    try {
+      await openPathExternally(path, processRunner: processRunner);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not open config: $error')));
+    }
+  }
+
+  Future<void> _copyDiagnostics(
+    BuildContext context, {
+    required String message,
+    String? detail,
+  }) async {
+    final diagnostic = <String>[
+      message.trim(),
+      if (detail?.trim().isNotEmpty == true) 'Config: ${detail!.trim()}',
+    ].join('\n');
+    await Clipboard.setData(ClipboardData(text: diagnostic));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Diagnostics copied')));
   }
 
   Future<void> _showCapabilitiesDialog(BuildContext context) async {
@@ -861,6 +934,128 @@ class AppShell extends StatelessWidget {
   }
 }
 
+class _CompactShellNavigation extends StatelessWidget {
+  const _CompactShellNavigation({
+    required this.showWorkspaces,
+    required this.showContext,
+    required this.onShowWorkspaces,
+    required this.onShowContext,
+  });
+
+  final bool showWorkspaces;
+  final bool showContext;
+  final VoidCallback? onShowWorkspaces;
+  final VoidCallback? onShowContext;
+
+  @override
+  Widget build(BuildContext context) {
+    final buttonStyle = TextButton.styleFrom(
+      foregroundColor: AppColors.textSecondary,
+      minimumSize: const Size(0, 44),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      textStyle: AppTypography.label.copyWith(fontSize: 12),
+      visualDensity: VisualDensity.standard,
+      tapTargetSize: MaterialTapTargetSize.padded,
+    );
+    return Container(
+      key: const Key('compact-shell-navigation'),
+      height: 45,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceRaised,
+        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
+      ),
+      child: Row(
+        children: [
+          if (showWorkspaces)
+            TextButton.icon(
+              key: const Key('compact-workspaces-button'),
+              onPressed: onShowWorkspaces,
+              icon: const Icon(Icons.view_sidebar_outlined, size: 17),
+              label: const Text('Workspaces'),
+              style: buttonStyle,
+            ),
+          const Spacer(),
+          if (showContext)
+            TextButton.icon(
+              key: const Key('compact-context-button'),
+              onPressed: onShowContext,
+              icon: const Icon(Icons.menu_book_outlined, size: 17),
+              label: const Text('Context'),
+              style: buttonStyle,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactPanelSheet extends StatelessWidget {
+  const _CompactPanelSheet({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final height = (size.height * 0.9).clamp(360.0, 760.0).toDouble();
+    return SafeArea(
+      top: false,
+      child: Align(
+        alignment: Alignment.bottomCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 620),
+          child: Container(
+            height: height,
+            decoration: const BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(AppRadius.xl),
+              ),
+              boxShadow: AppShadows.floatingPanel,
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                SizedBox(
+                  height: 50,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 6, 8, 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontFamily: AppTypography.family,
+                              fontFamilyFallback: AppTypography.familyFallback,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close $title',
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: const Icon(Icons.close_rounded, size: 19),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const Divider(height: 1, color: AppColors.border),
+                Expanded(child: child),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ShellSidebar extends StatelessWidget {
   const _ShellSidebar({
     required this.agentName,
@@ -892,8 +1087,8 @@ class _SidebarBrandHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 40,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      height: 52,
+      padding: const EdgeInsets.symmetric(horizontal: 18),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AppColors.border)),
       ),
@@ -904,9 +1099,9 @@ class _SidebarBrandHeader extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: 15,
+              fontSize: 16,
               fontWeight: FontWeight.w600,
-              letterSpacing: 0,
+              letterSpacing: -0.1,
             ),
           ),
           if (agentName != 'Codex') ...[
@@ -950,7 +1145,7 @@ class _AuthMethodTile extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(
           color: AppColors.textPrimary,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),

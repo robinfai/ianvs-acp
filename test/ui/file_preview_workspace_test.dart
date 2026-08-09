@@ -102,40 +102,46 @@ void main() {
     },
   );
 
-  testWidgets('inspector is a floating card in a reserved right region', (
-    tester,
-  ) async {
-    final workspace = createWorkspace();
-    tester.view.physicalSize = const Size(1200, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+  testWidgets(
+    'inspector is a full-height pane beside the conversation canvas',
+    (tester) async {
+      final workspace = createWorkspace();
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(
-      previewApp(workspacePath: workspace.path, markdown: 'Ready.'),
-    );
+      await tester.pumpWidget(
+        previewApp(workspacePath: workspace.path, markdown: 'Ready.'),
+      );
 
-    final surfaceRect = tester.getRect(
-      find.byKey(const Key('workspace-inspector-surface')),
-    );
-    final workspaceRect = tester.getRect(find.byType(FilePreviewWorkspace));
-    expect(surfaceRect.top, 12);
-    expect(surfaceRect.right, workspaceRect.right - 18);
-    expect(surfaceRect.width, 318);
-    expect(surfaceRect.height, 520);
-    expect(surfaceRect.bottom, lessThan(800));
+      final surfaceRect = tester.getRect(
+        find.byKey(const Key('workspace-inspector-surface')),
+      );
+      final workspaceRect = tester.getRect(find.byType(FilePreviewWorkspace));
+      expect(surfaceRect.top, workspaceRect.top);
+      expect(surfaceRect.right, workspaceRect.right);
+      expect(surfaceRect.width, 320);
+      expect(surfaceRect.height, workspaceRect.height);
+      expect(surfaceRect.bottom, workspaceRect.bottom);
 
-    final surface = tester.widget<Container>(
-      find.byKey(const Key('workspace-inspector-surface')),
-    );
-    final decoration = surface.decoration! as BoxDecoration;
-    expect(decoration.borderRadius, BorderRadius.circular(18));
-    expect(decoration.border, isNull);
-    expect(decoration.boxShadow, isNotEmpty);
-    final foregroundDecoration = surface.foregroundDecoration! as BoxDecoration;
-    expect(foregroundDecoration.borderRadius, BorderRadius.circular(18));
-    expect(foregroundDecoration.border, isNotNull);
-  });
+      final surface = tester.widget<Container>(
+        find.byKey(const Key('workspace-inspector-surface')),
+      );
+      final decoration = surface.decoration! as BoxDecoration;
+      expect(decoration.borderRadius, isNull);
+      expect(decoration.border, isNotNull);
+      expect(decoration.boxShadow, isNull);
+      expect(surface.foregroundDecoration, isNull);
+
+      final canvasRect = tester.getRect(
+        find.byKey(const Key('conversation-canvas-surface')),
+      );
+      expect(canvasRect.top, workspaceRect.top + 12);
+      expect(canvasRect.bottom, workspaceRect.bottom - 12);
+      expect(canvasRect.right, surfaceRect.left - 12);
+    },
+  );
 
   testWidgets(
     'reuses one tab for the same file and updates the selected line',

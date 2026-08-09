@@ -35,7 +35,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
         style: TextStyle(
           color: AppColors.textPrimary,
           fontSize: 17,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -51,7 +51,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
                 style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 15,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               if (agentName != null && agentName.isNotEmpty) ...[
@@ -61,7 +61,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
                   style: const TextStyle(
                     color: AppColors.textSecondary,
                     fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -95,7 +95,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
             ),
             textStyle: const TextStyle(
               fontSize: 13,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
             ),
           ),
           child: const Text('Cancel'),
@@ -109,7 +109,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
             ),
             textStyle: const TextStyle(
               fontSize: 13,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
             ),
           ),
           child: const Text('Resume Session'),
@@ -155,7 +155,7 @@ class _WorkspacePath extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textTertiary,
               fontSize: 11,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 4),
@@ -163,7 +163,8 @@ class _WorkspacePath extends StatelessWidget {
             path,
             style: const TextStyle(
               color: AppColors.textPrimary,
-              fontFamily: 'monospace',
+              fontFamily: AppTypography.monoFamily,
+              fontFamilyFallback: AppTypography.monoFallback,
               fontSize: 12,
               height: 1.35,
             ),

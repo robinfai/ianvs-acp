@@ -20,6 +20,7 @@ class AuditFixture {
       controller: controller,
       config: auditSeedConfig,
       startupError: startupError,
+      onRetryStartup: startupError == null ? null : () {},
     );
   }
 
@@ -103,7 +104,7 @@ final AcpClientConfig auditSeedConfig = AcpClientConfig.fromJson({
       },
     },
   },
-});
+}, configPath: '/Users/robinfai/.config/ianvs-acp/settings.json');
 
 const AcpSessionSettings auditSeedSettings = AcpSessionSettings(
   modes: AcpSessionModeInfo(

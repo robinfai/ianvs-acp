@@ -212,7 +212,7 @@ class _CapabilitySummary extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.primaryMist,
         borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)),
+        border: Border.all(color: AppColors.borderSoft),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -229,45 +229,28 @@ class _CapabilitySummary extends StatelessWidget {
                 'Capability summary',
                 style: TextStyle(
                   color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 8),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final width = constraints.maxWidth < 520
-                  ? constraints.maxWidth
-                  : (constraints.maxWidth - 8) / 2;
-              return Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  SizedBox(
-                    width: width,
-                    child: _SummaryPanel(
-                      title: 'Ready now',
-                      icon: Icons.check_circle_outline_rounded,
-                      color: AppColors.success,
-                      items: readyItems,
-                      emptyLabel: 'No advertised capability yet',
-                    ),
-                  ),
-                  SizedBox(
-                    width: width,
-                    child: _SummaryPanel(
-                      title: 'Needs attention',
-                      icon: Icons.info_outline_rounded,
-                      color: AppColors.warning,
-                      items: attentionItems,
-                      emptyLabel: 'No obvious gaps',
-                    ),
-                  ),
-                ],
-              );
-            },
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _SummaryChip(
+                label: '${readyItems.length} ready',
+                color: AppColors.success,
+              ),
+              _SummaryChip(
+                label: '${attentionItems.length} need attention',
+                color: attentionItems.isEmpty
+                    ? AppColors.textTertiary
+                    : AppColors.warning,
+              ),
+            ],
           ),
         ],
       ),
@@ -306,67 +289,6 @@ class _CapabilitySummary extends StatelessWidget {
   }
 }
 
-class _SummaryPanel extends StatelessWidget {
-  const _SummaryPanel({
-    required this.title,
-    required this.icon,
-    required this.color,
-    required this.items,
-    required this.emptyLabel,
-  });
-
-  final String title;
-  final IconData icon;
-  final Color color;
-  final List<_SummaryItem> items;
-  final String emptyLabel;
-
-  @override
-  Widget build(BuildContext context) {
-    final labels = items.isEmpty
-        ? [emptyLabel]
-        : items.map((item) => item.label).toList(growable: false);
-    return Container(
-      constraints: const BoxConstraints(minHeight: 78),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 14, color: color),
-              const SizedBox(width: 5),
-              Text(
-                title,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 7),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final label in labels)
-                _SummaryChip(label: label, color: color),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _SummaryChip extends StatelessWidget {
   const _SummaryChip({required this.label, required this.color});
 
@@ -389,7 +311,7 @@ class _SummaryChip extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.textPrimary,
           fontSize: 11,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -447,12 +369,9 @@ class _Section extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
+      padding: const EdgeInsets.fromLTRB(2, 12, 2, 12),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -465,7 +384,7 @@ class _Section extends StatelessWidget {
                 title,
                 style: const TextStyle(
                   color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -520,13 +439,19 @@ class _Pill extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 320),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.09),
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: AppColors.borderSoft),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
           Flexible(
             child: Text(
               label,
@@ -534,7 +459,7 @@ class _Pill extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 11,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -547,7 +472,7 @@ class _Pill extends StatelessWidget {
               style: TextStyle(
                 color: color,
                 fontSize: 11,
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -646,7 +571,7 @@ class _RawSectionState extends State<_RawSection> {
           'Raw capability data',
           style: TextStyle(
             color: AppColors.textPrimary,
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w600,
           ),
         ),
         leading: const Icon(Icons.data_object_rounded),
@@ -746,7 +671,7 @@ class _RawBlock extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.primaryDark,
               fontSize: 12,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 6),
@@ -754,7 +679,8 @@ class _RawBlock extends StatelessWidget {
             preview.text,
             style: const TextStyle(
               color: AppColors.textSecondary,
-              fontFamily: 'monospace',
+              fontFamily: AppTypography.monoFamily,
+              fontFamilyFallback: AppTypography.monoFallback,
               fontSize: 12,
               height: 1.35,
             ),
@@ -768,7 +694,7 @@ class _RawBlock extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.warning,
                 fontSize: 11,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ],

@@ -36,7 +36,7 @@ class SessionSidebar extends StatelessWidget {
                 Text(
                   'Sessions',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     color: AppColors.textPrimary,
                     letterSpacing: 0,
                   ),
@@ -112,7 +112,7 @@ class _EmptySessions extends StatelessWidget {
                     style: TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: compact ? 15 : 16,
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       letterSpacing: 0,
                     ),
                   ),
@@ -140,7 +140,7 @@ class _EmptySessions extends StatelessWidget {
                       ),
                       textStyle: TextStyle(
                         fontSize: compact ? 12 : 13,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -218,7 +218,7 @@ class _SessionTile extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           color: AppColors.textPrimary,
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                           fontSize: 12,
                           letterSpacing: 0,
                         ),
@@ -293,7 +293,7 @@ class _AgentPill extends StatelessWidget {
           style: const TextStyle(
             color: AppColors.primaryDark,
             fontSize: 10,
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
         ),

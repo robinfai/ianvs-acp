@@ -128,6 +128,78 @@ Old ACP replay events do not always carry the original elapsed-time metadata or 
 
 final result: passed
 
+## Conversation Canvas full-flow redesign — 2026-08-09
+
+### Visual truth and evidence
+
+- Selected ImageGen reference: `artifacts/design-reference/conversation-canvas-option-2.png` (1487 × 1058 px).
+- Reference direction: a native macOS ACP client influenced by Codex and ChatGPT, with a quiet workspace sidebar, dominant conversation canvas, full-height Context inspector, restrained teal interaction states, and one grounded multiline composer.
+- Native implementation capture: `artifacts/ui-redesign-2026-08-09/active-conversation-native.png` (1224 × 768 px), captured from the running macOS Flutter app with a deterministic active ACP session.
+- Deterministic implementation capture: `docs/design-audit-2026-06-05/screenshots/03-active-conversation.png` (1440 × 900 logical px at DPR 1).
+- Required combined comparisons: `artifacts/ui-redesign-2026-08-09/reference-vs-native.png` and `artifacts/ui-redesign-2026-08-09/reference-vs-active-conversation.png`. The two panels were normalized to the same comparison width and padded rather than cropped, preserving the full reference and implementation states.
+- Full-flow evidence: `artifacts/ui-redesign-2026-08-09/full-flow-contact-sheet.png`, backed by ten individual screenshots under `docs/design-audit-2026-06-05/screenshots/`.
+
+### Comparison history
+
+- Iteration 1 — P1 typography: process commentary inherited a semibold treatment and had no visible agent identity, making the response feel heavier and less conversational than the selected design. Fixed by rendering assistant prose at regular weight and adding a compact teal sparkle plus dynamic agent-name label.
+- Iteration 1 — P2 structure: the previous empty-preview layout treated the inspector as a floating card and allowed the conversation to blend into the surrounding shell. Fixed by introducing one bounded conversation canvas and a flat, full-height 320 px inspector separated by a single divider.
+- Iteration 2 — P2 flow coverage: the visual audit still attempted to open settings from removed toolbar affordances. Fixed by following the redesigned Context → Diagnostics flow, then capturing the actual Session settings and ACP compatibility dialogs.
+- Iteration 2 — P2 test typography: the audit renderer loaded a different family from the production theme, so layout screenshots used fallback block glyphs for normal text. Fixed by loading the deterministic audit font under `AppTypography.family`; the production native capture continues to use the macOS system and Chinese fallbacks.
+- Iteration 3: the selected reference and implementation were recomposed in one comparison input. No actionable P0, P1, or P2 layout, typography, color, image-quality, interaction, or responsiveness issue remained.
+
+### Fidelity surfaces
+
+- Fonts and typography: the app now uses `.AppleSystemUIFont` with SF Pro Text, PingFang SC, Helvetica Neue, and Arial fallbacks; code uses SF Mono with Menlo/Monaco fallbacks. Product text is limited to regular, medium, and semibold hierarchy, with no `w800` or `w900` production usage.
+- Spacing and layout: the desktop shell preserves the reference's three-column rhythm, 320 px navigation and inspector panes, a 744 px reading measure, quiet 52 px toolbar, 760 px composer, generous turn spacing, and restrained radii, borders, and shadows. At narrower widths the inspector and then sidebar collapse without overlapping the conversation.
+- Colors and tokens: warm neutral backgrounds, pure reading surfaces, soft gray borders, charcoal copy, and a reserved teal accent map directly to selection, focus, agent identity, and inspector tabs. Safety, warning, success, and destructive states retain semantic colors.
+- Image quality and icons: the selected ImageGen bitmap is preserved as the visual source rather than embedded as product UI. The implementation uses the existing Material icon system; no placeholder illustration, custom SVG, CSS art, or fabricated asset was introduced.
+- Copy, behavior, accessibility, and responsiveness: dynamic ACP copy remains intact; workspace search, session selection, agent menu, resume/new-session flows, Context diagnostics, dialogs, permission review, errors, composer controls, focus states, labels, and keyboard semantics remain operational. The 390 × 844 scenario has no clipping or overflow.
+
+### Automated verification before independent acceptance
+
+- `flutter analyze --no-pub`: no issues.
+- `./tool/flutter_test_isolated.sh`: 1303 tests passed.
+- `./tool/flutter_test_isolated.sh --update-goldens docs/design-audit-2026-06-05/audit_screenshots_test.dart`: ten full-flow states passed and their accepted images were regenerated.
+- Native macOS build and launch: passed; the active conversation, system-font rendering, three-column layout, composer, and accessibility tree were inspected directly.
+- `git diff --check`: passed; production code contains no `FontWeight.w800` or `FontWeight.w900` usage.
+
+### Independent subagent acceptance
+
+- Re-inspected the selected ImageGen reference and the native/deterministic comparison inputs together, then reviewed the active conversation, permission request, error, dialog, and 390 × 844 narrow-window evidence. No actionable P0, P1, or P2 visual issue remained.
+- `flutter analyze --no-pub`: no issues.
+- `./tool/flutter_test_isolated.sh`: 1303 tests passed.
+- `./tool/flutter_test_isolated.sh docs/design-audit-2026-06-05/audit_screenshots_test.dart` (non-update mode): all ten full-flow screenshots passed against the accepted baselines.
+- `git diff --check`: passed.
+- Production typography scan: 16 `w400`, 28 `w500`, and 235 `w600` declarations; zero `w700`, `w800`, or `w900` declarations and no hard-coded `fontFamily: 'monospace'` or `fontFamily: 'SF Mono'` usage.
+
+### Feedback-driven final acceptance
+
+- Final ten-state contact sheet: `artifacts/ui-iteration-2026-08-09/full-flow-contact-sheet-final.png`.
+- Final same-input comparison against the selected ImageGen direction: `artifacts/ui-iteration-2026-08-09/reference-vs-active-final.png`.
+- R1–R8 are closed: deterministic fonts and icons render without block-glyph evidence; empty state has a primary New Session action; startup failure exposes Open config, Retry, and copy diagnostics; compact mode preserves labeled Workspaces and Context panels; dialogs use a quiet one-pixel border with no heavy shadow; permission review uses a restrained warm surface and 44 px decisions; active sessions default to Context; plans and commands remain inline in the conversation canvas.
+- Final visual refinement removed the remaining heavy PopupMenu/Dialog outline, restored readable compact-navigation labels, and replaced the mixed-language permission heading with `Tool call approval required`.
+- Three independent read-only subagent reviews covered visual fidelity, flow/accessibility, and Codex/ChatGPT style consistency. Their final current-run conclusion was unanimous: no remaining P0, P1, or P2 issue.
+- `flutter analyze --no-pub`: no issues.
+- `./tool/flutter_test_isolated.sh`: 1303/1303 passed after correcting two title-first resume-dialog test finders and the permission-heading expectation.
+- `./tool/flutter_test_isolated.sh docs/design-audit-2026-06-05/audit_screenshots_test.dart` in non-update mode: 10/10 passed.
+- `git diff --check`: passed. Production code contains only regular, medium, and semibold weights; no `w700`, `w800`, or `w900` declarations and no hard-coded monospace family remain.
+
+### Native four-choice ACP permission smoke — 2026-08-09
+
+- A real Codex ACP session was launched in the rebuilt macOS client at 800 × 632 px. The request `touch /etc/ianvs-acp-permission-smoke-2` produced the runtime's actual four structured choices: Reject, Allow Once, Allow for Session, and Allow Commands Starting With.
+- The first native run exposed a 93 px bottom overflow because all four choices, the close action, the permission-policy chip, and model controls competed for one compact composer. The permission surface now keeps the safest high-frequency decisions—Reject and Allow Once—in the primary row, moves persistent grants into a labeled More menu, hides unrelated model/session configuration while the request is pending, and removes the duplicated service chip.
+- An independent post-smoke subagent review found that the first fix only collapsed requests with more than three choices, leaving a three-choice `Allow once / Always allow / Reject` payload able to feature the persistent grant. The final implementation groups by choice semantics instead of choice count: one safe denial and one single-use allow may be featured, while every remaining choice—including persistent grants—stays in More.
+- Final native evidence: `artifacts/ui-iteration-2026-08-09/native-permission-final.png`; persistent-choice menu evidence: `artifacts/ui-iteration-2026-08-09/native-permission-more-menu-final.png`. Both were captured from the rebuilt production macOS app, not the deterministic test renderer.
+- The live request was rejected through the UI. `/etc/ianvs-acp-permission-smoke-2` remained absent, confirming the denial path reached the ACP runtime without executing the command.
+- Permission-policy descriptions now state the actual behavior: manual requests are confirmed by the user, auto-review requests fall back to confirmation when unresolved, and full access automatically approves agent requests.
+- `./tool/flutter_test_isolated.sh test/ui/prompt_input_test.dart`: 61/61 passed, including a 480 × 535 regression using the real four-choice payload and model options plus a three-choice regression that keeps `Always allow` in More and returns its exact ACP option id.
+- `./tool/flutter_test_isolated.sh`: 1304/1304 passed.
+- `flutter analyze --no-pub`: no issues.
+- `./tool/flutter_test_isolated.sh docs/design-audit-2026-06-05/audit_screenshots_test.dart` in non-update mode: 10/10 passed after accepting the intentional permission-composer change.
+- `git diff --check`: passed. The refreshed ten-state sheet is `artifacts/ui-iteration-2026-08-09/full-flow-contact-sheet-final.png`.
+
+final result: passed
+
 ## Markdown file references and code blocks — 2026-08-02
 
 ### Visual truth and rendered evidence

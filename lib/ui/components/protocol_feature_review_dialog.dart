@@ -528,7 +528,7 @@ class _Overview extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 12,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -566,7 +566,7 @@ class _FeaturePanel extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w900,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -612,7 +612,7 @@ class _DetailLine extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.textTertiary,
                 fontSize: 12,
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -651,7 +651,7 @@ class _TinyChip extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.textSecondary,
           fontSize: 12,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -680,7 +680,7 @@ class _StatusPill extends StatelessWidget {
         style: TextStyle(
           color: color,
           fontSize: 11,
-          fontWeight: FontWeight.w900,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),

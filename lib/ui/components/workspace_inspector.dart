@@ -43,29 +43,35 @@ class WorkspaceInspector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
+      key: ValueKey(
+        currentSession == null
+            ? 'workspace-inspector-overview'
+            : 'workspace-inspector-context',
+      ),
       length: 2,
+      initialIndex: currentSession == null ? 0 : 1,
       child: Container(
         color: AppColors.surface,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 13, 14, 8),
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
               child: Row(
                 children: [
                   const Icon(
-                    Icons.tune_rounded,
+                    Icons.menu_book_outlined,
                     color: AppColors.textSecondary,
-                    size: 16,
+                    size: 17,
                   ),
-                  const SizedBox(width: 7),
+                  const SizedBox(width: 8),
                   const Expanded(
                     child: Text(
                       'Workspace',
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: AppColors.textPrimary,
-                        fontSize: 13.5,
+                        fontSize: 14,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
@@ -75,26 +81,23 @@ class WorkspaceInspector extends StatelessWidget {
               ),
             ),
             SizedBox(
-              height: 38,
+              height: 40,
               child: TabBar(
                 labelColor: AppColors.textPrimary,
                 unselectedLabelColor: AppColors.textSecondary,
                 dividerColor: Colors.transparent,
                 indicator: const UnderlineTabIndicator(
-                  borderSide: BorderSide(
-                    color: AppColors.textPrimary,
-                    width: 1.5,
-                  ),
+                  borderSide: BorderSide(color: AppColors.accent, width: 2),
                   insets: EdgeInsets.symmetric(horizontal: 26),
                 ),
                 indicatorSize: TabBarIndicatorSize.tab,
                 labelStyle: const TextStyle(
-                  fontSize: 11.5,
+                  fontSize: 12,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
                 unselectedLabelStyle: const TextStyle(
-                  fontSize: 11.5,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                   letterSpacing: 0,
                 ),
@@ -312,7 +315,7 @@ class _SessionConfigRow extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: AppColors.textTertiary,
-                fontSize: 10.5,
+                fontSize: 11,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -781,7 +784,7 @@ class _InfoRow extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: AppColors.textPrimary,
-                fontSize: 11.5,
+                fontSize: 12,
                 height: 1.3,
                 fontWeight: FontWeight.w500,
                 letterSpacing: 0,

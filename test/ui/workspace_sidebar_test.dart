@@ -387,7 +387,7 @@ void main() {
       tester
           .getSize(find.widgetWithText(TextField, 'Search workspaces...'))
           .height,
-      34,
+      40,
     );
     expect(find.bySemanticsLabel('2 workspaces'), findsOneWidget);
     expect(

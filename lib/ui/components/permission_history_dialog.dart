@@ -142,7 +142,7 @@ class _PermissionHistoryEmptyState extends StatelessWidget {
             style: TextStyle(
               color: AppColors.textPrimary,
               fontSize: 14,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -185,7 +185,7 @@ class _ExportStatus extends StatelessWidget {
         style: TextStyle(
           color: color,
           fontSize: 12,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -223,7 +223,7 @@ class _PermissionHistoryRow extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -234,7 +234,7 @@ class _PermissionHistoryRow extends StatelessWidget {
                 style: TextStyle(
                   color: statusColor,
                   fontSize: 12,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -340,7 +340,7 @@ class _MetaChip extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 11,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),

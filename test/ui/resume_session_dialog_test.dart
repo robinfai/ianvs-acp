@@ -514,7 +514,7 @@ void main() {
     await tester.tap(projectTile);
     await tester.pumpAndSettle();
 
-    expect(find.text('Other chat'), findsOneWidget);
+    expect(find.text('Other chat'), findsNWidgets(2));
     expect(_loadButton(tester).onPressed, isNotNull);
 
     await tester.enterText(
@@ -535,7 +535,7 @@ void main() {
     await tester.tap(conversationTile);
     await tester.pumpAndSettle();
 
-    expect(find.text('Beta task'), findsOneWidget);
+    expect(find.text('Beta task'), findsNWidgets(2));
     expect(find.textContaining('Othbetaer'), findsNothing);
     expect(_loadButton(tester).onPressed, isNotNull);
   });

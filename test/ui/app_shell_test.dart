@@ -324,8 +324,8 @@ void main() {
         .first;
     final resumeSize = tester.getSize(resumeButton);
     final newSessionSize = tester.getSize(newSessionButton);
-    expect(resumeSize.width, 32);
-    expect(newSessionSize.width, 32);
+    expect(resumeSize.width, 34);
+    expect(newSessionSize.width, 34);
     expect(resumeSize.height, greaterThanOrEqualTo(31));
     expect(newSessionSize.height, resumeSize.height);
   });
@@ -433,7 +433,7 @@ void main() {
     final sidebarRect = tester.getRect(find.byType(WorkspaceSidebar));
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
 
-    expect(sidebarRect.width, moreOrLessEquals(312));
+    expect(sidebarRect.width, moreOrLessEquals(320));
     expect(promptRect.left, greaterThanOrEqualTo(sidebarRect.right));
     expect(promptRect.right, lessThan(inspectorRect.left));
   });
@@ -483,7 +483,7 @@ void main() {
     },
   );
 
-  testWidgets('AppShell keeps one visible New Session entry on desktop', (
+  testWidgets('AppShell adds an explicit empty-state action on desktop', (
     tester,
   ) async {
     final client = FakeAgentClient();
@@ -509,7 +509,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('ACP Client'), findsOneWidget);
-    expect(find.text('New Session'), findsOneWidget);
+    expect(find.text('New Session'), findsNWidgets(2));
   });
 
   testWidgets('AppShell keeps an explicit New Session action when compact', (
@@ -581,10 +581,7 @@ void main() {
     await tester.tap(find.text('Resume'));
     await tester.pumpAndSettle();
 
-    expect(
-      find.textContaining('pi ACP - Resume this project conversation'),
-      findsWidgets,
-    );
+    expect(find.text('Resume this project conversation'), findsWidgets);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Load'));
     await tester.pumpAndSettle();
@@ -701,9 +698,7 @@ void main() {
     await tester.pumpAndSettle();
     final piConversation = find.descendant(
       of: find.byKey(const ValueKey('resume-conversation-list')),
-      matching: find.textContaining(
-        'pi ACP - Resume this project conversation',
-      ),
+      matching: find.textContaining('pi ACP ·'),
     );
     expect(piConversation, findsOneWidget);
     await tester.tap(piConversation);

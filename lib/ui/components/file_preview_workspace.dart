@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -70,47 +69,38 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
       ),
     );
     if (_activeTab < 0 || _tabs.isEmpty) {
-      return LayoutBuilder(
-        builder: (context, constraints) {
-          final inspectorHeight = constraints.maxHeight.isFinite
-              ? math
-                    .min(520.0, math.max(0.0, constraints.maxHeight - 24))
-                    .toDouble()
-              : 520.0;
-          return Row(
-            children: [
-              Expanded(child: conversation),
-              if (widget.showInspector)
-                SizedBox(
-                  width: 348,
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 18, 0),
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: inspectorHeight,
-                        child: Container(
-                          key: const Key('workspace-inspector-surface'),
-                          clipBehavior: Clip.antiAlias,
-                          decoration: BoxDecoration(
-                            color: AppColors.surface,
-                            borderRadius: BorderRadius.circular(AppRadius.xl),
-                            boxShadow: AppShadows.floatingPanel,
-                          ),
-                          foregroundDecoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(AppRadius.xl),
-                            border: Border.all(color: AppColors.border),
-                          ),
-                          child: widget.inspector,
-                        ),
-                      ),
-                    ),
-                  ),
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Container(
+                key: const Key('conversation-canvas-surface'),
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(AppRadius.xl),
+                  border: Border.all(color: AppColors.borderSoft),
+                  boxShadow: AppShadows.soft,
                 ),
-            ],
-          );
-        },
+                child: conversation,
+              ),
+            ),
+          ),
+          if (widget.showInspector)
+            SizedBox(
+              width: 320,
+              child: Container(
+                key: const Key('workspace-inspector-surface'),
+                decoration: const BoxDecoration(
+                  color: AppColors.surface,
+                  border: Border(left: BorderSide(color: AppColors.border)),
+                ),
+                child: widget.inspector,
+              ),
+            ),
+        ],
       );
     }
 
@@ -527,7 +517,7 @@ class _PreviewTabs extends StatelessWidget {
                                   : AppColors.textSecondary,
                               fontSize: 12,
                               fontWeight: selected
-                                  ? FontWeight.w800
+                                  ? FontWeight.w600
                                   : FontWeight.w600,
                             ),
                           ),
@@ -600,7 +590,7 @@ class _FileBreadcrumb extends StatelessWidget {
                               ? AppColors.textPrimary
                               : AppColors.textSecondary,
                           fontWeight: index == segments.length - 1
-                              ? FontWeight.w800
+                              ? FontWeight.w600
                               : FontWeight.w500,
                         ),
                       ),
@@ -782,7 +772,7 @@ class _MarkdownModeToggle extends StatelessWidget {
           style: const ButtonStyle(
             visualDensity: VisualDensity.compact,
             textStyle: WidgetStatePropertyAll(
-              TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+              TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
             ),
           ),
         ),
@@ -984,19 +974,19 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                               color: AppColors.textPrimary,
                               fontSize: 26,
                               height: 1.22,
-                              fontWeight: FontWeight.w900,
+                              fontWeight: FontWeight.w600,
                             ),
                             h2: const TextStyle(
                               color: AppColors.textPrimary,
                               fontSize: 19,
                               height: 1.3,
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w600,
                             ),
                             h3: const TextStyle(
                               color: AppColors.textPrimary,
                               fontSize: 15,
                               height: 1.35,
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w600,
                             ),
                             p: const TextStyle(
                               color: AppColors.textPrimary,
@@ -1007,19 +997,20 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                               color: AppColors.primaryDark,
                               decoration: TextDecoration.underline,
                               decorationColor: AppColors.primary,
-                              fontWeight: FontWeight.w700,
+                              fontWeight: FontWeight.w600,
                             ),
                             code: const TextStyle(
                               color: AppColors.primaryDark,
                               backgroundColor: AppColors.primaryMist,
-                              fontFamily: 'monospace',
+                              fontFamily: AppTypography.monoFamily,
+                              fontFamilyFallback: AppTypography.monoFallback,
                               fontSize: 12,
                             ),
                             tableBorder: TableBorder.all(
                               color: AppColors.border,
                             ),
                             tableHead: const TextStyle(
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w600,
                             ),
                             tableCellsPadding: const EdgeInsets.symmetric(
                               horizontal: 10,
@@ -1100,7 +1091,7 @@ class _MarkdownOutline extends StatelessWidget {
                           style: TextStyle(
                             color: AppColors.textSecondary,
                             fontSize: 11,
-                            fontWeight: FontWeight.w800,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
@@ -1171,7 +1162,7 @@ class _MarkdownOutlineItem extends StatelessWidget {
               fontSize: 11,
               height: 1.3,
               fontWeight: selected || heading.level == 1
-                  ? FontWeight.w800
+                  ? FontWeight.w600
                   : FontWeight.w600,
             ),
           ),
@@ -1275,7 +1266,8 @@ class _TextFilePreviewState extends State<_TextFilePreview> {
                       color: selected
                           ? AppColors.primaryDark
                           : AppColors.textTertiary,
-                      fontFamily: 'monospace',
+                      fontFamily: AppTypography.monoFamily,
+                      fontFamilyFallback: AppTypography.monoFallback,
                       fontSize: 12,
                       height: 1.5,
                     ),
@@ -1288,7 +1280,8 @@ class _TextFilePreviewState extends State<_TextFilePreview> {
                     maxLines: widget.wrapText ? null : 1,
                     style: const TextStyle(
                       color: AppColors.textPrimary,
-                      fontFamily: 'monospace',
+                      fontFamily: AppTypography.monoFamily,
+                      fontFamilyFallback: AppTypography.monoFallback,
                       fontSize: 12.5,
                       height: 1.5,
                     ),
@@ -1397,7 +1390,7 @@ class _PreviewFailure extends StatelessWidget {
                 style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 15,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 7),
@@ -1501,7 +1494,7 @@ class _PreviewStatus extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.primaryDark,
                 fontSize: 10.5,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
               ),
             ),
         ],

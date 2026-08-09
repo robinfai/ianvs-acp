@@ -181,7 +181,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                           'MCP Servers',
                           style: TextStyle(
                             color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w900,
+                            fontWeight: FontWeight.w600,
                             letterSpacing: 0,
                           ),
                         ),
@@ -214,7 +214,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                           'Agents',
                           style: TextStyle(
                             color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w900,
+                            fontWeight: FontWeight.w600,
                             letterSpacing: 0,
                           ),
                         ),
@@ -361,7 +361,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               style: TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 12,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             )
@@ -501,7 +501,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                         ? AppColors.success
                         : AppColors.warning,
                     fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -512,7 +512,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             'Enhancements',
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -639,7 +639,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                       'Trust rules',
                       style: TextStyle(
                         color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -667,7 +667,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                     style: TextStyle(
                       color: AppColors.textTertiary,
                       fontSize: 12,
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       letterSpacing: 0,
                     ),
                   ),
@@ -678,7 +678,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                     style: const TextStyle(
                       color: AppColors.textSecondary,
                       fontSize: 12,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w600,
                       letterSpacing: 0,
                     ),
                   ),
@@ -1077,7 +1077,7 @@ class _ErrorPanel extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.danger,
                 fontSize: 12,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -1137,7 +1137,7 @@ class _ConfigSwitch extends StatelessWidget {
           style: const TextStyle(
             color: AppColors.textPrimary,
             fontSize: 12,
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
         ),
@@ -1146,7 +1146,7 @@ class _ConfigSwitch extends StatelessWidget {
           style: const TextStyle(
             color: AppColors.textSecondary,
             fontSize: 11,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
         ),
@@ -1462,7 +1462,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                   style: TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 13,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -1777,7 +1777,7 @@ class _ReadyAgentPanel extends StatelessWidget {
                   style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 12,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -2191,7 +2191,7 @@ class _AssistantAgentPreview extends StatelessWidget {
                 style: TextStyle(
                   color: AppColors.textSecondary,
                   fontSize: 12,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               Spacer(),
@@ -2200,7 +2200,7 @@ class _AssistantAgentPreview extends StatelessWidget {
                 style: TextStyle(
                   color: AppColors.success,
                   fontSize: 11,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
@@ -2212,7 +2212,7 @@ class _AssistantAgentPreview extends StatelessWidget {
               color: AppColors.textPrimary,
               fontSize: 12,
               height: 1.45,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
             ),
           ),
           SizedBox(height: 5),
@@ -2377,7 +2377,7 @@ class _ListEditorFrame extends StatelessWidget {
                   title,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -2408,7 +2408,7 @@ class _InlineError extends StatelessWidget {
       style: const TextStyle(
         color: AppColors.danger,
         fontSize: 12,
-        fontWeight: FontWeight.w700,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0,
       ),
     );
@@ -2625,7 +2625,7 @@ class _ConfigPathPanel extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.textSecondary,
           fontSize: 12,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -2750,7 +2750,7 @@ class _DetailRow extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textTertiary,
               fontSize: 12,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -2761,7 +2761,7 @@ class _DetailRow extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 12,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -2809,7 +2809,7 @@ class _Panel extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w900,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -2845,7 +2845,7 @@ class _TinyPill extends StatelessWidget {
         style: TextStyle(
           color: color,
           fontSize: 11,
-          fontWeight: FontWeight.w900,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -2877,7 +2877,7 @@ class _EmptyState extends StatelessWidget {
             'No user-configured agent servers.',
             style: TextStyle(
               color: AppColors.textSecondary,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),

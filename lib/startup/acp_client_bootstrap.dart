@@ -167,6 +167,9 @@ final class _AcpClientBootstrapState extends State<AcpClientBootstrap> {
       config: config,
       secretStore: secretStore,
       startupError: startupError,
+      onRetryStartup: startupError == null
+          ? null
+          : () => unawaited(_load(allowUserInteraction: false)),
       configurationWritable: configurationWritable,
       initialResumeSessionId: options.resumeSessionId,
       initialResumeCwd: options.resumeCwd,

@@ -7,11 +7,23 @@ void main() {
     expect(AppColors.primary, AppColors.textPrimary);
   });
 
-  test('Codex alignment keeps navigation and content surfaces distinct', () {
-    expect(AppColors.bg, const Color(0xfff4f5f5));
-    expect(AppColors.surface, const Color(0xffffffff));
-    expect(AppColors.surfaceSelected, const Color(0xffe7e8e9));
-    expect(AppColors.userMessageSurface, const Color(0xfff3f3f4));
-    expect(AppColors.textPrimary, const Color(0xff27292c));
+  test(
+    'Conversation Canvas keeps navigation and content surfaces distinct',
+    () {
+      expect(AppColors.bg, const Color(0xfff7f7f5));
+      expect(AppColors.surface, const Color(0xffffffff));
+      expect(AppColors.surfaceSelected, const Color(0xffeaf4f2));
+      expect(AppColors.userMessageSurface, const Color(0xfff4f4f3));
+      expect(AppColors.textPrimary, const Color(0xff242526));
+      expect(AppColors.accent, const Color(0xff0f8a83));
+    },
+  );
+
+  test('Conversation Canvas uses restrained product typography', () {
+    expect(AppTypography.family, '.AppleSystemUIFont');
+    expect(AppTypography.body.fontSize, 15);
+    expect(AppTypography.body.fontWeight, FontWeight.w400);
+    expect(AppTypography.label.fontWeight, FontWeight.w500);
+    expect(AppTypography.sectionTitle.fontWeight, FontWeight.w600);
   });
 }

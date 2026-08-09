@@ -39,9 +39,8 @@ const int _maximumInlineImageBytes = 4 * 1024 * 1024;
 
 const Color _permissionAccent = Color(0xffea580c);
 const Color _permissionAccentDark = Color(0xff9a3412);
-const Color _permissionAccentSoft = Color(0xfffff7ed);
+const Color _permissionAccentSoft = Color(0xfffffcf8);
 const Color _permissionAccentMist = Color(0xffffedd5);
-const Color _permissionAccentBorder = Color(0xfffb923c);
 const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
 
 class PromptAttachmentController {
@@ -343,10 +342,10 @@ class _PromptInputState extends State<PromptInput> {
     final pendingPermissionRequest = widget.pendingPermissionRequest;
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 740),
+          constraints: const BoxConstraints(maxWidth: 760),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -402,29 +401,29 @@ class _PromptInputState extends State<PromptInput> {
                     child: AnimatedContainer(
                       key: const Key('prompt-input-surface'),
                       duration: const Duration(milliseconds: 120),
-                      constraints: const BoxConstraints(minHeight: 108),
+                      constraints: const BoxConstraints(minHeight: 124),
                       decoration: BoxDecoration(
                         color: _isDraggingAttachments
-                            ? AppColors.primarySoft
+                            ? AppColors.accentMist
                             : AppColors.surface,
                         borderRadius: BorderRadius.circular(AppRadius.xl),
                         border: Border.all(
                           color: _isDraggingAttachments
-                              ? AppColors.textSecondary
+                              ? AppColors.accent
                               : AppColors.border,
                           width: _isDraggingAttachments ? 2 : 1,
                         ),
                         boxShadow: [
                           BoxShadow(
                             color: AppColors.textPrimary.withValues(
-                              alpha: _isDraggingAttachments ? 0.12 : 0.06,
+                              alpha: _isDraggingAttachments ? 0.11 : 0.045,
                             ),
-                            blurRadius: _isDraggingAttachments ? 28 : 24,
-                            offset: const Offset(0, 8),
+                            blurRadius: _isDraggingAttachments ? 24 : 18,
+                            offset: const Offset(0, 6),
                           ),
                           BoxShadow(
                             color: AppColors.textPrimary.withValues(
-                              alpha: 0.035,
+                              alpha: 0.025,
                             ),
                             blurRadius: 4,
                             offset: const Offset(0, 1),
@@ -482,22 +481,22 @@ class _PromptInputState extends State<PromptInput> {
                               controller: _controller,
                               focusNode: focusNode,
                               minLines: 1,
-                              maxLines: 4,
+                              maxLines: 6,
                               keyboardType: TextInputType.multiline,
                               enabled: widget.enabled,
                               onChanged: _handlePromptChanged,
                               style: const TextStyle(
                                 color: AppColors.textPrimary,
-                                fontSize: 13,
-                                height: 1.35,
+                                fontSize: 15,
+                                height: 1.48,
                               ),
                               decoration: InputDecoration(
                                 hint: ExcludeSemantics(
                                   child: Text(
-                                    'Send a prompt to ${widget.agentName}...',
+                                    'Message ${widget.agentName}',
                                     style: const TextStyle(
                                       color: AppColors.textTertiary,
-                                      fontSize: 14,
+                                      fontSize: 15,
                                       fontWeight: FontWeight.w400,
                                     ),
                                   ),
@@ -505,10 +504,10 @@ class _PromptInputState extends State<PromptInput> {
                                 filled: false,
                                 isCollapsed: true,
                                 contentPadding: const EdgeInsets.fromLTRB(
-                                  13,
-                                  14,
-                                  13,
-                                  27,
+                                  15,
+                                  16,
+                                  15,
+                                  32,
                                 ),
                                 border: InputBorder.none,
                                 enabledBorder: InputBorder.none,
@@ -518,7 +517,7 @@ class _PromptInputState extends State<PromptInput> {
                             ),
                           ),
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(7, 0, 7, 7),
+                            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
                             child: _ComposerControlBar(
                               enabled: widget.enabled,
                               isSending: widget.isSending,
@@ -834,7 +833,8 @@ class _PromptInputState extends State<PromptInput> {
                             attachment.path,
                             style: const TextStyle(
                               color: AppColors.textSecondary,
-                              fontFamily: 'monospace',
+                              fontFamily: AppTypography.monoFamily,
+                              fontFamilyFallback: AppTypography.monoFallback,
                               fontSize: 11,
                             ),
                           ),
@@ -1020,7 +1020,7 @@ class _PromptAttachmentDropRegionState
                           style: const TextStyle(
                             color: AppColors.textPrimary,
                             fontSize: 14,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ],
@@ -1060,13 +1060,39 @@ class _PromptPermissionCard extends StatelessWidget {
     return choice.decision == AcpPermissionDecision.deny;
   }
 
+  bool _canSelectChoice(
+    AcpPermissionChoice choice, {
+    required bool contextIsComplete,
+  }) {
+    return contextIsComplete
+        ? choice.decision != null
+        : choice.explicitDecision == AcpPermissionDecision.deny;
+  }
+
+  AcpPermissionChoice? _firstChoiceFor(AcpPermissionDecision decision) {
+    for (final choice in request.choices) {
+      if (choice.decision == decision) return choice;
+    }
+    return null;
+  }
+
+  AcpPermissionChoice? _firstSingleUseChoiceFor(
+    AcpPermissionDecision decision,
+  ) {
+    for (final choice in request.choices) {
+      if (choice.decision == decision && choice.isSingleUse) return choice;
+    }
+    return null;
+  }
+
   Widget _structuredChoiceButton(
     AcpPermissionChoice choice, {
     required bool contextIsComplete,
   }) {
-    final canSelect = contextIsComplete
-        ? choice.decision != null
-        : choice.explicitDecision == AcpPermissionDecision.deny;
+    final canSelect = _canSelectChoice(
+      choice,
+      contextIsComplete: contextIsComplete,
+    );
     final onPressed = onSelectOption == null || !canSelect
         ? null
         : () => onSelectOption!(choice.optionId);
@@ -1079,11 +1105,10 @@ class _PromptPermissionCard extends StatelessWidget {
         style: OutlinedButton.styleFrom(
           foregroundColor: AppColors.danger,
           backgroundColor: Colors.white,
-          minimumSize: const Size(0, 34),
-          padding: const EdgeInsets.symmetric(horizontal: 11),
+          minimumSize: const Size(0, 44),
+          padding: const EdgeInsets.symmetric(horizontal: 14),
           side: const BorderSide(color: Color(0xfffecaca)),
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.padded,
         ),
       );
     }
@@ -1102,10 +1127,59 @@ class _PromptPermissionCard extends StatelessWidget {
       style: FilledButton.styleFrom(
         foregroundColor: Colors.white,
         backgroundColor: const Color(0xffc2410c),
-        minimumSize: const Size(0, 34),
-        padding: const EdgeInsets.symmetric(horizontal: 11),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        visualDensity: VisualDensity.compact,
+        minimumSize: const Size(0, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        tapTargetSize: MaterialTapTargetSize.padded,
+      ),
+    );
+  }
+
+  Widget _structuredChoiceMenu(
+    List<AcpPermissionChoice> choices, {
+    required bool contextIsComplete,
+  }) {
+    return PopupMenuButton<String>(
+      key: const Key('prompt-permission-more-choices'),
+      tooltip: 'More permission choices',
+      enabled: onSelectOption != null,
+      onSelected: onSelectOption,
+      itemBuilder: (context) => [
+        for (final choice in choices)
+          PopupMenuItem<String>(
+            key: Key('prompt-permission-menu-option-${choice.optionId}'),
+            value: choice.optionId,
+            enabled: _canSelectChoice(
+              choice,
+              contextIsComplete: contextIsComplete,
+            ),
+            child: Text(
+              choice.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: AppTypography.label,
+            ),
+          ),
+      ],
+      child: Container(
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 13),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.more_horiz_rounded,
+              size: 17,
+              color: AppColors.textSecondary,
+            ),
+            SizedBox(width: 6),
+            Text('More', style: AppTypography.label),
+          ],
+        ),
       ),
     );
   }
@@ -1113,20 +1187,29 @@ class _PromptPermissionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final displayContext = permissionDisplayContextForRequest(request);
+    final preferredAllow =
+        request.singleUseChoiceFor(AcpPermissionDecision.allow) ??
+        _firstSingleUseChoiceFor(AcpPermissionDecision.allow);
+    final preferredDeny =
+        request.singleUseChoiceFor(AcpPermissionDecision.deny) ??
+        _firstSingleUseChoiceFor(AcpPermissionDecision.deny) ??
+        _firstChoiceFor(AcpPermissionDecision.deny);
+    final featuredChoices = <AcpPermissionChoice>[
+      ?preferredDeny,
+      if (preferredAllow != null && preferredAllow != preferredDeny)
+        preferredAllow,
+    ];
+    final secondaryChoices = request.choices
+        .where((choice) => !featuredChoices.contains(choice))
+        .toList(growable: false);
+    final collapseSecondaryChoices = secondaryChoices.isNotEmpty;
     return Container(
       key: const Key('prompt-permission-card'),
       width: double.infinity,
       decoration: BoxDecoration(
         color: _permissionAccentSoft,
         borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: _permissionAccentBorder, width: 2),
-        boxShadow: [
-          BoxShadow(
-            color: _permissionAccent.withValues(alpha: 0.22),
-            blurRadius: 22,
-            offset: const Offset(0, 8),
-          ),
-        ],
+        border: Border.all(color: _permissionAccentBorderSoft),
       ),
       clipBehavior: Clip.antiAlias,
       child: Stack(
@@ -1135,11 +1218,11 @@ class _PromptPermissionCard extends StatelessWidget {
             left: 0,
             top: 0,
             bottom: 0,
-            width: 8,
+            width: 4,
             child: ColoredBox(color: _permissionAccent),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+            padding: const EdgeInsets.fromLTRB(16, 13, 12, 13),
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final compact =
@@ -1150,13 +1233,14 @@ class _PromptPermissionCard extends StatelessWidget {
                     Container(
                       width: 38,
                       height: 38,
-                      decoration: const BoxDecoration(
-                        color: _permissionAccent,
+                      decoration: BoxDecoration(
+                        color: _permissionAccentMist,
                         shape: BoxShape.circle,
+                        border: Border.all(color: _permissionAccentBorderSoft),
                       ),
                       child: const Icon(
                         Icons.privacy_tip_rounded,
-                        color: Colors.white,
+                        color: _permissionAccentDark,
                         size: 21,
                       ),
                     ),
@@ -1172,35 +1256,16 @@ class _PromptPermissionCard extends StatelessWidget {
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
                               const Text(
-                                '等待 Tool Call 权限确认',
+                                'Tool call approval required',
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   color: _permissionAccentDark,
+                                  fontFamily: AppTypography.family,
+                                  fontFamilyFallback:
+                                      AppTypography.familyFallback,
                                   fontSize: 13,
-                                  fontWeight: FontWeight.w900,
+                                  fontWeight: FontWeight.w600,
                                   letterSpacing: 0,
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: _permissionAccent,
-                                  borderRadius: BorderRadius.circular(
-                                    AppRadius.pill,
-                                  ),
-                                ),
-                                child: const Text(
-                                  '需要处理',
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w900,
-                                    letterSpacing: 0,
-                                  ),
                                 ),
                               ),
                               Container(
@@ -1223,7 +1288,7 @@ class _PromptPermissionCard extends StatelessWidget {
                                   style: const TextStyle(
                                     color: _permissionAccentDark,
                                     fontSize: 11,
-                                    fontWeight: FontWeight.w900,
+                                    fontWeight: FontWeight.w600,
                                     letterSpacing: 0,
                                   ),
                                 ),
@@ -1238,7 +1303,7 @@ class _PromptPermissionCard extends StatelessWidget {
                             style: const TextStyle(
                               color: AppColors.textPrimary,
                               fontSize: 14,
-                              fontWeight: FontWeight.w900,
+                              fontWeight: FontWeight.w600,
                               letterSpacing: 0,
                             ),
                           ),
@@ -1250,7 +1315,7 @@ class _PromptPermissionCard extends StatelessWidget {
                             style: const TextStyle(
                               color: AppColors.textSecondary,
                               fontSize: 12,
-                              fontWeight: FontWeight.w700,
+                              fontWeight: FontWeight.w600,
                               letterSpacing: 0,
                             ),
                           ),
@@ -1260,6 +1325,7 @@ class _PromptPermissionCard extends StatelessWidget {
                             _PermissionContextView(
                               key: ObjectKey(request),
                               displayContext: displayContext,
+                              maxHeight: constraints.maxWidth < 360 ? 96 : 180,
                             ),
                           ],
                         ],
@@ -1273,12 +1339,25 @@ class _PromptPermissionCard extends StatelessWidget {
                   alignment: WrapAlignment.end,
                   children: [
                     if (request.choices.isNotEmpty)
-                      ...request.choices.map(
-                        (choice) => _structuredChoiceButton(
-                          choice,
-                          contextIsComplete: displayContext.isComplete,
+                      if (collapseSecondaryChoices) ...[
+                        ...featuredChoices.map(
+                          (choice) => _structuredChoiceButton(
+                            choice,
+                            contextIsComplete: displayContext.isComplete,
+                          ),
                         ),
-                      )
+                        if (secondaryChoices.isNotEmpty)
+                          _structuredChoiceMenu(
+                            secondaryChoices,
+                            contextIsComplete: displayContext.isComplete,
+                          ),
+                      ] else
+                        ...request.choices.map(
+                          (choice) => _structuredChoiceButton(
+                            choice,
+                            contextIsComplete: displayContext.isComplete,
+                          ),
+                        )
                     else ...[
                       OutlinedButton.icon(
                         onPressed: onDeny,
@@ -1287,11 +1366,10 @@ class _PromptPermissionCard extends StatelessWidget {
                         style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.danger,
                           backgroundColor: Colors.white,
-                          minimumSize: const Size(0, 34),
-                          padding: const EdgeInsets.symmetric(horizontal: 11),
+                          minimumSize: const Size(0, 44),
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
                           side: const BorderSide(color: Color(0xfffecaca)),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          visualDensity: VisualDensity.compact,
+                          tapTargetSize: MaterialTapTargetSize.padded,
                         ),
                       ),
                       FilledButton.icon(
@@ -1301,10 +1379,9 @@ class _PromptPermissionCard extends StatelessWidget {
                         style: FilledButton.styleFrom(
                           foregroundColor: Colors.white,
                           backgroundColor: const Color(0xffc2410c),
-                          minimumSize: const Size(0, 34),
-                          padding: const EdgeInsets.symmetric(horizontal: 11),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          visualDensity: VisualDensity.compact,
+                          minimumSize: const Size(0, 44),
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          tapTargetSize: MaterialTapTargetSize.padded,
                         ),
                       ),
                     ],
@@ -1314,10 +1391,9 @@ class _PromptPermissionCard extends StatelessWidget {
                       icon: const Icon(Icons.close_rounded, size: 18),
                       color: AppColors.textSecondary,
                       constraints: const BoxConstraints.tightFor(
-                        width: 34,
-                        height: 34,
+                        width: 44,
+                        height: 44,
                       ),
-                      visualDensity: VisualDensity.compact,
                     ),
                   ],
                 );
@@ -1351,9 +1427,14 @@ class _PromptPermissionCard extends StatelessWidget {
 }
 
 class _PermissionContextView extends StatefulWidget {
-  const _PermissionContextView({super.key, required this.displayContext});
+  const _PermissionContextView({
+    super.key,
+    required this.displayContext,
+    required this.maxHeight,
+  });
 
   final PermissionDisplayContext displayContext;
+  final double maxHeight;
 
   @override
   State<_PermissionContextView> createState() => _PermissionContextViewState();
@@ -1372,7 +1453,7 @@ class _PermissionContextViewState extends State<_PermissionContextView> {
   Widget build(BuildContext context) {
     return ConstrainedBox(
       key: const Key('prompt-permission-context'),
-      constraints: const BoxConstraints(maxHeight: 180),
+      constraints: BoxConstraints(maxHeight: widget.maxHeight),
       child: Scrollbar(
         controller: _scrollController,
         child: SingleChildScrollView(
@@ -1397,7 +1478,7 @@ class _PermissionContextViewState extends State<_PermissionContextView> {
                               style: const TextStyle(
                                 color: AppColors.textSecondary,
                                 fontSize: 11,
-                                fontWeight: FontWeight.w800,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                             SelectableText(
@@ -1418,7 +1499,7 @@ class _PermissionContextViewState extends State<_PermissionContextView> {
                   style: const TextStyle(
                     color: AppColors.danger,
                     fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
         ),
@@ -1470,7 +1551,7 @@ class _AttachmentDropIndicator extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.primaryDark,
                 fontSize: 12,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
@@ -1620,7 +1701,7 @@ class _AttachmentPickerMenuItem extends StatelessWidget {
                 style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 13,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               Text(
@@ -1699,7 +1780,7 @@ class _PromptIdleWarning extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 10),
               textStyle: const TextStyle(
                 fontSize: 12,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
               ),
             ),
             child: const Text('Stop'),
@@ -1754,7 +1835,7 @@ class _PromptQueueTray extends StatelessWidget {
                   style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 12,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 const Spacer(),
@@ -1767,7 +1848,7 @@ class _PromptQueueTray extends StatelessWidget {
                       'Clear all',
                       style: TextStyle(
                         fontSize: 10,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     style: TextButton.styleFrom(
@@ -1783,7 +1864,7 @@ class _PromptQueueTray extends StatelessWidget {
                     style: TextStyle(
                       color: AppColors.textTertiary,
                       fontSize: 10,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
               ],
@@ -1878,7 +1959,7 @@ class _PromptQueueRow extends StatelessWidget {
                 style: TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 12,
-                  fontWeight: prompt.guide ? FontWeight.w800 : FontWeight.w600,
+                  fontWeight: prompt.guide ? FontWeight.w600 : FontWeight.w500,
                 ),
               ),
             ),
@@ -1890,7 +1971,7 @@ class _PromptQueueRow extends StatelessWidget {
                 style: const TextStyle(
                   color: AppColors.textTertiary,
                   fontSize: 10,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
@@ -1989,7 +2070,9 @@ class _ComposerControlBar extends StatelessWidget {
     final adaptiveOptions = configOptions
         .where((option) => option.isBooleanOption || option.options.length > 1)
         .toList(growable: false);
-    final sessionConfig = adaptiveOptions.isNotEmpty
+    final sessionConfig = pendingPermissionRequest != null
+        ? null
+        : adaptiveOptions.isNotEmpty
         ? _AdaptiveSessionConfigSelector(
             options: adaptiveOptions,
             enabled: enabled && !isSending && onConfigOptionSelected != null,
@@ -2012,20 +2095,12 @@ class _ComposerControlBar extends StatelessWidget {
       onSend: onSend,
       onStop: onStop,
     );
-    final permissionChip = pendingPermissionRequest == null
-        ? null
-        : _PermissionServiceChip(request: pendingPermissionRequest!);
-
     return LayoutBuilder(
       builder: (context, constraints) {
         if (constraints.maxWidth < 560) {
           return Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (permissionChip != null) ...[
-                Align(alignment: Alignment.centerLeft, child: permissionChip),
-                const SizedBox(height: 6),
-              ],
               Row(
                 children: [
                   attach,
@@ -2052,15 +2127,6 @@ class _ComposerControlBar extends StatelessWidget {
           children: [
             attach,
             const SizedBox(width: 2),
-            if (permissionChip != null) ...[
-              Flexible(
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: permissionChip,
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
             Flexible(
               child: Align(alignment: Alignment.centerLeft, child: policy),
             ),
@@ -2078,76 +2144,6 @@ class _ComposerControlBar extends StatelessWidget {
           ],
         );
       },
-    );
-  }
-}
-
-class _PermissionServiceChip extends StatelessWidget {
-  const _PermissionServiceChip({required this.request});
-
-  final AcpPermissionRequest request;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      liveRegion: true,
-      label: 'Pending tool call permission',
-      child: Container(
-        key: const Key('prompt-permission-service-chip'),
-        height: 30,
-        constraints: const BoxConstraints(maxWidth: 236),
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: _permissionAccent,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-          border: Border.all(color: _permissionAccentDark, width: 1.2),
-          boxShadow: [
-            BoxShadow(
-              color: _permissionAccent.withValues(alpha: 0.26),
-              blurRadius: 16,
-              offset: const Offset(0, 5),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.privacy_tip_rounded,
-              color: Colors.white,
-              size: 16,
-            ),
-            const SizedBox(width: 6),
-            const Flexible(
-              child: Text(
-                'Tool Call 待确认',
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0,
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            Container(width: 1, height: 14, color: Colors.white54),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                request.displayKind,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -3359,7 +3355,7 @@ class _ComposerControlButton extends StatelessWidget {
         ? const Color(0xfffecaca)
         : Colors.transparent;
     return Container(
-      height: 28,
+      height: 30,
       constraints: const BoxConstraints(maxWidth: 190),
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
@@ -3425,7 +3421,7 @@ class _PopupChoiceRow extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -3464,8 +3460,8 @@ class _PromptActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final primary = SizedBox(
-      width: 34,
-      height: 34,
+      width: 36,
+      height: 36,
       child: Tooltip(
         message: isSending ? 'Stop' : 'Send',
         child: FilledButton(
@@ -3532,10 +3528,10 @@ String _policyDescription(
   required bool hasPermissionReviewer,
 }) {
   return switch (policy) {
-    AcpToolCallExecutionPolicy.defaultPermissions => '所有请求都由你确认',
+    AcpToolCallExecutionPolicy.defaultPermissions => 'Agent 请求授权时由你确认',
     AcpToolCallExecutionPolicy.autoReview =>
-      hasPermissionReviewer ? '旁路 agent 审查，未决时再确认' : '使用信任规则，未命中时再确认',
-    AcpToolCallExecutionPolicy.fullAccess => '自动允许所有工具调用',
+      hasPermissionReviewer ? '先审查授权请求，未决时再确认' : '信任规则未命中时再确认',
+    AcpToolCallExecutionPolicy.fullAccess => '自动批准 Agent 的授权请求',
   };
 }
 
@@ -3635,7 +3631,7 @@ class _CommandSuggestionTile extends StatelessWidget {
                     style: const TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 12,
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w600,
                       letterSpacing: 0,
                     ),
                   ),
@@ -3665,7 +3661,8 @@ class _CommandSuggestionTile extends StatelessWidget {
                 maxLines: 1,
                 style: const TextStyle(
                   color: AppColors.textTertiary,
-                  fontFamily: 'monospace',
+                  fontFamily: AppTypography.monoFamily,
+                  fontFamilyFallback: AppTypography.monoFallback,
                   fontSize: 10,
                 ),
               ),
@@ -3939,7 +3936,7 @@ class _AttachmentChip extends StatelessWidget {
                 style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 12,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -4116,7 +4113,7 @@ class _AttachmentModeBadge extends StatelessWidget {
               style: TextStyle(
                 color: color,
                 fontSize: 10,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),

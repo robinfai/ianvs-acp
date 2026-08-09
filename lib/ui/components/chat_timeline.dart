@@ -38,7 +38,7 @@ const double _turnNavigationMarkerPitch = 16;
 const double _turnNavigationMarkerWidth = 38;
 const double _turnNavigationIdleBarWidth = 7;
 const double _turnNavigationHoverBarWidth = 34;
-const double _conversationContentWidth = 760;
+const double _conversationContentWidth = 744;
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -184,9 +184,9 @@ class _ChatTimelineState extends State<ChatTimeline> {
                     slivers: [
                       SliverPadding(
                         padding: EdgeInsets.fromLTRB(
-                          showNavigator ? 62 : 22,
-                          20,
-                          24,
+                          showNavigator ? 66 : 32,
+                          28,
+                          32,
                           0,
                         ),
                         sliver: SliverList.builder(
@@ -201,10 +201,10 @@ class _ChatTimelineState extends State<ChatTimeline> {
                       SliverPadding(
                         key: _timelineCenterSliverKey,
                         padding: EdgeInsets.fromLTRB(
-                          showNavigator ? 62 : 22,
+                          showNavigator ? 66 : 32,
                           0,
-                          24,
-                          22,
+                          32,
+                          28,
                         ),
                         sliver: SliverList.builder(
                           itemCount:
@@ -312,7 +312,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   Widget _buildTimelineTurn(List<_TimelineTurn> turns, int index) {
     final turn = turns[index];
     return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.only(bottom: 28),
       child: KeyedSubtree(
         key: _turnItemKey(turn, index),
         child: Center(
@@ -323,6 +323,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
             child: _TurnSectionBubble(
               key: ValueKey('timeline-turn-${turn.turnId}-$index'),
               turn: turn,
+              agentName: widget.agentName,
               inferredComplete:
                   index < turns.length - 1 && turn.userMessages.isNotEmpty,
               inputBudget: widget.inputBudget,
@@ -920,12 +921,14 @@ class _TurnSectionBubble extends StatefulWidget {
   const _TurnSectionBubble({
     super.key,
     required this.turn,
+    required this.agentName,
     required this.inferredComplete,
     required this.inputBudget,
     required this.onTapLink,
   });
 
   final _TimelineTurn turn;
+  final String agentName;
   final bool inferredComplete;
   final AcpInputBudget inputBudget;
   final MarkdownTapLinkCallback? onTapLink;
@@ -1016,6 +1019,7 @@ class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
     }
     return _MessageBubble(
       message: entry.message!,
+      agentName: widget.agentName,
       inputBudget: widget.inputBudget,
       onTapLink: widget.onTapLink,
       emphasizeAssistant: process,
@@ -1352,7 +1356,7 @@ class _EmptyTimeline extends StatelessWidget {
                     style: TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: compact ? 17 : 19,
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       letterSpacing: 0,
                     ),
                   ),
@@ -1390,9 +1394,9 @@ class _EmptyTimeline extends StatelessWidget {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(AppRadius.pill),
                           ),
-                          textStyle: const TextStyle(
+                          textStyle: AppTypography.label.copyWith(
                             fontSize: 13,
-                            fontWeight: FontWeight.w800,
+                            fontWeight: FontWeight.w600,
                             letterSpacing: 0,
                           ),
                         ),
@@ -1448,7 +1452,7 @@ class _SessionLoadingFooter extends StatelessWidget {
               style: TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 12,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -1486,12 +1490,14 @@ class _CodeCardIllustration extends StatelessWidget {
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
+    required this.agentName,
     required this.inputBudget,
     required this.onTapLink,
     this.emphasizeAssistant = false,
   });
 
   final ChatMessage message;
+  final String agentName;
   final AcpInputBudget inputBudget;
   final MarkdownTapLinkCallback? onTapLink;
   final bool emphasizeAssistant;
@@ -1576,8 +1582,8 @@ class _MessageBubble extends StatelessWidget {
               if (markdownDecision != null || omissions.isNotEmpty)
                 Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
+                    horizontal: 15,
+                    vertical: 11,
                   ),
                   decoration: BoxDecoration(
                     color: AppColors.userMessageSurface,
@@ -1603,8 +1609,8 @@ class _MessageBubble extends StatelessWidget {
                             markdownDecision.text,
                             style: const TextStyle(
                               color: textColor,
-                              fontSize: 14,
-                              height: 1.5,
+                              fontSize: 14.5,
+                              height: 1.55,
                               fontWeight: FontWeight.w400,
                             ),
                           ),
@@ -1636,6 +1642,31 @@ class _MessageBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (assistant) ...[
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.auto_awesome_rounded,
+                      size: 17,
+                      color: AppColors.accent,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      agentName,
+                      style: TextStyle(
+                        color: emphasizeAssistant
+                            ? AppColors.accentDark
+                            : AppColors.textPrimary,
+                        fontSize: 13.5,
+                        height: 1.3,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+                if (markdownDecision != null) const SizedBox(height: 8),
+              ],
               if (!user && !assistant)
                 Wrap(
                   spacing: 6,
@@ -1677,11 +1708,9 @@ class _MessageBubble extends StatelessWidget {
                     markdownDecision.text,
                     style: TextStyle(
                       color: textColor,
-                      fontSize: 14,
-                      height: 1.55,
-                      fontWeight: assistant && emphasizeAssistant
-                          ? FontWeight.w600
-                          : FontWeight.w400,
+                      fontSize: 15,
+                      height: 1.58,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
               ],
@@ -1707,9 +1736,9 @@ class _MessageBubble extends StatelessWidget {
   }) {
     final baseTextStyle = TextStyle(
       color: textColor,
-      fontSize: 14,
-      height: 1.55,
-      fontWeight: emphasizeAssistant ? FontWeight.w600 : FontWeight.w400,
+      fontSize: 15,
+      height: 1.58,
+      fontWeight: FontWeight.w400,
     );
     final codeBackground = user
         ? AppColors.surface.withValues(alpha: 0.72)
@@ -1723,12 +1752,13 @@ class _MessageBubble extends StatelessWidget {
         decorationThickness: 1,
         fontWeight: FontWeight.w600,
       ),
-      strong: baseTextStyle.copyWith(fontWeight: FontWeight.w700),
+      strong: baseTextStyle.copyWith(fontWeight: FontWeight.w600),
       em: baseTextStyle.copyWith(fontStyle: FontStyle.italic),
       code: baseTextStyle.copyWith(
-        fontFamily: 'monospace',
+        fontFamily: AppTypography.monoFamily,
+        fontFamilyFallback: AppTypography.monoFallback,
         backgroundColor: codeBackground,
-        fontSize: 12.5,
+        fontSize: 13,
       ),
       listBullet: baseTextStyle,
       blockSpacing: 8,
@@ -1926,7 +1956,7 @@ class _InputOmissionNotice extends StatelessWidget {
         style: TextStyle(
           color: user ? Colors.white70 : AppColors.warning,
           fontSize: 11,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
@@ -2193,7 +2223,7 @@ class _ToolImageActivityState extends State<_ToolImageActivity> {
               style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 13,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
               ),
             ),
             children: !_expanded
@@ -2227,7 +2257,7 @@ class _ToolImageActivityState extends State<_ToolImageActivity> {
                                 style: const TextStyle(
                                   color: AppColors.textSecondary,
                                   fontSize: 14,
-                                  fontWeight: FontWeight.w800,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
@@ -2307,7 +2337,7 @@ class _ToolDiffActivityState extends State<_ToolDiffActivity> {
                           style: const TextStyle(
                             color: AppColors.textPrimary,
                             fontSize: 14,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                         const SizedBox(height: 3),
@@ -2424,7 +2454,7 @@ class _DiffCounts extends StatelessWidget {
           style: TextStyle(
             color: AppColors.success,
             fontSize: fontSize,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
           ),
         ),
         const SizedBox(width: 5),
@@ -2433,7 +2463,7 @@ class _DiffCounts extends StatelessWidget {
           style: TextStyle(
             color: AppColors.danger,
             fontSize: fontSize,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ],
@@ -2704,8 +2734,8 @@ class _UnifiedDiffLineRow extends StatelessWidget {
   Widget build(BuildContext context) {
     const codeStyle = TextStyle(
       color: AppColors.textPrimary,
-      fontFamily: 'SF Mono',
-      fontFamilyFallback: <String>['Menlo', 'Monaco', 'monospace'],
+      fontFamily: AppTypography.monoFamily,
+      fontFamilyFallback: AppTypography.monoFallback,
       fontSize: 11,
       height: 1.25,
     );
@@ -2762,9 +2792,10 @@ class _UnifiedDiffLineRow extends StatelessWidget {
                   marker,
                   style: TextStyle(
                     color: accent,
-                    fontFamily: 'monospace',
+                    fontFamily: AppTypography.monoFamily,
+                    fontFamilyFallback: AppTypography.monoFallback,
                     fontSize: 11,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -2833,7 +2864,8 @@ class _DiffLineNumber extends StatelessWidget {
         value?.toString() ?? '',
         style: const TextStyle(
           color: AppColors.textTertiary,
-          fontFamily: 'monospace',
+          fontFamily: AppTypography.monoFamily,
+          fontFamilyFallback: AppTypography.monoFallback,
           fontSize: 10,
           height: 1.2,
         ),
@@ -3057,7 +3089,7 @@ class _ToolGroupDisclosureState extends State<_ToolGroupDisclosure> {
                             fontSize: 13.5,
                             height: 1.3,
                             fontWeight: _hovered && !expanded
-                                ? FontWeight.w700
+                                ? FontWeight.w600
                                 : FontWeight.w600,
                             letterSpacing: 0,
                           ),
@@ -3724,7 +3756,7 @@ class _ToolHeader extends StatelessWidget {
                 style: const TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 13,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -3752,7 +3784,15 @@ class _StatusBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final kind = _stringMetadata(message.metadata, 'kind') ?? 'status';
-    final minimal = kind == 'thought' || kind == 'turn';
+    // Plans and command catalogs are supporting conversation content, not
+    // standalone deliverables. Keep them inline so the reading rhythm matches
+    // the selected Codex/ChatGPT reference; reserve framed cards for diffs,
+    // errors, permissions, and other actionable results.
+    final minimal =
+        kind == 'thought' ||
+        kind == 'turn' ||
+        kind == 'plan' ||
+        kind == 'commands';
     final child = switch (kind) {
       'plan' => _PlanStatus(message: message),
       'diff' => _DiffStatus(message: message),
@@ -3783,7 +3823,7 @@ class _StatusBubble extends StatelessWidget {
         child: Container(
           width: double.infinity,
           padding: minimal
-              ? const EdgeInsets.symmetric(vertical: 5)
+              ? const EdgeInsets.symmetric(vertical: 7)
               : const EdgeInsets.all(10),
           decoration: minimal
               ? null
@@ -4531,7 +4571,7 @@ class _InlineContentFrame extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -4727,7 +4767,7 @@ class _DiffStatus extends StatelessWidget {
           uri,
           style: const TextStyle(
             color: AppColors.textPrimary,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
           ),
         ),
         if (changeCount > 0) ...[
@@ -4787,7 +4827,7 @@ class _DiffChangesListState extends State<_DiffChangesList> {
             style: TextStyle(
               color: AppColors.textPrimary,
               fontSize: 13,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
             ),
           ),
           children: _expanded
@@ -4859,7 +4899,7 @@ class _DiffChangeRow extends StatelessWidget {
                   style: const TextStyle(
                     color: AppColors.textTertiary,
                     fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -4871,7 +4911,8 @@ class _DiffChangeRow extends StatelessWidget {
               body,
               style: const TextStyle(
                 color: AppColors.textPrimary,
-                fontFamily: 'monospace',
+                fontFamily: AppTypography.monoFamily,
+                fontFamilyFallback: AppTypography.monoFallback,
                 fontSize: 12,
                 height: 1.35,
               ),
@@ -4960,7 +5001,7 @@ class _CommandsStatusState extends State<_CommandsStatus> {
                       style: TextStyle(
                         color: AppColors.textPrimary,
                         fontSize: 13,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     children: _expanded
@@ -5024,7 +5065,7 @@ class _TinyCollectionPill extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.textSecondary,
           fontSize: 11,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
@@ -5041,7 +5082,7 @@ class _DetailsIncompleteNotice extends StatelessWidget {
       style: TextStyle(
         color: AppColors.warning,
         fontSize: 11,
-        fontWeight: FontWeight.w700,
+        fontWeight: FontWeight.w600,
       ),
     );
   }
@@ -5083,7 +5124,7 @@ class _CommandDetailCard extends StatelessWidget {
             name,
             style: const TextStyle(
               color: AppColors.textPrimary,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -5183,9 +5224,10 @@ class _TerminalStatus extends StatelessWidget {
           command.isEmpty ? 'Command unavailable' : command,
           style: const TextStyle(
             color: AppColors.textPrimary,
-            fontFamily: 'monospace',
+            fontFamily: AppTypography.monoFamily,
+            fontFamilyFallback: AppTypography.monoFallback,
             fontSize: 12,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
             height: 1.35,
           ),
         ),
@@ -5196,7 +5238,7 @@ class _TerminalStatus extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textTertiary,
               fontSize: 12,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -5247,7 +5289,7 @@ class _SectionHeader extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               color: AppColors.textPrimary,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -5277,7 +5319,7 @@ class _StatusPill extends StatelessWidget {
         style: TextStyle(
           color: color,
           fontSize: 11,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -5304,7 +5346,7 @@ class _CommandChip extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.primaryDark,
           fontSize: 11,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -5325,7 +5367,8 @@ class _DetailBlock extends StatelessWidget {
       entry.value,
       style: const TextStyle(
         color: AppColors.textPrimary,
-        fontFamily: 'monospace',
+        fontFamily: AppTypography.monoFamily,
+        fontFamilyFallback: AppTypography.monoFallback,
         fontSize: 12,
         height: 1.35,
       ),
@@ -5346,7 +5389,7 @@ class _DetailBlock extends StatelessWidget {
             style: const TextStyle(
               color: Color(0xff92400e),
               fontSize: 11,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),

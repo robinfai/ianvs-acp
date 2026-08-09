@@ -209,7 +209,7 @@ class _PathAutocompleteField extends StatelessWidget {
                               style: const TextStyle(
                                 color: AppColors.textSecondary,
                                 fontSize: 12,
-                                fontWeight: FontWeight.w700,
+                                fontWeight: FontWeight.w600,
                                 letterSpacing: 0,
                               ),
                             ),
@@ -285,7 +285,7 @@ class _AgentChoiceTile extends StatelessWidget {
                           style: const TextStyle(
                             color: AppColors.textPrimary,
                             fontSize: 13,
-                            fontWeight: FontWeight.w900,
+                            fontWeight: FontWeight.w600,
                             letterSpacing: 0,
                           ),
                         ),
@@ -298,7 +298,7 @@ class _AgentChoiceTile extends StatelessWidget {
                             style: const TextStyle(
                               color: AppColors.textTertiary,
                               fontSize: 11,
-                              fontWeight: FontWeight.w700,
+                              fontWeight: FontWeight.w600,
                               letterSpacing: 0,
                             ),
                           ),

@@ -54,7 +54,7 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
                 style: TextStyle(
                   color: AppColors.textPrimary,
                   fontSize: 12,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(width: 8),
@@ -69,7 +69,7 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
                   style: TextStyle(
                     color: AppColors.primaryDark,
                     fontSize: 9,
-                    fontWeight: FontWeight.w900,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: .5,
                   ),
                 ),
@@ -159,7 +159,7 @@ class _MetadataEntryTile extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textTertiary,
               fontSize: 9.5,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 4),

@@ -53,10 +53,10 @@ class AgentToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 40,
+      height: 52,
       decoration: const BoxDecoration(
         color: AppColors.surface,
-        border: Border(bottom: BorderSide(color: AppColors.border)),
+        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -66,15 +66,15 @@ class AgentToolbar extends StatelessWidget {
           final compact = !forceFullActions && availableWidth < 1240;
           final veryCompact = availableWidth < 620;
           final horizontalPadding = veryCompact
-              ? 12.0
-              : (compact ? 14.0 : 18.0);
+              ? 14.0
+              : (compact ? 18.0 : 20.0);
 
           return Padding(
             padding: EdgeInsets.fromLTRB(
               horizontalPadding,
-              4,
+              8,
               horizontalPadding,
-              4,
+              8,
             ),
             child: Row(
               children: [
@@ -198,7 +198,7 @@ class _AgentMenuButton extends StatelessWidget {
               style: TextStyle(
                 color: AppColors.textTertiary,
                 fontSize: 12,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -234,7 +234,7 @@ class _AgentMenuButton extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -259,7 +259,7 @@ class _AgentMenuButton extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -289,7 +289,7 @@ class _AgentMenuButton extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -320,7 +320,7 @@ class _AgentMenuButton extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -348,7 +348,7 @@ class _AgentMenuButton extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: AppColors.danger,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -430,7 +430,7 @@ class _AgentMenuItem extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -558,9 +558,9 @@ class _BrandMark extends StatelessWidget {
       softWrap: false,
       style: TextStyle(
         color: AppColors.textPrimary,
-        fontSize: veryCompact ? 14 : 15,
+        fontSize: veryCompact ? 14.5 : 15.5,
         fontWeight: FontWeight.w600,
-        letterSpacing: 0,
+        letterSpacing: -0.05,
       ),
     );
     final session = currentSession;
@@ -710,11 +710,13 @@ class _ToolbarSessionActions extends StatelessWidget {
                 Expanded(child: label),
                 const SizedBox(width: 6),
                 Container(
-                  width: 28,
-                  height: 28,
+                  width: 32,
+                  height: 32,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: AppColors.surfaceMuted,
+                    color: controller.isOpen
+                        ? AppColors.surfaceSelected
+                        : Colors.transparent,
                     borderRadius: BorderRadius.circular(AppRadius.sm),
                   ),
                   child: const Icon(
@@ -768,7 +770,7 @@ MenuItemButton _toolbarMenuItem(
     child: Text(
       label,
       overflow: TextOverflow.ellipsis,
-      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
     ),
   );
 }
@@ -826,8 +828,8 @@ class _ToolbarAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.pill),
         onTap: onPressed,
         child: Container(
-          width: label == null ? 32 : null,
-          height: 32,
+          width: label == null ? 34 : null,
+          height: 34,
           padding: label == null
               ? EdgeInsets.zero
               : const EdgeInsets.symmetric(horizontal: 8),
@@ -880,7 +882,7 @@ class _PrimaryToolbarAction extends StatelessWidget {
       backgroundColor: AppColors.surfaceMuted,
       disabledBackgroundColor: AppColors.surfaceRaised,
       elevation: 0,
-      minimumSize: Size(compact ? 32 : 108, 32),
+      minimumSize: Size(compact ? 34 : 108, 34),
       padding: compact
           ? EdgeInsets.zero
           : const EdgeInsets.symmetric(horizontal: 12),
@@ -905,6 +907,8 @@ class _PrimaryToolbarAction extends StatelessWidget {
             label: const Text(
               'New Session',
               style: TextStyle(
+                fontFamily: AppTypography.family,
+                fontFamilyFallback: AppTypography.familyFallback,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,

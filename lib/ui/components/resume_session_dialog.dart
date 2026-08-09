@@ -74,11 +74,16 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Resume ACP Session'),
-      content: SizedBox(
-        width: 640,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 180),
-          child: _content(),
+      content: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.66,
+        ),
+        child: SizedBox(
+          width: 600,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: _content(),
+          ),
         ),
       ),
       actions: [
@@ -371,9 +376,11 @@ class _LazySelectionList<T> extends StatelessWidget {
         ),
       );
     }
-    final estimatedHeight = items.length * 48.0;
+    final conversationList = items.isNotEmpty && items.first is AcpSessionEntry;
+    final rowHeight = conversationList ? 58.0 : 46.0;
+    final estimatedHeight = items.length * rowHeight;
     return Container(
-      height: estimatedHeight < 144 ? estimatedHeight : 144,
+      height: estimatedHeight < rowHeight * 3 ? estimatedHeight : rowHeight * 3,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(AppRadius.sm),
         border: Border.all(color: AppColors.border),
@@ -384,14 +391,43 @@ class _LazySelectionList<T> extends StatelessWidget {
         child: ListView.builder(
           key: listKey,
           primary: false,
-          itemExtent: 48,
+          itemExtent: rowHeight,
           itemCount: items.length,
           itemBuilder: (context, index) {
             final item = items[index];
+            final conversation = item is AcpSessionEntry ? item : null;
+            final agent = conversation == null
+                ? ''
+                : _conversationAgentName(conversation);
+            final updated = conversation?.updatedAt;
+            final subtitle = <String>[
+              if (agent.isNotEmpty) agent,
+              if (updated != null) _formatDateTime(updated),
+            ].join(' · ');
             return ListTile(
               dense: true,
               selected: identical(item, selected),
-              title: Text(label(item), overflow: TextOverflow.ellipsis),
+              title: Text(
+                conversation?.title ?? label(item),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              subtitle: subtitle.isEmpty
+                  ? null
+                  : Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textTertiary,
+                        fontSize: 11,
+                      ),
+                    ),
               trailing: identical(item, selected)
                   ? const Icon(Icons.check_rounded, size: 18)
                   : null,
@@ -436,7 +472,7 @@ class _SearchField extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.textPrimary,
           fontSize: 12,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
         decoration: _inputDecoration(
@@ -509,7 +545,7 @@ class _FieldLabel extends StatelessWidget {
           label,
           style: const TextStyle(
             color: AppColors.textPrimary,
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
         ),
@@ -563,7 +599,7 @@ class _ConversationPreview extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               color: AppColors.textPrimary,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -661,7 +697,7 @@ class _MetadataPreviewState extends State<_MetadataPreview> {
             style: TextStyle(
               color: AppColors.textPrimary,
               fontSize: 13,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
             ),
           ),
           leading: const Icon(
@@ -684,7 +720,8 @@ class _MetadataPreviewState extends State<_MetadataPreview> {
                       _preview!.text,
                       style: const TextStyle(
                         color: AppColors.textSecondary,
-                        fontFamily: 'monospace',
+                        fontFamily: AppTypography.monoFamily,
+                        fontFamilyFallback: AppTypography.monoFallback,
                         fontSize: 12,
                         height: 1.35,
                       ),
@@ -713,7 +750,7 @@ class _MetadataOmissionLabel extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.warning,
           fontSize: 11,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
@@ -789,14 +826,15 @@ class _PreviewPathRow extends StatelessWidget {
                 style: const TextStyle(
                   color: AppColors.textTertiary,
                   fontSize: 11,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               SelectableText(
                 path,
                 style: const TextStyle(
                   color: AppColors.textSecondary,
-                  fontFamily: 'monospace',
+                  fontFamily: AppTypography.monoFamily,
+                  fontFamilyFallback: AppTypography.monoFallback,
                   fontSize: 12,
                   height: 1.3,
                 ),
@@ -840,7 +878,7 @@ class _MessagePanel extends StatelessWidget {
             title,
             style: const TextStyle(
               color: AppColors.textPrimary,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),

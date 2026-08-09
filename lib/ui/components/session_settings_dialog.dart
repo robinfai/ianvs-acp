@@ -409,7 +409,7 @@ class _ConfigSectionHeading extends StatelessWidget {
             'Config Options',
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -465,7 +465,7 @@ class _SessionHeader extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w900,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),
@@ -652,7 +652,7 @@ class _ReasoningEffortControl extends StatelessWidget {
           style: TextStyle(
             color: AppColors.textPrimary,
             fontSize: 13,
-            fontWeight: FontWeight.w900,
+            fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
         ),
@@ -682,7 +682,7 @@ class _ReasoningEffortControl extends StatelessWidget {
                       ? AppColors.primaryDark
                       : AppColors.textSecondary,
                   fontSize: 12,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -847,7 +847,7 @@ class _ConfigOptionTile extends StatelessWidget {
                       style: const TextStyle(
                         color: AppColors.textPrimary,
                         fontSize: 13,
-                        fontWeight: FontWeight.w900,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -1004,7 +1004,7 @@ class _LargeChoiceControlState extends State<_LargeChoiceControl> {
           style: const TextStyle(
             color: AppColors.textPrimary,
             fontSize: 13,
-            fontWeight: FontWeight.w900,
+            fontWeight: FontWeight.w600,
           ),
         ),
         const SizedBox(height: 7),
@@ -1303,7 +1303,7 @@ class _SettingsIncompleteNotice extends StatelessWidget {
             'Settings incomplete',
             style: TextStyle(
               color: AppColors.warning,
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w600,
             ),
           ),
           if (truncated)
@@ -1353,7 +1353,7 @@ class _Panel extends StatelessWidget {
                 title,
                 style: const TextStyle(
                   color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -1388,7 +1388,7 @@ class _ReadOnlyValue extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(
           color: AppColors.textSecondary,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -1414,7 +1414,7 @@ class _TinyPill extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.primaryDark,
           fontSize: 11,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),
@@ -1458,7 +1458,7 @@ class _EmptyState extends StatelessWidget {
                   title!,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w900,
+                    fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
                 ),

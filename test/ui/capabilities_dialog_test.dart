@@ -54,10 +54,8 @@ void main() {
 
     expect(find.text('ACP Compatibility'), findsOneWidget);
     expect(find.text('Capability summary'), findsOneWidget);
-    expect(find.text('Ready now'), findsOneWidget);
-    expect(find.text('Needs attention'), findsOneWidget);
-    expect(find.text('Image input'), findsWidgets);
-    expect(find.text('SSE MCP'), findsWidgets);
+    expect(find.textContaining(' ready'), findsOneWidget);
+    expect(find.textContaining(' need attention'), findsOneWidget);
     expect(find.text('Protocol version'), findsOneWidget);
     expect(find.text('1'), findsOneWidget);
     expect(find.text('Client'), findsWidgets);

@@ -390,12 +390,26 @@ void main() {
   testWidgets('AcpClientApp shows startup config errors without crashing', (
     tester,
   ) async {
+    var retries = 0;
     await tester.pumpWidget(
-      AcpClientApp(startupError: 'Could not load ACP config: bad json'),
+      AcpClientApp(
+        config: const AcpClientConfig(configPath: '/tmp/settings.json'),
+        startupError: 'Could not load ACP config: bad json at line 8',
+        onRetryStartup: () => retries += 1,
+      ),
     );
 
     expect(find.textContaining('bad json'), findsOneWidget);
+    expect(find.text('/tmp/settings.json'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Open config'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Retry'), findsOneWidget);
+    expect(find.byTooltip('Copy diagnostics'), findsOneWidget);
     expect(find.text('ACP Client'), findsOneWidget);
+
+    final retry = find.widgetWithText(TextButton, 'Retry');
+    await tester.ensureVisible(retry);
+    tester.widget<TextButton>(retry).onPressed?.call();
+    expect(retries, 1);
   });
 
   testWidgets('startup config failure keeps discovery and writes disabled', (
@@ -1898,7 +1912,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('resume-conversation-list')),
-        matching: find.text('Codex - Codex shared session (shared-s)'),
+        matching: find.text('Codex shared session'),
       ),
       findsOneWidget,
     );
@@ -1948,7 +1962,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('resume-conversation-list')),
-        matching: find.text('pi ACP - Pi shared session (shared-s)'),
+        matching: find.text('Pi shared session'),
       ),
       findsOneWidget,
     );
@@ -2528,6 +2542,27 @@ void main() {
       find.text('Check prompt composer states and permission review'),
       findsOneWidget,
     );
+    expect(find.byKey(const Key('compact-workspaces-button')), findsOneWidget);
+    expect(find.byKey(const Key('compact-context-button')), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const Key('compact-workspaces-button'))).height,
+      greaterThanOrEqualTo(44),
+    );
+    expect(
+      tester.getSize(find.byKey(const Key('compact-context-button'))).height,
+      greaterThanOrEqualTo(44),
+    );
+
+    await tester.tap(find.byKey(const Key('compact-context-button')));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Close Context'), findsOneWidget);
+    expect(find.text('Session'), findsWidgets);
+    await tester.tap(find.byTooltip('Close Context'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('compact-workspaces-button')));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Close Workspaces'), findsOneWidget);
   });
 
   testWidgets('AcpClientApp disables resume when agent cannot list sessions', (
@@ -3286,7 +3321,7 @@ void main() {
       });
       final thinkingConversation = find.descendant(
         of: find.byKey(const ValueKey('resume-conversation-list')),
-        matching: find.text('codex-thinking - Shared alias session (shared-a)'),
+        matching: find.text('codex-thinking'),
       );
       expect(thinkingConversation, findsOneWidget);
       await tester.tap(thinkingConversation);

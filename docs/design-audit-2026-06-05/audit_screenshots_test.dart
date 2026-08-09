@@ -5,21 +5,62 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
+import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 
 import 'audit_fixture.dart';
 
 void main() {
   setUpAll(() async {
-    final regular = await File(
-      '/System/Library/Fonts/Supplemental/Arial.ttf',
-    ).readAsBytes();
-    final bold = await File(
-      '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
-    ).readAsBytes();
-    final loader = FontLoader('SF Pro Display')
-      ..addFont(Future<ByteData>.value(ByteData.sublistView(regular)))
-      ..addFont(Future<ByteData>.value(ByteData.sublistView(bold)));
-    await loader.load();
+    Future<ByteData> fontData(String path) async =>
+        ByteData.sublistView(await File(path).readAsBytes());
+    var flutterRoot = File(Platform.resolvedExecutable).parent;
+    while (!Directory(
+      '${flutterRoot.path}/bin/cache/artifacts/material_fonts',
+    ).existsSync()) {
+      final parent = flutterRoot.parent;
+      if (parent.path == flutterRoot.path) {
+        throw StateError('Unable to locate the Flutter SDK font cache.');
+      }
+      flutterRoot = parent;
+    }
+
+    // Keep the audit renderer deterministic while covering every visible
+    // surface. One sans face is deliberately synthesized across 400/500/600;
+    // loading a second face into the same test family caused dialog text to
+    // rasterize as solid blocks. Arial Unicode supplies the Chinese fallback,
+    // and Material Icons prevents icon-codepoint tofu squares.
+    final sans = FontLoader(AppTypography.family)
+      ..addFont(fontData('/System/Library/Fonts/Supplemental/Arial.ttf'));
+    final cjk = FontLoader('PingFang SC')
+      ..addFont(fontData('/System/Library/Fonts/Hiragino Sans GB.ttc'));
+    final mono = FontLoader(AppTypography.monoFamily)
+      ..addFont(
+        fontData(
+          '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/'
+          'assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
+        ),
+      );
+    final monoFallback = FontLoader('Menlo')
+      ..addFont(
+        fontData(
+          '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/'
+          'assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
+        ),
+      );
+    final icons = FontLoader('MaterialIcons')
+      ..addFont(
+        fontData(
+          '${flutterRoot.path}/bin/cache/artifacts/material_fonts/'
+          'MaterialIcons-Regular.otf',
+        ),
+      );
+    await Future.wait([
+      sans.load(),
+      cjk.load(),
+      mono.load(),
+      monoFallback.load(),
+      icons.load(),
+    ]);
     debugSessionTimeNow = () => DateTime(2026, 7, 8, 12);
   });
 
@@ -85,14 +126,22 @@ void main() {
 
   testWidgets('06 session settings dialog', (tester) async {
     await pumpScenario(tester, 'active');
-    await tester.tap(find.byTooltip('Session settings'));
+    await tester.tap(find.text('Context'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Diagnostics'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Session settings'));
     await tester.pumpAndSettle();
     await capture('06-session-settings-dialog');
   });
 
   testWidgets('07 capabilities dialog', (tester) async {
     await pumpScenario(tester, 'active');
-    await tester.tap(find.byTooltip('ACP compatibility'));
+    await tester.tap(find.text('Context'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Diagnostics'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ACP compatibility'));
     await tester.pumpAndSettle();
     await capture('07-capabilities-dialog');
   });

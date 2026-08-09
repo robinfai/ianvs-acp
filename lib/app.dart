@@ -101,6 +101,7 @@ class AcpClientApp extends StatefulWidget {
     this.controller,
     this.config = const AcpClientConfig(),
     this.startupError,
+    this.onRetryStartup,
     this.discoverAgentServers,
     this.writeDiscoveredAgentServers,
     this.writeConfig,
@@ -124,6 +125,7 @@ class AcpClientApp extends StatefulWidget {
   final ChatController? controller;
   final AcpClientConfig config;
   final String? startupError;
+  final VoidCallback? onRetryStartup;
   final AgentServerDiscoverer? discoverAgentServers;
   final DiscoveredAgentServerWriter? writeDiscoveredAgentServers;
   final AcpConfigWriter? writeConfig;
@@ -481,7 +483,31 @@ class _AcpClientAppState extends State<AcpClientApp> {
         useMaterial3: true,
         visualDensity: VisualDensity.compact,
         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        fontFamily: '.AppleSystemUIFont',
+        fontFamily: AppTypography.family,
+        fontFamilyFallback: AppTypography.familyFallback,
+        textTheme: const TextTheme(
+          titleLarge: AppTypography.pageTitle,
+          titleMedium: AppTypography.sectionTitle,
+          titleSmall: AppTypography.label,
+          bodyLarge: AppTypography.body,
+          bodyMedium: AppTypography.bodyCompact,
+          bodySmall: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12.5,
+            height: 1.4,
+            fontWeight: FontWeight.w400,
+          ),
+          labelLarge: AppTypography.label,
+          labelMedium: AppTypography.metadata,
+          labelSmall: TextStyle(
+            color: AppColors.textTertiary,
+            fontSize: 10.5,
+            height: 1.3,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        focusColor: AppColors.accentMist,
+        hoverColor: AppColors.surfaceHover,
         dividerTheme: const DividerThemeData(
           color: AppColors.border,
           thickness: 1,
@@ -492,6 +518,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
           fillColor: AppColors.surface,
           hoverColor: AppColors.surfaceMuted,
           isDense: true,
+          hintStyle: const TextStyle(
+            color: AppColors.textTertiary,
+            fontSize: 13.5,
+            fontWeight: FontWeight.w400,
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 11,
+          ),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(AppRadius.md),
             borderSide: const BorderSide(color: AppColors.border),
@@ -502,15 +537,19 @@ class _AcpClientAppState extends State<AcpClientApp> {
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(AppRadius.md),
-            borderSide: const BorderSide(color: AppColors.textSecondary),
+            borderSide: const BorderSide(color: AppColors.accent, width: 1.35),
           ),
         ),
         popupMenuTheme: PopupMenuThemeData(
           color: AppColors.surface,
           elevation: 0,
+          shadowColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          menuPadding: const EdgeInsets.symmetric(vertical: 5),
+          textStyle: AppTypography.label,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.lg),
-            side: const BorderSide(color: AppColors.border),
+            side: const BorderSide(color: AppColors.borderSoft),
           ),
         ),
         iconButtonTheme: IconButtonThemeData(
@@ -518,45 +557,118 @@ class _AcpClientAppState extends State<AcpClientApp> {
             foregroundColor: AppColors.textSecondary,
             hoverColor: AppColors.surfaceMuted,
             highlightColor: AppColors.surfaceMuted,
+            minimumSize: const Size(32, 32),
+            maximumSize: const Size(40, 40),
+            padding: const EdgeInsets.all(7),
             visualDensity: VisualDensity.compact,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
         textButtonTheme: TextButtonThemeData(
           style: TextButton.styleFrom(
+            foregroundColor: AppColors.textPrimary,
+            minimumSize: const Size(32, 34),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            textStyle: AppTypography.label,
             visualDensity: VisualDensity.compact,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
         filledButtonTheme: FilledButtonThemeData(
           style: FilledButton.styleFrom(
+            foregroundColor: Colors.white,
+            backgroundColor: AppColors.textPrimary,
+            minimumSize: const Size(36, 36),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            elevation: 0,
+            textStyle: AppTypography.label,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md),
+            ),
             visualDensity: VisualDensity.compact,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
         outlinedButtonTheme: OutlinedButtonThemeData(
           style: OutlinedButton.styleFrom(
+            foregroundColor: AppColors.textPrimary,
+            minimumSize: const Size(36, 36),
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+            side: const BorderSide(color: AppColors.border),
+            textStyle: AppTypography.label,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md),
+            ),
             visualDensity: VisualDensity.compact,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
+        switchTheme: SwitchThemeData(
+          thumbColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.selected)
+                ? Colors.white
+                : AppColors.textTertiary,
+          ),
+          trackColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.selected)
+                ? AppColors.accent
+                : AppColors.surfaceMuted,
+          ),
+          trackOutlineColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.selected)
+                ? AppColors.accent
+                : AppColors.border,
+          ),
+        ),
+        progressIndicatorTheme: const ProgressIndicatorThemeData(
+          color: AppColors.accent,
+          linearTrackColor: AppColors.surfaceMuted,
+          circularTrackColor: AppColors.surfaceMuted,
+        ),
         dialogTheme: DialogThemeData(
           backgroundColor: AppColors.surface,
+          surfaceTintColor: Colors.transparent,
           elevation: 0,
+          shadowColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 28,
+            vertical: 24,
+          ),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.xl),
-            side: const BorderSide(color: AppColors.border),
+            side: const BorderSide(color: AppColors.borderSoft),
           ),
-          titleTextStyle: const TextStyle(
+          titleTextStyle: AppTypography.dialogTitle,
+          contentTextStyle: AppTypography.bodyCompact,
+          actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
+        ),
+        tooltipTheme: TooltipThemeData(
+          decoration: BoxDecoration(
             color: AppColors.textPrimary,
-            fontSize: 18,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+          ),
+          textStyle: const TextStyle(
+            color: Colors.white,
+            fontSize: 11.5,
+            fontWeight: FontWeight.w500,
+          ),
+          waitDuration: const Duration(milliseconds: 420),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.textPrimary,
+          contentTextStyle: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w400,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md),
           ),
         ),
         textSelectionTheme: TextSelectionThemeData(
-          cursorColor: AppColors.primary,
-          selectionColor: AppColors.primary.withValues(alpha: 0.18),
+          cursorColor: AppColors.accent,
+          selectionColor: AppColors.accent.withValues(alpha: 0.18),
         ),
       ),
       home: AppShell(
@@ -577,6 +689,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         workspaceStateStore: _workspaceStateStore,
         defaultAgentName: _config.defaultAgentServerName,
         startupError: _combinedStartupError,
+        onRetryStartup: widget.onRetryStartup,
         canSwitchAgent: widget.controller == null,
         autoLoadWorkspaceSessions: _canAutoLoadWorkspaceSessions,
         onLoadSessionCatalogs: widget.controller == null

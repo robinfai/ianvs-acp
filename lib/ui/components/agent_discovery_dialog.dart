@@ -34,7 +34,7 @@ class _AgentDiscoveryDialogState extends State<AgentDiscoveryDialog> {
               'Select the local ACP agents to add to settings.json.',
               style: TextStyle(
                 color: AppColors.textSecondary,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
             ),
@@ -129,7 +129,7 @@ class _DiscoveredAgentTile extends StatelessWidget {
                       style: const TextStyle(
                         color: AppColors.textPrimary,
                         fontSize: 13,
-                        fontWeight: FontWeight.w900,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -140,7 +140,7 @@ class _DiscoveredAgentTile extends StatelessWidget {
                       style: const TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 12,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),

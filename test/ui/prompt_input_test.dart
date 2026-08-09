@@ -65,6 +65,7 @@ void main() {
     VoidCallback? onClearQueuedPrompts,
     void Function(int oldIndex, int newIndex)? onReorderQueuedPrompt,
     double? width,
+    double? height,
     Widget? background,
     AcpInputBudget inputBudget = const AcpInputBudget(),
   }) {
@@ -107,11 +108,11 @@ void main() {
       onReorderQueuedPrompt: onReorderQueuedPrompt,
       inputBudget: inputBudget,
     );
-    final body = width == null
+    final body = width == null && height == null
         ? promptInput
         : Align(
             alignment: Alignment.topLeft,
-            child: SizedBox(width: width, child: promptInput),
+            child: SizedBox(width: width, height: height, child: promptInput),
           );
     return MaterialApp(
       home: Scaffold(
@@ -197,7 +198,7 @@ void main() {
       input(agentName: 'Kimi Code Dev', isSending: false, onSend: (_, _) {}),
     );
 
-    expect(find.text('Send a prompt to Kimi Code Dev...'), findsOneWidget);
+    expect(find.text('Message Kimi Code Dev'), findsOneWidget);
   });
 
   testWidgets('PromptInput shows a stoppable idle warning', (tester) async {
@@ -1570,9 +1571,8 @@ void main() {
       ),
     );
 
-    expect(find.text('等待 Tool Call 权限确认'), findsOneWidget);
-    expect(find.text('需要处理'), findsOneWidget);
-    expect(find.text('Tool Call 待确认'), findsOneWidget);
+    expect(find.text('Tool call approval required'), findsOneWidget);
+    expect(find.text('需要处理'), findsNothing);
     expect(find.text('Read file'), findsOneWidget);
     expect(find.text('Allow Once'), findsOneWidget);
     expect(
@@ -1583,23 +1583,13 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.descendant(
-        of: find.byKey(const Key('prompt-input-surface')),
-        matching: find.byKey(const Key('prompt-permission-service-chip')),
-      ),
-      findsOneWidget,
+      find.byKey(const Key('prompt-permission-service-chip')),
+      findsNothing,
     );
     expect(
       tester.getTopLeft(find.byKey(const Key('prompt-permission-card'))).dy,
       lessThan(tester.getTopLeft(find.byType(TextField)).dy),
     );
-    expect(
-      tester
-          .getTopLeft(find.byKey(const Key('prompt-permission-service-chip')))
-          .dy,
-      greaterThan(tester.getTopLeft(find.byType(TextField)).dy),
-    );
-
     final surface = tester.widget<AnimatedContainer>(
       find.byKey(const Key('prompt-input-surface')),
     );
@@ -2019,13 +2009,24 @@ void main() {
 
       expect(choice('allow-once').onPressed, isNull);
       expect(choice('deny-once').onPressed, isNotNull);
-      expect(choice('fallback-reject').onPressed, isNull);
-      expect(choice('fallback-allow').onPressed, isNull);
-      expect(choice('unknown-kind').onPressed, isNull);
 
       await tester.tap(
         find.byKey(const Key('prompt-permission-option-deny-once')),
       );
+      await tester.tap(find.byKey(const Key('prompt-permission-more-choices')));
+      await tester.pumpAndSettle();
+
+      PopupMenuItem<String> menuChoice(String id) =>
+          tester.widget<PopupMenuItem<String>>(
+            find.byKey(Key('prompt-permission-menu-option-$id')),
+          );
+
+      expect(menuChoice('fallback-reject').enabled, isFalse);
+      expect(menuChoice('fallback-allow').enabled, isFalse);
+      expect(menuChoice('unknown-kind').enabled, isFalse);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Cancel permission request'));
       await tester.pump();
 
@@ -2124,59 +2125,173 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.byKey(const Key('prompt-permission-card')), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, 'Deny'), findsOneWidget);
+    expect(
+      tester.getSize(find.widgetWithText(OutlinedButton, 'Deny')).height,
+      greaterThanOrEqualTo(44),
+    );
+    expect(
+      tester.getSize(find.widgetWithText(FilledButton, 'Allow Once')).height,
+      greaterThanOrEqualTo(44),
+    );
+    expect(
+      tester.getSize(find.byTooltip('Cancel permission request')).height,
+      greaterThanOrEqualTo(44),
+    );
 
     await tester.tap(find.widgetWithText(OutlinedButton, 'Deny'));
     await tester.pump();
     expect(denied, isTrue);
   });
 
-  testWidgets('PromptInput returns the exact structured permission option', (
-    tester,
-  ) async {
-    String? selectedOptionId;
-    await tester.pumpWidget(
-      input(
-        isSending: false,
-        onSend: (_, _) {},
-        pendingPermissionRequest: AcpPermissionRequest(
-          id: 'permission-1',
-          title: 'Run command',
-          rationale: 'Requested by agent',
-          sessionId: 'session-1',
-          toolName: 'terminal',
-          options: const ['Allow once', 'Always allow', 'Reject'],
-          choices: const [
-            AcpPermissionChoice(
-              optionId: 'allow-once',
-              name: 'Allow once',
-              kind: 'allow_once',
-            ),
-            AcpPermissionChoice(
-              optionId: 'allow-always',
-              name: 'Always allow',
-              kind: 'allow_always',
-            ),
-            AcpPermissionChoice(
-              optionId: 'reject-once',
-              name: 'Reject',
-              kind: 'reject_once',
-            ),
-          ],
-          requestedAt: DateTime(2026, 5, 31, 12),
+  testWidgets(
+    'PromptInput fits a real four-choice permission in compact desktop height',
+    (tester) async {
+      await tester.pumpWidget(
+        input(
+          width: 480,
+          height: 535,
+          isSending: true,
+          onSend: (_, _) {},
+          pendingPermissionRequest: AcpPermissionRequest(
+            id: 'permission-real-choices',
+            title: 'Agent action',
+            rationale:
+                'The Rust runtime blocked this action pending your choice.',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            toolKind: 'execute',
+            options: const [
+              'Allow Once',
+              'Allow for Session',
+              'Allow Commands Starting With `touch /etc/smoke`',
+              'Reject',
+            ],
+            choices: const [
+              AcpPermissionChoice(
+                optionId: 'allow-once',
+                name: 'Allow Once',
+                kind: 'allow_once',
+              ),
+              AcpPermissionChoice(
+                optionId: 'allow-session',
+                name: 'Allow for Session',
+                kind: 'allow_always',
+              ),
+              AcpPermissionChoice(
+                optionId: 'allow-prefix',
+                name: 'Allow Commands Starting With `touch /etc/smoke`',
+                kind: 'allow_always',
+              ),
+              AcpPermissionChoice(
+                optionId: 'reject-once',
+                name: 'Reject',
+                kind: 'reject_once',
+              ),
+            ],
+            requestedAt: DateTime(2026, 8, 9, 12),
+            metadata: const <String, Object?>{
+              'command': <String>['touch /etc/smoke'],
+              'cwd': '/workspace/app',
+            },
+          ),
+          modelOption: const AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'gpt-5.6-sol',
+            options: [
+              AcpConfigOptionChoice(
+                value: 'gpt-5.6-sol',
+                name: 'GPT-5.6-Sol Xhigh',
+              ),
+            ],
+          ),
+          onModelSelected: (_) {},
+          onSelectPermissionOption: (_) {},
         ),
-        onSelectPermissionOption: (optionId) => selectedOptionId = optionId,
-      ),
-    );
+      );
 
-    expect(find.text('Allow once'), findsOneWidget);
-    expect(find.text('Always allow'), findsOneWidget);
-    expect(find.text('Reject'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      expect(find.text('Reject'), findsOneWidget);
+      expect(find.text('Allow Once'), findsOneWidget);
+      expect(
+        find.byKey(const Key('prompt-permission-more-choices')),
+        findsOneWidget,
+      );
+      expect(find.text('Allow for Session'), findsNothing);
+      expect(find.text('GPT-5.6-Sol Xhigh'), findsNothing);
+      expect(
+        tester.getBottomRight(find.byKey(const Key('prompt-input-surface'))).dy,
+        lessThanOrEqualTo(535),
+      );
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Always allow'));
-    await tester.pump();
+      await tester.tap(find.byKey(const Key('prompt-permission-more-choices')));
+      await tester.pumpAndSettle();
+      expect(find.text('Allow for Session'), findsOneWidget);
+      expect(
+        find.text('Allow Commands Starting With `touch /etc/smoke`'),
+        findsOneWidget,
+      );
+    },
+  );
 
-    expect(selectedOptionId, 'allow-always');
-  });
+  testWidgets(
+    'PromptInput keeps a persistent structured permission in More and returns its exact option',
+    (tester) async {
+      String? selectedOptionId;
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          pendingPermissionRequest: AcpPermissionRequest(
+            id: 'permission-1',
+            title: 'Run command',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            options: const ['Allow once', 'Always allow', 'Reject'],
+            choices: const [
+              AcpPermissionChoice(
+                optionId: 'allow-once',
+                name: 'Allow once',
+                kind: 'allow_once',
+              ),
+              AcpPermissionChoice(
+                optionId: 'allow-always',
+                name: 'Always allow',
+                kind: 'allow_always',
+              ),
+              AcpPermissionChoice(
+                optionId: 'reject-once',
+                name: 'Reject',
+                kind: 'reject_once',
+              ),
+            ],
+            requestedAt: DateTime(2026, 5, 31, 12),
+          ),
+          onSelectPermissionOption: (optionId) => selectedOptionId = optionId,
+        ),
+      );
+
+      expect(find.text('Allow once'), findsOneWidget);
+      expect(find.text('Always allow'), findsNothing);
+      expect(find.text('Reject'), findsOneWidget);
+      expect(
+        find.byKey(const Key('prompt-permission-more-choices')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const Key('prompt-permission-more-choices')));
+      await tester.pumpAndSettle();
+      expect(find.text('Always allow'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('prompt-permission-menu-option-allow-always')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(selectedOptionId, 'allow-always');
+    },
+  );
 
   testWidgets('PromptInput changes tool call execution policy', (tester) async {
     AcpToolCallExecutionPolicy? selected;
@@ -2193,9 +2308,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('默认权限'), findsOneWidget);
     expect(find.text('完全访问权限'), findsOneWidget);
-    expect(find.text('所有请求都由你确认'), findsOneWidget);
-    expect(find.text('使用信任规则，未命中时再确认'), findsOneWidget);
-    expect(find.text('自动允许所有工具调用'), findsOneWidget);
+    expect(find.text('Agent 请求授权时由你确认'), findsOneWidget);
+    expect(find.text('信任规则未命中时再确认'), findsOneWidget);
+    expect(find.text('自动批准 Agent 的授权请求'), findsOneWidget);
 
     await tester.tap(find.text('完全访问权限'));
     await tester.pumpAndSettle();
@@ -2218,7 +2333,7 @@ void main() {
     await tester.tap(find.text('自动审查'));
     await tester.pumpAndSettle();
 
-    expect(find.text('旁路 agent 审查，未决时再确认'), findsOneWidget);
+    expect(find.text('先审查授权请求，未决时再确认'), findsOneWidget);
   });
 
   testWidgets('PromptInput changes exposed model option', (tester) async {

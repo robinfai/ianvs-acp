@@ -141,16 +141,16 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 10, 8),
+            padding: const EdgeInsets.fromLTRB(18, 18, 14, 10),
             child: Row(
               children: [
                 Text(
                   'Workspaces',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     color: AppColors.textSecondary,
-                    fontSize: 12,
-                    letterSpacing: .1,
+                    fontSize: 12.5,
+                    letterSpacing: 0,
                   ),
                 ),
                 const Spacer(),
@@ -171,7 +171,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
             child: _WorkspaceSearchField(
               controller: _searchController,
               onChanged: (_) => setState(() {}),
@@ -179,7 +179,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
           ),
           Expanded(
             child: ListView.separated(
-              padding: const EdgeInsets.fromLTRB(8, 0, 8, 10),
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
               itemBuilder: (context, index) {
                 final workspace = workspaces[index];
                 final selected = workspace.path == widget.currentWorkspace.path;
@@ -741,7 +741,7 @@ class _WorkspaceSearchField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 34,
+      height: 40,
       child: Stack(
         children: [
           Positioned.fill(
@@ -757,8 +757,8 @@ class _WorkspaceSearchField extends StatelessWidget {
                 textInputAction: TextInputAction.search,
                 style: const TextStyle(
                   color: AppColors.textPrimary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w400,
                   letterSpacing: 0,
                 ),
                 decoration: InputDecoration(
@@ -767,15 +767,15 @@ class _WorkspaceSearchField extends StatelessWidget {
                       'Search workspaces...',
                       style: TextStyle(
                         color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w400,
                         letterSpacing: 0,
                       ),
                     ),
                   ),
                   prefixIcon: const Icon(
                     Icons.search_rounded,
-                    size: 16,
+                    size: 17,
                     color: AppColors.textSecondary,
                   ),
                   suffixIcon: controller.text.isEmpty
@@ -786,7 +786,7 @@ class _WorkspaceSearchField extends StatelessWidget {
                   fillColor: AppColors.surface,
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: 8,
-                    vertical: 6,
+                    vertical: 9,
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -799,8 +799,8 @@ class _WorkspaceSearchField extends StatelessWidget {
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(AppRadius.sm),
                     borderSide: const BorderSide(
-                      color: AppColors.textSecondary,
-                      width: 1.2,
+                      color: AppColors.accent,
+                      width: 1.3,
                     ),
                   ),
                 ),
@@ -1081,7 +1081,7 @@ class _SessionListToggle extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.textTertiary,
                 fontSize: 11.5,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
                 letterSpacing: 0,
                 height: 1.1,
               ),
@@ -1442,7 +1442,7 @@ PopupMenuItem<_WorkspaceMenuAction> _workspaceMenuItem({
             style: TextStyle(
               color: enabled ? color : disabledColor,
               fontSize: 13,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -1611,7 +1611,7 @@ class _SessionTileState extends State<_SessionTile> {
     bool showActions, {
     required bool selected,
   }) {
-    const titleColor = AppColors.textPrimary;
+    final titleColor = selected ? AppColors.accentDark : AppColors.textPrimary;
     return Row(
       children: [
         Expanded(
@@ -2136,7 +2136,7 @@ PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem({
             style: TextStyle(
               color: color,
               fontSize: 13,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
           ),
@@ -2170,7 +2170,7 @@ class _InlineSessionLoadStatus extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 11,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
                 height: 1.25,
                 letterSpacing: 0,
               ),
@@ -2206,7 +2206,7 @@ class _InlineSessionLoadError extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 11,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               height: 1.25,
               letterSpacing: 0,
             ),
@@ -2234,7 +2234,7 @@ class _InlineSessionLoadError extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 textStyle: const TextStyle(
                   fontSize: 11,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
               ),
@@ -2302,7 +2302,7 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
                     style: const TextStyle(
                       color: AppColors.textSecondary,
                       fontSize: 11,
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       height: 1.25,
                       letterSpacing: 0,
                     ),
@@ -2340,7 +2340,7 @@ class _CountPill extends StatelessWidget {
         style: const TextStyle(
           color: AppColors.textSecondary,
           fontSize: 10,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
       ),

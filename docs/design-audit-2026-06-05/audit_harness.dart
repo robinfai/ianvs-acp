@@ -4,7 +4,10 @@ import 'audit_fixture.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final scenario = Uri.base.queryParameters['scenario'] ?? 'empty';
+  const buildScenario = String.fromEnvironment('AUDIT_SCENARIO');
+  final scenario = buildScenario.isNotEmpty
+      ? buildScenario
+      : Uri.base.queryParameters['scenario'] ?? 'empty';
   final fixture = await createAuditFixture(scenario);
 
   runApp(

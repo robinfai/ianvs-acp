@@ -126,8 +126,8 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
   Widget build(BuildContext context) {
     final baseStyle = const TextStyle(
       color: Color(0xff24292e),
-      fontFamily: 'SF Mono',
-      fontFamilyFallback: <String>['Menlo', 'Monaco', 'monospace'],
+      fontFamily: AppTypography.monoFamily,
+      fontFamilyFallback: AppTypography.monoFallback,
       fontSize: 12.5,
       height: 1.5,
     );
@@ -331,7 +331,7 @@ class _CodeBlockToolbar extends StatelessWidget {
             style: const TextStyle(
               color: AppColors.textSecondary,
               fontSize: 10.5,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w600,
               letterSpacing: .55,
             ),
           ),
@@ -356,7 +356,7 @@ class _CodeBlockToolbar extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 7),
                 textStyle: const TextStyle(
                   fontSize: 11,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               icon: Icon(
@@ -423,7 +423,7 @@ class _MermaidToolbarState extends State<_MermaidToolbar> {
             style: TextStyle(
               color: AppColors.textSecondary,
               fontSize: 10.5,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               letterSpacing: .45,
             ),
           ),

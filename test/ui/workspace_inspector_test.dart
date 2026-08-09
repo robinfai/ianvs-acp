@@ -88,11 +88,7 @@ void main() {
 
     expect(find.text('Workspace'), findsOneWidget);
     expect(find.text('Overview'), findsOneWidget);
-    expect(find.text('Build workspace shell'), findsWidgets);
-
-    await tester.tap(find.text('Context'));
-    await tester.pumpAndSettle();
-
+    // Active sessions open directly on Context, matching the selected design.
     expect(find.text('5.6 Sol'), findsOneWidget);
     expect(find.text('On'), findsOneWidget);
     expect(find.text('25%  2K / 8K'), findsOneWidget);
@@ -100,6 +96,13 @@ void main() {
     expect(find.text('Filesystem MCP'), findsOneWidget);
     expect(find.text('read'), findsOneWidget);
     expect(find.text('Enabled'), findsOneWidget);
+
+    await tester.tap(find.text('Overview'));
+    await tester.pumpAndSettle();
+    expect(find.text('Build workspace shell'), findsWidgets);
+
+    await tester.tap(find.text('Context'));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('On'));
     await tester.pumpAndSettle();
@@ -153,6 +156,8 @@ void main() {
       ),
     );
 
+    await tester.tap(find.text('Overview'));
+    await tester.pumpAndSettle();
     expect(find.text('Codex - 4h ago'), findsOneWidget);
   });
 }
