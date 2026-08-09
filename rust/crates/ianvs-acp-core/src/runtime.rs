@@ -420,15 +420,32 @@ impl EventSink {
 #[derive(Default)]
 struct ReplayRenderProjection {
     request_id: String,
+    ready_updates: Vec<RenderUpdate>,
     updates: Vec<RenderUpdate>,
+    emit_incrementally: bool,
+    next_chunk_index: u32,
 }
 
 impl ReplayRenderProjection {
-    fn push(&mut self, update: RenderUpdate) {
+    fn push(&mut self, update: RenderUpdate) -> Option<Vec<RenderUpdate>> {
+        // A new user update closes every preceding replay turn. Once that
+        // boundary is observed, later ACP notifications cannot merge into the
+        // completed prefix because tool updates never cross a user message.
+        // Transfer that immutable prefix while the adapter is still replaying
+        // the remainder, but keep adjacent chunks of one user message local so
+        // the existing coalescing semantics remain unchanged.
+        let completed = (self.emit_incrementally
+            && update.kind == RenderUpdateKind::UserMessage
+            && self
+                .updates
+                .last()
+                .is_some_and(|previous| previous.kind != RenderUpdateKind::UserMessage))
+        .then(|| std::mem::take(&mut self.updates));
         if self.coalesce_adjacent_text(&update) || self.merge_tool_update(&update) {
-            return;
+            return completed;
         }
         self.updates.push(update);
+        completed
     }
 
     fn coalesce_adjacent_text(&mut self, update: &RenderUpdate) -> bool {
@@ -490,6 +507,7 @@ impl ReplayRenderProjection {
 struct RenderRouter {
     sink: EventSink,
     replay: Arc<Mutex<HashMap<String, ReplayRenderProjection>>>,
+    emission: Arc<Mutex<()>>,
 }
 
 impl RenderRouter {
@@ -497,10 +515,24 @@ impl RenderRouter {
         Self {
             sink,
             replay: Arc::new(Mutex::new(HashMap::new())),
+            emission: Arc::new(Mutex::new(())),
         }
     }
 
     fn begin_replay(&self, session_id: String, request_id: String) {
+        self.begin_replay_with_transfer(session_id, request_id, true);
+    }
+
+    fn begin_recovery_replay(&self, session_id: String, request_id: String) {
+        self.begin_replay_with_transfer(session_id, request_id, false);
+    }
+
+    fn begin_replay_with_transfer(
+        &self,
+        session_id: String,
+        request_id: String,
+        emit_incrementally: bool,
+    ) {
         self.replay
             .lock()
             .expect("render replay mutex poisoned")
@@ -508,15 +540,41 @@ impl RenderRouter {
                 session_id,
                 ReplayRenderProjection {
                     request_id,
+                    ready_updates: Vec::new(),
                     updates: Vec::new(),
+                    emit_incrementally,
+                    next_chunk_index: 0,
                 },
             );
     }
 
     fn route(&self, update: RenderUpdate) {
+        let _emission = self
+            .emission
+            .lock()
+            .expect("render emission mutex poisoned");
+        let session_id = update.session_id.clone();
         let mut replay = self.replay.lock().expect("render replay mutex poisoned");
-        if let Some(projection) = replay.get_mut(&update.session_id) {
-            projection.push(update);
+        if let Some(projection) = replay.get_mut(&session_id) {
+            let completed = projection.push(update).map(|updates| {
+                projection.ready_updates.extend(updates);
+                let chunks = Self::take_complete_snapshot_chunks(&mut projection.ready_updates);
+                let chunk_index = projection.next_chunk_index;
+                projection.next_chunk_index = projection
+                    .next_chunk_index
+                    .saturating_add(u32::try_from(chunks.len()).unwrap_or(u32::MAX));
+                (projection.request_id.clone(), chunk_index, chunks)
+            });
+            std::mem::drop(replay);
+            if let Some((request_id, chunk_index, chunks)) = completed {
+                self.emit_snapshot_chunk_batch(
+                    &request_id,
+                    &session_id,
+                    chunk_index,
+                    false,
+                    chunks,
+                );
+            }
             return;
         }
         std::mem::drop(replay);
@@ -524,6 +582,10 @@ impl RenderRouter {
     }
 
     fn finish_replay(&self, session_id: &str, request_id: &str) {
+        let _emission = self
+            .emission
+            .lock()
+            .expect("render emission mutex poisoned");
         let projection = self
             .replay
             .lock()
@@ -535,20 +597,29 @@ impl RenderRouter {
         if projection.request_id != request_id {
             return;
         }
-        self.emit_snapshot_chunks(request_id, session_id, projection.updates);
+        let mut updates = projection.ready_updates;
+        updates.extend(projection.updates);
+        self.emit_snapshot_chunks(
+            request_id,
+            session_id,
+            projection.next_chunk_index,
+            true,
+            updates,
+        );
     }
 
     fn abort_replay(&self, request_id: &str) {
+        let _emission = self
+            .emission
+            .lock()
+            .expect("render emission mutex poisoned");
         self.replay
             .lock()
             .expect("render replay mutex poisoned")
             .retain(|_, projection| projection.request_id != request_id);
     }
 
-    fn emit_snapshot_chunks(&self, request_id: &str, session_id: &str, updates: Vec<RenderUpdate>) {
-        if updates.is_empty() {
-            return;
-        }
+    fn split_snapshot_updates(updates: Vec<RenderUpdate>) -> Vec<Vec<RenderUpdate>> {
         let mut chunks = Vec::<Vec<RenderUpdate>>::new();
         let mut chunk = Vec::<RenderUpdate>::new();
         let mut chunk_bytes = 0_usize;
@@ -568,13 +639,72 @@ impl RenderRouter {
         if !chunk.is_empty() {
             chunks.push(chunk);
         }
+        chunks
+    }
+
+    fn take_complete_snapshot_chunks(
+        ready_updates: &mut Vec<RenderUpdate>,
+    ) -> Vec<Vec<RenderUpdate>> {
+        let mut chunks = Vec::<Vec<RenderUpdate>>::new();
+        let mut chunk = Vec::<RenderUpdate>::new();
+        let mut chunk_bytes = 0_usize;
+        for update in std::mem::take(ready_updates) {
+            let update_bytes = serde_json::to_vec(&update).map_or(0, |encoded| encoded.len());
+            if !chunk.is_empty()
+                && (chunk.len() >= RENDER_SNAPSHOT_CHUNK_MAX_UPDATES
+                    || chunk_bytes.saturating_add(update_bytes)
+                        > RENDER_SNAPSHOT_CHUNK_TARGET_BYTES)
+            {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_bytes = 0;
+            }
+            chunk_bytes = chunk_bytes.saturating_add(update_bytes);
+            chunk.push(update);
+            if chunk.len() >= RENDER_SNAPSHOT_CHUNK_MAX_UPDATES
+                || (chunk.len() == 1 && chunk_bytes > RENDER_SNAPSHOT_CHUNK_TARGET_BYTES)
+            {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_bytes = 0;
+            }
+        }
+        *ready_updates = chunk;
+        chunks
+    }
+
+    fn emit_snapshot_chunks(
+        &self,
+        request_id: &str,
+        session_id: &str,
+        first_chunk_index: u32,
+        mark_last: bool,
+        updates: Vec<RenderUpdate>,
+    ) {
+        let chunks = Self::split_snapshot_updates(updates);
+        self.emit_snapshot_chunk_batch(
+            request_id,
+            session_id,
+            first_chunk_index,
+            mark_last,
+            chunks,
+        );
+    }
+
+    fn emit_snapshot_chunk_batch(
+        &self,
+        request_id: &str,
+        session_id: &str,
+        first_chunk_index: u32,
+        mark_last: bool,
+        chunks: Vec<Vec<RenderUpdate>>,
+    ) {
         let last_index = chunks.len().saturating_sub(1);
-        for (index, updates) in chunks.into_iter().enumerate() {
+        for (offset, updates) in chunks.into_iter().enumerate() {
             self.sink.emit(RuntimeEvent::RenderSnapshotChunk {
                 request_id: request_id.to_string(),
                 session_id: session_id.to_string(),
-                chunk_index: u32::try_from(index).unwrap_or(u32::MAX),
-                is_last: index == last_index,
+                chunk_index: first_chunk_index
+                    .saturating_add(u32::try_from(offset).unwrap_or(u32::MAX)),
+                is_last: mark_last && offset == last_index,
                 updates,
             });
         }
@@ -1666,7 +1796,8 @@ async fn recover_registered_sessions(
         let scope = session.scope().map_err(|error| error.to_string())?;
         let recovery_request_id = format!("recovery:{}", session.session_id);
         if support.load {
-            render_router.begin_replay(session.session_id.clone(), recovery_request_id.clone());
+            render_router
+                .begin_recovery_replay(session.session_id.clone(), recovery_request_id.clone());
         }
         let restored =
             match restore_wire_session(connection, &session, &scope, support, mcp_servers).await {
@@ -3827,16 +3958,17 @@ mod tests {
         let mut projection = ReplayRenderProjection {
             request_id: "restore-1".to_string(),
             updates: Vec::new(),
+            ..ReplayRenderProjection::default()
         };
         for text in ["hel", "lo"] {
-            projection.push(RenderUpdate {
+            let _ = projection.push(RenderUpdate {
                 session_id: "session-1".to_string(),
                 kind: RenderUpdateKind::AssistantText,
                 text: text.to_string(),
                 metadata: None,
             });
         }
-        projection.push(RenderUpdate {
+        let _ = projection.push(RenderUpdate {
             session_id: "session-1".to_string(),
             kind: RenderUpdateKind::ToolCall,
             text: "Read file".to_string(),
@@ -3845,7 +3977,7 @@ mod tests {
                 "status": "in_progress"
             })),
         });
-        projection.push(RenderUpdate {
+        let _ = projection.push(RenderUpdate {
             session_id: "session-1".to_string(),
             kind: RenderUpdateKind::ToolCall,
             text: String::new(),
@@ -3870,6 +4002,107 @@ mod tests {
     }
 
     #[test]
+    fn foreground_replay_transfers_completed_turn_before_finish() {
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let sink = EventSink {
+            sender,
+            next_sequence: Arc::new(Mutex::new(1)),
+        };
+        let router = RenderRouter::new(sink);
+        router.begin_replay("session-1".to_string(), "restore-1".to_string());
+
+        for turn in 0..8 {
+            for (kind, text) in [
+                (RenderUpdateKind::UserMessage, format!("question {turn}")),
+                (RenderUpdateKind::AssistantText, format!("answer {turn}")),
+            ] {
+                router.route(RenderUpdate {
+                    session_id: "session-1".to_string(),
+                    kind,
+                    text,
+                    metadata: None,
+                });
+            }
+        }
+        assert!(receiver.try_recv().is_err());
+
+        router.route(RenderUpdate {
+            session_id: "session-1".to_string(),
+            kind: RenderUpdateKind::UserMessage,
+            text: "final question".to_string(),
+            metadata: None,
+        });
+        let first = receiver.try_recv().expect("completed replay turn");
+        let RuntimeEvent::RenderSnapshotChunk {
+            chunk_index,
+            is_last,
+            updates,
+            ..
+        } = first.event
+        else {
+            panic!("unexpected runtime event");
+        };
+        assert_eq!(chunk_index, 0);
+        assert!(!is_last);
+        assert_eq!(updates.len(), RENDER_SNAPSHOT_CHUNK_MAX_UPDATES);
+        assert_eq!(updates[0].text, "question 0");
+        assert_eq!(updates[15].text, "answer 7");
+
+        router.route(RenderUpdate {
+            session_id: "session-1".to_string(),
+            kind: RenderUpdateKind::AssistantText,
+            text: "final answer".to_string(),
+            metadata: None,
+        });
+        router.finish_replay("session-1", "restore-1");
+
+        let final_chunk = receiver.try_recv().expect("final replay turn");
+        let RuntimeEvent::RenderSnapshotChunk {
+            chunk_index,
+            is_last,
+            updates,
+            ..
+        } = final_chunk.event
+        else {
+            panic!("unexpected runtime event");
+        };
+        assert_eq!(chunk_index, 1);
+        assert!(is_last);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].text, "final question");
+        assert_eq!(updates[1].text, "final answer");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn background_recovery_replay_never_crosses_the_event_queue() {
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let sink = EventSink {
+            sender,
+            next_sequence: Arc::new(Mutex::new(1)),
+        };
+        let router = RenderRouter::new(sink);
+        router.begin_recovery_replay("session-1".to_string(), "recovery:1".to_string());
+
+        for (kind, text) in [
+            (RenderUpdateKind::UserMessage, "first question"),
+            (RenderUpdateKind::AssistantText, "first answer"),
+            (RenderUpdateKind::UserMessage, "second question"),
+        ] {
+            router.route(RenderUpdate {
+                session_id: "session-1".to_string(),
+                kind,
+                text: text.to_string(),
+                metadata: None,
+            });
+        }
+        assert!(receiver.try_recv().is_err());
+
+        router.abort_replay("recovery:1");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn replay_snapshot_is_split_before_the_ffi_queue() {
         let (sender, receiver) = mpsc::sync_channel(16);
         let sink = EventSink {
@@ -3886,7 +4119,7 @@ mod tests {
             })
             .collect();
 
-        router.emit_snapshot_chunks("restore-1", "session-1", updates);
+        router.emit_snapshot_chunks("restore-1", "session-1", 0, true, updates);
 
         let envelopes = receiver.try_iter().collect::<Vec<RuntimeEventEnvelope>>();
         assert_eq!(envelopes.len(), 3);
@@ -3925,7 +4158,7 @@ mod tests {
             })
             .collect();
 
-        router.emit_snapshot_chunks("restore-1", "session-1", updates);
+        router.emit_snapshot_chunks("restore-1", "session-1", 0, true, updates);
 
         let envelopes = receiver.try_iter().collect::<Vec<RuntimeEventEnvelope>>();
         assert_eq!(envelopes.len(), 2);

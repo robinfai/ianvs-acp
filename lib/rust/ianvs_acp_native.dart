@@ -106,9 +106,10 @@ final class IanvsRustRuntime {
   IanvsRustRuntime({
     IanvsAcpNativeApi? native,
     this.pollInterval = const Duration(milliseconds: 16),
-    this.maxEventsPerPoll = 4,
-    this.maxBytesPerPoll = 128 * 1024,
-    this.backlogDrainDelay = const Duration(milliseconds: 4),
+    this.maxEventsPerPoll = 32,
+    this.maxBytesPerPoll = 2 * 1024 * 1024,
+    this.backlogDrainDelay = Duration.zero,
+    this.eventDispatchTimeSlice = const Duration(milliseconds: 4),
   }) : _native = native ?? FfiIanvsAcpNativeApi.open() {
     if (_native.ffiVersion != expectedFfiVersion) {
       throw StateError(
@@ -144,6 +145,13 @@ final class IanvsRustRuntime {
         'must not be negative',
       );
     }
+    if (eventDispatchTimeSlice <= Duration.zero) {
+      throw ArgumentError.value(
+        eventDispatchTimeSlice,
+        'eventDispatchTimeSlice',
+        'must be positive',
+      );
+    }
     _runtime = _native.createRuntime();
     _pollTimer = Timer.periodic(pollInterval, (_) {
       // A backlog drain already owns the next slice. Do not let the periodic
@@ -162,6 +170,7 @@ final class IanvsRustRuntime {
   final int maxEventsPerPoll;
   final int maxBytesPerPoll;
   final Duration backlogDrainDelay;
+  final Duration eventDispatchTimeSlice;
   final StreamController<IanvsRuntimeEvent> _events =
       StreamController<IanvsRuntimeEvent>.broadcast(sync: true);
   late final Object _runtime;
@@ -449,7 +458,9 @@ final class IanvsRustRuntime {
         );
       }
       hasMore = decoded['hasMore'] == true;
-      for (final rawEvent in rawEvents) {
+      final dispatchStopwatch = Stopwatch()..start();
+      for (var index = 0; index < rawEvents.length; index += 1) {
+        final rawEvent = rawEvents[index];
         if (rawEvent is! Map) {
           throw const FormatException('Rust event envelope must be an object.');
         }
@@ -464,13 +475,23 @@ final class IanvsRustRuntime {
         }
         _lastSequence = event.sequence;
         _events.add(event);
+        if (index + 1 < rawEvents.length &&
+            dispatchStopwatch.elapsed >= eventDispatchTimeSlice) {
+          // Event listeners project synchronously. Yield only after the active
+          // slice is spent so a large decoded batch lowers FFI/isolate fixed
+          // cost without turning replay projection into one long UI task.
+          await Future<void>.delayed(Duration.zero);
+          dispatchStopwatch
+            ..reset()
+            ..start();
+        }
       }
     } on Object catch (error, stackTrace) {
       _events.addError(error, stackTrace);
     }
-    // Pull a non-empty native remainder in bounded, cooperative slices. A real
-    // delay (rather than an immediate timer) lets a due vsync/frame callback
-    // run between JSON decode and synchronous event projection bursts.
+    // Pull a non-empty native remainder on the next event-loop turn. Projection
+    // inside each larger batch is independently bounded by a time slice; a
+    // caller may still opt into a longer inter-batch delay when needed.
     if (hasMore && !_disposed && _backlogDrainTimer == null) {
       _backlogDrainTimer = Timer(backlogDrainDelay, () {
         _backlogDrainTimer = null;

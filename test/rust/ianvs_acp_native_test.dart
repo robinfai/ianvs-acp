@@ -6,16 +6,17 @@ import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
 import 'package:ianvs_acp/rust/ianvs_runtime_event.dart';
 
 void main() {
-  test('uses frame-friendly default FFI drain budgets', () async {
+  test('uses adaptive default FFI drain budgets', () async {
     final runtime = IanvsRustRuntime(
       native: _FakeNativeApi(),
       pollInterval: const Duration(hours: 1),
     );
     addTearDown(runtime.dispose);
 
-    expect(runtime.maxEventsPerPoll, 4);
-    expect(runtime.maxBytesPerPoll, 128 * 1024);
-    expect(runtime.backlogDrainDelay, const Duration(milliseconds: 4));
+    expect(runtime.maxEventsPerPoll, 32);
+    expect(runtime.maxBytesPerPoll, 2 * 1024 * 1024);
+    expect(runtime.backlogDrainDelay, Duration.zero);
+    expect(runtime.eventDispatchTimeSlice, const Duration(milliseconds: 4));
   });
 
   test('rejects FFI batch limits outside the native ABI bounds', () {
@@ -30,6 +31,13 @@ void main() {
       () => IanvsRustRuntime(
         native: _FakeNativeApi(),
         maxBytesPerPoll: IanvsRustRuntime.maxNativeBytesPerPoll + 1,
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => IanvsRustRuntime(
+        native: _FakeNativeApi(),
+        eventDispatchTimeSlice: Duration.zero,
       ),
       throwsArgumentError,
     );
@@ -121,6 +129,43 @@ void main() {
       orderedEquals(<int>[1, 2, 3, 4, 5, 6, 7, 8, 9]),
     );
     expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 350)));
+  });
+
+  test('yields while projecting one large decoded event batch', () async {
+    var eventLoopAdvanced = false;
+    var eventLoopAdvancedBeforeLastEvent = false;
+    final native = _FakeNativeApi()
+      ..onPoll = () {
+        Timer.run(() => eventLoopAdvanced = true);
+      };
+    for (var sequence = 1; sequence <= 4; sequence += 1) {
+      native.events.add(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 4,
+          'sequence': sequence,
+          'type': 'status_changed',
+          'status': 'ready',
+        }),
+      );
+    }
+    final runtime = IanvsRustRuntime(
+      native: native,
+      pollInterval: const Duration(milliseconds: 1),
+      eventDispatchTimeSlice: const Duration(milliseconds: 1),
+    );
+    addTearDown(runtime.dispose);
+
+    final events = await runtime.events.take(4).map((event) {
+      final projectionWork = Stopwatch()..start();
+      while (projectionWork.elapsed < const Duration(milliseconds: 2)) {}
+      if (event.sequence == 4) {
+        eventLoopAdvancedBeforeLastEvent = eventLoopAdvanced;
+      }
+      return event;
+    }).toList();
+
+    expect(events.map((event) => event.sequence), <int>[1, 2, 3, 4]);
+    expect(eventLoopAdvancedBeforeLastEvent, isTrue);
   });
 
   test('sends stable product commands instead of ACP JSON-RPC', () async {

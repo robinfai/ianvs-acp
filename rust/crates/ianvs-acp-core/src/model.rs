@@ -558,9 +558,10 @@ pub enum RuntimeEvent {
     RenderUpdate {
         update: RenderUpdate,
     },
-    /// A replay projection is chunked before it reaches FFI. Chunks are not
-    /// independently visible: the host accumulates them until the following
-    /// `session_restored` control event commits the complete transcript.
+    /// A replay projection is transferred in completed-turn chunks while the
+    /// agent continues loading. Chunks are not independently visible: the host
+    /// stages them until the following `session_restored` control event commits
+    /// the complete transcript.
     RenderSnapshotChunk {
         request_id: String,
         session_id: String,

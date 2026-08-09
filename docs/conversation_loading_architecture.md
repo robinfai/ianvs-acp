@@ -47,7 +47,7 @@ Rust core 接收显式的 `replay_history`：
 
 ## Rust 渲染投影与 FFI 有界延迟传输
 
-FFI ABI v9 不再把 ACP `session/update` 的通用 payload 交给 Dart
+FFI ABI v10 不再把 ACP `session/update` 的通用 payload 交给 Dart
 解释。Rust 将协议事件分成两类：
 
 - `session_update`：仅保留会话生命周期、模式、配置和权限失效等小型控制状态；
@@ -60,9 +60,11 @@ omission，而不是先传到 Dart 再扫描丢弃。
 
 `session/load` 的通知在 Rust 内进入 replay projector：连续 assistant text 和 thought 在约 32 KiB
 处分段，user 的文本与非文本 content block 合并为一个消息，同一回合相同 tool-call id
-的 update 直接覆盖到一个工具投影。投影完成后，Rust 按约 64 KiB 或最多 16 个 update
-组成 `render_snapshot_chunk`。只有随后的 `session_restored` 才提交整份转录，因此分块是传输
-边界，不是可见分页。后台进程恢复产生但没有前台消费者的历史回放在 Rust 内直接丢弃。
+的 update 直接覆盖到一个工具投影。新的 user 消息到达后，前一回合已经不可再被后续通知修改；
+Rust 将这些已封闭回合聚合到约 64 KiB 或最多 16 个 update，并在 adapter 继续发布剩余历史时
+提前组成 `render_snapshot_chunk` 跨过 FFI。Dart 只把分块投影到隐藏 staging，仍然只有随后的
+`session_restored` 才原子提交整份转录，因此增量传输不是可见分页，失败也可以整体回滚。
+后台进程恢复产生但没有前台消费者的历史回放仍在 Rust 内直接丢弃。
 
 批量拉取接口保持：
 
@@ -71,15 +73,16 @@ ianvs_acp_poll_events(runtime, max_events, max_bytes, timeout_ms)
   -> { events: [...], hasMore: bool }
 ```
 
-默认每批最多 4 个事件或 128 KiB，并在 backlog 批次间保留 4 ms 的协作窗口：
+默认每批最多 32 个事件或 2 MiB，并在批内按 4 ms 投影时间片主动归还事件循环：
 
 - Rust queue 保持事件所有权，Dart 没有请求的事件不跨 FFI；
 - 若下一事件会超过字节预算，Rust 将其留在 `pending_event`，下一批再传；
 - 单个超大事件允许作为该批第一项通过，避免永远无法前进；
-- `hasMore=true` 时 Dart 延迟 4 ms 再拉下一批；周期轮询不会绕过这个 delay，避免 backlog 连续占满 UI isolate；
+- `hasMore=true` 时 Dart 在下一次 event-loop turn 拉取下一批；调用方仍可显式配置更长的批间 delay；
 - `hasMore=false` 时才进入正常等待，避免空轮询；
-- 每批只做一次 UTF-8/JSON 边界转换，减少 FFI 调用与 JSON decoder 固定成本；
-- 单个事件仍允许超过 128 KiB 以保证协议能前进；达到 128 KiB 的批次改在后台 isolate 做 JSON decode，UI isolate 只接收解码后的事件并投影。
+- 每批只做一次 UTF-8/JSON 边界转换，减少 FFI 调用、isolate 启动和 JSON decoder 固定成本；
+- 单个事件仍允许超过批预算以保证协议能前进；达到 128 KiB 的批次改在后台 isolate 做 JSON decode；
+- 解码后的事件保持严格 sequence 顺序同步投影，每耗尽 4 ms 时间片才 yield，避免 2 MiB 大批次形成长 UI task。
 
 这属于“有界、按需拉取”的传输延迟优化。它控制内存峰值和桥接调度，但不会把 ACP 完整回放变成协议分页。
 
@@ -184,3 +187,20 @@ Debug 构建对超过 100 ms 的加载输出一条 `[session-load]`。验收重�
 | 历史可见性 | 滚动立即出现更早消息 |
 
 首屏只出现一次完整转录，没有先挂载最新消息预览；后台 `session/resume` 没有替换时间线。加载完成后滚动和输入均保持响应。工具组展开后显示 3 条独立工具行，单条工具继续可展开 Kind/Call ID 详情，显示/隐藏语义未因传输裁剪而退化。
+
+### 2026-08-10 无缓存客户端重叠复验
+
+从同一份 486 MiB Codex rollout 和 SQLite 索引分别创建隔离 `CODEX_HOME`，使用相同的
+Codex 0.147 与 codex-acp 1.1.14 恢复会话；未配置 transcript cache。三组都投影出
+3,230 个 replay event 和 1,705 条消息，加载期间 `visibleMessages` 始终为空：
+
+| Rust replay / Dart drain | 完整可见 | adapter 完成后的客户端尾段 | 投影 CPU |
+| --- | ---: | ---: | ---: |
+| 完成后统一快照 / 4 events、128 KiB、4 ms | 39.04 s | 5.66 s | 380 ms |
+| 完成后统一快照 / 32 events、2 MiB、4 ms time slice | 35.28 s | 2.05 s | 350 ms |
+| 已封闭回合增量快照 / 新 drain | 33.31 s | 与 adapter 发布重叠 | 352 ms |
+
+相对旧客户端端到端减少 5.73 秒（14.7%）。增量版的 `eventSpan` 为 6.74 秒，是因为首批
+回放在 adapter 完成前约 6.65 秒就开始进入隐藏 staging；它不代表 UI 多等待了 6.74 秒。
+最终完整可见时间与 adapter 发布结束基本重合。剩余约 33 秒主要仍属于 Codex/adapter 的
+rollout 读取和事件生成，客户端在不改协议、不使用应用层缓存的约束下已不再追加显著串行尾段。
