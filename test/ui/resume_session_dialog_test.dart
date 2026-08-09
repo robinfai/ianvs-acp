@@ -9,6 +9,51 @@ import 'package:ianvs_acp/ui/components/resume_session_dialog.dart';
 import 'package:ianvs_acp/ui/components/session_workspace_review_dialog.dart';
 
 void main() {
+  testWidgets('ResumeSessionDialog labels both search fields for semantics', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final project = AcpProjectSessions(
+      cwd: '/workspace/project-a',
+      sessions: const [
+        AcpSessionEntry(
+          id: 'session-a',
+          cwd: '/workspace/project-a',
+          title: 'Conversation A',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(loadSessions: () async => [project]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.semantics.byPredicate(
+        (node) =>
+            node.label == 'Filter projects' &&
+            node.hint == 'Filter projects...' &&
+            node.getSemanticsData().flagsCollection.isTextField,
+      ),
+      findsOne,
+    );
+    expect(
+      find.semantics.byPredicate(
+        (node) =>
+            node.label == 'Filter conversations' &&
+            node.hint == 'Filter conversations...' &&
+            node.getSemanticsData().flagsCollection.isTextField,
+      ),
+      findsOne,
+    );
+    semantics.dispose();
+  });
+
   testWidgets('ResumeSessionDialog lazily builds 1024 searchable entries', (
     tester,
   ) async {

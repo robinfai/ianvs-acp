@@ -1,6 +1,180 @@
 import Cocoa
 import FlutterMacOS
 
+final class AccessibleTextFieldProxyFactory: NSObject, FlutterPlatformViewFactory {
+  static let viewType = "com.ianvs.acp/accessible-text-field"
+
+  private let messenger: FlutterBinaryMessenger
+  private let accessibilityCoordinator: AccessibleTextFieldAccessibilityCoordinator
+
+  init(
+    messenger: FlutterBinaryMessenger,
+    accessibilityContainer: NSView?
+  ) {
+    self.messenger = messenger
+    accessibilityCoordinator = AccessibleTextFieldAccessibilityCoordinator(
+      container: accessibilityContainer
+    )
+    super.init()
+  }
+
+  func create(
+    withViewIdentifier viewId: Int64,
+    arguments args: Any?
+  ) -> NSView {
+    return AccessibleTextFieldProxyView(
+      viewId: viewId,
+      arguments: args as? [String: Any] ?? [:],
+      messenger: messenger,
+      accessibilityCoordinator: accessibilityCoordinator
+    )
+  }
+
+  func createArgsCodec() -> (FlutterMessageCodec & NSObjectProtocol)? {
+    return FlutterStandardMessageCodec.sharedInstance()
+  }
+}
+
+final class AccessibleTextFieldAccessibilityCoordinator {
+  private weak var container: NSView?
+  private let views = NSHashTable<AccessibleTextFieldProxyView>.weakObjects()
+  private var semanticRoots: [Any] = []
+
+  init(container: NSView?) {
+    self.container = container
+  }
+
+  func register(_ view: AccessibleTextFieldProxyView) {
+    views.add(view)
+    refresh()
+  }
+
+  func unregister(_ view: AccessibleTextFieldProxyView) {
+    views.remove(view)
+    refresh()
+  }
+
+  func refresh() {
+    guard let container else { return }
+    let currentChildren = container.accessibilityChildren() ?? []
+    let proxyViews = views.allObjects
+    let currentRoots = currentChildren.filter {
+      !($0 is AccessibleTextFieldProxyView)
+    }
+    if !currentRoots.isEmpty {
+      semanticRoots = currentRoots
+    }
+    guard !semanticRoots.isEmpty else { return }
+
+    let attachedViews = proxyViews.filter { $0.window != nil }
+    for view in attachedViews {
+      view.setAccessibilityParent(container)
+    }
+    container.setAccessibilityChildren(semanticRoots + attachedViews)
+  }
+}
+
+final class AccessibleTextFieldProxyView: NSView {
+  private let channel: FlutterMethodChannel?
+  private weak var accessibilityCoordinator: AccessibleTextFieldAccessibilityCoordinator?
+  private var isApplyingState = false
+
+  init(
+    viewId: Int64,
+    arguments: [String: Any],
+    messenger: FlutterBinaryMessenger,
+    accessibilityCoordinator: AccessibleTextFieldAccessibilityCoordinator
+  ) {
+    let channel = FlutterMethodChannel(
+      name: "com.ianvs.acp/accessible-text-field/\(viewId)",
+      binaryMessenger: messenger
+    )
+    self.channel = channel
+    self.accessibilityCoordinator = accessibilityCoordinator
+    super.init(frame: .zero)
+    configure(viewId: viewId)
+    apply(arguments)
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(nil)
+        return
+      }
+      guard call.method == "update",
+            let arguments = call.arguments as? [String: Any]
+      else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      self.apply(arguments)
+      result(nil)
+    }
+  }
+
+  init(viewId: Int64, arguments: [String: Any]) {
+    channel = nil
+    accessibilityCoordinator = nil
+    super.init(frame: .zero)
+    configure(viewId: viewId)
+    apply(arguments)
+  }
+
+  required init?(coder: NSCoder) {
+    return nil
+  }
+
+  deinit {
+    accessibilityCoordinator?.unregister(self)
+    channel?.setMethodCallHandler(nil)
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window == nil {
+      accessibilityCoordinator?.unregister(self)
+    } else {
+      accessibilityCoordinator?.register(self)
+    }
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    return nil
+  }
+
+  override func setAccessibilityFocused(_ accessibilityFocused: Bool) {
+    super.setAccessibilityFocused(accessibilityFocused)
+    if accessibilityFocused && !isApplyingState {
+      channel?.invokeMethod("focus", arguments: nil)
+    }
+  }
+
+  override func setAccessibilityValue(_ accessibilityValue: Any?) {
+    super.setAccessibilityValue(accessibilityValue)
+    if !isApplyingState, let value = accessibilityValue as? String {
+      channel?.invokeMethod("setText", arguments: value)
+    }
+  }
+
+  private func configure(viewId: Int64) {
+    setAccessibilityElement(true)
+    setAccessibilityRole(.textField)
+    setAccessibilityIdentifier("ianvs-acp.accessible-text-field.\(viewId)")
+  }
+
+  private func apply(_ arguments: [String: Any]) {
+    isApplyingState = true
+    defer { isApplyingState = false }
+
+    let label = arguments["label"] as? String ?? ""
+    let description = arguments["description"] as? String ?? ""
+    setAccessibilityLabel(label)
+    setAccessibilityTitle(label)
+    setAccessibilityHelp(description)
+    setAccessibilityValue(arguments["value"] as? String ?? "")
+    setAccessibilityEnabled(arguments["enabled"] as? Bool ?? true)
+    setAccessibilityFocused(arguments["focused"] as? Bool ?? false)
+  }
+}
+
 class MainFlutterWindow: NSWindow {
   private var promptImageClipboardChannel: FlutterMethodChannel?
 
@@ -12,6 +186,16 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    let accessibilityRegistrar = flutterViewController.registrar(
+      forPlugin: "AccessibleTextFieldProxy"
+    )
+    accessibilityRegistrar.register(
+      AccessibleTextFieldProxyFactory(
+        messenger: accessibilityRegistrar.messenger,
+        accessibilityContainer: accessibilityRegistrar.view
+      ),
+      withId: AccessibleTextFieldProxyFactory.viewType
+    )
     let clipboardChannel = FlutterMethodChannel(
       name: "com.ianvs.acp/prompt_image_clipboard",
       binaryMessenger: flutterViewController.engine.binaryMessenger

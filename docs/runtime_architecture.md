@@ -52,7 +52,13 @@ second execution model.
 
 `acp_sessions.sqlite3` stores the minimal agent-scoped session registry needed
 for process recovery. It uses the application-wide size and retention policy.
-Conversation events remain owned by the ACP agent/session projection.
+The exact-revision transcript cache stores a bounded private copy of locally
+projected messages and tool metadata to avoid replaying unchanged sessions.
+`workspace_ui_state.json` separately stores Workspace/sidebar preferences and
+the local session index. Concurrent app windows merge independent record-field
+updates and expanded-Workspace set changes across processes. This state file is
+not covered by the payload-store size and retention policy. The ACP agent
+remains the canonical owner of conversation events.
 
 ## Packaging
 

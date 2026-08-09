@@ -24,6 +24,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
   RustAcpAgentClient({
     required this.agentName,
     required this.agentCommand,
+    this.agentPersistenceId,
+    this.agentPersistenceAliases = const <String>[],
     this.agentArgs = const <String>[],
     this.agentCwd,
     this.sessionStorePath,
@@ -57,6 +59,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
 
   final String agentName;
   final String agentCommand;
+  final String? agentPersistenceId;
+  final List<String> agentPersistenceAliases;
   final List<String> agentArgs;
   final String? agentCwd;
   final String? sessionStorePath;
@@ -173,6 +177,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
           await mcpServersProvider?.call() ?? const <Map<String, Object?>>[];
       _runtimeInstance.startAgent(
         agentName: agentName,
+        persistenceIdentity: agentPersistenceId,
+        persistenceAliases: agentPersistenceAliases,
         command: agentCommand,
         args: agentArgs,
         environment: AgentProcessEnvironment.resolve(

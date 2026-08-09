@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -89,4 +90,65 @@ void main() {
     expect(find.textContaining('configured read on'), findsOneWidget);
     expect(find.textContaining('trust rules on'), findsOneWidget);
   });
+
+  testWidgets(
+    'ProtocolFeatureReviewDialog keeps one scroll position through dismissal',
+    (tester) async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      await controller.connect();
+      await controller.newSession();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: FilledButton(
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (_) =>
+                        ProtocolFeatureReviewDialog(controller: controller),
+                  ),
+                  child: const Text('Open coverage'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open coverage'));
+      await tester.pumpAndSettle();
+
+      final scrollbar = tester.widget<Scrollbar>(find.byType(Scrollbar));
+      final scrollView = tester.widget<SingleChildScrollView>(
+        find.byType(SingleChildScrollView),
+      );
+      expect(scrollbar.controller, isNotNull);
+      expect(scrollbar.controller, same(scrollView.controller));
+      expect(scrollbar.controller!.hasClients, isTrue);
+
+      final scrollPosition = tester.getCenter(
+        find.byType(SingleChildScrollView),
+      );
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: scrollPosition,
+          scrollDelta: const Offset(0, 600),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(scrollbar.controller!.offset, greaterThan(0));
+
+      await tester.tap(find.text('Close'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Protocol Coverage'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

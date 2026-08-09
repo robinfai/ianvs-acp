@@ -38,7 +38,9 @@ class WorkspaceSidebarStateStore {
       <String, _WorkspaceStateCoordinator>{};
 
   final String? path;
-  Future<Map<String, Object?>>? _cachedState;
+  Set<String>? _expandedWorkspacePathsBase;
+  Map<String, Map<String, Object?>>? _workspaceIndexBase;
+  Map<String, Map<String, Object?>>? _sessionIndexBase;
 
   static String? defaultPath({
     String? configPath,
@@ -64,15 +66,21 @@ class WorkspaceSidebarStateStore {
   }
 
   Future<Set<String>> loadExpandedWorkspacePaths() async {
-    final state = await _readState();
-    final rawPaths =
-        state['expanded_workspaces'] ?? state['expandedWorkspacePaths'];
-    if (rawPaths is! List) return <String>{};
-    return rawPaths
-        .whereType<String>()
-        .map((path) => path.trim())
-        .where((path) => path.isNotEmpty)
-        .toSet();
+    final file = _fileOrNull();
+    if (file == null) {
+      _expandedWorkspacePathsBase = <String>{};
+      return <String>{};
+    }
+    return _withCoordinator(file, (_) async {
+      return SecureAtomicFile.synchronizedAcrossProcesses(file, (
+        resolvedFile,
+      ) async {
+        final state = await _readStateFile(resolvedFile);
+        final paths = _expandedPathsFromState(state);
+        _expandedWorkspacePathsBase = Set<String>.of(paths);
+        return paths;
+      });
+    });
   }
 
   Future<bool> hasSavedExpandedWorkspacePaths() async {
@@ -82,34 +90,55 @@ class WorkspaceSidebarStateStore {
   }
 
   Future<void> saveExpandedWorkspacePaths(Set<String> paths) async {
-    final sortedPaths =
-        paths
-            .map((path) => path.trim())
-            .where((path) => path.isNotEmpty)
-            .toSet()
-            .toList()
-          ..sort();
-
-    await _mutate((payload) {
-      payload['expanded_workspaces'] = sortedPaths;
-      payload.remove('expandedWorkspacePaths');
+    final desired = paths
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toSet();
+    final file = _fileOrNull();
+    if (file == null) {
+      _expandedWorkspacePathsBase = Set<String>.of(desired);
+      return;
+    }
+    await _withCoordinator(file, (_) async {
+      await SecureAtomicFile.synchronizedAcrossProcesses(file, (
+        resolvedFile,
+      ) async {
+        final state = await _readStateFile(resolvedFile);
+        final latest = _expandedPathsFromState(state);
+        final base = _expandedWorkspacePathsBase ?? latest;
+        final merged = Set<String>.of(latest)
+          ..removeAll(base.difference(desired))
+          ..addAll(desired.difference(base));
+        final sortedPaths = merged.toList()..sort();
+        state['expanded_workspaces'] = sortedPaths;
+        state.remove('expandedWorkspacePaths');
+        await _writeStateFile(resolvedFile, state);
+      });
+      _expandedWorkspacePathsBase = Set<String>.of(desired);
     });
   }
 
   Future<List<WorkspaceSidebarWorkspaceState>> loadWorkspaceStates() async {
-    final state = await _readState();
-    final rawWorkspaces = state['workspace_index'] ?? state['workspaceIndex'];
-    if (rawWorkspaces is! List) {
+    final file = _fileOrNull();
+    if (file == null) {
+      _workspaceIndexBase = <String, Map<String, Object?>>{};
       return const <WorkspaceSidebarWorkspaceState>[];
     }
-
-    final workspaces = <WorkspaceSidebarWorkspaceState>[];
-    for (final rawWorkspace in rawWorkspaces) {
-      final workspace = _workspaceStateFromJson(rawWorkspace);
-      if (workspace != null) workspaces.add(workspace);
-    }
-    workspaces.sort((a, b) => a.path.compareTo(b.path));
-    return List.unmodifiable(workspaces);
+    return _withCoordinator(file, (_) async {
+      return SecureAtomicFile.synchronizedAcrossProcesses(file, (
+        resolvedFile,
+      ) async {
+        final state = await _readStateFile(resolvedFile);
+        final records = _workspaceIndexRecords(state);
+        _workspaceIndexBase = _canonicalWorkspaceIndex(records);
+        final workspaces =
+            records.values
+                .map((record) => record.workspace)
+                .toList(growable: false)
+              ..sort((a, b) => a.path.compareTo(b.path));
+        return List<WorkspaceSidebarWorkspaceState>.unmodifiable(workspaces);
+      });
+    });
   }
 
   Future<void> saveWorkspaceStates(
@@ -128,76 +157,124 @@ class WorkspaceSidebarStateStore {
       );
     }
 
-    final sortedStates = statesByPath.values.toList()
-      ..sort((a, b) => a.path.compareTo(b.path));
-    await _mutate((payload) {
-      payload['workspace_index'] = sortedStates
-          .map(_workspaceStateToJson)
-          .toList();
-      payload.remove('workspaceIndex');
+    final desired = <String, Map<String, Object?>>{
+      for (final entry in statesByPath.entries)
+        entry.key: _workspaceStateToJson(entry.value),
+    };
+    final file = _fileOrNull();
+    if (file == null) {
+      _workspaceIndexBase = _cloneRecordIndex(desired);
+      return;
+    }
+    await _withCoordinator(file, (_) async {
+      await SecureAtomicFile.synchronizedAcrossProcesses(file, (
+        resolvedFile,
+      ) async {
+        final state = await _readStateFile(resolvedFile);
+        final latestRecords = _workspaceIndexRecords(state);
+        final base =
+            _workspaceIndexBase ?? _canonicalWorkspaceIndex(latestRecords);
+        final mergedRecords = _mergeWorkspaceIndex(
+          base: base,
+          desired: desired,
+          latest: latestRecords,
+        );
+        final sortedRecords = mergedRecords.values.toList()
+          ..sort(
+            (left, right) =>
+                left.workspace.path.compareTo(right.workspace.path),
+          );
+        state['workspace_index'] = sortedRecords
+            .map((record) => record.raw)
+            .toList(growable: false);
+        state.remove('workspaceIndex');
+        await _writeStateFile(resolvedFile, state);
+      });
+      _workspaceIndexBase = _cloneRecordIndex(desired);
     });
   }
 
   Future<List<AgentSession>> loadSessionIndex() async {
-    final state = await _readState();
-    final rawSessions = state['session_index'] ?? state['sessionIndex'];
-    if (rawSessions is! List) return const <AgentSession>[];
-
-    final sessions = <AgentSession>[];
-    for (final rawSession in rawSessions) {
-      final session = _sessionIndexFromJson(rawSession);
-      if (session != null) sessions.add(session);
+    final file = _fileOrNull();
+    if (file == null) {
+      _sessionIndexBase = <String, Map<String, Object?>>{};
+      return const <AgentSession>[];
     }
-    sessions.sort((a, b) => b.displayTime.compareTo(a.displayTime));
-    return List.unmodifiable(sessions);
+    return _withCoordinator(file, (_) async {
+      return SecureAtomicFile.synchronizedAcrossProcesses(file, (
+        resolvedFile,
+      ) async {
+        final state = await _readStateFile(resolvedFile);
+        final records = _sessionIndexRecords(state);
+        _sessionIndexBase = _canonicalSessionIndex(records);
+        final sessions =
+            records.values
+                .map((record) => record.session)
+                .toList(growable: false)
+              ..sort((a, b) => b.displayTime.compareTo(a.displayTime));
+        return List<AgentSession>.unmodifiable(sessions);
+      });
+    });
   }
 
   Future<void> saveSessionIndex(Iterable<AgentSession> sessions) async {
-    final sessionsByKey = <String, AgentSession>{};
+    final desired = <String, Map<String, Object?>>{};
     for (final session in sessions) {
       final id = session.id.trim();
       final cwd = session.cwd.trim();
       if (id.isEmpty || cwd.isEmpty) continue;
-      sessionsByKey['$cwd\u0000$id'] = session;
+      final agentName = session.agentName?.trim() ?? '';
+      desired['$cwd\u0000$agentName\u0000$id'] = _sessionIndexToJson(session);
     }
 
-    final sortedSessions = sessionsByKey.values.toList()
-      ..sort((a, b) => b.displayTime.compareTo(a.displayTime));
-    await _mutate((payload) {
-      payload['session_index'] = sortedSessions
-          .map(_sessionIndexToJson)
-          .toList();
-      payload.remove('sessionIndex');
+    final file = _fileOrNull();
+    if (file == null) {
+      _sessionIndexBase = _cloneRecordIndex(desired);
+      return;
+    }
+    await _withCoordinator(file, (_) async {
+      await SecureAtomicFile.synchronizedAcrossProcesses(file, (
+        resolvedFile,
+      ) async {
+        final state = await _readStateFile(resolvedFile);
+        final latestRecords = _sessionIndexRecords(state);
+        final base = _sessionIndexBase ?? _canonicalSessionIndex(latestRecords);
+        final mergedRecords = _mergeSessionIndex(
+          base: base,
+          desired: desired,
+          latest: latestRecords,
+        );
+        final sortedRecords = mergedRecords.values.toList()
+          ..sort(
+            (left, right) =>
+                right.session.displayTime.compareTo(left.session.displayTime),
+          );
+        state['session_index'] = sortedRecords
+            .map((record) => record.raw)
+            .toList(growable: false);
+        state.remove('sessionIndex');
+        await _writeStateFile(resolvedFile, state);
+      });
+      _sessionIndexBase = _cloneRecordIndex(desired);
     });
   }
 
   Future<Map<String, Object?>> _readState() async {
     final file = _fileOrNull();
     if (file == null) return <String, Object?>{};
-    final cached = _cachedState;
-    if (cached != null) return cached;
-    final snapshot = _withCoordinator(file, (_) => _readStateFile(file));
-    _cachedState = snapshot;
-    return snapshot;
+    return _withCoordinator(
+      file,
+      (_) => SecureAtomicFile.synchronizedAcrossProcesses(file, _readStateFile),
+    );
   }
 
-  Future<void> _mutate(
-    void Function(Map<String, Object?> state) mutation,
-  ) async {
-    final file = _fileOrNull();
-    if (file == null) return;
-    await _withCoordinator(file, (_) async {
-      final state = await _readStateFile(file);
-      mutation(state);
-
-      const encoder = JsonEncoder.withIndent('  ');
-      await SecureAtomicFile.writeString(
-        file,
-        '${encoder.convert(state)}\n',
-        protectExistingParent: false,
-      );
-      _cachedState = Future<Map<String, Object?>>.value(state);
-    });
+  Future<void> _writeStateFile(File file, Map<String, Object?> state) async {
+    const encoder = JsonEncoder.withIndent('  ');
+    await SecureAtomicFile.writeString(
+      file,
+      '${encoder.convert(state)}\n',
+      protectExistingParent: false,
+    );
   }
 
   Future<Map<String, Object?>> _readStateFile(File file) async {
@@ -272,6 +349,93 @@ class WorkspaceSidebarStateStore {
     };
   }
 
+  Set<String> _expandedPathsFromState(Map<String, Object?> state) {
+    final rawPaths =
+        state['expanded_workspaces'] ?? state['expandedWorkspacePaths'];
+    if (rawPaths is! List) return <String>{};
+    return rawPaths
+        .whereType<String>()
+        .map((path) => path.trim())
+        .where((path) => path.isNotEmpty)
+        .toSet();
+  }
+
+  Map<String, _WorkspaceIndexRecord> _workspaceIndexRecords(
+    Map<String, Object?> state,
+  ) {
+    final rawWorkspaces = state['workspace_index'] ?? state['workspaceIndex'];
+    if (rawWorkspaces is! List) return <String, _WorkspaceIndexRecord>{};
+    final records = <String, _WorkspaceIndexRecord>{};
+    for (final rawWorkspace in rawWorkspaces) {
+      final workspace = _workspaceStateFromJson(rawWorkspace);
+      if (workspace == null || rawWorkspace is! Map) continue;
+      records[workspace.path] = _WorkspaceIndexRecord(
+        workspace: workspace,
+        raw: _cloneObjectMap(rawWorkspace),
+      );
+    }
+    return records;
+  }
+
+  Map<String, Map<String, Object?>> _canonicalWorkspaceIndex(
+    Map<String, _WorkspaceIndexRecord> records,
+  ) {
+    return <String, Map<String, Object?>>{
+      for (final entry in records.entries)
+        entry.key: _workspaceStateToJson(entry.value.workspace),
+    };
+  }
+
+  Map<String, _WorkspaceIndexRecord> _mergeWorkspaceIndex({
+    required Map<String, Map<String, Object?>> base,
+    required Map<String, Map<String, Object?>> desired,
+    required Map<String, _WorkspaceIndexRecord> latest,
+  }) {
+    final merged = <String, _WorkspaceIndexRecord>{
+      for (final entry in latest.entries)
+        entry.key: _WorkspaceIndexRecord(
+          workspace: entry.value.workspace,
+          raw: _cloneObjectMap(entry.value.raw),
+        ),
+    };
+
+    for (final path in base.keys) {
+      if (!desired.containsKey(path)) merged.remove(path);
+    }
+    for (final entry in desired.entries) {
+      final path = entry.key;
+      final desiredRecord = entry.value;
+      final baseRecord = base[path];
+      if (baseRecord == null) {
+        final workspace = _workspaceStateFromJson(desiredRecord);
+        if (workspace != null) {
+          merged[path] = _WorkspaceIndexRecord(
+            workspace: workspace,
+            raw: _cloneObjectMap(desiredRecord),
+          );
+        }
+        continue;
+      }
+      if (_deepJsonEquals(baseRecord, desiredRecord)) continue;
+
+      final target = merged[path]?.raw ?? _cloneObjectMap(baseRecord);
+      for (final field in _workspaceIndexFieldAliases.keys) {
+        if (_sameJsonField(baseRecord, desiredRecord, field)) continue;
+        for (final alias in _workspaceIndexFieldAliases[field]!) {
+          target.remove(alias);
+        }
+        if (desiredRecord.containsKey(field)) {
+          target[field] = _cloneJsonValue(desiredRecord[field]);
+        }
+      }
+      final workspace = _workspaceStateFromJson(target);
+      if (workspace != null) {
+        merged[path] = _WorkspaceIndexRecord(workspace: workspace, raw: target);
+      }
+    }
+    return merged;
+  }
+
   AgentSession? _sessionIndexFromJson(Object? raw) {
     if (raw is! Map) return null;
     final json = <String, Object?>{
@@ -320,6 +484,88 @@ class WorkspaceSidebarStateStore {
       unread: _boolFromJson(json['unread']),
       localUnstarted: localUnstarted,
     );
+  }
+
+  Map<String, _SessionIndexRecord> _sessionIndexRecords(
+    Map<String, Object?> state,
+  ) {
+    final rawSessions = state['session_index'] ?? state['sessionIndex'];
+    if (rawSessions is! List) return <String, _SessionIndexRecord>{};
+    final records = <String, _SessionIndexRecord>{};
+    for (final rawSession in rawSessions) {
+      final session = _sessionIndexFromJson(rawSession);
+      if (session == null || rawSession is! Map) continue;
+      final key = _sessionIndexKey(session);
+      records[key] = _SessionIndexRecord(
+        session: session,
+        raw: _cloneObjectMap(rawSession),
+      );
+    }
+    return records;
+  }
+
+  Map<String, Map<String, Object?>> _canonicalSessionIndex(
+    Map<String, _SessionIndexRecord> records,
+  ) {
+    return <String, Map<String, Object?>>{
+      for (final entry in records.entries)
+        entry.key: _sessionIndexToJson(entry.value.session),
+    };
+  }
+
+  Map<String, _SessionIndexRecord> _mergeSessionIndex({
+    required Map<String, Map<String, Object?>> base,
+    required Map<String, Map<String, Object?>> desired,
+    required Map<String, _SessionIndexRecord> latest,
+  }) {
+    final merged = <String, _SessionIndexRecord>{
+      for (final entry in latest.entries)
+        entry.key: _SessionIndexRecord(
+          session: entry.value.session,
+          raw: _cloneObjectMap(entry.value.raw),
+        ),
+    };
+
+    for (final key in base.keys) {
+      if (!desired.containsKey(key)) merged.remove(key);
+    }
+    for (final entry in desired.entries) {
+      final key = entry.key;
+      final desiredRecord = entry.value;
+      final baseRecord = base[key];
+      if (baseRecord == null) {
+        final session = _sessionIndexFromJson(desiredRecord);
+        if (session != null) {
+          merged[key] = _SessionIndexRecord(
+            session: session,
+            raw: _cloneObjectMap(desiredRecord),
+          );
+        }
+        continue;
+      }
+      if (_deepJsonEquals(baseRecord, desiredRecord)) continue;
+
+      final target = merged[key]?.raw ?? _cloneObjectMap(baseRecord);
+      for (final field in _sessionIndexFieldAliases.keys) {
+        if (_sameJsonField(baseRecord, desiredRecord, field)) continue;
+        for (final alias in _sessionIndexFieldAliases[field]!) {
+          target.remove(alias);
+        }
+        if (desiredRecord.containsKey(field)) {
+          target[field] = _cloneJsonValue(desiredRecord[field]);
+        }
+      }
+      final session = _sessionIndexFromJson(target);
+      if (session != null) {
+        merged[key] = _SessionIndexRecord(session: session, raw: target);
+      }
+    }
+    return merged;
+  }
+
+  String _sessionIndexKey(AgentSession session) {
+    final agentName = session.agentName?.trim() ?? '';
+    return '${session.cwd.trim()}\u0000$agentName\u0000${session.id.trim()}';
   }
 
   Map<String, Object?> _sessionIndexToJson(AgentSession session) {
@@ -380,6 +626,75 @@ class WorkspaceSidebarStateStore {
     }
     return '$directory${Platform.pathSeparator}$basename';
   }
+}
+
+const Map<String, List<String>> _workspaceIndexFieldAliases =
+    <String, List<String>>{
+      'path': <String>['path'],
+      'display_name': <String>['display_name', 'displayName'],
+      'pinned': <String>['pinned'],
+      'hidden': <String>['hidden'],
+      'manually_added': <String>['manually_added', 'manuallyAdded'],
+    };
+
+const Map<String, List<String>> _sessionIndexFieldAliases =
+    <String, List<String>>{
+      'id': <String>['id', 'session_id'],
+      'cwd': <String>['cwd'],
+      'created_at': <String>['created_at', 'createdAt'],
+      'updated_at': <String>['updated_at', 'updatedAt'],
+      'title': <String>['title'],
+      'title_override': <String>['title_override', 'titleOverride'],
+      'agent_name': <String>['agent_name', 'agentName'],
+      'additional_directories': <String>[
+        'additional_directories',
+        'additionalDirectories',
+      ],
+      'pinned': <String>['pinned'],
+      'archived': <String>['archived'],
+      'unread': <String>['unread'],
+      'local_unstarted': <String>['local_unstarted', 'localUnstarted'],
+    };
+
+bool _sameJsonField(
+  Map<String, Object?> left,
+  Map<String, Object?> right,
+  String field,
+) {
+  if (left.containsKey(field) != right.containsKey(field)) return false;
+  return !left.containsKey(field) || _deepJsonEquals(left[field], right[field]);
+}
+
+bool _deepJsonEquals(Object? left, Object? right) {
+  return jsonEncode(left) == jsonEncode(right);
+}
+
+Object? _cloneJsonValue(Object? value) => jsonDecode(jsonEncode(value));
+
+Map<String, Object?> _cloneObjectMap(Map value) {
+  return jsonDecode(jsonEncode(value)) as Map<String, dynamic>;
+}
+
+Map<String, Map<String, Object?>> _cloneRecordIndex(
+  Map<String, Map<String, Object?>> source,
+) {
+  return <String, Map<String, Object?>>{
+    for (final entry in source.entries) entry.key: _cloneObjectMap(entry.value),
+  };
+}
+
+class _WorkspaceIndexRecord {
+  const _WorkspaceIndexRecord({required this.workspace, required this.raw});
+
+  final WorkspaceSidebarWorkspaceState workspace;
+  final Map<String, Object?> raw;
+}
+
+class _SessionIndexRecord {
+  const _SessionIndexRecord({required this.session, required this.raw});
+
+  final AgentSession session;
+  final Map<String, Object?> raw;
 }
 
 class WorkspaceSessionIndexPersistenceQueue {

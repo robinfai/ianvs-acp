@@ -2850,13 +2850,10 @@ void main() {
         createdAt: DateTime(2026, 7, 1),
         title: 'Pi session',
         agentName: 'pi ACP',
-      ),
-      AgentSession(
-        id: 'pi-session',
-        cwd: '/workspace/pi',
-        createdAt: DateTime(2026, 7, 1),
-        title: 'Pi session',
-        agentName: 'Pi',
+        localUnstarted: true,
+        initialEvents: const [
+          AgentEvent(type: AgentEventType.status, text: 'Draft session'),
+        ],
       ),
     ]);
     final config = AcpClientConfig.fromJson({
@@ -2881,7 +2878,219 @@ void main() {
         .where((session) => session.id == 'pi-session')
         .toList(growable: false);
     expect(savedPiSessions, hasLength(1));
-    expect(savedPiSessions.single.agentName, 'Pi');
+    expect(
+      savedPiSessions.single.agentName,
+      config.agentServerNamed('Pi')!.persistenceIdentity,
+    );
+    expect(savedPiSessions.single.localUnstarted, isTrue);
+    expect(savedPiSessions.single.initialEvents.single.text, 'Draft session');
+  });
+
+  testWidgets(
+    'AcpClientApp restores indexed sessions after agent rename and restart',
+    (tester) async {
+      final workspace = Directory.current.path;
+      final originalConfig = AcpClientConfig.fromJson({
+        'default_agent_server': 'Original agent',
+        'agent_servers': {
+          'Original agent': {
+            'type': 'custom',
+            'command': '/usr/local/bin/agent-acp',
+          },
+        },
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+      final persistenceIdentity =
+          originalConfig.activeAgentServer!.persistenceIdentity;
+      final initialStore = _SessionIndexWorkspaceStateStore(<AgentSession>[
+        AgentSession(
+          id: 'rename-session',
+          cwd: workspace,
+          createdAt: DateTime(2026, 7, 3),
+          title: 'Rename-safe session',
+          agentName: 'Original agent',
+          localUnstarted: true,
+        ),
+      ]);
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: originalConfig,
+          workspaceStateStore: initialStore,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(tester, () => initialStore.lastSaved.isNotEmpty);
+      expect(initialStore.lastSaved.single.agentName, persistenceIdentity);
+
+      final renamedConfig = AcpClientConfig.fromJson({
+        'default_agent_server': 'Renamed agent',
+        'agent_servers': {
+          'Renamed agent': originalConfig.activeAgentServer!.toJson(),
+        },
+      }, configPath: originalConfig.configPath);
+      final restartedStore = _SessionIndexWorkspaceStateStore(
+        initialStore.initialSessions,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: renamedConfig,
+          workspaceStateStore: restartedStore,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () => find.text('Rename-safe session').evaluate().isNotEmpty,
+      );
+
+      expect(renamedConfig.agentName, 'Renamed agent');
+      expect(
+        renamedConfig.activeAgentServer!.persistenceIdentity,
+        persistenceIdentity,
+      );
+      expect(restartedStore.lastSaved.single.agentName, persistenceIdentity);
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp preserves unresolved sessions through remove restart and readd',
+    (tester) async {
+      final workspace = Directory.current.path;
+      AcpClientConfig configured() => AcpClientConfig.fromJson({
+        'default_agent_server': 'Temporary agent',
+        'agent_servers': {
+          'Temporary agent': {
+            'type': 'custom',
+            'command': '/usr/local/bin/temporary-agent-acp',
+          },
+        },
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+      final initialConfig = configured();
+      final persistenceIdentity =
+          initialConfig.activeAgentServer!.persistenceIdentity;
+      final removedConfig = const AcpClientConfig(
+        configPath: '/tmp/ianvs-acp/settings.json',
+      );
+      final removedStore = _SessionIndexWorkspaceStateStore(<AgentSession>[
+        AgentSession(
+          id: 'temporarily-unresolved',
+          cwd: workspace,
+          createdAt: DateTime(2026, 7, 4),
+          title: 'Recover after readd',
+          agentName: persistenceIdentity,
+          localUnstarted: true,
+        ),
+      ]);
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: removedConfig,
+          workspaceStateStore: removedStore,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+      );
+      await _pumpUntil(tester, () => removedStore.lastSaved.isNotEmpty);
+      expect(removedStore.lastSaved.single.agentName, persistenceIdentity);
+
+      final restartedWithoutAgent = _SessionIndexWorkspaceStateStore(
+        removedStore.lastSaved,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: removedConfig,
+          workspaceStateStore: restartedWithoutAgent,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+      );
+      await _pumpUntil(
+        tester,
+        () => restartedWithoutAgent.lastSaved.isNotEmpty,
+      );
+      expect(
+        restartedWithoutAgent.lastSaved.single.agentName,
+        persistenceIdentity,
+      );
+
+      final readdedConfig = configured();
+      expect(
+        readdedConfig.activeAgentServer!.persistenceIdentity,
+        persistenceIdentity,
+      );
+      final readdedStore = _SessionIndexWorkspaceStateStore(
+        restartedWithoutAgent.lastSaved,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: readdedConfig,
+          workspaceStateStore: readdedStore,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () => find.text('Recover after readd').evaluate().isNotEmpty,
+      );
+      expect(readdedStore.lastSaved.single.agentName, persistenceIdentity);
+    },
+  );
+
+  testWidgets('AcpClientApp persists archived sessions outside the sidebar', (
+    tester,
+  ) async {
+    final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+      AgentSession(
+        id: 'archived-session',
+        cwd: '/workspace/app',
+        createdAt: DateTime(2026, 7, 2),
+        title: 'Archived session',
+        agentName: 'Codex',
+        archived: true,
+      ),
+    ]);
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    }, configPath: '/tmp/ianvs-acp/settings.json');
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        workspaceStateStore: store,
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (_) => FakeAgentClient(supportsListSessions: false),
+      ),
+    );
+    await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
+
+    final saved = store.lastSaved.singleWhere(
+      (session) => session.id == 'archived-session',
+    );
+    expect(saved.archived, isTrue);
+    expect(find.text('Archived session'), findsNothing);
   });
 
   testWidgets('AcpClientApp deduplicates shared ids across configured agents', (
@@ -2946,8 +3155,246 @@ void main() {
         .where((session) => session.id == 'shared-stale-session')
         .toList(growable: false);
     expect(restored, hasLength(1));
-    expect(restored.single.agentName, 'Codex');
+    expect(
+      restored.single.agentName,
+      config.agentServerNamed('Codex')!.persistenceIdentity,
+    );
   });
+
+  testWidgets(
+    'AcpClientApp restores an archived alias session across restart',
+    (tester) async {
+      final workspacePath = Directory.current.path;
+      final clients = <String, _SharedAliasCatalogClient>{};
+      final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+        for (final agentName in const [
+          'codex-fast',
+          'codex-thinking',
+          'codex-worker',
+        ])
+          AgentSession(
+            id: 'shared-alias-session',
+            cwd: workspacePath,
+            createdAt: DateTime(2026, 7, 1),
+            title: 'Shared alias session',
+            agentName: agentName,
+          ),
+      ]);
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          'codex-fast': {
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+            'default_reasoning_effort': 'low',
+          },
+          'codex-thinking': {
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+            'default_reasoning_effort': 'high',
+          },
+          'codex-worker': {
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+            'default_model': 'worker-model',
+          },
+        },
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          workspaceStateStore: store,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (agentConfig) => clients.putIfAbsent(
+            agentConfig.agentName,
+            () =>
+                _SharedAliasCatalogClient(agentConfig.agentName, workspacePath),
+          ),
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
+      List<AgentSession> savedAliasSessions() => store.lastSaved
+          .where((session) => session.id == 'shared-alias-session')
+          .toList(growable: false);
+
+      await _openSidebarSessionMenuForTitle(tester, 'Shared alias session');
+      await tester.tap(find.text('Pin Conversation'));
+      await tester.pumpAndSettle();
+      await _pumpUntil(
+        tester,
+        () =>
+            savedAliasSessions().isNotEmpty &&
+            savedAliasSessions().every((session) => session.pinned),
+      );
+
+      await _openSidebarSessionMenuForTitle(tester, 'Shared alias session');
+      await tester.tap(find.text('Rename Conversation'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        ),
+        'Canonical session title',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+      await _pumpUntil(
+        tester,
+        () =>
+            savedAliasSessions().isNotEmpty &&
+            savedAliasSessions().every(
+              (session) => session.titleOverride == 'Canonical session title',
+            ),
+      );
+
+      await _openSidebarSessionMenuForTitle(tester, 'Canonical session title');
+      await tester.tap(find.text('Mark as Unread'));
+      await tester.pumpAndSettle();
+      await _pumpUntil(
+        tester,
+        () =>
+            savedAliasSessions().isNotEmpty &&
+            savedAliasSessions().every((session) => session.unread),
+      );
+
+      await _openSidebarSessionMenuForTitle(tester, 'Canonical session title');
+      await tester.tap(find.text('Archive Conversation'));
+      await tester.pumpAndSettle();
+      await _pumpUntil(
+        tester,
+        () =>
+            savedAliasSessions().isNotEmpty &&
+            savedAliasSessions().every(
+              (session) => session.archived && !session.unread,
+            ),
+      );
+      expect(find.text('Canonical session title'), findsNothing);
+
+      await tester.tap(find.text('Resume'));
+      await _pumpUntil(
+        tester,
+        () => find.text('Resume ACP Session').evaluate().isNotEmpty,
+      );
+      await _pumpUntil(tester, () {
+        final loadButton = find.widgetWithText(FilledButton, 'Load');
+        return loadButton.evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(loadButton).onPressed != null;
+      });
+      final thinkingConversation = find.descendant(
+        of: find.byKey(const ValueKey('resume-conversation-list')),
+        matching: find.text('codex-thinking - Shared alias session (shared-a)'),
+      );
+      expect(thinkingConversation, findsOneWidget);
+      await tester.tap(thinkingConversation);
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await _pumpUntil(
+        tester,
+        () => find.text('Review Session Workspace').evaluate().isNotEmpty,
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(
+        find.widgetWithText(FilledButton, 'Resume Session').hitTestable(),
+      );
+      await _pumpUntil(
+        tester,
+        () => clients['codex-thinking']?.resumeCalls == 1,
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            savedAliasSessions().length == 1 &&
+            !savedAliasSessions().single.archived,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(WorkspaceSidebar),
+          matching: find.text('Canonical session title'),
+        ),
+        findsOneWidget,
+      );
+
+      final restartedStore = _SessionIndexWorkspaceStateStore(store.lastSaved);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          workspaceStateStore: restartedStore,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+        const Size(1400, 900),
+      );
+
+      await _pumpUntil(
+        tester,
+        () => find.text('Canonical session title').evaluate().isNotEmpty,
+      );
+      expect(
+        restartedStore.initialSessions
+            .where((session) => session.id == 'shared-alias-session')
+            .single
+            .archived,
+        isFalse,
+      );
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp preserves same ids from independent agent catalogs',
+    (tester) async {
+      final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 7, 1),
+          title: 'Codex session',
+          agentName: 'Codex',
+        ),
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 7, 2),
+          title: 'Pi session',
+          agentName: 'Pi',
+        ),
+      ]);
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          'Pi': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
+        },
+      }, configPath: '/tmp/ianvs-acp/settings.json');
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: config,
+          workspaceStateStore: store,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) =>
+              FakeAgentClient(supportsListSessions: false),
+        ),
+      );
+      await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
+
+      final persisted = store.lastSaved
+          .where((session) => session.id == 'shared-session')
+          .toList(growable: false);
+      expect(persisted, hasLength(2));
+      expect(persisted.map((session) => session.agentName).toSet(), {
+        config.agentServerNamed('Codex')!.persistenceIdentity,
+        config.agentServerNamed('Pi')!.persistenceIdentity,
+      });
+    },
+  );
 
   testWidgets(
     'AcpClientApp retries an unchanged session index after a save failure',
@@ -2982,10 +3429,18 @@ Future<void> _openSidebarSessionMenu(
   ChatController controller,
 ) async {
   final title = controller.currentSession!.displayTitle;
+  await _openSidebarSessionMenuForTitle(tester, title);
+}
+
+Future<void> _openSidebarSessionMenuForTitle(
+  WidgetTester tester,
+  String title,
+) async {
   final sessionTitle = find.descendant(
     of: find.byType(WorkspaceSidebar),
     matching: find.text(title),
   );
+  await _pumpUntil(tester, () => sessionTitle.evaluate().isNotEmpty);
   await tester.tapAt(
     tester.getCenter(sessionTitle.first),
     buttons: kSecondaryMouseButton,
@@ -3047,6 +3502,45 @@ class _SameIdAcrossAgentsClient extends FakeAgentClient {
     resumeCalls += 1;
     lastResumeSessionId = sessionId;
     lastResumeWorkspace = cwd;
+    return super.resumeSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+    );
+  }
+}
+
+class _SharedAliasCatalogClient extends FakeAgentClient {
+  _SharedAliasCatalogClient(this.agentName, this.workspacePath);
+
+  final String agentName;
+  final String workspacePath;
+  int resumeCalls = 0;
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (!connected) throw StateError('Fake client is not connected.');
+    return <AcpProjectSessions>[
+      AcpProjectSessions(
+        cwd: workspacePath,
+        sessions: <AcpSessionEntry>[
+          AcpSessionEntry(
+            id: 'shared-alias-session',
+            cwd: workspacePath,
+            title: 'Shared alias session',
+          ),
+        ],
+      ),
+    ];
+  }
+
+  @override
+  Future<List<AgentEvent>> resumeSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+  }) {
+    resumeCalls += 1;
     return super.resumeSession(
       sessionId: sessionId,
       cwd: cwd,
@@ -3235,7 +3729,7 @@ class _TrackingHangingAgentClient extends FakeAgentClient {
 }
 
 class _FailOnceWorkspaceStateStore extends WorkspaceSidebarStateStore {
-  _FailOnceWorkspaceStateStore() : super(path: 'memory');
+  _FailOnceWorkspaceStateStore() : super(path: null);
 
   int saveAttempts = 0;
   int successfulSaves = 0;
@@ -3256,8 +3750,7 @@ class _FailOnceWorkspaceStateStore extends WorkspaceSidebarStateStore {
 }
 
 class _SessionIndexWorkspaceStateStore extends WorkspaceSidebarStateStore {
-  _SessionIndexWorkspaceStateStore(this.initialSessions)
-    : super(path: 'memory');
+  _SessionIndexWorkspaceStateStore(this.initialSessions) : super(path: null);
 
   final List<AgentSession> initialSessions;
   List<AgentSession> lastSaved = const <AgentSession>[];

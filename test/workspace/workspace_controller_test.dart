@@ -163,6 +163,18 @@ void main() {
         controller.currentWorkspace.sessions.map((session) => session.id),
         ['pinned', 'newer'],
       );
+
+      final persistenceController = WorkspaceController(
+        controllers: [chat],
+        currentWorkspacePath: '/workspace/app',
+        includeArchived: true,
+      );
+      expect(
+        persistenceController.currentWorkspace.sessions.map(
+          (session) => session.id,
+        ),
+        ['pinned', 'archived', 'newer'],
+      );
     },
   );
 
@@ -171,21 +183,25 @@ void main() {
       client: FakeAgentClient(),
       cwd: '/workspace/app',
       agentName: 'Codex',
+      sessionCatalogSourceKey: 'shared-codex-catalog',
     );
     final fast = ChatController(
       client: FakeAgentClient(),
       cwd: '/workspace/app',
       agentName: 'codex-fast',
+      sessionCatalogSourceKey: 'shared-codex-catalog',
     );
     final thinking = ChatController(
       client: FakeAgentClient(),
       cwd: '/workspace/app',
       agentName: 'codex-thinking',
+      sessionCatalogSourceKey: 'shared-codex-catalog',
     );
     final worker = ChatController(
       client: FakeAgentClient(),
       cwd: '/workspace/app',
       agentName: 'codex-worker',
+      sessionCatalogSourceKey: 'shared-codex-catalog',
     );
     addTearDown(codex.dispose);
     addTearDown(fast.dispose);
@@ -221,11 +237,13 @@ void main() {
       client: FakeAgentClient(),
       cwd: '/workspace/app',
       agentName: 'Codex',
+      sessionCatalogSourceKey: 'shared-catalog',
     );
     final pi = ChatController(
       client: FakeAgentClient(),
       cwd: '/workspace/app',
       agentName: 'pi ACP',
+      sessionCatalogSourceKey: 'shared-catalog',
     );
     addTearDown(codex.dispose);
     addTearDown(pi.dispose);
@@ -258,6 +276,132 @@ void main() {
     expect(session.agentName, 'Codex');
     expect(session.additionalDirectories, ['/workspace/codex-extra']);
   });
+
+  test(
+    'WorkspaceController never assigns an unrelated default agent to a catalog',
+    () {
+      final codex = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+        sessionCatalogSourceKey: 'shared-codex-catalog',
+      );
+      final fast = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'codex-fast',
+        sessionCatalogSourceKey: 'shared-codex-catalog',
+      );
+      addTearDown(codex.dispose);
+      addTearDown(fast.dispose);
+
+      codex.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          agentName: 'Codex',
+        ),
+      );
+      fast.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          agentName: 'codex-fast',
+        ),
+      );
+
+      final session = WorkspaceController(
+        controllers: [fast, codex],
+        currentWorkspacePath: '/workspace/app',
+        defaultAgentName: 'Pi',
+      ).currentWorkspace.sessions.single;
+
+      expect(session.agentName, 'Codex');
+    },
+  );
+
+  test('WorkspaceController keeps same-id sessions from different agents', () {
+    final codex = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+      sessionCatalogSourceKey: 'codex-catalog',
+    );
+    final pi = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'pi ACP',
+      sessionCatalogSourceKey: 'pi-catalog',
+    );
+    addTearDown(codex.dispose);
+    addTearDown(pi.dispose);
+
+    for (final controller in [codex, pi]) {
+      controller.sessions.add(
+        AgentSession(
+          id: 'shared-session',
+          cwd: '/workspace/app',
+          createdAt: DateTime(2026, 5, 3, 10),
+          title: '${controller.agentName} session',
+          agentName: controller.agentName,
+        ),
+      );
+    }
+
+    final workspace = WorkspaceController(
+      controllers: [codex, pi],
+      currentWorkspacePath: '/workspace/app',
+    ).currentWorkspace;
+
+    expect(workspace.sessionCount, 2);
+    expect(workspace.sessions.map((session) => session.agentName).toSet(), {
+      'Codex',
+      'pi ACP',
+    });
+  });
+
+  test(
+    'WorkspaceController isolates different agents when catalog keys are absent',
+    () {
+      final codex = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'Codex',
+      );
+      final pi = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace/app',
+        agentName: 'pi ACP',
+      );
+      addTearDown(codex.dispose);
+      addTearDown(pi.dispose);
+
+      for (final controller in [codex, pi]) {
+        controller.sessions.add(
+          AgentSession(
+            id: 'shared-session',
+            cwd: '/workspace/app',
+            createdAt: DateTime(2026, 5, 3, 10),
+            title: '${controller.agentName} session',
+            agentName: controller.agentName,
+          ),
+        );
+      }
+
+      final workspace = WorkspaceController(
+        controllers: [codex, pi],
+        currentWorkspacePath: '/workspace/app',
+      ).currentWorkspace;
+
+      expect(workspace.sessionCount, 2);
+      expect(workspace.sessions.map((session) => session.agentName).toSet(), {
+        'Codex',
+        'pi ACP',
+      });
+    },
+  );
 
   test(
     'WorkspaceController uses the only source agent for an unattributed session',
@@ -334,11 +478,13 @@ void main() {
         client: FakeAgentClient(),
         cwd: '/workspace/app',
         agentName: 'Codex',
+        sessionCatalogSourceKey: 'shared-catalog',
       );
       final fast = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace/app',
         agentName: 'codex-fast',
+        sessionCatalogSourceKey: 'shared-catalog',
       );
       addTearDown(codex.dispose);
       addTearDown(fast.dispose);
@@ -381,11 +527,13 @@ void main() {
         client: FakeAgentClient(),
         cwd: '/workspace/app',
         agentName: 'Codex',
+        sessionCatalogSourceKey: 'shared-catalog',
       );
       final worker = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace/app',
         agentName: 'codex-worker',
+        sessionCatalogSourceKey: 'shared-catalog',
       );
       addTearDown(codex.dispose);
       addTearDown(worker.dispose);

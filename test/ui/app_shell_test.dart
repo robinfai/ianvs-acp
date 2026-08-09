@@ -651,6 +651,78 @@ void main() {
     expect(client.lastResumeCwd, '/workspace/project-a');
   });
 
+  testWidgets('AppShell direct resume restores every shared catalog alias', (
+    tester,
+  ) async {
+    final codex = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+      sessionCatalogSourceKey: 'shared-catalog',
+    );
+    final pi = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'pi ACP',
+      sessionCatalogSourceKey: 'shared-catalog',
+    );
+    addTearDown(codex.dispose);
+    addTearDown(pi.dispose);
+    for (final controller in <ChatController>[codex, pi]) {
+      controller.mergeSessionIndex(<AgentSession>[
+        AgentSession(
+          id: 'session-a',
+          cwd: '/workspace/project-a',
+          createdAt: DateTime(2026, 8, 9),
+          title: 'Resume this project conversation',
+          agentName: controller.agentName,
+          archived: true,
+          unread: true,
+        ),
+      ]);
+    }
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: codex,
+          agentName: 'Codex',
+          sessionControllers: <ChatController>[codex, pi],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    final piConversation = find.descendant(
+      of: find.byKey(const ValueKey('resume-conversation-list')),
+      matching: find.textContaining(
+        'pi ACP - Resume this project conversation',
+      ),
+    );
+    expect(piConversation, findsOneWidget);
+    await tester.tap(piConversation);
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+    await _pumpUntil(
+      tester,
+      () =>
+          pi.currentSession?.id == 'session-a' && !pi.isSessionOperationRunning,
+    );
+
+    expect(codex.sessions.single.archived, isFalse);
+    expect(pi.sessions.single.archived, isFalse);
+    expect(codex.sessions.single.unread, isFalse);
+    expect(pi.sessions.single.unread, isFalse);
+  });
+
   testWidgets('AppShell rejects changed roots for the active session id', (
     tester,
   ) async {

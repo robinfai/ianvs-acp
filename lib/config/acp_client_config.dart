@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
+
 import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
@@ -58,6 +60,30 @@ class AcpClientConfig {
     return null;
   }
 
+  AgentServerConfig? agentServerWithPersistenceIdentity(String identity) {
+    final trimmed = identity.trim();
+    if (trimmed.isEmpty) return null;
+    for (final server in selectableAgentServers) {
+      if (server.persistenceIdentity == trimmed) return server;
+    }
+    return null;
+  }
+
+  AgentServerConfig? agentServerWithPersistenceAlias(String alias) {
+    final trimmed = alias.trim();
+    if (trimmed.isEmpty) return null;
+    AgentServerConfig? match;
+    for (final server in selectableAgentServers) {
+      if (!server.persistenceNames.contains(trimmed)) continue;
+      if (match != null &&
+          match.persistenceIdentity != server.persistenceIdentity) {
+        return null;
+      }
+      match = server;
+    }
+    return match;
+  }
+
   AcpClientConfig withActiveAgentServer(String name) {
     final server = agentServerNamed(name);
     if (server == null) {
@@ -77,12 +103,46 @@ class AcpClientConfig {
     );
   }
 
+  AcpClientConfig normalizedAgentPersistenceNamespace() {
+    final source = selectableAgentServers;
+    if (source.isEmpty) return this;
+    final normalized = _normalizedAgentPersistenceNamespace(source);
+    final activeName = activeAgentServer?.name;
+    final normalizedActive = activeName == null
+        ? null
+        : normalized.where((server) => server.name == activeName).firstOrNull;
+    return AcpClientConfig(
+      activeAgentServer: normalizedActive,
+      agentServers: agentServers.isEmpty ? const [] : normalized,
+      mcpServers: mcpServers,
+      additionalDirectories: additionalDirectories,
+      clientProviders: clientProviders,
+      storage: storage,
+      assistantAgent: assistantAgent,
+      configPath: configPath,
+      defaultAgentServerName: defaultAgentServerName,
+      runtimeSecretGeneration: runtimeSecretGeneration,
+    );
+  }
+
   AcpClientConfig? configForSessionIndexAgent(String? name) {
     final trimmed = name?.trim();
     if (trimmed == null || trimmed.isEmpty) return this;
+    final persistedServer = agentServerWithPersistenceIdentity(trimmed);
+    if (persistedServer != null) {
+      if (activeAgentServer?.persistenceIdentity ==
+          persistedServer.persistenceIdentity) {
+        return this;
+      }
+      return withActiveAgentServer(persistedServer.name);
+    }
     if (activeAgentServer != null && agentName == trimmed) return this;
     if (agentServerNamed(trimmed) != null) {
       return withActiveAgentServer(trimmed);
+    }
+    final aliasedServer = agentServerWithPersistenceAlias(trimmed);
+    if (aliasedServer != null) {
+      return withActiveAgentServer(aliasedServer.name);
     }
     if (AcpAdapterPackages.isPiAgentAlias(trimmed)) {
       final matches = selectableAgentServers
@@ -111,10 +171,11 @@ class AcpClientConfig {
     String? path,
     Map<String, String>? environment,
   }) async {
-    final configPath = path ?? resolveConfigPath(environment: environment);
-    if (configPath == null || configPath.trim().isEmpty) {
-      return AcpClientConfig(configPath: configPath);
+    final requestedPath = path ?? resolveConfigPath(environment: environment);
+    if (requestedPath == null || requestedPath.trim().isEmpty) {
+      return AcpClientConfig(configPath: requestedPath);
     }
+    final configPath = _absoluteFilePath(requestedPath);
 
     final file = File(configPath);
     if (!await file.exists()) {
@@ -203,6 +264,12 @@ class AcpClientConfig {
       );
     }
 
+    final normalizedServers = _normalizedAgentPersistenceNamespace(
+      servers.values,
+    );
+    final normalizedByName = <String, AgentServerConfig>{
+      for (final server in normalizedServers) server.name: server,
+    };
     final preferredName = _stringValue(
       _aliasedValue(json, const <String>[
         'default_agent_server',
@@ -210,14 +277,14 @@ class AcpClientConfig {
       ], fieldName: 'default_agent_server'),
     );
     final active = preferredName == null
-        ? servers.values.first
-        : servers[preferredName];
+        ? normalizedServers.first
+        : normalizedByName[preferredName];
     if (active == null) {
       throw FormatException('Unknown default agent server "$preferredName".');
     }
     return AcpClientConfig(
       activeAgentServer: active,
-      agentServers: servers.values.toList(),
+      agentServers: normalizedServers,
       mcpServers: mcpServers,
       additionalDirectories: additionalDirectories,
       clientProviders: clientProviders,
@@ -230,22 +297,28 @@ class AcpClientConfig {
 
   static String? resolveConfigPath({Map<String, String>? environment}) {
     const dartDefinePath = String.fromEnvironment('ACP_CONFIG_PATH');
-    if (dartDefinePath.trim().isNotEmpty) return dartDefinePath.trim();
+    if (dartDefinePath.trim().isNotEmpty) {
+      return _absoluteFilePath(dartDefinePath);
+    }
 
     final env = environment ?? Platform.environment;
     final envPath = env['ACP_CONFIG_PATH'] ?? env['IANVS_ACP_CONFIG'];
     if (envPath != null && envPath.trim().isNotEmpty) {
-      return envPath.trim();
+      return _absoluteFilePath(envPath);
     }
 
     final xdgConfigHome = env['XDG_CONFIG_HOME'];
     if (xdgConfigHome != null && xdgConfigHome.trim().isNotEmpty) {
-      return '${xdgConfigHome.trim()}/$appConfigDirectoryName/$settingsFileName';
+      return _absoluteFilePath(
+        '${xdgConfigHome.trim()}/$appConfigDirectoryName/$settingsFileName',
+      );
     }
 
     final home = env['HOME'];
     if (home == null || home.trim().isEmpty) return null;
-    return '${home.trim()}/.config/$appConfigDirectoryName/$settingsFileName';
+    return _absoluteFilePath(
+      '${home.trim()}/.config/$appConfigDirectoryName/$settingsFileName',
+    );
   }
 
   static String resolveWorkspaceCwd({
@@ -274,6 +347,10 @@ class AcpClientConfig {
 
     return current.isEmpty ? Directory.current.path : current;
   }
+}
+
+String _absoluteFilePath(String path) {
+  return File.fromUri(File(path.trim()).absolute.uri.normalizePath()).path;
 }
 
 class AcpClientProviderConfig {
@@ -637,6 +714,8 @@ class AgentServerConfig {
   const AgentServerConfig({
     required this.name,
     required this.type,
+    this.persistenceId,
+    this.persistenceAliases = const <String>[],
     this.command = '',
     this.cwd,
     this.url = '',
@@ -654,6 +733,8 @@ class AgentServerConfig {
 
   final String name;
   final String type;
+  final String? persistenceId;
+  final List<String> persistenceAliases;
   final String command;
   final String? cwd;
   final String url;
@@ -681,11 +762,42 @@ class AgentServerConfig {
 
   String get displayTarget => isStdio ? command : url;
 
+  String get persistenceIdentity => _resolvedAgentPersistenceIdentity(
+    configured: persistenceId ?? additionalProperties['persistence_id'],
+    migrationName: name,
+    type: type,
+    command: command,
+    cwd: cwd,
+    url: url,
+    args: args,
+    environmentKeys: <String>{...env.keys, ...envRefs.keys},
+    headerKeys: <String>{...headers.keys, ...headerRefs.keys},
+    additionalProperties: additionalProperties,
+  );
+
+  List<String> get persistenceNames =>
+      _resolvedAgentPersistenceAliases(persistenceAliases, currentName: name);
+
   factory AgentServerConfig.fromJson({
     required String name,
     required Map<String, dynamic> json,
   }) {
     final type = (_stringValue(json['type']) ?? 'custom').trim().toLowerCase();
+    final configuredPersistenceIdentity = _persistenceIdentityValue(
+      _aliasedValue(json, const <String>[
+        'persistence_id',
+        'persistenceIdentity',
+      ], fieldName: 'persistence_id'),
+    );
+    final persistenceAliases = _resolvedAgentPersistenceAliases(
+      _persistenceAliasesValue(
+        _aliasedValue(json, const <String>[
+          'persistence_aliases',
+          'persistenceAliases',
+        ], fieldName: 'persistence_aliases'),
+      ),
+      currentName: name,
+    );
     final envRefs = _secretReferenceMapFromAliases(
       json['env_refs'],
       json['envRefs'],
@@ -721,9 +833,25 @@ class AgentServerConfig {
               fieldName: 'headers',
               serverName: name,
             );
+      final persistenceIdentity = _resolvedAgentPersistenceIdentity(
+        configured: configuredPersistenceIdentity,
+        migrationName: name,
+        type: type,
+        command: '',
+        cwd: null,
+        url: url,
+        args: const <String>[],
+        environmentKeys: envRefs.keys,
+        headerKeys: <String>{...headers.keys, ...headerRefs.keys},
+        additionalProperties: additionalProperties,
+      );
+      additionalProperties['persistence_id'] = persistenceIdentity;
+      additionalProperties['persistence_aliases'] = persistenceAliases;
       return AgentServerConfig(
         name: name,
         type: type,
+        persistenceId: persistenceIdentity,
+        persistenceAliases: persistenceAliases,
         url: url,
         headers: headers,
         envRefs: envRefs,
@@ -758,9 +886,25 @@ class AgentServerConfig {
               fieldName: 'headers',
               serverName: name,
             );
+      final persistenceIdentity = _resolvedAgentPersistenceIdentity(
+        configured: configuredPersistenceIdentity,
+        migrationName: name,
+        type: type,
+        command: '',
+        cwd: null,
+        url: url,
+        args: const <String>[],
+        environmentKeys: envRefs.keys,
+        headerKeys: <String>{...headers.keys, ...headerRefs.keys},
+        additionalProperties: additionalProperties,
+      );
+      additionalProperties['persistence_id'] = persistenceIdentity;
+      additionalProperties['persistence_aliases'] = persistenceAliases;
       return AgentServerConfig(
         name: name,
         type: type,
+        persistenceId: persistenceIdentity,
+        persistenceAliases: persistenceAliases,
         url: url,
         headers: headers,
         envRefs: envRefs,
@@ -798,9 +942,26 @@ class AgentServerConfig {
         ? const <String, String>{}
         : _stringMap(envRaw, fieldName: 'env', serverName: name);
 
+    final persistenceIdentity = _resolvedAgentPersistenceIdentity(
+      configured: configuredPersistenceIdentity,
+      migrationName: name,
+      type: type,
+      command: command,
+      cwd: cwd,
+      url: '',
+      args: args,
+      environmentKeys: <String>{...env.keys, ...envRefs.keys},
+      headerKeys: headerRefs.keys,
+      additionalProperties: additionalProperties,
+    );
+    additionalProperties['persistence_id'] = persistenceIdentity;
+    additionalProperties['persistence_aliases'] = persistenceAliases;
+
     return AgentServerConfig(
       name: name,
       type: type,
+      persistenceId: persistenceIdentity,
+      persistenceAliases: persistenceAliases,
       command: command,
       cwd: cwd,
       args: args,
@@ -827,6 +988,8 @@ class AgentServerConfig {
     );
     return <String, Object?>{
       ...additionalProperties,
+      'persistence_id': persistenceIdentity,
+      'persistence_aliases': persistenceNames,
       'type': type,
       if (command.isNotEmpty) 'command': command,
       if (cwd != null) 'cwd': cwd,
@@ -868,6 +1031,8 @@ class AgentServerConfig {
     return AgentServerConfig(
       name: name,
       type: type,
+      persistenceId: persistenceIdentity,
+      persistenceAliases: persistenceNames,
       command: command,
       cwd: cwd,
       url: url,
@@ -888,9 +1053,88 @@ class AgentServerConfig {
           permissionReviewAgent ?? this.permissionReviewAgent,
     );
   }
+
+  AgentServerConfig withPersistenceAliases(List<String> aliases) {
+    return AgentServerConfig(
+      name: name,
+      type: type,
+      persistenceId: persistenceIdentity,
+      persistenceAliases: List<String>.unmodifiable(aliases),
+      command: command,
+      cwd: cwd,
+      url: url,
+      args: args,
+      env: env,
+      headers: headers,
+      envRefs: envRefs,
+      headerRefs: headerRefs,
+      explicitEnvKeys: explicitEnvKeys,
+      explicitHeaderKeys: explicitHeaderKeys,
+      secretRefsResolved: secretRefsResolved,
+      additionalProperties: additionalProperties,
+      permissionReviewAgent: permissionReviewAgent,
+    );
+  }
+}
+
+List<AgentServerConfig> _normalizedAgentPersistenceNamespace(
+  Iterable<AgentServerConfig> configured,
+) {
+  final servers = configured.toList(growable: false);
+  final identityOwners = <String, String>{};
+  final canonicalOwners = <String, String>{};
+
+  void claimCanonical(String token, AgentServerConfig server) {
+    final existing = canonicalOwners[token];
+    if (existing != null && existing != server.name) {
+      throw FormatException(
+        'Agent persistence token "$token" is owned by both "$existing" '
+        'and "${server.name}".',
+      );
+    }
+    canonicalOwners[token] = server.name;
+  }
+
+  for (final server in servers) {
+    final identity = server.persistenceIdentity;
+    final identityOwner = identityOwners[identity];
+    if (identityOwner != null && identityOwner != server.name) {
+      throw FormatException(
+        'Agent persistence_id "$identity" is shared by "$identityOwner" '
+        'and "${server.name}".',
+      );
+    }
+    identityOwners[identity] = server.name;
+    claimCanonical(identity, server);
+    claimCanonical(server.name, server);
+  }
+
+  final aliasOwners = <String, Set<String>>{};
+  for (final server in servers) {
+    for (final alias in server.persistenceNames) {
+      aliasOwners.putIfAbsent(alias, () => <String>{}).add(server.name);
+    }
+  }
+
+  return List<AgentServerConfig>.unmodifiable(
+    servers.map((server) {
+      final filtered = <String>[
+        for (final alias in server.persistenceNames)
+          if (canonicalOwners[alias] == server.name ||
+              (canonicalOwners[alias] == null &&
+                  aliasOwners[alias]?.length == 1))
+            alias,
+      ];
+      return server.withPersistenceAliases(filtered);
+    }),
+  );
 }
 
 const Set<String> _agentServerManagedKeys = <String>{
+  'persistence_id',
+  'persistenceIdentity',
+  'persistence_aliases',
+  'persistenceAliases',
   'type',
   'command',
   'cwd',
@@ -908,6 +1152,123 @@ const Set<String> _agentServerManagedKeys = <String>{
   'reviewAgent',
   'permissions',
 };
+
+String? _persistenceIdentityValue(Object? raw) {
+  if (raw == null) return null;
+  if (raw is! String || !_isCanonicalPersistenceText(raw)) {
+    throw const FormatException(
+      'persistence_id must be canonical non-empty text up to 256 UTF-8 bytes.',
+    );
+  }
+  return raw;
+}
+
+List<String> _persistenceAliasesValue(Object? raw) {
+  if (raw == null) return const <String>[];
+  if (raw is! List) {
+    throw const FormatException('persistence_aliases must be a string list.');
+  }
+  final aliases = <String>[];
+  for (final value in raw) {
+    if (value is! String || !_isCanonicalPersistenceText(value)) {
+      throw const FormatException(
+        'persistence_aliases entries must be canonical non-empty text up to '
+        '256 UTF-8 bytes.',
+      );
+    }
+    if (!aliases.contains(value)) aliases.add(value);
+  }
+  return List<String>.unmodifiable(aliases);
+}
+
+List<String> _resolvedAgentPersistenceAliases(
+  Iterable<String> configured, {
+  required String currentName,
+}) {
+  final aliases = <String>[];
+  for (final alias in configured) {
+    if (!_isCanonicalPersistenceText(alias)) {
+      throw const FormatException(
+        'persistence_aliases entries must be canonical non-empty text up to '
+        '256 UTF-8 bytes.',
+      );
+    }
+    if (!aliases.contains(alias)) aliases.add(alias);
+  }
+  final canonicalName = currentName.trim();
+  if (canonicalName.isNotEmpty) {
+    if (!_isCanonicalPersistenceText(canonicalName)) {
+      throw const FormatException(
+        'Agent names used for persistence must fit in 256 UTF-8 bytes.',
+      );
+    }
+    aliases.remove(canonicalName);
+    aliases.add(canonicalName);
+  }
+  const maxAliasCount = 64;
+  if (aliases.length > maxAliasCount) {
+    aliases.removeRange(0, aliases.length - maxAliasCount);
+  }
+  return List<String>.unmodifiable(aliases);
+}
+
+bool _isCanonicalPersistenceText(String value) =>
+    value.isNotEmpty &&
+    value.trim() == value &&
+    !value.contains('\u0000') &&
+    utf8.encode(value).length <= 256;
+
+String _resolvedAgentPersistenceIdentity({
+  required Object? configured,
+  required String migrationName,
+  required String type,
+  required String command,
+  required String? cwd,
+  required String url,
+  required List<String> args,
+  required Iterable<String> environmentKeys,
+  required Iterable<String> headerKeys,
+  required Map<String, dynamic> additionalProperties,
+}) {
+  final explicit = _persistenceIdentityValue(configured);
+  if (explicit != null) return explicit;
+  final envKeys = environmentKeys.toSet().toList()..sort();
+  final headers = headerKeys.toSet().toList()..sort();
+  final properties = <String, Object?>{
+    for (final entry in additionalProperties.entries)
+      if (entry.key != 'persistence_id' &&
+          entry.key != 'persistenceIdentity' &&
+          entry.key != 'persistence_aliases' &&
+          entry.key != 'persistenceAliases')
+        entry.key: entry.value,
+  };
+  final canonical = _canonicalAgentIdentityJson(<String, Object?>{
+    'migrationName': migrationName.trim(),
+    'type': type.trim().toLowerCase(),
+    'command': command.trim(),
+    'cwd': cwd?.trim(),
+    'url': url.trim(),
+    'args': args,
+    'environmentKeys': envKeys,
+    'headerKeys': headers,
+    'properties': properties,
+  });
+  final digest = sha256.convert(utf8.encode(jsonEncode(canonical)));
+  return 'agent-$digest';
+}
+
+Object? _canonicalAgentIdentityJson(Object? value) {
+  if (value is Map) {
+    final keys = value.keys.map((key) => key.toString()).toList()..sort();
+    return <String, Object?>{
+      for (final key in keys) key: _canonicalAgentIdentityJson(value[key]),
+    };
+  }
+  if (value is List) {
+    return value.map(_canonicalAgentIdentityJson).toList(growable: false);
+  }
+  return value;
+}
 
 class McpServerConfig {
   const McpServerConfig({

@@ -9,7 +9,9 @@ String? resolveAppStateFilePath({
 }) {
   final config = configPath?.trim();
   if (config != null && config.isNotEmpty) {
-    final configDirectory = File(config).parent;
+    final configDirectory = File.fromUri(
+      File(config).absolute.uri.normalizePath(),
+    ).parent;
     final stateDirectory = _isAppOwnedStateDirectory(configDirectory)
         ? configDirectory.path
         : _joinPath(configDirectory.path, '.ianvs-acp');

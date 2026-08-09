@@ -248,6 +248,64 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue((response as AnyObject?) === FlutterMethodNotImplemented)
   }
 
+  func testAccessibleTextFieldProxyExposesStableNativeAttributes() {
+    let view = AccessibleTextFieldProxyView(
+      viewId: 7,
+      arguments: [
+        "label": "Search workspaces",
+        "description": "Filter the workspace list",
+        "value": "ianvs",
+        "enabled": true,
+        "focused": false,
+      ]
+    )
+
+    XCTAssertTrue(view.isAccessibilityElement())
+    XCTAssertEqual(view.accessibilityRole(), .textField)
+    XCTAssertEqual(view.accessibilityLabel(), "Search workspaces")
+    XCTAssertEqual(view.accessibilityTitle(), "Search workspaces")
+    XCTAssertEqual(view.accessibilityHelp(), "Filter the workspace list")
+    XCTAssertEqual(view.accessibilityValue() as? String, "ianvs")
+    XCTAssertEqual(
+      view.accessibilityIdentifier(),
+      "ianvs-acp.accessible-text-field.7"
+    )
+    XCTAssertNil(view.hitTest(.zero))
+  }
+
+  func testAccessibleTextFieldCoordinatorPreservesSemanticRootLifecycle() {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+      styleMask: .borderless,
+      backing: .buffered,
+      defer: false
+    )
+    let container = NSView(frame: window.contentView?.bounds ?? .zero)
+    window.contentView = container
+    let semanticRoot = NSAccessibilityElement()
+    container.setAccessibilityChildren([semanticRoot])
+    let coordinator = AccessibleTextFieldAccessibilityCoordinator(
+      container: container
+    )
+    let proxy = AccessibleTextFieldProxyView(
+      viewId: 8,
+      arguments: ["label": "Filter projects"]
+    )
+    container.addSubview(proxy)
+
+    coordinator.register(proxy)
+    let registeredChildren = container.accessibilityChildren() ?? []
+    XCTAssertEqual(registeredChildren.count, 2)
+    XCTAssertTrue(registeredChildren[0] as AnyObject === semanticRoot)
+    XCTAssertTrue(registeredChildren[1] as AnyObject === proxy)
+    XCTAssertTrue(proxy.accessibilityParent() as AnyObject === container)
+
+    coordinator.unregister(proxy)
+    let restoredChildren = container.accessibilityChildren() ?? []
+    XCTAssertEqual(restoredChildren.count, 1)
+    XCTAssertTrue(restoredChildren[0] as AnyObject === semanticRoot)
+  }
+
   func testPendingDeepLinkBufferBoundsCountAndLength() {
     let buffer = PendingDeepLinkBuffer()
 

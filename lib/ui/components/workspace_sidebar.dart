@@ -7,6 +7,7 @@ import '../../acp/agent_event.dart';
 import '../../acp/agent_session.dart';
 import '../../workspace/workspace.dart';
 import '../../workspace/workspace_sidebar_state_store.dart';
+import 'accessible_text_field.dart';
 import 'session_time_label.dart';
 import '../theme/app_design_tokens.dart';
 
@@ -81,14 +82,14 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   final TextEditingController _searchController = TextEditingController();
   Timer? _currentWorkspaceAutoLoadTimer;
   String? _hoveredWorkspacePath;
+  int _stateRestoreGeneration = 0;
 
   @override
   void initState() {
     super.initState();
     _expandedWorkspacePaths.add(widget.currentWorkspace.path);
     _scheduleLoadCurrentWorkspaceSessions();
-    unawaited(_restoreExpandedWorkspacePaths());
-    unawaited(_restoreWorkspaceStates());
+    _restoreSidebarState();
   }
 
   @override
@@ -101,8 +102,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     }
 
     if (oldWidget.stateStore?.path != widget.stateStore?.path) {
-      unawaited(_restoreExpandedWorkspacePaths());
-      unawaited(_restoreWorkspaceStates());
+      _restoreSidebarState();
     }
     if (!identical(
       oldWidget.gitWorkspaceDetector,
@@ -126,6 +126,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
 
   @override
   void dispose() {
+    _stateRestoreGeneration += 1;
     _currentWorkspaceAutoLoadTimer?.cancel();
     _searchController.dispose();
     super.dispose();
@@ -288,23 +289,73 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     }
   }
 
-  Future<void> _restoreExpandedWorkspacePaths() async {
+  void _restoreSidebarState() {
+    final generation = ++_stateRestoreGeneration;
     final store = widget.stateStore;
+    final sourcePath = store?.path;
+    unawaited(
+      _restoreExpandedWorkspacePaths(
+        store: store,
+        sourcePath: sourcePath,
+        generation: generation,
+      ),
+    );
+    unawaited(
+      _restoreWorkspaceStates(
+        store: store,
+        sourcePath: sourcePath,
+        generation: generation,
+      ),
+    );
+  }
+
+  bool _isCurrentStateRestore({
+    required String? sourcePath,
+    required int generation,
+  }) {
+    return mounted &&
+        generation == _stateRestoreGeneration &&
+        widget.stateStore?.path == sourcePath;
+  }
+
+  Future<void> _restoreExpandedWorkspacePaths({
+    required WorkspaceSidebarStateStore? store,
+    required String? sourcePath,
+    required int generation,
+  }) async {
     if (store != null) {
       final hasSavedPaths = await store.hasSavedExpandedWorkspacePaths();
+      if (!_isCurrentStateRestore(
+        sourcePath: sourcePath,
+        generation: generation,
+      )) {
+        return;
+      }
       final paths = await store.loadExpandedWorkspacePaths();
-      if (!mounted) return;
+      if (!_isCurrentStateRestore(
+        sourcePath: sourcePath,
+        generation: generation,
+      )) {
+        return;
+      }
       setState(() {
         _expandedWorkspacePaths
           ..clear()
           ..addAll(paths);
-        _autoLoadWorkspacePaths.addAll(paths);
+        _autoLoadWorkspacePaths
+          ..clear()
+          ..addAll(paths);
         if (!hasSavedPaths) {
           _expandedWorkspacePaths.add(widget.currentWorkspace.path);
         }
       });
     }
-    if (!mounted) return;
+    if (!_isCurrentStateRestore(
+      sourcePath: sourcePath,
+      generation: generation,
+    )) {
+      return;
+    }
     _scheduleLoadSessionsForAutoLoadWorkspaces();
   }
 
@@ -621,11 +672,19 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     _persistWorkspaceStates();
   }
 
-  Future<void> _restoreWorkspaceStates() async {
-    final store = widget.stateStore;
+  Future<void> _restoreWorkspaceStates({
+    required WorkspaceSidebarStateStore? store,
+    required String? sourcePath,
+    required int generation,
+  }) async {
     if (store == null) return;
     final states = await store.loadWorkspaceStates();
-    if (!mounted) return;
+    if (!_isCurrentStateRestore(
+      sourcePath: sourcePath,
+      generation: generation,
+    )) {
+      return;
+    }
     setState(() {
       _pinnedWorkspacePaths.clear();
       _hiddenWorkspacePaths.clear();
@@ -683,65 +742,90 @@ class _WorkspaceSearchField extends StatelessWidget {
   Widget build(BuildContext context) {
     return SizedBox(
       height: 34,
-      child: TextField(
-        controller: controller,
-        onChanged: onChanged,
-        textInputAction: TextInputAction.search,
-        style: const TextStyle(
-          color: AppColors.textPrimary,
-          fontSize: 12,
-          fontWeight: FontWeight.w500,
-          letterSpacing: 0,
-        ),
-        decoration: InputDecoration(
-          hintText: 'Search workspaces...',
-          hintStyle: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-            letterSpacing: 0,
-          ),
-          prefixIcon: const Icon(
-            Icons.search_rounded,
-            size: 16,
-            color: AppColors.textSecondary,
-          ),
-          suffixIcon: controller.text.isEmpty
-              ? null
-              : IconButton(
-                  tooltip: 'Clear workspace search',
-                  onPressed: () {
-                    controller.clear();
-                    onChanged('');
-                  },
-                  icon: const Icon(Icons.close_rounded, size: 15),
-                  color: AppColors.textSecondary,
-                  visualDensity: VisualDensity.compact,
-                  splashRadius: 16,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: AccessibleTextField(
+              label: 'Search workspaces',
+              description: 'Filter the workspace list',
+              controller: controller,
+              onChanged: onChanged,
+              builder: (focusNode) => TextField(
+                controller: controller,
+                focusNode: focusNode,
+                onChanged: onChanged,
+                textInputAction: TextInputAction.search,
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0,
                 ),
-          isDense: true,
-          filled: true,
-          fillColor: AppColors.surface,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 6,
-          ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            borderSide: const BorderSide(color: AppColors.border),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            borderSide: const BorderSide(color: AppColors.border),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            borderSide: const BorderSide(
-              color: AppColors.textSecondary,
-              width: 1.2,
+                decoration: InputDecoration(
+                  hint: const ExcludeSemantics(
+                    child: Text(
+                      'Search workspaces...',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                  prefixIcon: const Icon(
+                    Icons.search_rounded,
+                    size: 16,
+                    color: AppColors.textSecondary,
+                  ),
+                  suffixIcon: controller.text.isEmpty
+                      ? null
+                      : const SizedBox.shrink(),
+                  isDense: true,
+                  filled: true,
+                  fillColor: AppColors.surface,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                    borderSide: const BorderSide(color: AppColors.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                    borderSide: const BorderSide(color: AppColors.border),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                    borderSide: const BorderSide(
+                      color: AppColors.textSecondary,
+                      width: 1.2,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
-        ),
+          if (controller.text.isNotEmpty)
+            Positioned(
+              top: 0,
+              right: 0,
+              bottom: 0,
+              width: 40,
+              child: IconButton(
+                tooltip: 'Clear workspace search',
+                onPressed: () {
+                  controller.clear();
+                  onChanged('');
+                },
+                icon: const Icon(Icons.close_rounded, size: 15),
+                color: AppColors.textSecondary,
+                visualDensity: VisualDensity.compact,
+                splashRadius: 16,
+              ),
+            ),
+        ],
       ),
     );
   }

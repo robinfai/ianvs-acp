@@ -14,6 +14,8 @@ fn subprocess_handshake_prompt_permission_and_projection_are_rust_owned() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::from([
@@ -205,6 +207,8 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "attachment-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::from([(
@@ -401,6 +405,8 @@ fn filesystem_reverse_requests_use_permissions_and_core_scope() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "filesystem-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::from([(
@@ -531,6 +537,8 @@ fn permission_timeout_is_resolved_and_projected_by_rust() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::default(),
@@ -622,6 +630,8 @@ fn idle_agent_process_is_restarted_before_session_activity() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "flaky-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::from([(
@@ -670,6 +680,7 @@ fn idle_agent_process_is_restarted_before_session_activity() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn process_loss_after_session_activity_restores_durable_session() {
     let directory = unique_temp_dir("session-recovery");
     let database = directory.join("sessions.sqlite3");
@@ -677,6 +688,8 @@ fn process_loss_after_session_activity_restores_durable_session() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "session-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::from([(
@@ -774,11 +787,97 @@ fn process_loss_after_session_activity_restores_durable_session() {
 }
 
 #[test]
-fn durable_session_registry_survives_runtime_handle_recreation() {
+fn startup_migrates_prior_display_key_and_recovers_the_session() {
+    let directory = unique_temp_dir("session-identity-migration");
+    let database = directory.join("sessions.sqlite3");
+    let workspace = std::env::temp_dir().canonicalize().unwrap();
+    let mut store = ianvs_acp_core::SqliteSessionStore::open(&database).unwrap();
+    store
+        .upsert(&ianvs_acp_core::PersistedSession {
+            agent_name: "Original display name".to_string(),
+            session_id: "seeded-session".to_string(),
+            cwd: workspace.display().to_string(),
+            additional_directories: vec![],
+        })
+        .unwrap();
+    drop(store);
+
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(AgentLaunchConfig {
+            agent_name: "Renamed agent".to_string(),
+            persistence_identity: Some("stable-agent-identity".to_string()),
+            persistence_aliases: vec!["Original display name".to_string()],
+            command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
+            args: vec![],
+            environment: BTreeMap::new(),
+            process_cwd: None,
+            permission_timeout_ms: None,
+            max_restart_attempts: None,
+            restart_base_delay_ms: None,
+            session_store_path: Some(database.display().to_string()),
+            session_store_max_bytes: None,
+            session_store_retention_days: None,
+            additional_directories: vec![],
+            mcp_servers: vec![],
+            enable_terminal_provider: false,
+            enable_filesystem_read_text_file: false,
+            enable_filesystem_write_text_file: false,
+            max_terminal_handles: None,
+            max_terminal_handles_per_session: None,
+            terminal_default_output_byte_limit: None,
+            terminal_max_output_byte_limit: None,
+        })
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    runtime
+        .restore_session(
+            "restore-seeded",
+            "seeded-session",
+            workspace.display().to_string(),
+            vec![],
+            true,
+        )
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionRestored
+                    && update.session_id == "seeded-session"
+                    && update.request_id.as_deref() == Some("restore-seeded")
+        )
+    });
+    runtime.dispose().unwrap();
+
+    let store = ianvs_acp_core::SqliteSessionStore::open(&database).unwrap();
+    assert!(
+        store
+            .load_active("Original display name")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(store.load_active("stable-agent-identity").unwrap().len(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn durable_session_registry_survives_display_name_change_and_runtime_recreation() {
     let directory = unique_temp_dir("session-recovery-reopen");
     let database = directory.join("sessions.sqlite3");
     let config = AgentLaunchConfig {
         agent_name: "durable-session-fixture".to_string(),
+        persistence_identity: Some("durable-agent-identity".to_string()),
+        persistence_aliases: vec!["durable-session-fixture".to_string()],
         command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
         args: vec![],
         environment: BTreeMap::new(),
@@ -828,6 +927,7 @@ fn durable_session_registry_survives_runtime_handle_recreation() {
 
     let marker = directory.join("fail-once-after-reopen");
     let mut restart_config = config;
+    restart_config.agent_name = "Renamed durable agent".to_string();
     restart_config.environment.insert(
         "IANVS_FIXTURE_FAIL_ONCE_FILE".to_string(),
         marker.display().to_string(),
@@ -862,6 +962,100 @@ fn durable_session_registry_survives_runtime_handle_recreation() {
         )
     });
     second.dispose().unwrap();
+    let store = ianvs_acp_core::SqliteSessionStore::open(&database).unwrap();
+    assert_eq!(
+        store.load_active("durable-agent-identity").unwrap().len(),
+        1
+    );
+    assert!(
+        store
+            .load_active("durable-session-fixture")
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn successful_prompt_refreshes_session_retention_timestamp() {
+    let directory = unique_temp_dir("session-retention-touch");
+    let database = directory.join("sessions.sqlite3");
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(AgentLaunchConfig {
+            agent_name: "retention-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
+            command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
+            args: vec![],
+            environment: BTreeMap::from([(
+                "IANVS_FIXTURE_SKIP_PERMISSION".to_string(),
+                "1".to_string(),
+            )]),
+            process_cwd: None,
+            permission_timeout_ms: None,
+            max_restart_attempts: None,
+            restart_base_delay_ms: None,
+            session_store_path: Some(database.display().to_string()),
+            session_store_max_bytes: None,
+            session_store_retention_days: Some(30),
+            additional_directories: vec![],
+            mcp_servers: vec![],
+            enable_terminal_provider: false,
+            enable_filesystem_read_text_file: false,
+            enable_filesystem_write_text_file: false,
+            max_terminal_handles: None,
+            max_terminal_handles_per_session: None,
+            terminal_default_output_byte_limit: None,
+            terminal_max_output_byte_limit: None,
+        })
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    runtime
+        .create_session(
+            "create-retained",
+            std::env::temp_dir().display().to_string(),
+            vec![],
+        )
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionCreated
+        )
+    });
+
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute(
+            "UPDATE active_sessions SET updated_at = 1
+             WHERE agent_name = 'retention-fixture' AND session_id = 'fixture-session'",
+            [],
+        )
+        .unwrap();
+    runtime
+        .prompt("refresh-retention", "fixture-session", "still active")
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
+        )
+    });
+    runtime.dispose().unwrap();
+
+    let store = ianvs_acp_core::SqliteSessionStore::open(&database).unwrap();
+    assert_eq!(store.load_active("retention-fixture").unwrap().len(), 1);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -872,6 +1066,8 @@ fn session_catalog_restore_close_and_delete_are_rust_owned() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "session-lifecycle-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::default(),
@@ -1138,6 +1334,8 @@ fn terminal_reverse_requests_use_real_pty_and_generic_permissions() {
     runtime
         .start_agent(AgentLaunchConfig {
             agent_name: "terminal-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
             command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
             args: vec![],
             environment: BTreeMap::from([(

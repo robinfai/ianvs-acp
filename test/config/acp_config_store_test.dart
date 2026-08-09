@@ -8,8 +8,44 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/acp_config_store.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
+import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
 
 void main() {
+  test('migrates existing agent settings to a stable persistence id', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs_acp_agent_identity_migration',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString(
+      jsonEncode({
+        'agent_servers': {
+          'Original name': {
+            'type': 'custom',
+            'command': '/usr/local/bin/agent',
+          },
+        },
+      }),
+    );
+
+    final loaded = await AcpConfigStore.loadConfig(
+      configPath: file.path,
+      secretStore: _MemorySecretStore(),
+    );
+    final identity = loaded.activeAgentServer!.persistenceIdentity;
+    final migrated = jsonDecode(await file.readAsString());
+
+    expect(
+      migrated['agent_servers']['Original name']['persistence_id'],
+      identity,
+    );
+    expect(
+      migrated['agent_servers']['Original name']['persistence_aliases'],
+      <String>['Original name'],
+    );
+    expect(identity, startsWith('agent-'));
+  });
+
   test('serializes assistant agent config', () {
     final settings = AcpConfigStore.toSettingsJson(
       const AcpClientConfig(
@@ -282,6 +318,41 @@ void main() {
       raw['client_providers']['permissions']['approval_agent']['future_reviewer'],
       isTrue,
     );
+  });
+
+  test('removes only retired storage cleanup fields when saving', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs_acp_config_store_retired_storage',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString(
+      jsonEncode({
+        'storage': {
+          'max_size_gb': 20,
+          'retention_days': 14,
+          'cleanup_interval_hours': 24,
+          'cleanupIntervalHours': 12,
+          'future_storage': {'enabled': true, 'policy': 'keep'},
+        },
+      }),
+    );
+
+    await AcpConfigStore.writeConfig(
+      config: AcpClientConfig(
+        configPath: file.path,
+        storage: const SqliteStorageConfig(maxSizeGb: 40, retentionDays: 60),
+      ),
+      secretStore: _MemorySecretStore(),
+    );
+
+    final raw = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    final storage = raw['storage'] as Map<String, dynamic>;
+    expect(storage['max_size_gb'], 40);
+    expect(storage['retention_days'], 60);
+    expect(storage, isNot(contains('cleanup_interval_hours')));
+    expect(storage, isNot(contains('cleanupIntervalHours')));
+    expect(storage['future_storage'], {'enabled': true, 'policy': 'keep'});
   });
 
   test('writes edited MCP config without dropping unknown fields', () async {

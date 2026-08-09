@@ -33,3 +33,23 @@ fi
 
 chmod 755 "${DESTINATION_LIBRARY}"
 install_name_tool -id "@rpath/libianvs_acp_ffi.dylib" "${DESTINATION_LIBRARY}"
+
+if [ "${CODE_SIGNING_ALLOWED:-YES}" != "NO" ]; then
+  CODESIGN_BIN=${IANVS_CODESIGN_BIN:-/usr/bin/codesign}
+  [ -x "${CODESIGN_BIN}" ] || {
+    printf 'error: codesign tool is not executable: %s\n' "${CODESIGN_BIN}" >&2
+    exit 1
+  }
+  SIGN_IDENTITY=${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:--}}
+  if [ -z "${SIGN_IDENTITY}" ]; then
+    SIGN_IDENTITY=-
+  fi
+  if [ "${SIGN_IDENTITY}" = "-" ]; then
+    "${CODESIGN_BIN}" --force --sign - --timestamp=none \
+      "${DESTINATION_LIBRARY}"
+  else
+    "${CODESIGN_BIN}" --force --sign "${SIGN_IDENTITY}" \
+      --options runtime --timestamp \
+      "${DESTINATION_LIBRARY}"
+  fi
+fi

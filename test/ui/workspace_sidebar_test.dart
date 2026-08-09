@@ -128,6 +128,51 @@ void main() {
     expect(selected, newerOther);
   });
 
+  testWidgets('WorkspaceSidebar session semantics can activate a session', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    AgentSession? selected;
+    final session = AgentSession(
+      id: 'accessible-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'Accessible session',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [session],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 640,
+            child: WorkspaceSidebar(
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: null,
+              onNewSession: () {},
+              onResumeSession: () {},
+              onSelectSession: (value) => selected = value,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    tester.semantics.tap(find.semantics.byLabel(RegExp('Accessible session')));
+    await tester.pump();
+
+    expect(selected, same(session));
+    semantics.dispose();
+  });
+
   testWidgets('WorkspaceSidebar opens the top session from a workspace row', (
     tester,
   ) async {
@@ -349,6 +394,15 @@ void main() {
       find.bySemanticsLabel(RegExp(r'current.*0 sessions')),
       findsOneWidget,
     );
+    expect(
+      find.semantics.byPredicate(
+        (node) =>
+            node.label == 'Search workspaces' &&
+            node.hint == 'Filter the workspace list' &&
+            node.getSemanticsData().flagsCollection.isTextField,
+      ),
+      findsOne,
+    );
 
     await tester.enterText(
       find.widgetWithText(TextField, 'Search workspaces...'),
@@ -357,7 +411,20 @@ void main() {
     await tester.pump();
 
     expect(find.text('other'), findsNWidgets(2));
+    final clearSearchSemantics = tester.getSemantics(
+      find.byTooltip('Clear workspace search'),
+    );
+    expect(clearSearchSemantics.tooltip, 'Clear workspace search');
     expect(find.text('current'), findsNothing);
+
+    tester.semantics.tap(
+      find.semantics.byPredicate(
+        (node) => node.tooltip == 'Clear workspace search',
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('current'), findsOneWidget);
     semantics.dispose();
   });
 
@@ -587,6 +654,103 @@ void main() {
 
     expect(find.text('Pinned Alias'), findsOneWidget);
     expect(find.text('hidden'), findsNothing);
+  });
+
+  testWidgets('WorkspaceSidebar ignores stale state store restores', (
+    tester,
+  ) async {
+    final staleStore = _DelayedWorkspaceSidebarStateStore(path: 'memory-a');
+    final currentStore = _MemoryWorkspaceSidebarStateStore(
+      {'/workspace/b'},
+      path: 'memory-b',
+      initialWorkspaceStates: const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/b',
+          displayName: 'Current Alias',
+          pinned: true,
+        ),
+      ],
+    );
+    final selectedStore = ValueNotifier<WorkspaceSidebarStateStore>(staleStore);
+    addTearDown(selectedStore.dispose);
+    final currentWorkspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: const <AgentSession>[],
+    );
+    final workspaceA = WorkspaceRecord(
+      path: '/workspace/a',
+      name: 'workspace-a',
+      sessions: [
+        AgentSession(
+          id: 'session-a',
+          cwd: '/workspace/a',
+          createdAt: DateTime(2026, 5, 1),
+          title: 'Session A',
+        ),
+      ],
+    );
+    final workspaceB = WorkspaceRecord(
+      path: '/workspace/b',
+      name: 'workspace-b',
+      sessions: [
+        AgentSession(
+          id: 'session-b',
+          cwd: '/workspace/b',
+          createdAt: DateTime(2026, 5, 2),
+          title: 'Session B',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 640,
+            child: ValueListenableBuilder<WorkspaceSidebarStateStore>(
+              valueListenable: selectedStore,
+              builder: (context, store, _) => WorkspaceSidebar(
+                workspaces: [currentWorkspace, workspaceA, workspaceB],
+                currentWorkspace: currentWorkspace,
+                currentSession: null,
+                onNewSession: () {},
+                onResumeSession: () {},
+                stateStore: store,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(staleStore.expandedLoadStarted.isCompleted, isTrue);
+    expect(staleStore.workspaceLoadStarted.isCompleted, isTrue);
+
+    selectedStore.value = currentStore;
+    await tester.pumpAndSettle();
+
+    expect(find.text('Current Alias'), findsOneWidget);
+    expect(find.text('Session B'), findsOneWidget);
+    expect(find.text('Session A'), findsNothing);
+
+    staleStore.complete(
+      expandedPaths: {'/workspace/a'},
+      workspaceStates: const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/a',
+          displayName: 'Stale Alias',
+          pinned: true,
+        ),
+      ],
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Current Alias'), findsOneWidget);
+    expect(find.text('Stale Alias'), findsNothing);
+    expect(find.text('Session B'), findsOneWidget);
+    expect(find.text('Session A'), findsNothing);
   });
 
   testWidgets(
@@ -2140,11 +2304,12 @@ class _MemoryWorkspaceSidebarStateStore extends WorkspaceSidebarStateStore {
     Set<String> initialPaths, {
     List<WorkspaceSidebarWorkspaceState> initialWorkspaceStates = const [],
     this.hasSavedExpandedPaths = true,
+    String path = 'memory',
   }) : expandedWorkspacePaths = Set<String>.from(initialPaths),
        workspaceStates = List<WorkspaceSidebarWorkspaceState>.from(
          initialWorkspaceStates,
        ),
-       super(path: 'memory');
+       super(path: path);
 
   Set<String> expandedWorkspacePaths;
   List<WorkspaceSidebarWorkspaceState> workspaceStates;
@@ -2176,5 +2341,38 @@ class _MemoryWorkspaceSidebarStateStore extends WorkspaceSidebarStateStore {
     Iterable<WorkspaceSidebarWorkspaceState> workspaces,
   ) async {
     workspaceStates = List<WorkspaceSidebarWorkspaceState>.from(workspaces);
+  }
+}
+
+class _DelayedWorkspaceSidebarStateStore extends WorkspaceSidebarStateStore {
+  _DelayedWorkspaceSidebarStateStore({required super.path});
+
+  final Completer<void> expandedLoadStarted = Completer<void>();
+  final Completer<void> workspaceLoadStarted = Completer<void>();
+  final Completer<Set<String>> _expandedPaths = Completer<Set<String>>();
+  final Completer<List<WorkspaceSidebarWorkspaceState>> _workspaceStates =
+      Completer<List<WorkspaceSidebarWorkspaceState>>();
+
+  @override
+  Future<bool> hasSavedExpandedWorkspacePaths() async => true;
+
+  @override
+  Future<Set<String>> loadExpandedWorkspacePaths() {
+    expandedLoadStarted.complete();
+    return _expandedPaths.future;
+  }
+
+  @override
+  Future<List<WorkspaceSidebarWorkspaceState>> loadWorkspaceStates() {
+    workspaceLoadStarted.complete();
+    return _workspaceStates.future;
+  }
+
+  void complete({
+    required Set<String> expandedPaths,
+    required List<WorkspaceSidebarWorkspaceState> workspaceStates,
+  }) {
+    _expandedPaths.complete(expandedPaths);
+    _workspaceStates.complete(workspaceStates);
   }
 }

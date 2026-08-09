@@ -155,6 +155,27 @@ void main() {
     );
   }
 
+  testWidgets('PromptInput exposes an accessible composer label', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(
+      input(isSending: false, agentName: 'Codex', onSend: (_, _) {}),
+    );
+
+    expect(
+      find.semantics.byPredicate(
+        (node) =>
+            node.label == 'Prompt message for Codex' &&
+            node.hint == 'Write a prompt to Codex' &&
+            node.getSemanticsData().flagsCollection.isTextField,
+      ),
+      findsOne,
+    );
+    semantics.dispose();
+  });
+
   testWidgets('PromptInput empty input cannot send', (tester) async {
     var sent = false;
     await tester.pumpWidget(

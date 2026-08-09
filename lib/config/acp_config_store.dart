@@ -37,7 +37,7 @@ class AcpConfigStore {
       final proposal = _inheritCurrentSecretReferences(
         _withConfigPath(config, path),
         previous,
-      );
+      ).normalizedAgentPersistenceNamespace();
       validateUniqueSecretReferences(proposal);
       if (secretStore != null) {
         await _retryPendingSecretCleanup(
@@ -536,7 +536,7 @@ Map<String, dynamic> _persistEditedConfig(
   _writeAliasedValue(result, const <String>[
     'storage',
     'sqliteStorage',
-  ], mergedStorage);
+  ], _withoutRetiredStorageFields(mergedStorage));
   final currentAssistant = _valueForAliases(result, const <String>[
     'assistant_agent',
     'assistantAgent',
@@ -552,6 +552,14 @@ Map<String, dynamic> _persistEditedConfig(
   return result;
 }
 
+Object? _withoutRetiredStorageFields(Object? storage) {
+  if (storage is! Map) return storage;
+  final result = _cloneJsonMap(Map<String, dynamic>.from(storage));
+  result.remove('cleanup_interval_hours');
+  result.remove('cleanupIntervalHours');
+  return result;
+}
+
 Map<String, dynamic> _mergeAgentRaw(
   Map? current,
   Map desired,
@@ -561,6 +569,10 @@ Map<String, dynamic> _mergeAgentRaw(
       ? <String, dynamic>{}
       : _cloneJsonMap(Map<String, dynamic>.from(current));
   const directManaged = <String>[
+    'persistence_id',
+    'persistenceIdentity',
+    'persistence_aliases',
+    'persistenceAliases',
     'type',
     'command',
     'cwd',
@@ -826,6 +838,10 @@ Map<String, dynamic> _persistResolvedSecretReferences(
       final server = agents[entry.key];
       if (server == null || entry.value is! Map) continue;
       final serverRaw = entry.value as Map;
+      serverRaw['persistence_id'] = server.persistenceIdentity;
+      serverRaw['persistence_aliases'] = server.persistenceNames;
+      serverRaw.remove('persistenceIdentity');
+      serverRaw.remove('persistenceAliases');
       _replaceSecretMaps(
         serverRaw,
         server.env,

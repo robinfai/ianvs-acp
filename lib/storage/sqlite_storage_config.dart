@@ -1,4 +1,4 @@
-/// Application-wide retention and capacity policy for SQLite-backed data.
+/// Application-wide retention and capacity policy for local recovery data.
 class SqliteStorageConfig {
   const SqliteStorageConfig({
     this.maxSizeGb = defaultMaxSizeGb,

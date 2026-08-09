@@ -6,6 +6,7 @@ import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_session_catalog.dart';
 import '../theme/app_design_tokens.dart';
 import '../bounded_metadata_preview.dart';
+import 'accessible_text_field.dart';
 
 const String resumeSessionAgentNameMetaKey = 'agentName';
 
@@ -180,6 +181,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                 _SearchField(
                   key: const ValueKey('resume-project-search'),
                   controller: _projectSearchController,
+                  semanticsLabel: 'Filter projects',
                   hintText: 'Filter projects...',
                   onChanged: (_) => setState(() {}),
                 ),
@@ -210,6 +212,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                 _SearchField(
                   key: const ValueKey('resume-conversation-search'),
                   controller: _conversationSearchController,
+                  semanticsLabel: 'Filter conversations',
                   hintText: 'Filter conversations...',
                   enabled: conversations.isNotEmpty,
                   onChanged: (_) => setState(() {}),
@@ -405,31 +408,41 @@ class _SearchField extends StatelessWidget {
   const _SearchField({
     super.key,
     required this.controller,
+    required this.semanticsLabel,
     required this.hintText,
     required this.onChanged,
     this.enabled = true,
   });
 
   final TextEditingController controller;
+  final String semanticsLabel;
   final String hintText;
   final ValueChanged<String> onChanged;
   final bool enabled;
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
+    return AccessibleTextField(
+      label: semanticsLabel,
+      description: hintText,
       controller: controller,
       enabled: enabled,
       onChanged: onChanged,
-      style: const TextStyle(
-        color: AppColors.textPrimary,
-        fontSize: 12,
-        fontWeight: FontWeight.w700,
-        letterSpacing: 0,
-      ),
-      decoration: _inputDecoration(
-        icon: Icons.search_rounded,
-        hintText: hintText,
+      builder: (focusNode) => TextField(
+        controller: controller,
+        focusNode: focusNode,
+        enabled: enabled,
+        onChanged: onChanged,
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0,
+        ),
+        decoration: _inputDecoration(
+          icon: Icons.search_rounded,
+          hintText: hintText,
+        ),
       ),
     );
   }
@@ -441,12 +454,16 @@ InputDecoration _inputDecoration({
 }) {
   return InputDecoration(
     prefixIcon: Icon(icon, size: 18, color: AppColors.textSecondary),
-    hintText: hintText,
-    hintStyle: const TextStyle(
-      color: AppColors.textTertiary,
-      fontSize: 12,
-      fontWeight: FontWeight.w600,
-      letterSpacing: 0,
+    hint: ExcludeSemantics(
+      child: Text(
+        hintText,
+        style: const TextStyle(
+          color: AppColors.textTertiary,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0,
+        ),
+      ),
     ),
     filled: true,
     fillColor: AppColors.surface,

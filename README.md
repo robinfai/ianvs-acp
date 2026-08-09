@@ -22,8 +22,8 @@ local directory path completions while typing.
 Use `Agents` -> `Agent Configuration` to manage the saved configuration:
 agent servers, the default agent, MCP servers, additional directories,
 filesystem/terminal provider switches, permission trust rules, the review
-agent, assistant-agent settings, and SQLite storage settings. The app persists
-those GUI choices to:
+agent, assistant-agent settings, and local recovery storage settings. The app
+persists those GUI choices to:
 
 ```text
 ~/.config/ianvs-acp/settings.json
@@ -99,10 +99,20 @@ Saved shape example for automation and debugging:
 }
 ```
 
-`storage.max_size_gb` is the upper budget for the ACP session-recovery
-database. Expired recovery metadata is removed automatically. See
-[SQLite storage policy](docs/sqlite_storage.md) for the data inventory and
-compaction behavior.
+`storage.max_size_gb` and `storage.retention_days` bound two recovery payload
+stores: the ACP session registry and the exact-revision transcript cache. Each
+store enforces the configured capacity independently, and expired payloads are
+removed automatically.
+
+The adjacent private `workspace_ui_state.json` file stores Workspace/sidebar
+preferences and a recovery index containing session IDs, workspace roots,
+display titles, agent association, and pin/archive/unread state. It is written
+atomically, and concurrent app windows merge independent Workspace/session
+record fields plus expanded-Workspace additions and removals. It is not
+governed by `storage.max_size_gb` or `storage.retention_days`; those entries
+remain until the corresponding UI state is changed or removed. See the
+[local recovery storage policy](docs/sqlite_storage.md) for the data inventory
+and maintenance behavior.
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
 `headers`; enter secret header values through Agent Configuration so they are

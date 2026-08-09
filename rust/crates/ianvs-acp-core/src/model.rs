@@ -6,8 +6,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentLaunchConfig {
-    /// Stable UI-facing name for this runtime.
+    /// UI-facing name for this runtime.
     pub agent_name: String,
+    /// Stable identity used only for durable product-owned state.
+    #[serde(default)]
+    pub persistence_identity: Option<String>,
+    /// Prior display keys that may still own pre-migration recovery rows.
+    #[serde(default)]
+    pub persistence_aliases: Vec<String>,
     /// Executable path or command name. No shell interpretation is performed.
     pub command: String,
     /// Arguments passed directly to the executable.
@@ -72,6 +78,26 @@ impl AgentLaunchConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.agent_name.trim().is_empty() {
             return Err("agentName must not be empty");
+        }
+        if self
+            .persistence_identity
+            .as_deref()
+            .is_some_and(|identity| !canonical_bounded_text(identity, 256))
+        {
+            return Err("persistenceIdentity is invalid");
+        }
+        let persistence_aliases = self
+            .persistence_aliases
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
+        if self.persistence_aliases.len() > 64
+            || persistence_aliases.len() != self.persistence_aliases.len()
+            || self
+                .persistence_aliases
+                .iter()
+                .any(|alias| !canonical_bounded_text(alias, 256))
+        {
+            return Err("persistenceAliases is invalid");
         }
         if self.command.trim().is_empty() {
             return Err("command must not be empty");

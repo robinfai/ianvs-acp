@@ -96,22 +96,30 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
     required this.directoryPath,
     this.maxFileBytes = 48 * 1024 * 1024,
     this.maxMessages = 2000,
-  });
+    this.maxDirectoryBytes = 50 * 1024 * 1024 * 1024,
+    this.retention = const Duration(days: 30),
+    this.now,
+  }) : assert(maxFileBytes > 0),
+       assert(maxMessages > 0),
+       assert(maxDirectoryBytes > 0),
+       assert(retention > Duration.zero);
 
   static const int schemaVersion = 1;
+  static const int _lockShardCount = 64;
 
   final String directoryPath;
   final int maxFileBytes;
   final int maxMessages;
+  final int maxDirectoryBytes;
+  final Duration retention;
+  final DateTime Function()? now;
 
   @override
   Future<SessionTranscriptSnapshot?> load(
     SessionTranscriptIdentity identity,
   ) async {
     final target = _file(identity);
-    return SecureAtomicFile.synchronizedAcrossProcesses(target, (
-      resolvedTarget,
-    ) async {
+    return _synchronizedTranscript(target, (resolvedTarget) async {
       final type = await FileSystemEntity.type(
         resolvedTarget.path,
         followLinks: false,
@@ -125,6 +133,10 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
         return null;
       }
       final stat = await resolvedTarget.stat();
+      if (_isExpired(stat.modified)) {
+        await resolvedTarget.delete();
+        return null;
+      }
       if (stat.size <= 0 || stat.size > maxFileBytes) return null;
       final source = await resolvedTarget.readAsString();
       final decoded = await Isolate.run(() => jsonDecode(source));
@@ -174,16 +186,131 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
       final encoded = jsonEncode(payload);
       return (value: encoded, bytes: utf8.encode(encoded).length);
     });
-    if (encodedResult.bytes > maxFileBytes) return;
+    if (encodedResult.bytes > maxFileBytes ||
+        encodedResult.bytes > maxDirectoryBytes) {
+      return;
+    }
     final target = _file(snapshot.identity);
-    await SecureAtomicFile.synchronizedAcrossProcesses(target, (
-      resolvedTarget,
+    await SecureAtomicFile.synchronizedAcrossProcesses(_maintenanceTarget, (
+      _,
     ) async {
-      await SecureAtomicFile.writeString(
-        resolvedTarget,
-        encodedResult.value,
-        protectExistingParent: true,
+      await _synchronizedTranscript(target, (resolvedTarget) async {
+        await SecureAtomicFile.writeString(
+          resolvedTarget,
+          encodedResult.value,
+          protectExistingParent: true,
+        );
+      });
+      await _maintainUnlocked(protectedPath: target.absolute.path);
+    });
+  }
+
+  /// Removes expired transcripts and evicts the oldest remaining files until
+  /// the cache directory is within [maxDirectoryBytes].
+  Future<void> maintain() async {
+    final directory = Directory(directoryPath);
+    if (!await directory.exists()) return;
+    await SecureAtomicFile.synchronizedAcrossProcesses(_maintenanceTarget, (
+      _,
+    ) async {
+      await _maintainUnlocked();
+    });
+  }
+
+  Future<void> _maintainUnlocked({String? protectedPath}) async {
+    final cutoff = _currentTime().subtract(retention);
+    final expired = (await _transcriptFiles())
+        .where((entry) => entry.modified.isBefore(cutoff))
+        .toList(growable: false);
+    for (final entry in expired) {
+      await _deleteIfUnchanged(entry);
+    }
+
+    final remaining = await _transcriptFiles();
+    var totalBytes = remaining.fold<int>(
+      0,
+      (total, entry) => total + entry.size,
+    );
+    if (totalBytes <= maxDirectoryBytes) return;
+
+    remaining.sort((left, right) {
+      final modified = left.modified.compareTo(right.modified);
+      return modified != 0
+          ? modified
+          : left.file.path.compareTo(right.file.path);
+    });
+    for (final entry in remaining) {
+      if (totalBytes <= maxDirectoryBytes) return;
+      if (entry.file.absolute.path == protectedPath) continue;
+      if (await _deleteIfUnchanged(entry)) totalBytes -= entry.size;
+    }
+  }
+
+  Future<List<_TranscriptFileEntry>> _transcriptFiles() async {
+    final directory = Directory(directoryPath);
+    if (!await directory.exists()) return <_TranscriptFileEntry>[];
+    final entries = <_TranscriptFileEntry>[];
+    await for (final entity in directory.list(followLinks: false)) {
+      if (!entity.path.endsWith('.transcript.json')) continue;
+      final type = await FileSystemEntity.type(entity.path, followLinks: false);
+      if (type != FileSystemEntityType.file) continue;
+      final file = File(entity.path);
+      final stat = await file.stat();
+      entries.add(
+        _TranscriptFileEntry(
+          file: file,
+          size: stat.size,
+          modified: stat.modified,
+        ),
       );
+    }
+    return entries;
+  }
+
+  Future<bool> _deleteIfUnchanged(_TranscriptFileEntry entry) {
+    return _synchronizedTranscript(entry.file, (resolvedTarget) async {
+      final type = await FileSystemEntity.type(
+        resolvedTarget.path,
+        followLinks: false,
+      );
+      if (type != FileSystemEntityType.file) return false;
+      final stat = await resolvedTarget.stat();
+      if (stat.size != entry.size || stat.modified != entry.modified) {
+        return false;
+      }
+      await resolvedTarget.delete();
+      return true;
+    });
+  }
+
+  bool _isExpired(DateTime modified) {
+    return modified.isBefore(_currentTime().subtract(retention));
+  }
+
+  DateTime _currentTime() => now?.call() ?? DateTime.now();
+
+  File get _maintenanceTarget =>
+      File('$directoryPath${Platform.pathSeparator}.session-transcript-cache');
+
+  Future<T> _synchronizedTranscript<T>(
+    File target,
+    Future<T> Function(File resolvedTarget) operation,
+  ) {
+    final basename = target.uri.pathSegments.last;
+    final shard =
+        sha256.convert(utf8.encode(basename)).bytes.first % _lockShardCount;
+    final shardName = shard.toRadixString(16).padLeft(2, '0');
+    final lockTarget = File(
+      '$directoryPath${Platform.pathSeparator}'
+      'session-transcript-cache-shard-$shardName',
+    );
+    return SecureAtomicFile.synchronizedAcrossProcesses(lockTarget, (
+      resolvedLockTarget,
+    ) {
+      final resolvedTarget = File(
+        '${resolvedLockTarget.parent.path}${Platform.pathSeparator}$basename',
+      );
+      return operation(resolvedTarget);
     });
   }
 
@@ -202,4 +329,16 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
       '$directoryPath${Platform.pathSeparator}$digest.transcript.json',
     );
   }
+}
+
+final class _TranscriptFileEntry {
+  const _TranscriptFileEntry({
+    required this.file,
+    required this.size,
+    required this.modified,
+  });
+
+  final File file;
+  final int size;
+  final DateTime modified;
 }

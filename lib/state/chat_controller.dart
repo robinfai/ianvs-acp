@@ -2537,6 +2537,8 @@ class ChatController extends ChangeNotifier {
     required this.cwd,
     this.additionalDirectories = const <String>[],
     this.agentName = 'Codex',
+    String? sessionPersistenceIdentity,
+    this.sessionCatalogSourceKey,
     this.permissionHistoryLimit = defaultPermissionHistoryLimit,
     this.permissionReviewResultEncodedByteLimit =
         defaultPermissionReviewResultEncodedByteLimit,
@@ -2551,7 +2553,8 @@ class ChatController extends ChangeNotifier {
     this.enableAutomaticSessionTitles = false,
     this.promptIdleWarningDelay = defaultPromptIdleWarningDelay,
     this.sessionTranscriptCache,
-  }) : permissionTrustRules = List.unmodifiable(permissionTrustRules) {
+  }) : sessionPersistenceIdentity = sessionPersistenceIdentity ?? agentName,
+       permissionTrustRules = List.unmodifiable(permissionTrustRules) {
     if (permissionHistoryLimit <= 0) {
       throw ArgumentError.value(
         permissionHistoryLimit,
@@ -2601,6 +2604,8 @@ class ChatController extends ChangeNotifier {
   final String cwd;
   final List<String> additionalDirectories;
   final String agentName;
+  final String sessionPersistenceIdentity;
+  final String? sessionCatalogSourceKey;
   final int permissionHistoryLimit;
   final int permissionReviewResultEncodedByteLimit;
   final int permissionHistoryEncodedByteLimit;
@@ -3022,7 +3027,7 @@ class ChatController extends ChangeNotifier {
     final transcriptIdentity = updatedAt == null
         ? null
         : SessionTranscriptIdentity(
-            agentName: agentName,
+            agentName: sessionPersistenceIdentity,
             sessionId: trimmedSessionId,
             cwd: workspaceCwd,
             additionalDirectories: List<String>.unmodifiable(

@@ -278,7 +278,7 @@ struct AgentRunOutcome {
 }
 
 struct SessionRecoveryRegistry {
-    agent_name: String,
+    persistence_identity: String,
     active: HashMap<String, PersistedSession>,
     store: Option<SqliteSessionStore>,
 }
@@ -303,9 +303,25 @@ impl SessionRecoveryRegistry {
                     .map_err(|error| error.to_string())
             })
             .transpose()?;
+        let persistence_identity = config
+            .persistence_identity
+            .clone()
+            .unwrap_or_else(|| config.agent_name.clone());
+        if let Some(store) = store.as_mut() {
+            let mut migrated_names = HashSet::new();
+            for prior_name in
+                std::iter::once(&config.agent_name).chain(config.persistence_aliases.iter())
+            {
+                if migrated_names.insert(prior_name.as_str()) {
+                    store
+                        .migrate_agent_identity(prior_name, &persistence_identity)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+        }
         let active = store
             .as_mut()
-            .map(|store| store.load_active(&config.agent_name))
+            .map(|store| store.load_active(&persistence_identity))
             .transpose()
             .map_err(|error| error.to_string())?
             .unwrap_or_default()
@@ -313,15 +329,18 @@ impl SessionRecoveryRegistry {
             .map(|session| (session.session_id.clone(), session))
             .collect();
         Ok(Self {
-            agent_name: config.agent_name.clone(),
+            persistence_identity,
             active,
             store,
         })
     }
 
     fn activate(&mut self, session_id: &str, scope: &WorkspaceScope) -> Result<(), String> {
-        let session =
-            PersistedSession::from_scope(self.agent_name.clone(), session_id.to_string(), scope);
+        let session = PersistedSession::from_scope(
+            self.persistence_identity.clone(),
+            session_id.to_string(),
+            scope,
+        );
         if let Some(store) = self.store.as_mut() {
             store.upsert(&session).map_err(|error| error.to_string())?;
         }
@@ -332,10 +351,19 @@ impl SessionRecoveryRegistry {
     fn remove(&mut self, session_id: &str) -> Result<(), String> {
         if let Some(store) = self.store.as_mut() {
             store
-                .remove(&self.agent_name, session_id)
+                .remove(&self.persistence_identity, session_id)
                 .map_err(|error| error.to_string())?;
         }
         self.active.remove(session_id);
+        Ok(())
+    }
+
+    fn touch(&mut self, session_id: &str) -> Result<(), String> {
+        if let Some(store) = self.store.as_mut() {
+            store
+                .touch(&self.persistence_identity, session_id)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(())
     }
 
@@ -2602,15 +2630,25 @@ async fn command_loop(
                             sink.error(Some(request_id.clone()), "invalid_session_state", error.to_string(), false);
                         }
                         match result {
-                            Ok(stop_reason) => render_router.route(RenderUpdate {
-                                session_id,
-                                kind: RenderUpdateKind::TurnCompleted,
-                                text: String::new(),
-                                metadata: Some(serde_json::json!({
-                                    "stopReason": stop_reason,
-                                    "requestId": request_id,
-                                })),
-                            }),
+                            Ok(stop_reason) => {
+                                if let Err(message) = session_registry.touch(&session_id) {
+                                    sink.error(
+                                        Some(request_id.clone()),
+                                        "session_store_failed",
+                                        message,
+                                        false,
+                                    );
+                                }
+                                render_router.route(RenderUpdate {
+                                    session_id,
+                                    kind: RenderUpdateKind::TurnCompleted,
+                                    text: String::new(),
+                                    metadata: Some(serde_json::json!({
+                                        "stopReason": stop_reason,
+                                        "requestId": request_id,
+                                    })),
+                                });
+                            }
                             Err(message) => sink.error(Some(request_id), "prompt_failed", message, true),
                         }
                     }

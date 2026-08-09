@@ -176,6 +176,8 @@ final class IanvsRustRuntime {
   void startAgent({
     required String agentName,
     required String command,
+    String? persistenceIdentity,
+    List<String> persistenceAliases = const <String>[],
     List<String> args = const <String>[],
     Map<String, String> environment = const <String, String>{},
     String? processCwd,
@@ -196,6 +198,12 @@ final class IanvsRustRuntime {
     _check(
       _native.startAgent(_runtime, <String, Object?>{
         'agentName': agentName,
+        if (persistenceIdentity?.trim().isNotEmpty == true)
+          'persistenceIdentity': persistenceIdentity!.trim(),
+        if (persistenceAliases.isNotEmpty)
+          'persistenceAliases': List<String>.unmodifiable(
+            persistenceAliases.map((alias) => alias.trim()),
+          ),
         'command': command,
         'args': List<String>.unmodifiable(args),
         'environment': Map<String, String>.unmodifiable(environment),

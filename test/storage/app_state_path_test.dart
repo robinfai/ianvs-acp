@@ -33,6 +33,22 @@ void main() {
     );
   });
 
+  test('resolves state beside an absolute form of a relative config', () {
+    final relativeConfig = [
+      'profile',
+      'settings.json',
+    ].join(Platform.pathSeparator);
+    final expectedDirectory = File.fromUri(
+      File(relativeConfig).absolute.uri.normalizePath(),
+    ).parent;
+
+    expect(
+      resolveAppStateFilePath(fileName: fileName, configPath: relativeConfig),
+      '${expectedDirectory.path}${Platform.pathSeparator}.ianvs-acp'
+      '${Platform.pathSeparator}$fileName',
+    );
+  });
+
   test('uses XDG_CONFIG_HOME when no config path is provided', () {
     expect(
       resolveAppStateFilePath(

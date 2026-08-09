@@ -20,6 +20,7 @@ import '../../state/chat_controller.dart';
 import '../../acp/permission_context.dart';
 import '../theme/app_design_tokens.dart';
 import '../bounded_metadata_preview.dart';
+import 'accessible_text_field.dart';
 
 typedef PromptSendCallback =
     void Function(String text, List<PromptAttachment> attachments);
@@ -469,38 +470,51 @@ class _PromptInputState extends State<PromptInput> {
                             _ImageAttachmentLimitationNotice(
                               message: widget.imageAttachmentLimitation!,
                             ),
-                          TextField(
+                          AccessibleTextField(
+                            label: 'Prompt message for ${widget.agentName}',
+                            description:
+                                'Write a prompt to ${widget.agentName}',
                             controller: _controller,
-                            minLines: 1,
-                            maxLines: 4,
-                            keyboardType: TextInputType.multiline,
                             enabled: widget.enabled,
+                            multiline: true,
                             onChanged: _handlePromptChanged,
-                            style: const TextStyle(
-                              color: AppColors.textPrimary,
-                              fontSize: 13,
-                              height: 1.35,
-                            ),
-                            decoration: InputDecoration(
-                              hintText:
-                                  'Send a prompt to ${widget.agentName}...',
-                              hintStyle: const TextStyle(
-                                color: AppColors.textTertiary,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w400,
+                            builder: (focusNode) => TextField(
+                              controller: _controller,
+                              focusNode: focusNode,
+                              minLines: 1,
+                              maxLines: 4,
+                              keyboardType: TextInputType.multiline,
+                              enabled: widget.enabled,
+                              onChanged: _handlePromptChanged,
+                              style: const TextStyle(
+                                color: AppColors.textPrimary,
+                                fontSize: 13,
+                                height: 1.35,
                               ),
-                              filled: false,
-                              isCollapsed: true,
-                              contentPadding: const EdgeInsets.fromLTRB(
-                                13,
-                                14,
-                                13,
-                                27,
+                              decoration: InputDecoration(
+                                hint: ExcludeSemantics(
+                                  child: Text(
+                                    'Send a prompt to ${widget.agentName}...',
+                                    style: const TextStyle(
+                                      color: AppColors.textTertiary,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w400,
+                                    ),
+                                  ),
+                                ),
+                                filled: false,
+                                isCollapsed: true,
+                                contentPadding: const EdgeInsets.fromLTRB(
+                                  13,
+                                  14,
+                                  13,
+                                  27,
+                                ),
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                disabledBorder: InputBorder.none,
                               ),
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              disabledBorder: InputBorder.none,
                             ),
                           ),
                           Padding(

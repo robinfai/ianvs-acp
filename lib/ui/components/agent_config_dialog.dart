@@ -748,14 +748,15 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   Widget _buildStorageSection() {
     return _Panel(
       icon: Icons.storage_rounded,
-      title: 'SQLite Storage',
+      title: 'Local Recovery Storage',
       accent: AppColors.primary,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'The limit applies to the ACP session-recovery database. '
-            'Expired recovery metadata is removed automatically.',
+            'The limit and retention period apply independently to the '
+            'session-recovery database and transcript cache. Expired local '
+            'recovery data is removed automatically.',
             style: TextStyle(
               color: AppColors.textSecondary,
               fontSize: 12,
@@ -768,14 +769,14 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           _DialogTextField(
             key: const Key('storage-max-size-gb-field'),
             controller: _storageMaxSizeController,
-            label: 'Total limit (GB)',
+            label: 'Per-store limit (GB)',
             icon: Icons.data_usage_rounded,
           ),
           const SizedBox(height: 8),
           _DialogTextField(
             key: const Key('storage-retention-days-field'),
             controller: _storageRetentionController,
-            label: 'Session recovery retention (days)',
+            label: 'Per-store retention (days)',
             icon: Icons.history_rounded,
           ),
         ],
@@ -786,7 +787,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   SqliteStorageConfig _storageConfig() {
     final maxSize = _positiveIntValue(
       _storageMaxSizeController.text,
-      'SQLite total limit',
+      'Local recovery storage limit',
     );
     final retention = _positiveIntValue(
       _storageRetentionController.text,
@@ -794,7 +795,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     );
     if (maxSize > 8192) {
       throw const FormatException(
-        'SQLite total limit must be at most 8192 GB.',
+        'Local recovery storage limit must be at most 8192 GB.',
       );
     }
     if (retention > 3650) {

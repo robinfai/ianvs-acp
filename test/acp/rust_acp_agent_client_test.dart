@@ -19,12 +19,19 @@ void main() {
       );
       final client = RustAcpAgentClient(
         agentName: 'fixture',
+        agentPersistenceId: 'stable-fixture',
+        agentPersistenceAliases: const <String>['Original fixture'],
         agentCommand: 'fixture-agent',
         runtime: runtime,
       );
       addTearDown(client.dispose);
 
       await client.connect();
+      expect(native.startedConfig?['agentName'], 'fixture');
+      expect(native.startedConfig?['persistenceIdentity'], 'stable-fixture');
+      expect(native.startedConfig?['persistenceAliases'], <String>[
+        'Original fixture',
+      ]);
       expect(client.capabilities?.protocolVersion, 1);
       expect(client.capabilities?.client.terminal, isFalse);
 

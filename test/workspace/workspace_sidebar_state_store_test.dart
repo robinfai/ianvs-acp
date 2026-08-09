@@ -168,7 +168,7 @@ void main() {
   );
 
   test(
-    'WorkspaceSidebarStateStore deduplicates agents by workspace and session id',
+    'WorkspaceSidebarStateStore preserves agent-scoped session ids',
     () async {
       final tempDir = await Directory.systemTemp.createTemp(
         'ianvs-acp-sidebar-store-',
@@ -203,13 +203,13 @@ void main() {
       ]);
 
       final sessions = await store.loadSessionIndex();
-      expect(sessions, hasLength(2));
+      expect(sessions, hasLength(3));
       expect(
         sessions
             .where((session) => session.cwd == '/workspace/project')
-            .single
-            .agentName,
-        'codex-fast',
+            .map((session) => session.agentName)
+            .toSet(),
+        {'Codex', 'codex-fast'},
       );
       expect(
         sessions.where((session) => session.cwd == '/workspace/other'),
@@ -383,6 +383,216 @@ void main() {
       expect(raw['session_index'], hasLength(1));
       expect((await File(path).stat()).mode & 0x1ff, 0x180);
       expect((await File(path).parent.stat()).mode & 0x1ff, 0x1c0);
+    },
+  );
+
+  test(
+    'independent stores merge workspace fields and retain deletion tombstones',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-sidebar-store-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final path = '${tempDir.path}/workspace_ui_state.json';
+      final seedStore = WorkspaceSidebarStateStore(path: path);
+      await seedStore.saveWorkspaceStates([
+        const WorkspaceSidebarWorkspaceState(
+          path: '/workspace/shared',
+          displayName: 'Original name',
+        ),
+        const WorkspaceSidebarWorkspaceState(
+          path: '/workspace/removed',
+          pinned: true,
+        ),
+      ]);
+      final firstStore = WorkspaceSidebarStateStore(path: path);
+      final secondStore = WorkspaceSidebarStateStore(path: path);
+      expect(await firstStore.loadWorkspaceStates(), hasLength(2));
+      expect(await secondStore.loadWorkspaceStates(), hasLength(2));
+
+      await firstStore.saveWorkspaceStates([
+        const WorkspaceSidebarWorkspaceState(
+          path: '/workspace/shared',
+          displayName: 'Original name',
+          pinned: true,
+        ),
+        const WorkspaceSidebarWorkspaceState(
+          path: '/workspace/from-first',
+          manuallyAdded: true,
+        ),
+      ]);
+      await secondStore.saveWorkspaceStates([
+        const WorkspaceSidebarWorkspaceState(
+          path: '/workspace/shared',
+          displayName: 'Renamed elsewhere',
+          hidden: true,
+        ),
+        const WorkspaceSidebarWorkspaceState(
+          path: '/workspace/removed',
+          pinned: true,
+        ),
+        const WorkspaceSidebarWorkspaceState(
+          path: '/workspace/new',
+          manuallyAdded: true,
+        ),
+      ]);
+
+      final states = await WorkspaceSidebarStateStore(
+        path: path,
+      ).loadWorkspaceStates();
+      expect(states.map((state) => state.path).toSet(), {
+        '/workspace/shared',
+        '/workspace/from-first',
+        '/workspace/new',
+      });
+      final shared = states.singleWhere(
+        (state) => state.path == '/workspace/shared',
+      );
+      expect(shared.displayName, 'Renamed elsewhere');
+      expect(shared.pinned, isTrue);
+      expect(shared.hidden, isTrue);
+      expect(
+        states
+            .singleWhere((state) => state.path == '/workspace/new')
+            .manuallyAdded,
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'independent stores merge expanded workspace additions and deletions',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-sidebar-store-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final path = '${tempDir.path}/workspace_ui_state.json';
+      final seedStore = WorkspaceSidebarStateStore(path: path);
+      await seedStore.saveExpandedWorkspacePaths({
+        '/workspace/shared',
+        '/workspace/removed',
+      });
+      final firstStore = WorkspaceSidebarStateStore(path: path);
+      final secondStore = WorkspaceSidebarStateStore(path: path);
+      expect(await firstStore.loadExpandedWorkspacePaths(), hasLength(2));
+      expect(await secondStore.loadExpandedWorkspacePaths(), hasLength(2));
+
+      await firstStore.saveExpandedWorkspacePaths({
+        '/workspace/shared',
+        '/workspace/from-first',
+      });
+      await secondStore.saveExpandedWorkspacePaths({
+        '/workspace/shared',
+        '/workspace/removed',
+        '/workspace/from-second',
+      });
+
+      expect(
+        await WorkspaceSidebarStateStore(
+          path: path,
+        ).loadExpandedWorkspacePaths(),
+        {
+          '/workspace/shared',
+          '/workspace/from-first',
+          '/workspace/from-second',
+        },
+      );
+    },
+  );
+
+  test(
+    'independent stores preserve sessions added after their base snapshot',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-sidebar-store-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final path = '${tempDir.path}/workspace_ui_state.json';
+      final firstStore = WorkspaceSidebarStateStore(path: path);
+      final secondStore = WorkspaceSidebarStateStore(path: path);
+      expect(await firstStore.loadSessionIndex(), isEmpty);
+      expect(await secondStore.loadSessionIndex(), isEmpty);
+
+      await firstStore.saveSessionIndex([
+        AgentSession(
+          id: 'session-from-first',
+          cwd: '/workspace/project',
+          createdAt: DateTime(2026, 7, 11, 8),
+          agentName: 'Codex',
+        ),
+      ]);
+      await secondStore.saveSessionIndex([
+        AgentSession(
+          id: 'session-from-second',
+          cwd: '/workspace/project',
+          createdAt: DateTime(2026, 7, 11, 9),
+          agentName: 'Codex',
+        ),
+      ]);
+
+      expect(
+        (await WorkspaceSidebarStateStore(
+          path: path,
+        ).loadSessionIndex()).map((session) => session.id).toSet(),
+        {'session-from-first', 'session-from-second'},
+      );
+    },
+  );
+
+  test(
+    'independent stores merge fields and retain deletion tombstones',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'ianvs-acp-sidebar-store-',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final path = '${tempDir.path}/workspace_ui_state.json';
+      final seedStore = WorkspaceSidebarStateStore(path: path);
+      final original = AgentSession(
+        id: 'shared-session',
+        cwd: '/workspace/project',
+        createdAt: DateTime(2026, 7, 12, 8),
+        title: 'Original title',
+        agentName: 'Codex',
+      );
+      final removed = AgentSession(
+        id: 'removed-session',
+        cwd: '/workspace/project',
+        createdAt: DateTime(2026, 7, 12, 7),
+        agentName: 'Codex',
+      );
+      await seedStore.saveSessionIndex([original, removed]);
+      final firstStore = WorkspaceSidebarStateStore(path: path);
+      final secondStore = WorkspaceSidebarStateStore(path: path);
+      expect(await firstStore.loadSessionIndex(), hasLength(2));
+      expect(await secondStore.loadSessionIndex(), hasLength(2));
+
+      await firstStore.saveSessionIndex([original.copyWith(pinned: true)]);
+      await secondStore.saveSessionIndex([
+        original.copyWith(titleOverride: 'Renamed elsewhere', archived: true),
+        removed,
+        AgentSession(
+          id: 'session-from-second',
+          cwd: '/workspace/project',
+          createdAt: DateTime(2026, 7, 12, 9),
+          agentName: 'Codex',
+        ),
+      ]);
+
+      final sessions = await WorkspaceSidebarStateStore(
+        path: path,
+      ).loadSessionIndex();
+      final shared = sessions.singleWhere(
+        (session) => session.id == 'shared-session',
+      );
+      expect(shared.pinned, isTrue);
+      expect(shared.archived, isTrue);
+      expect(shared.titleOverride, 'Renamed elsewhere');
+      expect(sessions.map((session) => session.id).toSet(), {
+        'shared-session',
+        'session-from-second',
+      });
     },
   );
 

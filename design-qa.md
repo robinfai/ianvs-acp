@@ -29,7 +29,7 @@ Corrections:
 
 - Separated assistant commentary from genuine thought events and folded genuine thoughts only with adjacent tool activity.
 - Keyed group expansion state by stable tool-call identity and inferred historical completion from turn boundaries.
-- Preserved ACP content-block payloads, merged marked replay chunks, and added a legacy local-image marker fallback.
+- Preserved ACP content-block payloads, merged marked replay chunks, and adapted historical local-image markers into the thumbnail flow.
 - Rendered full available tool output inside bounded, independently scrollable fade regions.
 
 ### Iteration 2
@@ -58,7 +58,7 @@ The native-app comparison confirmed:
 - Thought plus adjacent tools grouping, while ordinary commentary stays outside the tool group.
 - Bounded command/code and metadata regions with internal scrolling and edge fades.
 - ACP replay payload preservation and selective user-chunk merging.
-- Clickable ACP and legacy image thumbnails with a zoomable modal preview,
+- Clickable ACP and historical image thumbnails with a zoomable modal preview,
   explicit close control, backdrop dismissal, and Escape-key dismissal.
 
 Verification:

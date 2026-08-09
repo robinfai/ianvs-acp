@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:path/path.dart' as path_utils;
 
 void main() {
   test(
@@ -114,6 +116,192 @@ void main() {
     expect(config.configForSessionIndexAgent('Codex'), same(config));
     expect(config.configForSessionIndexAgent(''), same(config));
     expect(config.configForSessionIndexAgent('Kimi'), isNull);
+  });
+
+  test('keeps persistence identity across display name changes', () {
+    final original = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Original name': {'type': 'custom', 'command': '/usr/local/bin/agent'},
+      },
+    }).activeAgentServer!;
+    final renamed = AcpClientConfig.fromJson({
+      'agent_servers': {'Renamed agent': original.toJson()},
+    });
+
+    expect(
+      renamed.activeAgentServer!.persistenceIdentity,
+      original.persistenceIdentity,
+    );
+    expect(
+      renamed
+          .configForSessionIndexAgent(original.persistenceIdentity)
+          ?.agentName,
+      'Renamed agent',
+    );
+    expect(
+      renamed.configForSessionIndexAgent('Original name')?.agentName,
+      'Renamed agent',
+    );
+  });
+
+  test('matches native persistence identity and alias boundaries', () {
+    final acceptedName = '中' * 85;
+    final accepted = AcpClientConfig.fromJson({
+      'agent_servers': {
+        acceptedName: {
+          'type': 'custom',
+          'command': '/usr/local/bin/agent',
+          'persistence_id': acceptedName,
+        },
+      },
+    }).activeAgentServer!;
+    expect(utf8.encode(accepted.persistenceIdentity), hasLength(255));
+    expect(utf8.encode(accepted.persistenceNames.single), hasLength(255));
+
+    final tooLong = '中' * 86;
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          tooLong: {'type': 'custom', 'command': '/usr/local/bin/agent'},
+        },
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Agent': {
+            'type': 'custom',
+            'command': '/usr/local/bin/agent',
+            'persistence_id': tooLong,
+          },
+        },
+      }),
+      throwsFormatException,
+    );
+  });
+
+  test('keeps the 64 most recent persistence aliases', () {
+    final server = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Current name': {
+          'type': 'custom',
+          'command': '/usr/local/bin/agent',
+          'persistence_aliases': List<String>.generate(
+            70,
+            (index) => 'Previous $index',
+          ),
+        },
+      },
+    }).activeAgentServer!;
+
+    expect(server.persistenceNames, hasLength(64));
+    expect(server.persistenceNames, isNot(contains('Previous 0')));
+    expect(server.persistenceNames, contains('Previous 7'));
+    expect(server.persistenceNames.last, 'Current name');
+  });
+
+  test('migration identities distinguish same-target config entries', () {
+    final config = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Work account': {
+          'type': 'custom',
+          'command': '/usr/local/bin/agent',
+          'env': {'TOKEN': 'work-secret'},
+        },
+        'Personal account': {
+          'type': 'custom',
+          'command': '/usr/local/bin/agent',
+          'env': {'TOKEN': 'personal-secret'},
+        },
+      },
+    });
+
+    expect(
+      config.agentServers.map((server) => server.persistenceIdentity).toSet(),
+      hasLength(2),
+    );
+  });
+
+  test('does not guess an ambiguous persistence alias', () {
+    final config = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'First': {
+          'type': 'custom',
+          'command': '/usr/local/bin/first',
+          'persistence_id': 'first-id',
+          'persistence_aliases': ['Shared old name'],
+        },
+        'Second': {
+          'type': 'custom',
+          'command': '/usr/local/bin/second',
+          'persistence_id': 'second-id',
+          'persistence_aliases': ['Shared old name'],
+        },
+      },
+    });
+
+    expect(config.configForSessionIndexAgent('Shared old name'), isNull);
+  });
+
+  test('rejects duplicate persistence identities', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'First': {
+            'type': 'custom',
+            'command': '/usr/local/bin/first',
+            'persistence_id': 'shared-id',
+          },
+          'Second': {
+            'type': 'custom',
+            'command': '/usr/local/bin/second',
+            'persistence_id': 'shared-id',
+          },
+        },
+      }),
+      throwsFormatException,
+    );
+  });
+
+  test('drops historical aliases owned by another configured agent', () {
+    final config = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Current owner': {
+          'type': 'custom',
+          'command': '/usr/local/bin/current',
+        },
+        'Renamed agent': {
+          'type': 'custom',
+          'command': '/usr/local/bin/renamed',
+          'persistence_aliases': ['Current owner', 'Unique old name'],
+        },
+      },
+    });
+
+    final renamed = config.agentServerNamed('Renamed agent')!;
+    expect(renamed.persistenceNames, isNot(contains('Current owner')));
+    expect(renamed.persistenceNames, contains('Unique old name'));
+    expect(
+      config.configForSessionIndexAgent('Current owner')?.agentName,
+      'Current owner',
+    );
+  });
+
+  test('rejects a display name that collides with another identity', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'agent_servers': {
+          'First': {
+            'type': 'custom',
+            'command': '/usr/local/bin/first',
+            'persistence_id': 'Second',
+          },
+          'Second': {'type': 'custom', 'command': '/usr/local/bin/second'},
+        },
+      }),
+      throwsFormatException,
+    );
   });
 
   test('resolves the pi ACP alias to the single Pi adapter', () {
@@ -1290,6 +1478,33 @@ void main() {
     expect(config.configPath, '/tmp/ianvs-acp-does-not-exist.json');
   });
 
+  test('loads a relative config path and records its absolute path', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-relative-config-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString(
+      jsonEncode({
+        'agent_servers': {
+          'Relative Agent': {'type': 'custom', 'command': 'relative-agent'},
+        },
+      }),
+    );
+    final relativePath = path_utils.relative(
+      file.path,
+      from: Directory.current.path,
+    );
+
+    final config = await AcpClientConfig.load(path: relativePath);
+
+    expect(config.agentName, 'Relative Agent');
+    expect(
+      config.configPath,
+      File.fromUri(file.absolute.uri.normalizePath()).path,
+    );
+  });
+
   test('resolves default config path under user home', () {
     final path = AcpClientConfig.resolveConfigPath(
       environment: const {'HOME': '/Users/example'},
@@ -1307,6 +1522,23 @@ void main() {
     );
 
     expect(path, '/Users/example/.config-alt/ianvs-acp/settings.json');
+  });
+
+  test('resolves relative config overrides to absolute paths', () {
+    for (final variable in const ['ACP_CONFIG_PATH', 'IANVS_ACP_CONFIG']) {
+      final relativePath = [
+        'profiles',
+        variable.toLowerCase(),
+        'settings.json',
+      ].join(Platform.pathSeparator);
+
+      expect(
+        AcpClientConfig.resolveConfigPath(
+          environment: <String, String>{variable: relativePath},
+        ),
+        File.fromUri(File(relativePath).absolute.uri.normalizePath()).path,
+      );
+    }
   });
 
   test('resolves workspace cwd from explicit environment override', () {

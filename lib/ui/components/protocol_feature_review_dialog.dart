@@ -5,7 +5,7 @@ import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
 import '../theme/app_design_tokens.dart';
 
-class ProtocolFeatureReviewDialog extends StatelessWidget {
+class ProtocolFeatureReviewDialog extends StatefulWidget {
   const ProtocolFeatureReviewDialog({
     super.key,
     required this.controller,
@@ -24,11 +24,26 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
   final String? configPath;
 
   @override
+  State<ProtocolFeatureReviewDialog> createState() =>
+      _ProtocolFeatureReviewDialogState();
+}
+
+class _ProtocolFeatureReviewDialogState
+    extends State<ProtocolFeatureReviewDialog> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: controller,
+      animation: widget.controller,
       builder: (context, _) {
-        final features = _features(controller);
+        final features = _features(widget.controller);
         return AlertDialog(
           title: const Text('Protocol Coverage'),
           content: ConstrainedBox(
@@ -38,18 +53,20 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
             child: SizedBox(
               width: 780,
               child: Scrollbar(
+                controller: _scrollController,
                 child: SingleChildScrollView(
+                  controller: _scrollController,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _Overview(
-                        connected: controller.capabilities != null,
+                        connected: widget.controller.capabilities != null,
                         implementedCount: features
                             .where((feature) => feature.status.isImplemented)
                             .length,
                         totalCount: features.length,
-                        configPath: configPath,
+                        configPath: widget.configPath,
                       ),
                       const SizedBox(height: 10),
                       for (final feature in features) ...[
@@ -76,18 +93,19 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
   List<_ProtocolFeature> _features(ChatController controller) {
     final caps = controller.capabilities;
     final settings = controller.sessionSettings;
-    final hasConfiguredRemoteAgent = agentServers.any(
+    final hasConfiguredRemoteAgent = widget.agentServers.any(
       (server) => server.isWebSocket || server.isStreamableHttp,
     );
     final hasConfiguredStdioAgent =
-        agentServers.isEmpty || agentServers.any((server) => server.isStdio);
+        widget.agentServers.isEmpty ||
+        widget.agentServers.any((server) => server.isStdio);
     final hasPromptAttachments =
         caps?.prompt.image == true ||
         caps?.prompt.audio == true ||
         caps?.prompt.embeddedContext == true;
-    final fs = clientProviders.filesystem;
-    final terminal = clientProviders.terminal;
-    final permissions = clientProviders.permissions;
+    final fs = widget.clientProviders.filesystem;
+    final terminal = widget.clientProviders.terminal;
+    final permissions = widget.clientProviders.permissions;
 
     return [
       _ProtocolFeature(
@@ -164,7 +182,7 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
           ),
           _runtimeFlag(
             'configured extra roots',
-            additionalDirectories.isNotEmpty,
+            widget.additionalDirectories.isNotEmpty,
           ),
         ],
       ),
@@ -435,7 +453,7 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
           'ACP Compatibility shows negotiated MCP transport capabilities',
         ],
         runtime: [
-          _runtimeFlag('configured MCP servers', mcpServers.isNotEmpty),
+          _runtimeFlag('configured MCP servers', widget.mcpServers.isNotEmpty),
           _runtimeFlag('mcp.http', caps?.mcp.http == true),
           _runtimeFlag('mcp.sse', caps?.mcp.sse == true),
           _runtimeFlag('mcp.acp', caps?.mcp.acp == true),

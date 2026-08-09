@@ -184,6 +184,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
   bool _sessionIndexPersistScheduled = false;
+  List<AgentSession> _unresolvedSessionIndex = const <AgentSession>[];
   int _sessionIndexHydrationSerial = 0;
   int _sessionCatalogLoadSerial = 0;
   Future<void>? _sessionCatalogLoad;
@@ -677,6 +678,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
       cwd: _cwd,
       additionalDirectories: config.additionalDirectories,
       agentName: config.agentName,
+      sessionPersistenceIdentity:
+          config.activeAgentServer?.persistenceIdentity ?? config.agentName,
+      sessionCatalogSourceKey: _sessionCatalogSourceKeyForConfig(config),
       permissionTrustRules: permissions.trustRules,
       permissionReviewer: _permissionReviewer(config),
       assistantAgentConfig: config.assistantAgent,
@@ -692,6 +696,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return FileSessionTranscriptCache(
       directoryPath:
           '${File(configPath).parent.path}${Platform.pathSeparator}session_transcripts',
+      maxDirectoryBytes: config.storage.maxBytes,
+      retention: config.storage.retention,
     );
   }
 
@@ -836,13 +842,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
 
     _ensureControllersForSelectableAgents(_config);
+    final unresolvedSessions = <AgentSession>[];
     for (final session in sessions) {
       final config = _configForSessionIndex(session);
-      if (config == null) continue;
+      if (config == null) {
+        unresolvedSessions.add(session);
+        continue;
+      }
       _cachedControllerFor(config).mergeSessionIndex([
         _sessionIndexWithFallbackAgent(session, config.agentName),
       ]);
     }
+    _unresolvedSessionIndex = List<AgentSession>.unmodifiable(
+      unresolvedSessions,
+    );
 
     _sessionIndexHydrated = true;
     _schedulePersistSessionIndex();
@@ -918,8 +931,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   String _sessionCatalogSourceKey(ChatController controller) {
     final config = _configForAgent(_config, controller.agentName);
-    final server = config?.activeAgentServer;
-    if (server == null) return 'controller:${identityHashCode(controller)}';
+    if (config != null) return _sessionCatalogSourceKeyForConfig(config);
+    return 'controller:${identityHashCode(controller)}';
+  }
+
+  String _sessionCatalogSourceKeyForConfig(AcpClientConfig config) {
+    final server = config.activeAgentServer;
+    if (server == null) return 'agent:${config.agentName}';
     return jsonEncode(<String, Object?>{
       'type': server.type,
       'command': server.command,
@@ -943,19 +961,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (existingAgentName == agentName) {
       return session;
     }
-    return AgentSession(
-      id: session.id,
-      cwd: session.cwd,
-      createdAt: session.createdAt,
-      additionalDirectories: session.additionalDirectories,
-      title: session.title,
-      titleOverride: session.titleOverride,
-      updatedAt: session.updatedAt,
-      agentName: agentName,
-      pinned: session.pinned,
-      archived: session.archived,
-      unread: session.unread,
-    );
+    return session.copyWith(agentName: agentName);
   }
 
   WorkspaceSidebarStateStore get _workspaceStateStore {
@@ -1008,10 +1014,18 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   List<AgentSession> _persistableSessionIndex() {
     final sessionsByKey = <String, AgentSession>{};
+    for (final session in _unresolvedSessionIndex) {
+      final id = session.id.trim();
+      final cwd = session.cwd.trim();
+      final persistenceIdentity = session.agentName?.trim() ?? '';
+      if (id.isEmpty || cwd.isEmpty) continue;
+      sessionsByKey['$cwd\u0000$persistenceIdentity\u0000$id'] = session;
+    }
     final workspaceController = WorkspaceController(
       controllers: _controllersByAgent.values.toList(growable: false),
       currentWorkspacePath: _cwd,
       defaultAgentName: _config.defaultAgentServerName ?? _config.agentName,
+      includeArchived: true,
     );
     for (final workspace in workspaceController.workspaces) {
       for (final session in workspace.sessions) {
@@ -1019,10 +1033,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
         final cwd = session.cwd.trim();
         if (id.isEmpty || cwd.isEmpty) continue;
         final agentName = session.agentName?.trim() ?? _config.agentName;
-        sessionsByKey['$cwd\u0000$id'] = _sessionIndexWithFallbackAgent(
+        final sessionConfig = _config.configForSessionIndexAgent(agentName);
+        final persistenceIdentity =
+            sessionConfig?.activeAgentServer?.persistenceIdentity ?? agentName;
+        final normalized = _sessionIndexWithFallbackAgent(
           session,
-          agentName,
+          persistenceIdentity,
         );
+        sessionsByKey['$cwd\u0000$persistenceIdentity\u0000$id'] = normalized;
       }
     }
     final sessions = sessionsByKey.values.toList()
@@ -1046,6 +1064,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
               'pinned': session.pinned,
               'archived': session.archived,
               'unread': session.unread,
+              'localUnstarted': session.localUnstarted,
             },
           )
           .toList(growable: false),
@@ -1185,6 +1204,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final existingTargetSession = existingTargetController?.currentSession;
     if (existingTargetSession != null &&
         existingTargetSession.id.trim() == session.id.trim()) {
+      _restoreSessionAcrossCatalogAliases(
+        session,
+        preferred: existingTargetController!,
+      );
       if (identical(existingTargetController, _controller)) return;
     }
 
@@ -1240,6 +1263,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
       title: session.title,
       updatedAt: session.updatedAt,
     );
+    final resumed = controller.currentSession;
+    if (resumed != null &&
+        resumed.id.trim() == session.id.trim() &&
+        normalizeWorkspacePath(resumed.cwd) ==
+            normalizeWorkspacePath(session.cwd) &&
+        !resumed.archived) {
+      _restoreSessionAcrossCatalogAliases(session, preferred: controller);
+    }
     if (mounted) setState(() {});
   }
 
@@ -1266,24 +1297,27 @@ class _AcpClientAppState extends State<AcpClientApp> {
     WorkspaceSessionMenuAction action,
   ) async {
     final controller = _controllerForSession(session);
+    final metadataControllers = _metadataControllersForSession(session);
     switch (action) {
       case WorkspaceSessionMenuAction.togglePinned:
-        controller.setSessionPinned(session.id, !session.pinned);
+        for (final candidate in metadataControllers) {
+          candidate.setSessionPinned(session.id, !session.pinned);
+        }
         if (mounted) setState(() {});
       case WorkspaceSessionMenuAction.rename:
-        await _renameSession(context, controller, session);
+        await _renameSession(context, metadataControllers, session);
       case WorkspaceSessionMenuAction.archive:
-        final snapshot = controller.archiveSessionLocally(session.id);
-        if (snapshot == null) return;
+        final archivedSnapshots = _archiveSessionAcrossCatalogAliases(session);
+        if (archivedSnapshots == null || archivedSnapshots.isEmpty) return;
         _showUndoableSnackBar(
           'Archived "${session.displayTitle}".',
-          <({ChatController controller, ArchivedSessionSnapshot snapshot})>[
-            (controller: controller, snapshot: snapshot),
-          ],
+          archivedSnapshots,
         );
         if (mounted) setState(() {});
       case WorkspaceSessionMenuAction.toggleUnread:
-        controller.setSessionUnread(session.id, !session.unread);
+        for (final candidate in metadataControllers) {
+          candidate.setSessionUnread(session.id, !session.unread);
+        }
         if (mounted) setState(() {});
       case WorkspaceSessionMenuAction.openSideSession:
         await _openSideSession(session);
@@ -1313,19 +1347,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   void _archiveWorkspaceSessions(WorkspaceRecord workspace) {
-    final workspacePath = normalizeWorkspacePath(workspace.path);
     final archivedSnapshots =
         <({ChatController controller, ArchivedSessionSnapshot snapshot})>[];
     var archivedCount = 0;
-    for (final controller in _sessionControllers) {
-      for (final session in controller.sessions.toList(growable: false)) {
-        if (normalizeWorkspacePath(session.cwd) != workspacePath) continue;
-        if (session.archived) continue;
-        final snapshot = controller.archiveSessionLocally(session.id);
-        if (snapshot == null) continue;
-        archivedSnapshots.add((controller: controller, snapshot: snapshot));
-        archivedCount += 1;
-      }
+    for (final session in workspace.sessions) {
+      final sessionSnapshots = _archiveSessionAcrossCatalogAliases(session);
+      if (sessionSnapshots == null || sessionSnapshots.isEmpty) continue;
+      archivedSnapshots.addAll(sessionSnapshots);
+      archivedCount += 1;
     }
     if (archivedCount > 0) {
       _showUndoableSnackBar(
@@ -1337,19 +1366,131 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController _controllerForSession(AgentSession session) {
+    late final ChatController preferred;
     final agentName = session.agentName?.trim();
     if (widget.controller == null &&
         agentName != null &&
         agentName.isNotEmpty) {
       final config = _configForAgent(_config, agentName);
-      if (config != null) return _cachedControllerFor(config);
+      preferred = config == null ? _controller : _cachedControllerFor(config);
+    } else {
+      preferred = _controller;
     }
-    return _controller;
+    if (_controllerContainsSession(preferred, session)) return preferred;
+
+    final sourceKey = preferred.sessionCatalogSourceKey?.trim();
+    if (sourceKey != null && sourceKey.isNotEmpty) {
+      for (final controller in _sessionControllers) {
+        if (identical(controller, preferred) ||
+            controller.sessionCatalogSourceKey?.trim() != sourceKey ||
+            !_controllerContainsSession(controller, session)) {
+          continue;
+        }
+        return controller;
+      }
+    }
+    return preferred;
+  }
+
+  List<ChatController> _metadataControllersForSession(AgentSession session) {
+    final preferred = _controllerForSession(session);
+    final sourceKey = preferred.sessionCatalogSourceKey?.trim();
+    if (sourceKey == null || sourceKey.isEmpty) {
+      return <ChatController>[preferred];
+    }
+
+    final controllers = <ChatController>[
+      for (final controller in _sessionControllers)
+        if (controller.sessionCatalogSourceKey?.trim() == sourceKey &&
+            _controllerContainsSession(controller, session))
+          controller,
+    ];
+    if (controllers.isEmpty) return <ChatController>[preferred];
+    controllers.sort((left, right) {
+      if (identical(left, preferred)) return -1;
+      if (identical(right, preferred)) return 1;
+      return left.agentName.compareTo(right.agentName);
+    });
+    return List<ChatController>.unmodifiable(controllers);
+  }
+
+  void _restoreSessionAcrossCatalogAliases(
+    AgentSession session, {
+    required ChatController preferred,
+  }) {
+    final sourceKey = preferred.sessionCatalogSourceKey?.trim();
+    final sessionId = session.id.trim();
+    final workspacePath = normalizeWorkspacePath(session.cwd);
+    for (final controller in _sessionControllers) {
+      if (sourceKey == null || sourceKey.isEmpty) {
+        if (!identical(controller, preferred)) continue;
+      } else if (controller.sessionCatalogSourceKey?.trim() != sourceKey) {
+        continue;
+      }
+      final matches = controller.sessions.any(
+        (candidate) =>
+            candidate.id.trim() == sessionId &&
+            normalizeWorkspacePath(candidate.cwd) == workspacePath,
+      );
+      if (matches) {
+        controller.setSessionArchived(sessionId, false);
+        controller.setSessionUnread(sessionId, false);
+      }
+    }
+  }
+
+  bool _controllerContainsSession(
+    ChatController controller,
+    AgentSession session,
+  ) {
+    final sessionId = session.id.trim();
+    final workspacePath = normalizeWorkspacePath(session.cwd);
+    return controller.sessions.any(
+      (candidate) =>
+          candidate.id.trim() == sessionId &&
+          normalizeWorkspacePath(candidate.cwd) == workspacePath,
+    );
+  }
+
+  List<({ChatController controller, ArchivedSessionSnapshot snapshot})>?
+  _archiveSessionAcrossCatalogAliases(AgentSession session) {
+    final targets = <ChatController>[
+      for (final controller in _metadataControllersForSession(session))
+        if (controller.sessions.any(
+          (candidate) =>
+              candidate.id.trim() == session.id.trim() &&
+              normalizeWorkspacePath(candidate.cwd) ==
+                  normalizeWorkspacePath(session.cwd) &&
+              !candidate.archived,
+        ))
+          controller,
+    ];
+    if (targets.isEmpty ||
+        targets.any(
+          (controller) =>
+              controller.isStreaming || controller.isSessionOperationRunning,
+        )) {
+      return null;
+    }
+
+    final archived =
+        <({ChatController controller, ArchivedSessionSnapshot snapshot})>[];
+    for (final controller in targets) {
+      final snapshot = controller.archiveSessionLocally(session.id);
+      if (snapshot == null) {
+        for (final entry in archived.reversed) {
+          entry.controller.restoreArchivedSessionLocally(entry.snapshot);
+        }
+        return null;
+      }
+      archived.add((controller: controller, snapshot: snapshot));
+    }
+    return archived;
   }
 
   Future<void> _renameSession(
     BuildContext context,
-    ChatController controller,
+    List<ChatController> controllers,
     AgentSession session,
   ) async {
     var draftTitle = session.displayTitle;
@@ -1386,7 +1527,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
     final trimmed = nextTitle?.trim();
     if (trimmed == null || trimmed.isEmpty) return;
-    controller.renameSession(session.id, trimmed);
+    for (final controller in controllers) {
+      controller.renameSession(session.id, trimmed);
+    }
     if (mounted) setState(() {});
   }
 
@@ -1953,6 +2096,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
     return RustAcpAgentClient(
       agentName: server.name,
+      agentPersistenceId: server.persistenceIdentity,
+      agentPersistenceAliases: server.persistenceNames,
       agentCommand: server.command,
       agentArgs: server.args,
       agentCwd: server.cwd,

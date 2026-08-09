@@ -212,6 +212,79 @@ impl SqliteSessionStore {
         Ok(())
     }
 
+    /// Refresh the retention timestamp for an active session after successful
+    /// user-visible activity.
+    pub fn touch(&mut self, agent_name: &str, session_id: &str) -> Result<(), SessionStoreError> {
+        validate_text(agent_name, "agent name", MAX_AGENT_NAME_BYTES)?;
+        validate_text(session_id, "session id", MAX_SESSION_ID_BYTES)?;
+        let updated = self.connection.execute(
+            "UPDATE active_sessions
+             SET updated_at = unixepoch()
+             WHERE agent_name = ?1 AND session_id = ?2",
+            params![agent_name, session_id],
+        )?;
+        if updated != 1 {
+            return Err(SessionStoreError::InvalidValue(
+                "cannot touch an unknown active session".to_string(),
+            ));
+        }
+        self.protect_sqlite_files()?;
+        Ok(())
+    }
+
+    /// Merge recovery rows written under a prior display key into the stable
+    /// persistence identity. On conflicts, the most recently touched row wins.
+    pub fn migrate_agent_identity(
+        &mut self,
+        prior_name: &str,
+        persistence_identity: &str,
+    ) -> Result<(), SessionStoreError> {
+        validate_text(prior_name, "prior agent name", MAX_AGENT_NAME_BYTES)?;
+        validate_text(
+            persistence_identity,
+            "agent persistence identity",
+            MAX_AGENT_NAME_BYTES,
+        )?;
+        if prior_name == persistence_identity {
+            return Ok(());
+        }
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO active_sessions (
+                agent_name, session_id, cwd, additional_directories_json, updated_at
+             )
+             SELECT ?2, session_id, cwd, additional_directories_json, updated_at
+             FROM active_sessions
+             WHERE agent_name = ?1
+             ON CONFLICT(agent_name, session_id) DO UPDATE SET
+                cwd = excluded.cwd,
+                additional_directories_json = excluded.additional_directories_json,
+                updated_at = excluded.updated_at
+             WHERE excluded.updated_at > active_sessions.updated_at",
+            params![prior_name, persistence_identity],
+        )?;
+        transaction.execute(
+            "DELETE FROM active_sessions WHERE agent_name = ?1",
+            [prior_name],
+        )?;
+        transaction.execute(
+            "DELETE FROM active_sessions
+             WHERE rowid IN (
+                SELECT rowid FROM active_sessions
+                WHERE agent_name = ?1
+                ORDER BY updated_at DESC, session_id DESC
+                LIMIT -1 OFFSET ?2
+             )",
+            params![
+                persistence_identity,
+                i64::try_from(MAX_ACTIVE_SESSIONS_PER_AGENT).unwrap()
+            ],
+        )?;
+        transaction.commit()?;
+        self.protect_sqlite_files()?;
+        Ok(())
+    }
+
     pub fn load_active(
         &self,
         agent_name: &str,
@@ -450,16 +523,37 @@ mod storage_tests {
         fs::create_dir_all(&root).unwrap();
         let state_directory = root.join(".ianvs-acp");
         let database = state_directory.join("acp_sessions.sqlite3");
+        fs::create_dir_all(&state_directory).unwrap();
+        fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(&database, []).unwrap();
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o644)).unwrap();
 
-        let store = SqliteSessionStore::open(&database).unwrap();
+        let mut store = SqliteSessionStore::open(&database).unwrap();
+        store
+            .upsert(&PersistedSession {
+                agent_name: "permissions-fixture".to_string(),
+                session_id: "session-1".to_string(),
+                cwd: std::env::temp_dir().display().to_string(),
+                additional_directories: vec![],
+            })
+            .unwrap();
         assert_eq!(
             fs::metadata(&state_directory).unwrap().permissions().mode() & 0o777,
             0o700
         );
-        assert_eq!(
-            fs::metadata(&database).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        for path in [
+            database.clone(),
+            PathBuf::from(format!("{}-wal", database.display())),
+            PathBuf::from(format!("{}-shm", database.display())),
+        ] {
+            assert!(path.exists(), "missing SQLite file: {}", path.display());
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "unexpected mode for {}",
+                path.display()
+            );
+        }
 
         drop(store);
         fs::remove_dir_all(root).unwrap();
@@ -498,5 +592,88 @@ mod storage_tests {
         let sessions = store.load_active("agent").unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "active");
+    }
+
+    #[test]
+    fn touched_session_survives_retention_cleanup() {
+        let mut store = SqliteSessionStore::open_in_memory().unwrap();
+        for session_id in ["stale", "touched"] {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO active_sessions (
+                        agent_name, session_id, cwd, additional_directories_json, updated_at
+                     ) VALUES ('agent', ?1, '/tmp', '[]', 1)",
+                    [session_id],
+                )
+                .unwrap();
+        }
+
+        store.touch("agent", "touched").unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        delete_expired_sessions(
+            &transaction,
+            SqliteStoragePolicy::new(1024 * 1024, 30).unwrap(),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let sessions = store.load_active("agent").unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "touched");
+    }
+
+    #[test]
+    fn agent_identity_migration_merges_rows_without_overwriting_newer_state() {
+        let mut store = SqliteSessionStore::open_in_memory().unwrap();
+        for (agent, session, cwd, updated_at) in [
+            ("Old name", "stable-newer", "/old", 100),
+            ("stable-agent", "stable-newer", "/stable", 200),
+            ("Old name", "prior-newer", "/prior-new", 300),
+            ("stable-agent", "prior-newer", "/stable-old", 200),
+            ("Old name", "prior-only", "/prior-only", 250),
+        ] {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO active_sessions (
+                        agent_name, session_id, cwd, additional_directories_json, updated_at
+                     ) VALUES (?1, ?2, ?3, '[]', ?4)",
+                    params![agent, session, cwd, updated_at],
+                )
+                .unwrap();
+        }
+
+        store
+            .migrate_agent_identity("Old name", "stable-agent")
+            .unwrap();
+
+        let old_count = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM active_sessions WHERE agent_name = 'Old name'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(old_count, 0);
+        let mut statement = store
+            .connection
+            .prepare(
+                "SELECT session_id, cwd FROM active_sessions
+                 WHERE agent_name = 'stable-agent'",
+            )
+            .unwrap();
+        let by_id = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()
+            .unwrap();
+        assert_eq!(by_id.len(), 3);
+        assert_eq!(by_id["stable-newer"], "/stable");
+        assert_eq!(by_id["prior-newer"], "/prior-new");
+        assert_eq!(by_id["prior-only"], "/prior-only");
     }
 }

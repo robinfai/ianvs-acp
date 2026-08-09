@@ -7,28 +7,44 @@ class WorkspaceController {
     required List<ChatController> controllers,
     required String currentWorkspacePath,
     this.defaultAgentName,
+    this.includeArchived = false,
   }) : _controllers = List.unmodifiable(controllers),
        _currentWorkspacePath = normalizeWorkspacePath(currentWorkspacePath);
 
   final List<ChatController> _controllers;
   final String _currentWorkspacePath;
   final String? defaultAgentName;
+  final bool includeArchived;
 
   List<WorkspaceRecord> get workspaces {
     final sessionsByPath = <String, Map<String, _WorkspaceSessionBucket>>{};
+    final agentsBySource = <String, Set<String>>{};
+    for (final controller in _controllers) {
+      final agentName = controller.agentName.trim();
+      if (agentName.isEmpty) continue;
+      agentsBySource
+          .putIfAbsent(_catalogSourceKey(controller), () => <String>{})
+          .add(agentName);
+    }
     for (final controller in _controllers) {
       for (final session in controller.sessions) {
-        if (session.archived) continue;
+        if (!includeArchived && session.archived) continue;
         final path = normalizeWorkspacePath(session.cwd);
         if (path.isEmpty) continue;
         final sessionId = session.id.trim();
         if (sessionId.isEmpty) continue;
+        final effectiveSourceKey = _catalogSourceKey(controller);
+        final sessionKey = '$effectiveSourceKey\u0000$sessionId';
         final normalizedSession = session.copyWith(cwd: path);
         sessionsByPath
             .putIfAbsent(path, () => <String, _WorkspaceSessionBucket>{})
             .putIfAbsent(
-              sessionId,
-              () => _WorkspaceSessionBucket(defaultAgentName: defaultAgentName),
+              sessionKey,
+              () => _WorkspaceSessionBucket(
+                defaultAgentName: defaultAgentName,
+                catalogAgentNames:
+                    agentsBySource[effectiveSourceKey] ?? const {},
+              ),
             )
             .add(
               normalizedSession,
@@ -79,6 +95,13 @@ class WorkspaceController {
     return List.unmodifiable(records);
   }
 
+  String _catalogSourceKey(ChatController controller) {
+    final sourceKey = controller.sessionCatalogSourceKey?.trim();
+    return sourceKey == null || sourceKey.isEmpty
+        ? 'agent:${controller.agentName.trim()}'
+        : sourceKey;
+  }
+
   WorkspaceRecord get currentWorkspace {
     for (final workspace in workspaces) {
       if (workspace.path == _currentWorkspacePath) return workspace;
@@ -102,9 +125,13 @@ class WorkspaceController {
 }
 
 class _WorkspaceSessionBucket {
-  _WorkspaceSessionBucket({required this.defaultAgentName});
+  _WorkspaceSessionBucket({
+    required this.defaultAgentName,
+    required Set<String> catalogAgentNames,
+  }) : catalogAgentNames = Set<String>.unmodifiable(catalogAgentNames);
 
   final String? defaultAgentName;
+  final Set<String> catalogAgentNames;
   final List<_WorkspaceSessionCandidate> _candidates =
       <_WorkspaceSessionCandidate>[];
 
@@ -184,8 +211,9 @@ class _WorkspaceSessionBucket {
           ? candidate.initialEvents
           : selected.initialEvents,
       pinned: selected.pinned || candidate.pinned,
-      archived: false,
+      archived: selected.archived || candidate.archived,
       unread: selected.unread || candidate.unread,
+      localUnstarted: selected.localUnstarted && candidate.localUnstarted,
     );
   }
 
@@ -215,12 +243,24 @@ class _WorkspaceSessionBucket {
 
     if (activeAgentNames.length == 1) return activeAgentNames.single;
     if (explicitAgentNames.length == 1) return explicitAgentNames.single;
-    if (explicitAgentNames.length > 1) return _fallbackAgentName();
     if (sourceAgentNames.length == 1) return sourceAgentNames.single;
-    return _fallbackAgentName();
+    final fallback = _trimmedOrNull(defaultAgentName);
+    if (fallback != null &&
+        (explicitAgentNames.contains(fallback) ||
+            sourceAgentNames.contains(fallback) ||
+            catalogAgentNames.contains(fallback))) {
+      return fallback;
+    }
+    if (explicitAgentNames.isNotEmpty) {
+      final sorted = explicitAgentNames.toList()..sort();
+      return sorted.first;
+    }
+    if (sourceAgentNames.isNotEmpty) {
+      final sorted = sourceAgentNames.toList()..sort();
+      return sorted.first;
+    }
+    return fallback;
   }
-
-  String? _fallbackAgentName() => _trimmedOrNull(defaultAgentName);
 
   String? _trimmedOrNull(String? value) {
     final trimmed = value?.trim();

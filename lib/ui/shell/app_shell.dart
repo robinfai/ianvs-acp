@@ -790,6 +790,11 @@ class AppShell extends StatelessWidget {
     final activeSession = targetController.currentSession;
     if (activeSession != null &&
         activeSession.id.trim() == selectedSession.id.trim()) {
+      _restoreSessionAcrossCatalogAliases(
+        sessionControllerList,
+        targetController,
+        selectedSession,
+      );
       return;
     }
 
@@ -799,15 +804,52 @@ class AppShell extends StatelessWidget {
     );
     if (!approved || !context.mounted) return;
 
-    unawaited(
-      targetController.resumeSession(
-        selectedSession.id,
-        cwd: selectedSession.cwd,
-        additionalDirectories: selectedSession.additionalDirectories,
-        title: selectedSession.title,
-        updatedAt: selectedSession.updatedAt,
-      ),
+    await targetController.resumeSession(
+      selectedSession.id,
+      cwd: selectedSession.cwd,
+      additionalDirectories: selectedSession.additionalDirectories,
+      title: selectedSession.title,
+      updatedAt: selectedSession.updatedAt,
     );
+    final resumed = targetController.currentSession;
+    if (resumed != null &&
+        resumed.id.trim() == selectedSession.id.trim() &&
+        normalizeWorkspacePath(resumed.cwd) ==
+            normalizeWorkspacePath(selectedSession.cwd) &&
+        !resumed.archived) {
+      _restoreSessionAcrossCatalogAliases(
+        sessionControllerList,
+        targetController,
+        selectedSession,
+      );
+    }
+  }
+
+  void _restoreSessionAcrossCatalogAliases(
+    List<ChatController> controllers,
+    ChatController target,
+    AgentSession session,
+  ) {
+    final sourceKey = target.sessionCatalogSourceKey?.trim();
+    final sessionId = session.id.trim();
+    final workspacePath = normalizeWorkspacePath(session.cwd);
+    for (final candidateController in controllers) {
+      if (sourceKey == null || sourceKey.isEmpty) {
+        if (!identical(candidateController, target)) continue;
+      } else if (candidateController.sessionCatalogSourceKey?.trim() !=
+          sourceKey) {
+        continue;
+      }
+      final matches = candidateController.sessions.any(
+        (candidate) =>
+            candidate.id.trim() == sessionId &&
+            normalizeWorkspacePath(candidate.cwd) == workspacePath,
+      );
+      if (matches) {
+        candidateController.setSessionArchived(sessionId, false);
+        candidateController.setSessionUnread(sessionId, false);
+      }
+    }
   }
 
   String? _resumeSelectionAgentName(ResumeSessionSelection selection) {

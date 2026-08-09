@@ -29,6 +29,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Xcode may preserve files that are no longer declared by any current build
+# phase when it reuses an existing product directory. Start the distributable
+# app bundle from an absent path while preserving any previously verified zip.
+rm -rf -- "${app}"
 flutter pub get
 flutter build macos --release --no-pub
 SRCROOT="${project_root}/macos" \

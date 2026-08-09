@@ -131,6 +131,8 @@ void main() {
     );
     runtime.startAgent(
       agentName: 'Codex',
+      persistenceIdentity: 'stable-codex',
+      persistenceAliases: const <String>['Codex', 'Original Codex'],
       command: 'codex-acp',
       args: const <String>['--flag'],
       environment: const <String, String>{'TOKEN': 'secret'},
@@ -167,6 +169,11 @@ void main() {
       text: 'hello',
     );
     expect(native.startedConfig?['command'], 'codex-acp');
+    expect(native.startedConfig?['persistenceIdentity'], 'stable-codex');
+    expect(native.startedConfig?['persistenceAliases'], <String>[
+      'Codex',
+      'Original Codex',
+    ]);
     expect(native.startedConfig?['permissionTimeoutMs'], 45000);
     expect(
       native.startedConfig?['sessionStorePath'],

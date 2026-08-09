@@ -34,6 +34,9 @@ void main() {
     await tester.ensureVisible(
       find.byKey(const Key('storage-max-size-gb-field')),
     );
+    expect(find.text('Per-store limit (GB)'), findsOneWidget);
+    expect(find.text('Per-store retention (days)'), findsOneWidget);
+    expect(find.text('Session recovery retention (days)'), findsNothing);
     await tester.enterText(
       find.byKey(const Key('storage-max-size-gb-field')),
       '80',
