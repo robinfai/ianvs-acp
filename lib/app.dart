@@ -15,9 +15,6 @@ import 'acp/agent_session.dart';
 import 'acp/rust_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
 import 'acp/unavailable_acp_agent_client.dart';
-import 'rust/ianvs_daemon_workflow.dart';
-import 'rust/ianvs_rust_task_repository.dart';
-import 'rust/ianvs_workflow_native.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
 import 'config/acp_config_store.dart';
@@ -27,22 +24,10 @@ import 'config/secret_store.dart';
 import 'platform/file_manager.dart';
 import 'startup/deep_link_request.dart';
 import 'startup/startup_options.dart';
-import 'storage/sqlite_storage_config.dart';
 import 'storage/session_transcript_cache.dart';
+import 'storage/app_state_path.dart';
 import 'state/chat_controller.dart';
 import 'state/workspace_controller.dart';
-import 'tasks/task_agent_pool.dart';
-import 'tasks/runtime_registry.dart';
-import 'tasks/retry_policy.dart';
-import 'tasks/task_inbox_controller.dart';
-import 'tasks/task_inbox_migrator.dart';
-import 'tasks/task_inbox_sqlite_store.dart';
-import 'tasks/task_inbox_state_store.dart';
-import 'tasks/task_persistence_cleanup.dart';
-import 'tasks/task_record.dart';
-import 'tasks/task_repository.dart';
-import 'tasks/task_runner.dart';
-import 'tasks/task_scheduler.dart';
 import 'ui/components/agent_discovery_dialog.dart';
 import 'ui/components/bounded_image_preview.dart';
 import 'ui/components/deep_link_confirmation_dialog.dart';
@@ -66,26 +51,15 @@ typedef AcpConfigWriter =
     Future<AcpClientConfig> Function(AcpClientConfig config);
 typedef SessionWindowOpener = Future<void> Function(List<String> args);
 typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
-typedef TaskDaemonAuthorityFactory =
-    Future<IanvsWorkflowAuthority> Function(String databasePath);
 
 const String _noAgentConfiguredMessage =
     'Add an ACP agent before starting a session.';
-String? _rustWorkflowDatabasePath(String? legacyPath) {
-  final target = legacyPath?.trim();
-  if (target == null || target.isEmpty) return null;
-  return File.fromUri(
-    File(target).parent.uri.resolve('task_inbox_workflow.sqlite3'),
-  ).path;
-}
 
 String? _rustAcpSessionDatabasePath(String? configPath) {
-  final taskStore = TaskInboxSqliteStore.defaultPath(configPath: configPath);
-  final target = taskStore?.trim();
-  if (target == null || target.isEmpty) return null;
-  return File.fromUri(
-    File(target).parent.uri.resolve('acp_sessions.sqlite3'),
-  ).path;
+  return resolveAppStateFilePath(
+    fileName: 'acp_sessions.sqlite3',
+    configPath: configPath,
+  );
 }
 
 Map<String, Object?> _rustMcpServerProjection(McpServerConfig server) {
@@ -114,51 +88,6 @@ Map<String, Object?> _rustMcpServerProjection(McpServerConfig server) {
   };
 }
 
-List<Map<String, Object?>> _daemonAgentConfigurations(AcpClientConfig config) {
-  if (config.mcpServers.any((server) => server.type == 'acp')) {
-    return const <Map<String, Object?>>[];
-  }
-  final mcpServers = config.mcpServers
-      .map(_rustMcpServerProjection)
-      .toList(growable: false);
-  final sessionStorePath = _rustAcpSessionDatabasePath(config.configPath);
-  return <Map<String, Object?>>[
-    for (final server in config.selectableAgentServers)
-      if (server.isStdio && server.secretRefsResolved)
-        <String, Object?>{
-          'agentName': server.name,
-          'command': server.command,
-          'args': server.args,
-          'environment': server.env,
-          'processCwd': server.cwd,
-          'sessionStorePath': sessionStorePath,
-          'sessionStoreMaxBytes': config.storage.budgetBytesFor(
-            SqliteStoreKind.acpSessions,
-          ),
-          'sessionStoreRetentionDays': config.storage.retentionDays,
-          'additionalDirectories': config.additionalDirectories,
-          'mcpServers': mcpServers,
-          'enableTerminalProvider': config.clientProviders.terminal.enabled,
-          'enableFilesystemReadTextFile':
-              config.clientProviders.filesystem.readTextFile,
-          'enableFilesystemWriteTextFile':
-              config.clientProviders.filesystem.writeTextFile,
-        },
-  ];
-}
-
-Future<IanvsWorkflowAuthority> _startTaskDaemon(
-  String databasePath, {
-  required SqliteStorageConfig storage,
-}) async {
-  final socketPath = await IanvsDaemonProcess.ensureRunning(
-    databasePath: databasePath,
-    maxDatabaseBytes: storage.budgetBytesFor(SqliteStoreKind.workflow),
-    retentionDays: storage.retentionDays,
-  );
-  return IanvsDaemonWorkflow(socketPath: socketPath);
-}
-
 class _PendingDeepLinkRequest {
   const _PendingDeepLinkRequest({required this.key, required this.request});
 
@@ -180,16 +109,10 @@ class AcpClientApp extends StatefulWidget {
     this.initialResumeSessionId,
     this.initialResumeCwd,
     this.initialResumeAgentName,
-    this.initialTaskId,
     this.openSessionWindow,
     this.autoLoadWorkspaceSessions = true,
-    this.taskInboxController,
-    this.taskInboxMaintenanceInterval = const Duration(hours: 1),
     this.createAgentClient,
-    this.createTaskAgentClient,
-    this.createTaskDaemonAuthority,
     this.agentClientFactoryKey,
-    this.taskAgentClientFactoryKey,
     this.workspaceStateStore,
     this.inputBudget = const AcpInputBudget(),
     this.imageDecodeLedger,
@@ -209,25 +132,14 @@ class AcpClientApp extends StatefulWidget {
   final String? initialResumeSessionId;
   final String? initialResumeCwd;
   final String? initialResumeAgentName;
-  final String? initialTaskId;
   final SessionWindowOpener? openSessionWindow;
   final bool autoLoadWorkspaceSessions;
-  final TaskInboxController? taskInboxController;
-
-  /// Foreground check cadence. The repository persists a 24-hour throttle,
-  /// so checking more often cannot purge more than once per day.
-  final Duration taskInboxMaintenanceInterval;
   final AcpAgentClientFactory? createAgentClient;
-  final AcpAgentClientFactory? createTaskAgentClient;
-  final TaskDaemonAuthorityFactory? createTaskDaemonAuthority;
 
   /// Change this key when [createAgentClient] changes behavior. Keep it stable
   /// across ordinary widget rebuilds.
   final Object? agentClientFactoryKey;
 
-  /// Change this key when [createTaskAgentClient] changes behavior. Keep it
-  /// stable across ordinary widget rebuilds.
-  final Object? taskAgentClientFactoryKey;
   final WorkspaceSidebarStateStore? workspaceStateStore;
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
@@ -239,8 +151,7 @@ class AcpClientApp extends StatefulWidget {
   State<AcpClientApp> createState() => _AcpClientAppState();
 }
 
-class _AcpClientAppState extends State<AcpClientApp>
-    with WidgetsBindingObserver {
+class _AcpClientAppState extends State<AcpClientApp> {
   static const String _initialResumeSessionId = String.fromEnvironment(
     'ACP_RESUME_SESSION_ID',
   );
@@ -270,25 +181,6 @@ class _AcpClientAppState extends State<AcpClientApp>
       GlobalKey<ScaffoldMessengerState>();
   final Set<ArchivedSessionSnapshot> _pendingUndoSnapshots =
       HashSet<ArchivedSessionSnapshot>.identity();
-  TaskInboxController? _taskInboxController;
-  TaskScheduler? _taskScheduler;
-  bool _taskExecutionHostedByDaemon = false;
-  String? _selectedTaskId;
-  bool _ownsTaskInboxController = false;
-  String? _taskInboxStorePath;
-  TaskRepository? _ownedTaskRepository;
-  String? _ownedTaskRepositoryPath;
-  String? _taskInboxInitializationError;
-  bool _taskInboxInitializationPending = false;
-  int _taskInboxInitializationSerial = 0;
-  TaskInboxController? _pendingTaskInboxController;
-  Future<void>? _taskInboxTransition;
-  Timer? _taskInboxRefreshTimer;
-  Future<void>? _taskInboxRefresh;
-  Timer? _taskInboxMaintenanceTimer;
-  Future<void>? _taskInboxMaintenance;
-  TaskPersistenceQuarantineRegistry get _taskPersistenceQuarantine =>
-      TaskPersistenceQuarantineRegistry.shared;
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
   bool _sessionIndexPersistScheduled = false;
@@ -310,8 +202,6 @@ class _AcpClientAppState extends State<AcpClientApp>
         AcpImageDecodeBudgetLedger(budget: _inputBudget);
     _boundedImageDecoder =
         widget.boundedImageDecoder ?? const DartUiBoundedImageDecoder();
-    _validateTaskInboxMaintenanceInterval();
-    WidgetsBinding.instance.addObserver(this);
     _config = _configWithInitialAgent(widget.config);
     _widgetConfigSignature = _configSignature(_config);
     _cwd = AcpClientConfig.resolveWorkspaceCwd(
@@ -324,16 +214,10 @@ class _AcpClientAppState extends State<AcpClientApp>
     } else {
       _controller = widget.controller!;
     }
-    _configureTaskInboxController();
     final initialStartupOptions = _initialStartupOptions;
     if (initialStartupOptions.hasResumeSession) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_resumeFromStartupOptions(initialStartupOptions));
-      });
-    }
-    if (initialStartupOptions.hasTaskLink) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _openTaskFromStartupOptions(initialStartupOptions);
       });
     }
     _setupDeepLinkHandling();
@@ -356,14 +240,6 @@ class _AcpClientAppState extends State<AcpClientApp>
     }
     _boundedImageDecoder =
         widget.boundedImageDecoder ?? const DartUiBoundedImageDecoder();
-    _validateTaskInboxMaintenanceInterval();
-    if (oldWidget.taskInboxMaintenanceInterval !=
-        widget.taskInboxMaintenanceInterval) {
-      _taskInboxMaintenanceTimer?.cancel();
-      _taskInboxMaintenanceTimer = null;
-      final controller = _taskInboxController;
-      if (controller != null) _startTaskInboxMaintenance(controller);
-    }
 
     final nextWidgetConfig = _configWithInitialAgent(widget.config);
     final nextConfigSignature = _configSignature(nextWidgetConfig);
@@ -373,44 +249,9 @@ class _AcpClientAppState extends State<AcpClientApp>
         oldWidget.agentClientFactoryKey != widget.agentClientFactoryKey ||
         (oldWidget.createAgentClient == null) !=
             (widget.createAgentClient == null);
-    final explicitTaskAgentFactoryChanged =
-        oldWidget.taskAgentClientFactoryKey !=
-            widget.taskAgentClientFactoryKey ||
-        (oldWidget.createTaskAgentClient == null) !=
-            (widget.createTaskAgentClient == null);
-    final taskAgentFactoryChanged =
-        explicitTaskAgentFactoryChanged ||
-        (oldWidget.createTaskAgentClient == null &&
-            widget.createTaskAgentClient == null &&
-            foregroundAgentFactoryChanged);
-    final taskInboxControllerChanged =
-        oldWidget.taskInboxController != widget.taskInboxController;
     if (controllerChanged) {
-      Future<void>? previousTaskCleanup;
-      final foregroundChangesInboxAvailability =
-          oldWidget.taskInboxController == null &&
-          widget.taskInboxController == null &&
-          (oldWidget.controller == null) != (widget.controller == null);
-      final taskInputsChanged =
-          configChanged ||
-          taskAgentFactoryChanged ||
-          taskInboxControllerChanged ||
-          foregroundChangesInboxAvailability;
-      if (taskInputsChanged) {
-        previousTaskCleanup = _stopTaskInboxTransition();
-      }
       if (oldWidget.controller == null) {
-        final cachedControllers = _takeCachedControllers();
-        if (previousTaskCleanup == null) {
-          _disposeControllerList(cachedControllers);
-        } else {
-          unawaited(
-            _disposeControllersAfterTaskCleanup(
-              previousTaskCleanup,
-              cachedControllers,
-            ),
-          );
-        }
+        _disposeControllerList(_takeCachedControllers());
       }
       _config = nextWidgetConfig;
       _widgetConfigSignature = nextConfigSignature;
@@ -421,37 +262,26 @@ class _AcpClientAppState extends State<AcpClientApp>
       } else {
         _controller = widget.controller!;
       }
-      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
       return;
     }
 
-    if (!configChanged &&
-        (foregroundAgentFactoryChanged || taskAgentFactoryChanged)) {
-      final previousTaskCleanup = taskAgentFactoryChanged
-          ? _stopTaskInboxTransition()
-          : null;
+    if (!configChanged && foregroundAgentFactoryChanged) {
       if (foregroundAgentFactoryChanged && widget.controller == null) {
-        _replaceOwnedControllerFactory(
-          previousTaskCleanup: previousTaskCleanup,
-        );
+        _replaceOwnedControllerFactory();
       }
-      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
       if (mounted) setState(() {});
       return;
     }
 
     if (!configChanged) {
       if (widget.controller != null) _controller = widget.controller!;
-      _configureTaskInboxController();
       return;
     }
 
     if (widget.controller != null) {
-      final previousTaskCleanup = _stopTaskInboxTransition();
       _config = nextWidgetConfig;
       _widgetConfigSignature = nextConfigSignature;
       _controller = widget.controller!;
-      _configureTaskInboxController(previousCleanup: previousTaskCleanup);
       return;
     }
 
@@ -467,19 +297,7 @@ class _AcpClientAppState extends State<AcpClientApp>
           : _initialResumeSessionId,
       resumeCwd: _trimmedOrNull(widget.initialResumeCwd),
       resumeAgentName: _trimmedOrNull(widget.initialResumeAgentName),
-      taskId: _trimmedOrNull(widget.initialTaskId),
     );
-  }
-
-  void _validateTaskInboxMaintenanceInterval() {
-    final interval = widget.taskInboxMaintenanceInterval;
-    if (interval <= Duration.zero) {
-      throw ArgumentError.value(
-        interval,
-        'taskInboxMaintenanceInterval',
-        'Must be positive.',
-      );
-    }
   }
 
   AcpClientConfig _configWithInitialAgent(AcpClientConfig config) {
@@ -494,583 +312,16 @@ class _AcpClientAppState extends State<AcpClientApp>
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _invalidateSessionCatalogLoad();
     for (final snapshot in _pendingUndoSnapshots.toList(growable: false)) {
       snapshot.discard();
     }
     _pendingUndoSnapshots.clear();
-    final taskCleanup = _stopTaskInboxTransition();
     if (widget.controller == null) {
       _deepLinkChannel.setMethodCallHandler(null);
-      final cachedControllers = _takeCachedControllers();
-      if (taskCleanup == null) {
-        _disposeControllerList(cachedControllers);
-      } else {
-        unawaited(
-          _disposeControllersAfterTaskCleanup(taskCleanup, cachedControllers),
-        );
-      }
-    } else {
-      _ignoreTaskCleanup(taskCleanup);
+      _disposeControllerList(_takeCachedControllers());
     }
     super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    final controller = _taskInboxController;
-    if (state == AppLifecycleState.resumed) {
-      if (controller != null) {
-        _startTaskInboxRefresh(controller);
-        _startTaskInboxMaintenance(controller, runImmediately: true);
-      }
-      return;
-    }
-    _taskInboxRefreshTimer?.cancel();
-    _taskInboxRefreshTimer = null;
-    _taskInboxMaintenanceTimer?.cancel();
-    _taskInboxMaintenanceTimer = null;
-  }
-
-  void _configureTaskInboxController({Future<void>? previousCleanup}) {
-    final injected = widget.taskInboxController;
-    if (injected != null) {
-      if ((_taskInboxController == injected &&
-              !_ownsTaskInboxController &&
-              _taskScheduler != null) ||
-          (_taskInboxInitializationPending &&
-              _pendingTaskInboxController == injected)) {
-        return;
-      }
-      final cleanup = _joinTaskCleanup(
-        previousCleanup,
-        _stopTaskInboxTransition(),
-      );
-      _taskInboxStorePath = null;
-      _taskInboxInitializationError = null;
-      _taskInboxInitializationPending = true;
-      _pendingTaskInboxController = injected;
-      final serial = ++_taskInboxInitializationSerial;
-      final initialization = _initializeInjectedTaskInbox(
-        serial: serial,
-        controller: injected,
-        previousCleanup: cleanup,
-      );
-      _taskInboxTransition = initialization;
-      unawaited(initialization);
-      return;
-    }
-
-    if (widget.controller != null) {
-      final cleanup = _joinTaskCleanup(
-        previousCleanup,
-        _stopTaskInboxTransition(),
-      );
-      _taskInboxTransition = cleanup;
-      _ignoreTaskCleanup(cleanup);
-      _taskInboxStorePath = null;
-      _taskInboxInitializationError = null;
-      return;
-    }
-
-    final sourcePath = TaskInboxStateStore.defaultPath(
-      configPath: _config.configPath,
-    );
-    final repositoryPath = TaskInboxSqliteStore.defaultPath(
-      configPath: _config.configPath,
-    );
-    final authorityPath = _rustWorkflowDatabasePath(repositoryPath);
-    if (_taskInboxStorePath == authorityPath &&
-        ((_ownsTaskInboxController && _taskInboxController != null) ||
-            _taskInboxInitializationPending)) {
-      final repository = _taskInboxController?.repository;
-      if (repository is IanvsRustTaskRepository) {
-        unawaited(
-          repository
-              .configureStorage(
-                maxDatabaseBytes: _config.storage.budgetBytesFor(
-                  SqliteStoreKind.workflow,
-                ),
-                retentionDays: _config.storage.retentionDays,
-              )
-              .onError((error, _) {
-                _showSnackBar('Could not update SQLite storage policy: $error');
-              }),
-        );
-      }
-      return;
-    }
-
-    final cleanup = _joinTaskCleanup(
-      previousCleanup,
-      _stopTaskInboxTransition(),
-    );
-    _taskInboxStorePath = authorityPath;
-    _taskInboxInitializationError = null;
-    _taskInboxInitializationPending = true;
-    final serial = ++_taskInboxInitializationSerial;
-    final initialization = _initializeTaskInbox(
-      serial: serial,
-      sourcePath: sourcePath,
-      repositoryPath: repositoryPath,
-      authorityPath: authorityPath,
-      previousCleanup: cleanup,
-    );
-    _taskInboxTransition = initialization;
-    unawaited(initialization);
-  }
-
-  Future<void> _initializeTaskInbox({
-    required int serial,
-    required String? sourcePath,
-    required String? repositoryPath,
-    required String? authorityPath,
-    Future<void>? previousCleanup,
-  }) async {
-    TaskRepository? repository;
-    TaskInboxController? controller;
-    TaskScheduler? scheduler;
-    Object? storagePolicyCompatibilityError;
-    try {
-      await prepareTaskPersistenceTarget(
-        registry: _taskPersistenceQuarantine,
-        previousCleanup: previousCleanup,
-        targetPath: authorityPath,
-      );
-      if (authorityPath != repositoryPath) {
-        await _taskPersistenceQuarantine.ensurePathAvailable(repositoryPath);
-      }
-      if (!mounted || serial != _taskInboxInitializationSerial) return;
-      final migrationRepository = TaskInboxSqliteStore(
-        path: repositoryPath,
-        maxDatabaseBytes: _config.storage.budgetBytesFor(
-          SqliteStoreKind.taskInboxLegacy,
-        ),
-      );
-      repository = migrationRepository;
-      final pendingMigration =
-          TaskPersistencePendingOperation<TaskMigrationResult>(
-            path: repositoryPath,
-            operationName: 'migrateIfNeeded',
-            watchdog: TaskInboxController.defaultPersistenceWatchdog,
-            operation: () => TaskInboxMigrator(
-              source: TaskInboxStateStore(path: sourcePath),
-              repository: migrationRepository,
-            ).migrateIfNeeded(),
-            closeRepository: migrationRepository.close,
-          );
-      _taskPersistenceQuarantine.retain(pendingMigration);
-      late final TaskMigrationResult migration;
-      try {
-        migration = await pendingMigration.result;
-      } on Object {
-        pendingMigration.abandon();
-        repository = null;
-        try {
-          await _taskPersistenceQuarantine.ensurePathAvailable(
-            pendingMigration.path,
-          );
-        } on Object {
-          // The process-wide owner retains the repository until the source
-          // migration Future quiesces, so cleanup must not close it here.
-        }
-        rethrow;
-      }
-      if (migration.status == TaskMigrationStatus.awaitingBackupFinalization) {
-        pendingMigration.abandon();
-        repository = null;
-        await _taskPersistenceQuarantine.ensurePathAvailable(
-          pendingMigration.path,
-        );
-        throw StateError('The legacy task backup could not be verified.');
-      }
-      pendingMigration.transfer();
-      _taskPersistenceQuarantine.release(pendingMigration);
-      await migrationRepository.purgeRawPayloads(
-        now: DateTime.now(),
-        retention: _config.storage.retention,
-      );
-      final rustPath = authorityPath?.trim();
-      if (rustPath == null || rustPath.isEmpty) {
-        throw StateError('Rust TaskInbox requires a persistent database path.');
-      }
-      final bootstrap = (await migrationRepository.loadRepository()).snapshot;
-      final checksum =
-          migration.checksum ??
-          sha256
-              .convert(utf8.encode(canonicalJson(bootstrap.toJson())))
-              .toString();
-      await migrationRepository.close();
-      final authority = widget.createTaskDaemonAuthority == null
-          ? await _startTaskDaemon(rustPath, storage: _config.storage)
-          : await widget.createTaskDaemonAuthority!(rustPath);
-      if (authority is IanvsDaemonWorkflow) {
-        try {
-          await authority.configureStorage(
-            maxDatabaseBytes: _config.storage.budgetBytesFor(
-              SqliteStoreKind.workflow,
-            ),
-            retentionDays: _config.storage.retentionDays,
-          );
-        } on Object catch (error) {
-          // A detached daemon from an older app version can remain alive
-          // across upgrades. Keep TaskInbox available; the policy is applied
-          // as soon as the updated daemon is started.
-          storagePolicyCompatibilityError = error;
-        }
-      }
-      repository = IanvsRustTaskRepository(
-        databasePath: rustPath,
-        bootstrapSnapshot: bootstrap,
-        sourceChecksum: checksum,
-        authority: authority,
-      );
-      await repository.initialize();
-      if (authority is IanvsDaemonWorkflow) {
-        await authority.configureAgents(_daemonAgentConfigurations(_config));
-      }
-      controller = TaskInboxController(repository: repository);
-      await controller.load();
-      if (!mounted || serial != _taskInboxInitializationSerial) {
-        final cleanup = _startTaskPersistenceCleanup(
-          scheduler: scheduler,
-          controller: controller,
-          repository: repository,
-          repositoryPath: authorityPath,
-        );
-        scheduler = null;
-        controller = null;
-        repository = null;
-        await cleanup;
-        return;
-      }
-
-      _taskInboxInitializationPending = false;
-      _taskInboxInitializationError = null;
-      _ownedTaskRepository = repository;
-      _ownedTaskRepositoryPath = authorityPath;
-      _taskInboxController = controller;
-      _ownsTaskInboxController = true;
-      _taskScheduler = null;
-      _taskExecutionHostedByDaemon = true;
-      _startTaskInboxRefresh(controller);
-      _startTaskInboxMaintenance(controller);
-      setState(() {});
-      if (storagePolicyCompatibilityError != null) {
-        _showSnackBar(
-          'SQLite storage policy will apply after the workflow daemon '
-          'restarts: $storagePolicyCompatibilityError',
-        );
-      }
-    } on Object catch (error) {
-      var reportedError = error;
-      final cleanup = _startTaskPersistenceCleanup(
-        scheduler: scheduler,
-        controller: controller,
-        repository: repository,
-        repositoryPath: authorityPath,
-      );
-      scheduler = null;
-      controller = null;
-      repository = null;
-      try {
-        await cleanup;
-      } on Object catch (cleanupError) {
-        reportedError = cleanupError;
-      }
-      if (!mounted || serial != _taskInboxInitializationSerial) return;
-      _taskInboxInitializationPending = false;
-      _pendingTaskInboxController = null;
-      _taskInboxController = null;
-      _ownsTaskInboxController = false;
-      _taskInboxInitializationError = _taskInboxErrorMessage(reportedError);
-      setState(() {});
-    }
-  }
-
-  Future<void> _initializeInjectedTaskInbox({
-    required int serial,
-    required TaskInboxController controller,
-    Future<void>? previousCleanup,
-  }) async {
-    TaskScheduler? scheduler;
-    try {
-      await prepareTaskPersistenceTarget(
-        registry: _taskPersistenceQuarantine,
-        previousCleanup: previousCleanup,
-        injectedController: true,
-      );
-      if (!mounted || serial != _taskInboxInitializationSerial) return;
-      scheduler = _createTaskScheduler(controller);
-      await scheduler.start(dispatchQueuedTasks: false);
-      if (!mounted || serial != _taskInboxInitializationSerial) {
-        await scheduler.shutdown();
-        return;
-      }
-
-      _taskInboxInitializationPending = false;
-      _pendingTaskInboxController = null;
-      _taskInboxInitializationError = null;
-      _taskInboxController = controller;
-      _ownsTaskInboxController = false;
-      _taskScheduler = scheduler;
-      _startTaskInboxRefresh(controller);
-      _startTaskInboxMaintenance(controller);
-      scheduler.startDispatching();
-      setState(() {});
-    } on Object catch (error) {
-      await scheduler?.shutdown();
-      if (!mounted || serial != _taskInboxInitializationSerial) return;
-      _taskInboxInitializationPending = false;
-      _pendingTaskInboxController = null;
-      _taskInboxController = null;
-      _ownsTaskInboxController = false;
-      _taskInboxInitializationError = _taskInboxErrorMessage(error);
-      setState(() {});
-    }
-  }
-
-  Future<void>? _disposeOwnedTaskInboxController() {
-    _taskInboxInitializationSerial += 1;
-    _taskInboxInitializationPending = false;
-    _pendingTaskInboxController = null;
-    final scheduler = _taskScheduler;
-    scheduler?.stop();
-    _taskScheduler = null;
-    _taskExecutionHostedByDaemon = false;
-    final controller = _ownsTaskInboxController ? _taskInboxController : null;
-    _taskInboxController = null;
-    final repository = _ownedTaskRepository;
-    _ownedTaskRepository = null;
-    final repositoryPath = _ownedTaskRepositoryPath;
-    _ownedTaskRepositoryPath = null;
-    _ownsTaskInboxController = false;
-    final refreshCleanup = _stopTaskInboxRefresh();
-    if (scheduler == null && controller == null && repository == null) {
-      return refreshCleanup;
-    }
-    final persistenceCleanup = _startTaskPersistenceCleanup(
-      scheduler: scheduler,
-      controller: controller,
-      repository: repository,
-      repositoryPath: repositoryPath,
-    );
-    if (refreshCleanup == null) {
-      return persistenceCleanup;
-    }
-    return () async {
-      await refreshCleanup;
-      await persistenceCleanup;
-    }();
-  }
-
-  void _startTaskInboxRefresh(TaskInboxController controller) {
-    _taskInboxRefreshTimer?.cancel();
-    final lifecycleState = WidgetsBinding.instance.lifecycleState;
-    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
-      _taskInboxRefreshTimer = null;
-      return;
-    }
-    _taskInboxRefreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || _taskInboxController != controller) return;
-      if (_taskInboxRefresh != null || _taskInboxMaintenance != null) return;
-      late final Future<void> refresh;
-      refresh = _refreshTaskInbox(controller).whenComplete(() {
-        if (identical(_taskInboxRefresh, refresh)) {
-          _taskInboxRefresh = null;
-        }
-      });
-      _taskInboxRefresh = refresh;
-    });
-  }
-
-  void _startTaskInboxMaintenance(
-    TaskInboxController controller, {
-    bool runImmediately = false,
-  }) {
-    _taskInboxMaintenanceTimer?.cancel();
-    final lifecycleState = WidgetsBinding.instance.lifecycleState;
-    if (lifecycleState != null && lifecycleState != AppLifecycleState.resumed) {
-      _taskInboxMaintenanceTimer = null;
-      return;
-    }
-    if (runImmediately) _scheduleTaskInboxMaintenance(controller);
-    _taskInboxMaintenanceTimer = Timer.periodic(
-      widget.taskInboxMaintenanceInterval,
-      (_) => _scheduleTaskInboxMaintenance(controller),
-    );
-  }
-
-  void _scheduleTaskInboxMaintenance(TaskInboxController controller) {
-    if (!mounted || _taskInboxController != controller) return;
-    if (_taskInboxMaintenance != null) return;
-    late final Future<void> maintenance;
-    maintenance = _maintainTaskInbox(controller).whenComplete(() {
-      if (identical(_taskInboxMaintenance, maintenance)) {
-        _taskInboxMaintenance = null;
-      }
-    });
-    _taskInboxMaintenance = maintenance;
-  }
-
-  Future<void> _maintainTaskInbox(TaskInboxController controller) async {
-    try {
-      final refresh = _taskInboxRefresh;
-      if (refresh != null) await refresh;
-      if (!mounted || _taskInboxController != controller) return;
-      await controller.purgeRawPayloads(
-        retention: _config.storage.retention,
-        force: false,
-      );
-    } on TaskPersistenceStalledException catch (error) {
-      _taskInboxMaintenanceTimer?.cancel();
-      _taskInboxMaintenanceTimer = null;
-      final scheduler = _taskScheduler;
-      if (scheduler != null) {
-        scheduler.handlePersistenceFault(error);
-        return;
-      }
-      if (!mounted || _taskInboxController != controller) return;
-      _taskInboxInitializationError = _taskInboxErrorMessage(error);
-      setState(() {});
-    } on Object {
-      // A transient maintenance failure is retried on the next foreground
-      // interval or when the app resumes.
-    }
-  }
-
-  Future<void> _refreshTaskInbox(TaskInboxController controller) async {
-    try {
-      await controller.refreshIfChanged();
-    } on TaskPersistenceStalledException catch (error) {
-      _taskInboxRefreshTimer?.cancel();
-      _taskInboxRefreshTimer = null;
-      final scheduler = _taskScheduler;
-      if (scheduler != null) {
-        scheduler.handlePersistenceFault(error);
-        return;
-      }
-      if (!mounted || _taskInboxController != controller) return;
-      _taskInboxInitializationError = _taskInboxErrorMessage(error);
-      setState(() {});
-    } on Object {
-      // A transient read failure is retried by the next foreground poll.
-    }
-  }
-
-  Future<void>? _stopTaskInboxRefresh() {
-    _taskInboxRefreshTimer?.cancel();
-    _taskInboxRefreshTimer = null;
-    _taskInboxMaintenanceTimer?.cancel();
-    _taskInboxMaintenanceTimer = null;
-    return _joinTaskCleanup(_taskInboxRefresh, _taskInboxMaintenance);
-  }
-
-  Future<void>? _stopTaskInboxTransition() {
-    return _joinTaskCleanup(
-      _taskInboxTransition,
-      _disposeOwnedTaskInboxController(),
-    );
-  }
-
-  TaskScheduler _createTaskScheduler(TaskInboxController taskController) {
-    final agentPool = _createTaskAgentPool(_config);
-    final runner = TaskRunner(
-      taskController: taskController,
-      agentPool: agentPool,
-    );
-    late final TaskScheduler scheduler;
-    scheduler = TaskScheduler(
-      taskController: taskController,
-      worker: TaskRunnerWorker(runner: runner),
-      runtimeRegistry: LocalRuntimeRegistry(probe: agentPool.probeAgent),
-      onPersistenceFault: (error) {
-        _handleTaskSchedulerPersistenceFault(scheduler, error);
-      },
-    );
-    return scheduler;
-  }
-
-  void _handleTaskSchedulerPersistenceFault(
-    TaskScheduler scheduler,
-    TaskPersistenceStalledException error,
-  ) {
-    if (!mounted || !identical(_taskScheduler, scheduler)) return;
-    _taskInboxRefreshTimer?.cancel();
-    _taskInboxRefreshTimer = null;
-    _taskInboxMaintenanceTimer?.cancel();
-    _taskInboxMaintenanceTimer = null;
-    _taskInboxInitializationError = _taskInboxErrorMessage(error);
-    setState(() {});
-  }
-
-  Future<void> _startTaskPersistenceCleanup({
-    TaskScheduler? scheduler,
-    TaskInboxController? controller,
-    TaskRepository? repository,
-    String? repositoryPath,
-  }) {
-    if (controller != null && repository != null) {
-      final owner = TaskPersistenceOwnerCleanup(
-        path: repositoryPath,
-        controller: controller,
-        shutdownScheduler: () => scheduler?.shutdown() ?? Future<void>.value(),
-        disposeController: controller.dispose,
-        closeRepository: repository.close,
-      );
-      _taskPersistenceQuarantine.retain(owner);
-      return _taskPersistenceQuarantine.ensurePathAvailable(owner.path);
-    }
-    return () async {
-      await scheduler?.shutdown();
-      controller?.dispose();
-      await repository?.close();
-    }();
-  }
-
-  Future<void>? _joinTaskCleanup(Future<void>? first, Future<void>? second) {
-    if (first == null) return second;
-    if (second == null) return first;
-    return Future.wait(<Future<void>>[first, second]);
-  }
-
-  void _ignoreTaskCleanup(Future<void>? cleanup) {
-    if (cleanup == null) return;
-    unawaited(() async {
-      try {
-        await cleanup;
-      } on Object {
-        // There is no live task UI to report teardown failures to.
-      }
-    }());
-  }
-
-  Future<void> _disposeControllersAfterTaskCleanup(
-    Future<void> cleanup,
-    List<ChatController> controllers,
-  ) async {
-    try {
-      await cleanup;
-    } on Object {
-      // Cached controllers still need disposal after task teardown errors.
-    } finally {
-      _disposeControllerList(controllers);
-    }
-  }
-
-  String _taskInboxErrorMessage(Object error) {
-    if (error is FormatException) {
-      return 'Could not initialize Task Inbox: legacy task data is invalid; '
-          'the original file was not changed.';
-    }
-    if (error is TaskPersistenceStalledException) {
-      return 'Task persistence stalled during ${error.operation}. '
-          'Background task dispatch was stopped. The repository remains '
-          'quarantined until the pending operation finishes; retry the '
-          'configuration change afterward.';
-    }
-    return 'Could not initialize Task Inbox: $error';
   }
 
   void _setupDeepLinkHandling() {
@@ -1103,12 +354,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (normalizedLink.isEmpty) return;
     final request = StartupOptions.fromDeepLink(normalizedLink);
     if (request == null) return;
-    if (!request.requiresConfirmation) {
-      if (request.taskId != null) {
-        _openTaskFromStartupOptions(StartupOptions(taskId: request.taskId));
-      }
-      return;
-    }
+    if (!request.requiresConfirmation) return;
 
     final key = _deepLinkRequestKey(request);
     if (!_handledDeepLinks.add(key)) return;
@@ -1126,15 +372,12 @@ class _AcpClientAppState extends State<AcpClientApp>
   }
 
   String _deepLinkRequestKey(DeepLinkRequest request) {
-    return jsonEncode(switch (request.kind) {
-      DeepLinkRequestKind.session => <String?>[
-        'session',
-        request.sessionId,
-        request.cwd,
-        request.agentName,
-      ],
-      DeepLinkRequestKind.task => <String?>['task', request.taskId],
-    });
+    return jsonEncode(<String?>[
+      'session',
+      request.sessionId,
+      request.cwd,
+      request.agentName,
+    ]);
   }
 
   Future<void> _drainDeepLinkConfirmationQueue() async {
@@ -1206,20 +449,6 @@ class _AcpClientAppState extends State<AcpClientApp>
 
     await controller.resumeSession(sessionId, cwd: options.resumeCwd);
     if (mounted) setState(() {});
-  }
-
-  void _openTaskFromStartupOptions(StartupOptions options) {
-    final taskId = _trimmedOrNull(options.taskId);
-    if (taskId == null || !mounted) return;
-    if (_taskInboxController == null) {
-      if (_taskInboxInitializationPending) {
-        _selectedTaskId = taskId;
-        return;
-      }
-      _showSnackBar('Task Inbox is unavailable.');
-      return;
-    }
-    setState(() => _selectedTaskId = taskId);
   }
 
   String? _trimmedOrNull(String? value) {
@@ -1336,11 +565,6 @@ class _AcpClientAppState extends State<AcpClientApp>
         gitWorkspaceDetector: widget.gitWorkspaceDetector,
         processRunner: widget.processRunner,
         controller: _controller,
-        taskInboxController: _taskInboxController,
-        initialSidebarMode: _selectedTaskId == null
-            ? AppShellSidebarMode.workspaces
-            : AppShellSidebarMode.inbox,
-        selectedTaskId: _selectedTaskId,
         agentName: _config.agentName,
         agentServers: _config.selectableAgentServers,
         mcpServers: _config.mcpServers,
@@ -1370,9 +594,6 @@ class _AcpClientAppState extends State<AcpClientApp>
         onArchiveWorkspaceSessions: (context, workspace) =>
             _archiveWorkspaceSessions(workspace),
         onValidateAssistantAgent: _validateAssistantAgent,
-        onRunTask: (context, task) => _runTask(context, task),
-        onOpenTaskSession: (context, task) => _openTaskSession(context, task),
-        onAgentAuthenticated: _authenticateTaskAgent,
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
@@ -1386,9 +607,6 @@ class _AcpClientAppState extends State<AcpClientApp>
   String? get _combinedStartupError {
     final errors = <String>[
       if (widget.startupError case final error? when error.trim().isNotEmpty)
-        error.trim(),
-      if (_taskInboxInitializationError case final error?
-          when error.trim().isNotEmpty)
         error.trim(),
     ];
     return errors.isEmpty ? null : errors.join('\n');
@@ -1545,170 +763,25 @@ class _AcpClientAppState extends State<AcpClientApp>
     return controller;
   }
 
-  LocalTaskAgentPool _createTaskAgentPool(AcpClientConfig config) {
-    final createAgentClient =
-        widget.createTaskAgentClient ??
-        widget.createAgentClient ??
-        _defaultAgentClient;
-    return LocalTaskAgentPool(
-      controllerFactory: (agentName) {
-        if (!mounted) return null;
-        final agentConfig = _configForAgent(config, agentName.trim());
-        if (agentConfig == null) return null;
-        final client = createAgentClient(agentConfig);
-        final reusesForegroundClient = _sessionControllers.any(
-          (foreground) => identical(foreground.client, client),
-        );
-        if (reusesForegroundClient) {
-          throw StateError(
-            'The task agent factory must create a separate ACP client.',
-          );
-        }
-        return _controllerForClient(agentConfig, client);
-      },
-    );
-  }
-
-  Future<void> _runTask(BuildContext _, TaskRecord task) async {
-    final taskController = _taskInboxController;
-    if (taskController == null) return;
-    final scheduler = _taskScheduler;
-    if (scheduler != null) {
-      try {
-        await scheduler.enqueueTask(task.id);
-      } on TaskPersistenceStalledException catch (error) {
-        scheduler.handlePersistenceFault(error);
-        if (mounted) {
-          _taskInboxInitializationError = _taskInboxErrorMessage(error);
-        }
-      }
-      if (mounted) setState(() {});
-      return;
-    }
-    if (_taskExecutionHostedByDaemon) {
-      try {
-        await taskController.updateTask(
-          task.id,
-          status: TaskStatus.queued,
-          summary: 'Queued for daemon agent run.',
-          error: null,
-        );
-      } on TaskPersistenceStalledException catch (error) {
-        if (mounted) {
-          _taskInboxInitializationError = _taskInboxErrorMessage(error);
-        }
-      }
-      if (mounted) setState(() {});
-      return;
-    }
-    final agentPool = _createTaskAgentPool(_config);
-    final runner = TaskRunner(
-      taskController: taskController,
-      agentPool: agentPool,
-    );
-    try {
-      await runner.runTask(task.id);
-    } on TaskPersistenceStalledException catch (error) {
-      if (mounted) {
-        _taskInboxInitializationError = _taskInboxErrorMessage(error);
-      }
-    } finally {
-      await runner.dispose();
-    }
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _authenticateTaskAgent(String agentName, String methodId) async {
-    final hasBlockedTask = _taskInboxController?.tasks.any(
-      (task) =>
-          task.agentName == agentName &&
-          task.status == TaskStatus.blockedOnUserInput &&
-          task.metadata['failure_reason'] ==
-              TaskFailureReason.authRequired.name,
-    );
-    if (hasBlockedTask != true) return;
-    final scheduler = _taskScheduler;
-    if (scheduler == null) return;
-    try {
-      final authenticated = await scheduler.authenticateAgent(
-        agentName,
-        methodId,
-      );
-      if (!authenticated && mounted) {
-        _showSnackBar(
-          'The background task agent still requires authentication.',
-        );
-      }
-    } on Object catch (error) {
-      if (mounted) {
-        _showSnackBar(
-          'Could not authenticate the background task agent: $error',
-        );
-      }
-    }
-  }
-
-  Future<void> _openTaskSession(BuildContext _, TaskRecord task) async {
-    final sessionId = task.sessionId?.trim();
-    if (sessionId == null || sessionId.isEmpty) {
-      _showSnackBar('This task does not have a linked session yet.');
-      return;
-    }
-
-    var controller = _controller;
-    final agentName = task.agentName.trim();
-    if (widget.controller == null && agentName.isNotEmpty) {
-      final config = _configForAgent(_config, agentName);
-      if (config == null) {
-        _showSnackBar('Could not select agent "$agentName".');
-        return;
-      }
-      controller = _activateAgent(config);
-    } else if (widget.controller != null && agentName != controller.agentName) {
-      _showSnackBar('Could not open task session for agent "$agentName".');
-      return;
-    }
-
-    await controller.resumeSession(sessionId, cwd: task.workspacePath);
-    if (mounted) setState(() {});
-  }
-
   void _replaceOwnedControllerConfiguration(
     AcpClientConfig nextConfig, {
     bool rebuild = true,
   }) {
-    final taskCleanup = _stopTaskInboxTransition();
     final staleControllers = _takeCachedControllers();
     _config = nextConfig;
     _controller = _cachedControllerFor(nextConfig);
     _ensureControllersForSelectableAgents(nextConfig);
     unawaited(_hydrateSessionIndex());
-    if (taskCleanup == null) {
-      _disposeControllerList(staleControllers);
-    } else {
-      unawaited(
-        _disposeControllersAfterTaskCleanup(taskCleanup, staleControllers),
-      );
-    }
-    _configureTaskInboxController(previousCleanup: taskCleanup);
+    _disposeControllerList(staleControllers);
     if (rebuild && mounted) setState(() {});
   }
 
-  void _replaceOwnedControllerFactory({Future<void>? previousTaskCleanup}) {
+  void _replaceOwnedControllerFactory() {
     final staleControllers = _takeCachedControllers();
     _controller = _cachedControllerFor(_config);
     _ensureControllersForSelectableAgents(_config);
     unawaited(_hydrateSessionIndex());
-    if (previousTaskCleanup == null) {
-      _disposeControllerList(staleControllers);
-    } else {
-      unawaited(
-        _disposeControllersAfterTaskCleanup(
-          previousTaskCleanup,
-          staleControllers,
-        ),
-      );
-    }
+    _disposeControllerList(staleControllers);
   }
 
   AcpClientConfig? _configForAgent(AcpClientConfig config, String agentName) {
@@ -2212,8 +1285,8 @@ class _AcpClientAppState extends State<AcpClientApp>
       case WorkspaceSessionMenuAction.toggleUnread:
         controller.setSessionUnread(session.id, !session.unread);
         if (mounted) setState(() {});
-      case WorkspaceSessionMenuAction.openSideTask:
-        await _openSideTask(session);
+      case WorkspaceSessionMenuAction.openSideSession:
+        await _openSideSession(session);
       case WorkspaceSessionMenuAction.revealInFinder:
         await _revealPathInFinder(context, session.cwd, label: 'session');
       case WorkspaceSessionMenuAction.copyWorkingDirectory:
@@ -2234,8 +1307,6 @@ class _AcpClientAppState extends State<AcpClientApp>
         await _forkSession(session);
       case WorkspaceSessionMenuAction.forkToNewWorktree:
         await _forkSessionToNewWorktree(context, session);
-      case WorkspaceSessionMenuAction.addScheduledTask:
-        await _scheduleSessionTask(context, controller, session);
       case WorkspaceSessionMenuAction.openInNewWindow:
         await _openSessionInNewWindow(session);
     }
@@ -2319,7 +1390,7 @@ class _AcpClientAppState extends State<AcpClientApp>
     if (mounted) setState(() {});
   }
 
-  Future<void> _openSideTask(AgentSession session) async {
+  Future<void> _openSideSession(AgentSession session) async {
     var controller = _controllerForSession(session);
     final agentName = session.agentName?.trim();
     if (widget.controller == null &&
@@ -2334,61 +1405,18 @@ class _AcpClientAppState extends State<AcpClientApp>
       controller = _activateAgent(config);
     }
     if (controller.isStreaming || controller.isSessionOperationRunning) {
-      _showSnackBar('Finish the active operation before opening a side task.');
+      _showSnackBar(
+        'Finish the active operation before opening a side session.',
+      );
       return;
     }
     final created = await controller.newSession(cwd: session.cwd);
     if (!created) {
-      _showSnackBar('Could not open a side task.');
+      _showSnackBar('Could not open a side session.');
       return;
     }
-    _showSnackBar('Opened a new side task in this workspace.');
+    _showSnackBar('Opened a new side session in this workspace.');
     if (mounted) setState(() {});
-  }
-
-  Future<void> _scheduleSessionTask(
-    BuildContext context,
-    ChatController controller,
-    AgentSession session,
-  ) async {
-    final taskController = _taskInboxController ?? widget.taskInboxController;
-    if (taskController == null) {
-      _showSnackBar('Task Inbox is not available.');
-      return;
-    }
-    final draft = await showDialog<_ScheduledSessionTaskDraft>(
-      context: context,
-      builder: (context) => _ScheduledSessionTaskDialog(session: session),
-    );
-    if (draft == null) return;
-    try {
-      final scheduledAt = draft.scheduledAt.toUtc().toIso8601String();
-      final model = controller.currentModelValue?.trim();
-      final task = await taskController.createTask(
-        title: draft.title,
-        description: draft.instructions,
-        workspacePath: session.cwd,
-        agentName: session.agentName?.trim().isNotEmpty == true
-            ? session.agentName!.trim()
-            : controller.agentName,
-        metadata: <String, Object?>{
-          'source_session_id': session.id,
-          'source_deep_link': _deepLinkForSession(session),
-          'scheduled_at': scheduledAt,
-          'next_retry_at': scheduledAt,
-          if (model != null && model.isNotEmpty) 'model': model,
-        },
-      );
-      await taskController.updateTask(
-        task.id,
-        status: TaskStatus.queued,
-        summary: 'Scheduled for ${draft.scheduledAt.toLocal()}.',
-      );
-      _showSnackBar('Scheduled "${draft.title}".');
-      if (mounted) setState(() {});
-    } catch (error) {
-      _showSnackBar('Could not schedule task: $error');
-    }
   }
 
   Future<bool> _forkSession(AgentSession session) async {
@@ -2457,7 +1485,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       if (!didFork) {
         throw StateError('The ACP agent did not create the forked session.');
       }
-      _showSnackBar('Created worktree "$branchName" for the new task.');
+      _showSnackBar('Created worktree "$branchName" for the new session.');
     } catch (error) {
       final cleanupError =
           worktreeCreated && gitRoot != null && branchName != null
@@ -2931,9 +1959,7 @@ class _AcpClientAppState extends State<AcpClientApp>
       sessionStorePath: restrictedAssistant
           ? null
           : _rustAcpSessionDatabasePath(config.configPath),
-      sessionStoreMaxBytes: config.storage.budgetBytesFor(
-        SqliteStoreKind.acpSessions,
-      ),
+      sessionStoreMaxBytes: config.storage.maxBytes,
       sessionStoreRetentionDays: config.storage.retentionDays,
       mcpServers: restrictedAssistant
           ? const <Map<String, Object?>>[]
@@ -3147,204 +2173,6 @@ class _AcpClientAppState extends State<AcpClientApp>
       'model': config.model,
       'timeoutMs': config.timeout.inMilliseconds,
     };
-  }
-}
-
-class _ScheduledSessionTaskDraft {
-  const _ScheduledSessionTaskDraft({
-    required this.title,
-    required this.instructions,
-    required this.scheduledAt,
-  });
-
-  final String title;
-  final String instructions;
-  final DateTime scheduledAt;
-}
-
-class _ScheduledSessionTaskDialog extends StatefulWidget {
-  const _ScheduledSessionTaskDialog({required this.session});
-
-  final AgentSession session;
-
-  @override
-  State<_ScheduledSessionTaskDialog> createState() =>
-      _ScheduledSessionTaskDialogState();
-}
-
-class _ScheduledSessionTaskDialogState
-    extends State<_ScheduledSessionTaskDialog> {
-  late final TextEditingController _titleController;
-  late final TextEditingController _instructionsController;
-  late DateTime _scheduledAt;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _titleController = TextEditingController(
-      text: 'Continue ${widget.session.displayTitle}',
-    );
-    _instructionsController = TextEditingController(
-      text: 'Continue the work from session ${widget.session.id}.',
-    );
-    final nextHour = DateTime.now().add(const Duration(hours: 1));
-    _scheduledAt = DateTime(
-      nextHour.year,
-      nextHour.month,
-      nextHour.day,
-      nextHour.hour,
-    );
-  }
-
-  @override
-  void dispose() {
-    _titleController.dispose();
-    _instructionsController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final localizations = MaterialLocalizations.of(context);
-    return AlertDialog(
-      title: const Text('Add Scheduled Task'),
-      content: SizedBox(
-        width: 480,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              key: const Key('scheduled-task-title'),
-              controller: _titleController,
-              autofocus: true,
-              decoration: InputDecoration(
-                labelText: 'Title',
-                errorText: _error,
-                border: const OutlineInputBorder(),
-              ),
-              onChanged: (_) {
-                if (_error != null) setState(() => _error = null);
-              },
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              key: const Key('scheduled-task-instructions'),
-              controller: _instructionsController,
-              minLines: 3,
-              maxLines: 5,
-              decoration: const InputDecoration(
-                labelText: 'Instructions',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    key: const Key('scheduled-task-date'),
-                    onPressed: _pickDate,
-                    icon: const Icon(Icons.calendar_today_outlined, size: 17),
-                    label: Text(localizations.formatFullDate(_scheduledAt)),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    key: const Key('scheduled-task-time'),
-                    onPressed: _pickTime,
-                    icon: const Icon(Icons.schedule_outlined, size: 17),
-                    label: Text(
-                      localizations.formatTimeOfDay(
-                        TimeOfDay.fromDateTime(_scheduledAt),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'The task is persisted in Task Inbox and will run when its '
-                'scheduled time is reached.',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-              ),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          key: const Key('create-scheduled-task'),
-          onPressed: _submit,
-          child: const Text('Schedule'),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _pickDate() async {
-    final date = await showDatePicker(
-      context: context,
-      initialDate: _scheduledAt,
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 3650)),
-    );
-    if (date == null || !mounted) return;
-    setState(() {
-      _scheduledAt = DateTime(
-        date.year,
-        date.month,
-        date.day,
-        _scheduledAt.hour,
-        _scheduledAt.minute,
-      );
-      _error = null;
-    });
-  }
-
-  Future<void> _pickTime() async {
-    final time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(_scheduledAt),
-    );
-    if (time == null || !mounted) return;
-    setState(() {
-      _scheduledAt = DateTime(
-        _scheduledAt.year,
-        _scheduledAt.month,
-        _scheduledAt.day,
-        time.hour,
-        time.minute,
-      );
-      _error = null;
-    });
-  }
-
-  void _submit() {
-    final title = _titleController.text.trim();
-    if (title.isEmpty) {
-      setState(() => _error = 'Enter a title.');
-      return;
-    }
-    if (!_scheduledAt.isAfter(DateTime.now())) {
-      setState(() => _error = 'Choose a future date and time.');
-      return;
-    }
-    Navigator.of(context).pop(
-      _ScheduledSessionTaskDraft(
-        title: title,
-        instructions: _instructionsController.text.trim(),
-        scheduledAt: _scheduledAt,
-      ),
-    );
   }
 }
 

@@ -114,7 +114,7 @@ void main() {
     );
   });
 
-  test('SecretOwner derives target-bound and legacy namespaces', () {
+  test('SecretOwner derives target-scoped and unscoped namespaces', () {
     const owner = SecretOwner(
       configIdentity: 'config/abc',
       targetKind: 'agent/Codex',
@@ -124,7 +124,7 @@ void main() {
     );
 
     expect(owner.namespace, 'config/abc/agent/Codex/target/target-sha/env');
-    expect(owner.legacyNamespace, 'config/abc/agent/Codex/env');
+    expect(owner.unscopedNamespace, 'config/abc/agent/Codex/env');
   });
 
   test('rejects references outside the strict keychain format', () async {

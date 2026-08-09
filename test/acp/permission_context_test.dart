@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
-import 'package:ianvs_acp/tasks/permission_context.dart';
+import 'package:ianvs_acp/acp/permission_context.dart';
 
 void main() {
   group('permission display context', () {
@@ -553,11 +553,11 @@ void main() {
       expect(context.warning, PermissionDisplayContext.incompleteWarning);
     });
 
-    test('keeps legacy requests without structured context complete', () {
+    test('keeps requests without structured context complete', () {
       final context = permissionDisplayContextForRequest(
         _permissionRequest(
           metadata: <String, Object?>{
-            'legacy': _ThrowingToString('legacy-canary'),
+            'unstructured': _ThrowingToString('unstructured-canary'),
           },
         ),
       );

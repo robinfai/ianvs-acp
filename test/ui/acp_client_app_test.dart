@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:ianvs_acp/acp/acp_input_budget.dart';
@@ -16,12 +15,7 @@ import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
-import 'package:ianvs_acp/rust/ianvs_workflow_native.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
-import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
-import 'package:ianvs_acp/tasks/task_inbox_snapshot.dart';
-import 'package:ianvs_acp/tasks/task_inbox_sqlite_store.dart';
-import 'package:ianvs_acp/tasks/task_record.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
@@ -29,35 +23,30 @@ import 'package:ianvs_acp/ui/image_decode_budget.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
-import '../support/memory_task_repository.dart';
-
 void main() {
-  late TestTaskHarness taskHarness;
-
-  setUp(() async {
-    taskHarness = TestTaskHarness();
-    await taskHarness.initialize();
-  });
-
-  tearDown(() async {
-    await taskHarness.dispose();
-  });
-
-  testWidgets('AcpClientApp uses only the injected task repository', (
-    tester,
+  Future<void> pumpWithWindowSize(
+    WidgetTester tester,
+    Widget widget,
+    Size size,
   ) async {
-    await tester.pumpWidget(
-      AcpClientApp(
-        config: const AcpClientConfig(),
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(widget);
     await tester.pumpAndSettle();
+  }
 
-    expect(taskHarness.repository.loadCount, 1);
-    expect(taskHarness.repository.pathsOpened, isEmpty);
-  });
+  Future<void> sendDeepLink(WidgetTester tester, String link) async {
+    const channel = MethodChannel('ianvs_acp/deep_links');
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      channel.name,
+      const StandardMethodCodec().encodeMethodCall(
+        MethodCall('openDeepLink', link),
+      ),
+      null,
+    );
+  }
 
   testWidgets('AcpClientApp validates and forwards the same input budget', (
     tester,
@@ -78,7 +67,6 @@ void main() {
         controller: controller,
         inputBudget: budget,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
       ),
     );
     await tester.pump();
@@ -92,7 +80,6 @@ void main() {
         controller: controller,
         inputBudget: const AcpInputBudget(maxMarkdownSyntaxTokens: 0),
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
       ),
     );
     expect(tester.takeException(), isArgumentError);
@@ -117,7 +104,6 @@ void main() {
         imageDecodeLedger: ledger,
         boundedImageDecoder: decoder,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
       ),
     );
     await tester.pump();
@@ -144,7 +130,6 @@ void main() {
     Widget app(ChatController activeController) => AcpClientApp(
       controller: activeController,
       autoLoadWorkspaceSessions: false,
-      taskInboxController: taskHarness.controller,
     );
 
     await tester.pumpWidget(app(controller));
@@ -161,51 +146,6 @@ void main() {
     expect(identical(second.boundedImageDecoder, decoder), isTrue);
   });
 
-  testWidgets('AcpClientApp rejects non-positive task maintenance intervals', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      AcpClientApp(
-        taskInboxController: taskHarness.controller,
-        taskInboxMaintenanceInterval: Duration.zero,
-      ),
-    );
-    expect(tester.takeException(), isArgumentError);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pumpWidget(
-      AcpClientApp(
-        taskInboxController: taskHarness.controller,
-        taskInboxMaintenanceInterval: const Duration(seconds: -1),
-      ),
-    );
-    expect(tester.takeException(), isArgumentError);
-  });
-
-  Future<void> pumpWithWindowSize(
-    WidgetTester tester,
-    Widget widget,
-    Size size,
-  ) async {
-    tester.view.physicalSize = size;
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(widget);
-    await tester.pumpAndSettle();
-  }
-
-  Future<void> sendDeepLink(WidgetTester tester, String link) async {
-    const channel = MethodChannel('ianvs_acp/deep_links');
-    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-      channel.name,
-      const StandardMethodCodec().encodeMethodCall(
-        MethodCall('openDeepLink', link),
-      ),
-      null,
-    );
-  }
-
   testWidgets('AcpClientApp prompts to add discovered agents on startup', (
     tester,
   ) async {
@@ -215,7 +155,6 @@ void main() {
       AcpClientApp(
         config: const AcpClientConfig(configPath: '/tmp/ianvs-acp.json'),
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         discoverAgentServers: (_) async => const [
           AgentServerConfig(
             name: 'Codex',
@@ -269,7 +208,6 @@ void main() {
             },
           },
         }),
-        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -289,7 +227,6 @@ void main() {
         AcpClientApp(
           config: AcpClientConfig(),
           autoLoadWorkspaceSessions: false,
-          taskInboxController: taskHarness.controller,
         ),
         const Size(1400, 900),
       );
@@ -304,43 +241,6 @@ void main() {
       );
     },
   );
-
-  testWidgets('AcpClientApp creates Inbox tasks without configured agents', (
-    tester,
-  ) async {
-    final taskController = TaskInboxController(
-      repository: _MemoryTaskStore(),
-      clock: () => DateTime(2026, 7, 7, 8),
-      idGenerator: (_) => 'task-1',
-    );
-    addTearDown(taskController.dispose);
-    await taskController.load();
-
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        config: const AcpClientConfig(),
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskController,
-      ),
-      const Size(1400, 900),
-    );
-
-    await tester.tap(find.text('Inbox').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('New task'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('task-title-field')),
-      'Round2 no-agent task',
-    );
-    await tester.tap(find.widgetWithText(FilledButton, 'Create'));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(AlertDialog), findsNothing);
-    expect(taskController.tasks.single.title, 'Round2 no-agent task');
-    expect(taskController.tasks.single.agentName, 'Codex');
-  });
 
   testWidgets('AcpClientApp saves edited agent config', (tester) async {
     AcpClientConfig? savedConfig;
@@ -363,7 +263,6 @@ void main() {
           },
         }, configPath: '/tmp/ianvs-acp-test-settings.json'),
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         writeConfig: (config) async {
           savedConfig = config;
@@ -424,7 +323,6 @@ void main() {
             },
           },
         }),
-        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -456,7 +354,6 @@ void main() {
             },
           },
         }),
-        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -477,7 +374,6 @@ void main() {
             },
           },
         }),
-        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -495,10 +391,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      AcpClientApp(
-        startupError: 'Could not load ACP config: bad json',
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(startupError: 'Could not load ACP config: bad json'),
     );
 
     expect(find.textContaining('bad json'), findsOneWidget);
@@ -514,7 +407,6 @@ void main() {
         config: const AcpClientConfig(configPath: '/tmp/broken-settings.json'),
         startupError: 'Could not load ACP config: missing Keychain secret',
         configurationWritable: false,
-        taskInboxController: taskHarness.controller,
         discoverAgentServers: (config) {
           discoveryCalled = true;
           return const <AgentServerConfig>[
@@ -532,524 +424,6 @@ void main() {
     expect(discoveryCalled, isFalse);
     expect(find.textContaining('missing Keychain secret'), findsOneWidget);
   });
-
-  testWidgets('AcpClientApp migrates legacy tasks before enabling Inbox', (
-    tester,
-  ) async {
-    final temp = (await tester.runAsync(
-      () => Directory.systemTemp.createTemp('acp-app-migration-'),
-    ))!;
-    addTearDown(() {
-      if (temp.existsSync()) temp.deleteSync(recursive: true);
-    });
-    final configPath = '${temp.path}/settings.json';
-    final source = File('${temp.path}/task_inbox_state.json');
-    final createdAt = DateTime.utc(2026, 7, 10, 9);
-    final snapshot = TaskInboxSnapshot(
-      updatedAt: createdAt,
-      tasks: [
-        TaskRecord(
-          id: 'legacy-task',
-          title: 'Legacy task survived',
-          description: 'Migrate before scheduling.',
-          workspacePath: '/workspace/app',
-          agentName: 'Codex',
-          status: TaskStatus.inbox,
-          priority: TaskPriority.normal,
-          createdAt: createdAt,
-          updatedAt: createdAt,
-        ),
-      ],
-    );
-    await tester.runAsync(
-      () => source.writeAsString(jsonEncode(snapshot.toJson())),
-    );
-
-    // Intentionally omit injection: this verifies the app-owned repository
-    // migrates a legacy file rooted beside a systemTemp config path.
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        config: AcpClientConfig(configPath: configPath),
-        autoLoadWorkspaceSessions: false,
-        discoverAgentServers: (_) async => const <AgentServerConfig>[],
-        createTaskDaemonAuthority: (_) async => IanvsRustWorkflow(),
-      ),
-      const Size(1400, 900),
-    );
-    await _pumpUntil(tester, () => !source.existsSync());
-    await _pumpUntil(tester, () => find.text('Inbox').evaluate().isNotEmpty);
-    await tester.pumpAndSettle();
-
-    expect(find.text('Inbox'), findsOneWidget);
-    await tester.tap(find.text('Inbox'));
-    await tester.pumpAndSettle();
-    expect(find.text('Legacy task survived'), findsOneWidget);
-    expect(source.existsSync(), isFalse);
-    expect(
-      temp.listSync().any(
-        (entity) => entity is File && entity.path.contains('.migrated.'),
-      ),
-      isTrue,
-    );
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 20)),
-    );
-  });
-
-  testWidgets(
-    'AcpClientApp purges expired legacy raw payloads before enabling Inbox',
-    (tester) async {
-      final temp = (await tester.runAsync(
-        () => Directory.systemTemp.createTemp('acp-app-raw-purge-'),
-      ))!;
-      addTearDown(() {
-        if (temp.existsSync()) temp.deleteSync(recursive: true);
-      });
-      final configPath = '${temp.path}/settings.json';
-      final source = File('${temp.path}/task_inbox_state.json');
-      final createdAt = DateTime.utc(2000, 1, 1);
-      final snapshot = TaskInboxSnapshot(
-        updatedAt: createdAt,
-        tasks: <TaskRecord>[
-          TaskRecord(
-            id: 'legacy-task',
-            title: 'Legacy raw task',
-            description: '',
-            workspacePath: '/workspace/app',
-            agentName: 'Codex',
-            status: TaskStatus.done,
-            priority: TaskPriority.normal,
-            createdAt: createdAt,
-            updatedAt: createdAt,
-            currentRunId: 'legacy-run',
-            summary: 'Keep summary',
-          ),
-        ],
-        runs: <TaskRunRecord>[
-          TaskRunRecord(
-            id: 'legacy-run',
-            taskId: 'legacy-task',
-            attempt: 1,
-            status: TaskStatus.done,
-            startedAt: createdAt,
-            endedAt: createdAt,
-            promptSnapshot: 'expired prompt',
-          ),
-        ],
-        events: <TaskEventRecord>[
-          TaskEventRecord(
-            id: 'legacy-event',
-            taskId: 'legacy-task',
-            runId: 'legacy-run',
-            kind: TaskEventKind.tool,
-            text: 'Keep event text',
-            createdAt: createdAt,
-            metadata: const <String, Object?>{'raw': 'expired'},
-          ),
-        ],
-        artifacts: <ArtifactRecord>[
-          ArtifactRecord(
-            id: 'legacy-artifact',
-            taskId: 'legacy-task',
-            runId: 'legacy-run',
-            kind: ArtifactKind.gitDiff,
-            title: 'src/main.dart',
-            createdAt: createdAt,
-            path: 'src/main.dart',
-            contentPreview: 'expired diff',
-            metadata: const <String, Object?>{'raw_payload': true},
-          ),
-        ],
-      );
-      await tester.runAsync(
-        () => source.writeAsString(jsonEncode(snapshot.toJson())),
-      );
-
-      // Intentionally omit injection: this verifies app-owned migration and
-      // retention cleanup beside a systemTemp config path.
-      await pumpWithWindowSize(
-        tester,
-        AcpClientApp(
-          config: AcpClientConfig(configPath: configPath),
-          autoLoadWorkspaceSessions: false,
-          discoverAgentServers: (_) async => const <AgentServerConfig>[],
-          createTaskDaemonAuthority: (_) async => IanvsRustWorkflow(),
-        ),
-        const Size(1400, 900),
-      );
-      await _pumpUntil(tester, () => !source.existsSync());
-      await _pumpUntil(tester, () => find.text('Inbox').evaluate().isNotEmpty);
-
-      final repository = TaskInboxSqliteStore(
-        path: TaskInboxSqliteStore.defaultPath(configPath: configPath),
-      );
-      addTearDown(repository.close);
-      final persisted = (await tester.runAsync(
-        repository.loadRepository,
-      ))!.snapshot;
-      expect(persisted.tasks.single.summary, 'Keep summary');
-      expect(persisted.runs.single.promptSnapshot, isNull);
-      expect(persisted.events.single.text, 'Keep event text');
-      expect(persisted.events.single.metadata, isEmpty);
-      expect(persisted.artifacts.single.title, 'src/main.dart');
-      expect(persisted.artifacts.single.path, 'src/main.dart');
-      expect(persisted.artifacts.single.contentPreview, isNull);
-      expect(persisted.artifacts.single.metadata, isEmpty);
-
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 20)),
-      );
-    },
-  );
-
-  testWidgets('AcpClientApp keeps Inbox disabled when migration fails', (
-    tester,
-  ) async {
-    final temp = (await tester.runAsync(
-      () => Directory.systemTemp.createTemp('acp-app-migration-'),
-    ))!;
-    addTearDown(() {
-      if (temp.existsSync()) temp.deleteSync(recursive: true);
-    });
-    final configPath = '${temp.path}/settings.json';
-    final source = File('${temp.path}/task_inbox_state.json');
-    await tester.runAsync(() => source.writeAsString('{broken'));
-
-    // Intentionally omit injection: this verifies app-owned migration failure
-    // handling beside a systemTemp config path.
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        config: AcpClientConfig(configPath: configPath),
-        autoLoadWorkspaceSessions: false,
-        discoverAgentServers: (_) async => const <AgentServerConfig>[],
-      ),
-      const Size(1400, 900),
-    );
-    await _pumpUntil(
-      tester,
-      () => File(
-        TaskInboxSqliteStore.defaultPath(configPath: configPath)!,
-      ).existsSync(),
-    );
-    await _pumpUntil(
-      tester,
-      () => find
-          .textContaining('Could not initialize Task Inbox')
-          .evaluate()
-          .isNotEmpty,
-    );
-    await tester.pumpAndSettle();
-
-    expect(
-      find.textContaining('Could not initialize Task Inbox'),
-      findsOneWidget,
-    );
-    expect(find.text('Inbox'), findsNothing);
-    expect(source.readAsStringSync(), '{broken');
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    final repository = TaskInboxSqliteStore(
-      path: TaskInboxSqliteStore.defaultPath(configPath: configPath),
-    );
-    addTearDown(repository.close);
-    expect(await tester.runAsync(repository.isActive), isFalse);
-  });
-
-  testWidgets('AcpClientApp reuses injected controller startup load', (
-    tester,
-  ) async {
-    final store = _MemoryTaskStore();
-    final taskController = TaskInboxController(repository: store);
-    addTearDown(taskController.dispose);
-    await taskController.load();
-
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskController,
-      ),
-      const Size(1400, 900),
-    );
-
-    expect(store.loadCount, 1);
-    expect(
-      find.textContaining('Could not initialize Task Inbox'),
-      findsNothing,
-    );
-    expect(find.text('Inbox'), findsOneWidget);
-  });
-
-  testWidgets('AcpClientApp reports scheduler persistence fault immediately', (
-    tester,
-  ) async {
-    final store = _MemoryTaskStore();
-    final revisionStarted = Completer<void>();
-    final releaseRevision = Completer<void>();
-    final taskController = TaskInboxController(
-      repository: store,
-      persistenceWatchdog: const Duration(milliseconds: 20),
-    );
-    addTearDown(taskController.dispose);
-    addTearDown(() async {
-      if (!releaseRevision.isCompleted) releaseRevision.complete();
-      await taskController.whenPersistenceQuiesced;
-    });
-    await taskController.load();
-    store.beforeOperation = (operation) async {
-      if (operation != 'revision') return;
-      if (!revisionStarted.isCompleted) revisionStarted.complete();
-      await releaseRevision.future;
-    };
-
-    await tester.pumpWidget(
-      AcpClientApp(
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskController,
-      ),
-    );
-    await tester.pump();
-    await revisionStarted.future;
-    await tester.pump(const Duration(milliseconds: 25));
-    await tester.pump();
-
-    expect(
-      find.textContaining('Task persistence stalled during revision'),
-      findsOneWidget,
-    );
-    releaseRevision.complete();
-    await taskController.whenPersistenceQuiesced;
-  });
-
-  testWidgets('AcpClientApp uses a distinct controller for background tasks', (
-    tester,
-  ) async {
-    final createdAt = DateTime(2026, 7, 10, 9);
-    final taskController = TaskInboxController(
-      repository: _MemoryTaskStore(
-        TaskInboxSnapshot(
-          updatedAt: createdAt,
-          tasks: [
-            TaskRecord(
-              id: 'background-task',
-              title: 'Background task',
-              description: 'Do not replace the foreground session.',
-              workspacePath: '/workspace/background',
-              agentName: 'Codex',
-              status: TaskStatus.queued,
-              priority: TaskPriority.normal,
-              createdAt: createdAt,
-              updatedAt: createdAt,
-            ),
-          ],
-        ),
-      ),
-    );
-    addTearDown(taskController.dispose);
-    final clients = <FakeAgentClient>[];
-    final config = AcpClientConfig.fromJson({
-      'default_agent_server': 'Codex',
-      'agent_servers': {
-        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-      },
-    });
-    FakeAgentClient createClient(AcpClientConfig _) {
-      final client = FakeAgentClient();
-      clients.add(client);
-      return client;
-    }
-
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        config: config,
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskController,
-        createAgentClient: createClient,
-      ),
-      const Size(1400, 900),
-    );
-    await _pumpUntil(
-      tester,
-      () =>
-          clients.length >= 2 &&
-          clients.any((client) => client.lastPrompt != null) &&
-          taskController.taskById('background-task')?.status ==
-              TaskStatus.needsHumanReview,
-    );
-
-    final foregroundClient = clients.first;
-    final backgroundClient = clients.singleWhere(
-      (client) => client.lastPrompt != null,
-    );
-    expect(identical(foregroundClient, backgroundClient), isFalse);
-    expect(foregroundClient.sessionCount, 0);
-    expect(foregroundClient.lastPrompt, isNull);
-    expect(backgroundClient.sessionCount, 1);
-    expect(backgroundClient.lastPrompt, contains('Task ID: background-task'));
-    expect(
-      taskController.taskById('background-task')?.status,
-      TaskStatus.needsHumanReview,
-    );
-  });
-
-  testWidgets(
-    'AcpClientApp never reuses a busy injected foreground controller',
-    (tester) async {
-      final foregroundClient = _TrackingHangingAgentClient();
-      final foregroundController = ChatController(
-        client: foregroundClient,
-        cwd: '/workspace/ui',
-        agentName: 'Codex',
-      );
-      addTearDown(foregroundController.shutdown);
-      await foregroundController.newSession();
-      await foregroundController.sendPrompt('Foreground prompt');
-      expect(foregroundController.isStreaming, isTrue);
-
-      final createdAt = DateTime(2026, 7, 10, 9);
-      final taskController = TaskInboxController(
-        repository: _MemoryTaskStore(
-          TaskInboxSnapshot(
-            updatedAt: createdAt,
-            tasks: [
-              TaskRecord(
-                id: 'injected-background-task',
-                title: 'Background task',
-                description: '',
-                workspacePath: '/workspace/background',
-                agentName: 'Codex',
-                status: TaskStatus.queued,
-                priority: TaskPriority.normal,
-                createdAt: createdAt,
-                updatedAt: createdAt,
-              ),
-            ],
-          ),
-        ),
-      );
-      addTearDown(taskController.dispose);
-      final backgroundClient = FakeAgentClient();
-      final config = AcpClientConfig.fromJson({
-        'default_agent_server': 'Codex',
-        'agent_servers': {
-          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-        },
-      });
-
-      await pumpWithWindowSize(
-        tester,
-        AcpClientApp(
-          controller: foregroundController,
-          config: config,
-          autoLoadWorkspaceSessions: false,
-          taskInboxController: taskController,
-          createTaskAgentClient: (_) => backgroundClient,
-        ),
-        const Size(1400, 900),
-      );
-      await _pumpUntil(
-        tester,
-        () =>
-            taskController.taskById('injected-background-task')?.status ==
-            TaskStatus.needsHumanReview,
-      );
-
-      expect(foregroundController.isStreaming, isTrue);
-      expect(foregroundClient.cancelled, isFalse);
-      expect(foregroundClient.lastPrompt, 'Foreground prompt');
-      expect(
-        backgroundClient.lastPrompt,
-        contains('Task ID: injected-background-task'),
-      );
-
-      await foregroundController.stop();
-    },
-  );
-
-  testWidgets(
-    'AcpClientApp authenticates a process-scoped background task agent',
-    (tester) async {
-      final foregroundClient = FakeAgentClient(
-        authMethods: const [
-          <String, Object?>{'id': 'browser', 'name': 'Browser sign-in'},
-        ],
-      );
-      final foregroundController = ChatController(
-        client: foregroundClient,
-        cwd: '/workspace/ui',
-        agentName: 'Codex',
-      );
-      addTearDown(foregroundController.shutdown);
-      await foregroundController.connect();
-      final backgroundClient = _ProcessScopedAuthAgentClient();
-      final createdAt = DateTime(2026, 7, 10, 9);
-      final taskController = TaskInboxController(
-        repository: _MemoryTaskStore(
-          TaskInboxSnapshot(
-            updatedAt: createdAt,
-            tasks: [
-              TaskRecord(
-                id: 'process-auth-task',
-                title: 'Authenticate background process',
-                description: '',
-                workspacePath: '/workspace/background',
-                agentName: 'Codex',
-                status: TaskStatus.queued,
-                priority: TaskPriority.normal,
-                createdAt: createdAt,
-                updatedAt: createdAt,
-              ),
-            ],
-          ),
-        ),
-      );
-      addTearDown(taskController.dispose);
-      final config = AcpClientConfig.fromJson({
-        'default_agent_server': 'Codex',
-        'agent_servers': {
-          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-        },
-      });
-
-      await pumpWithWindowSize(
-        tester,
-        AcpClientApp(
-          controller: foregroundController,
-          config: config,
-          autoLoadWorkspaceSessions: false,
-          taskInboxController: taskController,
-          createTaskAgentClient: (_) => backgroundClient,
-        ),
-        const Size(1400, 900),
-      );
-      await _pumpUntil(
-        tester,
-        () =>
-            taskController.tasks.single.status == TaskStatus.blockedOnUserInput,
-      );
-
-      await tester.tap(find.byTooltip('Agents'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Authenticate'));
-      await _pumpUntil(
-        tester,
-        () => taskController.tasks.single.status == TaskStatus.needsHumanReview,
-      );
-
-      expect(foregroundClient.lastAuthenticatedMethodId, 'browser');
-      expect(backgroundClient.lastAuthenticatedMethodId, 'browser');
-      expect(backgroundClient.sessionCount, 1);
-      expect(
-        backgroundClient.lastPrompt,
-        contains('Task ID: process-auth-task'),
-      );
-    },
-  );
 
   testWidgets('AcpClientApp replaces owned clients when factory changes', (
     tester,
@@ -1079,7 +453,6 @@ void main() {
           key: const ValueKey('foreground-factory-replacement'),
           config: config,
           autoLoadWorkspaceSessions: false,
-          taskInboxController: taskHarness.controller,
           createAgentClient: factory,
           agentClientFactoryKey: factoryKey,
         );
@@ -1126,7 +499,6 @@ void main() {
       key: const ValueKey('secret-only-config-change'),
       config: config,
       autoLoadWorkspaceSessions: false,
-      taskInboxController: taskHarness.controller,
       createAgentClient: factory,
       agentClientFactoryKey: 'stable-factory',
     );
@@ -1183,7 +555,6 @@ void main() {
         key: const ValueKey('inline-reviewer-secret-change'),
         config: value,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: factory,
         agentClientFactoryKey: 'stable-factory',
       );
@@ -1228,7 +599,6 @@ void main() {
       key: const ValueKey('mutable-secret-change'),
       config: config,
       autoLoadWorkspaceSessions: false,
-      taskInboxController: taskHarness.controller,
       createAgentClient: factory,
       agentClientFactoryKey: 'stable-factory',
     );
@@ -1243,547 +613,6 @@ void main() {
     expect(clients.last.disposed, isFalse);
   });
 
-  testWidgets('AcpClientApp replaces only the keyed task agent factory', (
-    tester,
-  ) async {
-    final taskController = TaskInboxController(
-      repository: _MemoryTaskStore(),
-      idGenerator: _DeterministicIds().next,
-    );
-    addTearDown(taskController.dispose);
-    final foreground = ChatController(
-      client: FakeAgentClient(),
-      cwd: '/workspace/ui',
-      agentName: 'Codex',
-    );
-    addTearDown(foreground.shutdown);
-    final oldClients = <FakeAgentClient>[];
-    final newClients = <FakeAgentClient>[];
-    final config = AcpClientConfig.fromJson({
-      'default_agent_server': 'Codex',
-      'agent_servers': {
-        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-      },
-    });
-    FakeAgentClient oldFactory(AcpClientConfig _) {
-      final client = FakeAgentClient();
-      oldClients.add(client);
-      return client;
-    }
-
-    FakeAgentClient newFactory(AcpClientConfig _) {
-      final client = FakeAgentClient();
-      newClients.add(client);
-      return client;
-    }
-
-    AcpClientApp app(AcpAgentClientFactory factory, Object factoryKey) {
-      return AcpClientApp(
-        key: const ValueKey('task-factory-only-replacement'),
-        controller: foreground,
-        config: config,
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskController,
-        createTaskAgentClient: factory,
-        taskAgentClientFactoryKey: factoryKey,
-      );
-    }
-
-    await tester.pumpWidget(app(oldFactory, 'old'));
-    await tester.pumpAndSettle();
-    await tester.pumpWidget(app(newFactory, 'new'));
-    await tester.pumpAndSettle();
-    final task = await taskController.createTask(
-      title: 'Use replacement task factory',
-      description: '',
-      workspacePath: '/workspace/app',
-      agentName: 'Codex',
-    );
-    await taskController.updateTask(task.id, status: TaskStatus.queued);
-
-    await _pumpUntil(
-      tester,
-      () =>
-          taskController.taskById(task.id)?.status ==
-          TaskStatus.needsHumanReview,
-    );
-
-    expect(oldClients, isEmpty);
-    expect(newClients.single.lastPrompt, contains('Task ID: ${task.id}'));
-  });
-
-  testWidgets(
-    'AcpClientApp restarts task agents when injected controller and factory change',
-    (tester) async {
-      final createdAt = DateTime(2026, 7, 10, 9);
-      final taskController = TaskInboxController(
-        repository: _MemoryTaskStore(
-          TaskInboxSnapshot(
-            updatedAt: createdAt,
-            tasks: [
-              TaskRecord(
-                id: 'factory-restart-task',
-                title: 'Restart factory task',
-                description: '',
-                workspacePath: '/workspace/app',
-                agentName: 'Codex',
-                status: TaskStatus.queued,
-                priority: TaskPriority.normal,
-                createdAt: createdAt,
-                updatedAt: createdAt,
-              ),
-            ],
-          ),
-        ),
-      );
-      addTearDown(taskController.dispose);
-      final firstForeground = ChatController(
-        client: FakeAgentClient(),
-        cwd: '/workspace/ui-1',
-        agentName: 'Codex',
-      );
-      final secondForeground = ChatController(
-        client: FakeAgentClient(),
-        cwd: '/workspace/ui-2',
-        agentName: 'Codex',
-      );
-      addTearDown(firstForeground.shutdown);
-      addTearDown(secondForeground.shutdown);
-      final oldBackground = _TrackingHangingAgentClient();
-      final newBackgroundClients = <FakeAgentClient>[];
-      final config = AcpClientConfig.fromJson({
-        'default_agent_server': 'Codex',
-        'agent_servers': {
-          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-        },
-      });
-
-      AcpClientApp app({
-        required ChatController controller,
-        required AcpAgentClientFactory taskFactory,
-        required Object taskFactoryKey,
-      }) {
-        return AcpClientApp(
-          key: const ValueKey('injected-controller-factory-replacement'),
-          controller: controller,
-          config: config,
-          autoLoadWorkspaceSessions: false,
-          taskInboxController: taskController,
-          createTaskAgentClient: taskFactory,
-          taskAgentClientFactoryKey: taskFactoryKey,
-        );
-      }
-
-      await tester.pumpWidget(
-        app(
-          controller: firstForeground,
-          taskFactory: (_) => oldBackground,
-          taskFactoryKey: 'old',
-        ),
-      );
-      await _pumpUntil(tester, () => oldBackground.lastPrompt != null);
-
-      await tester.pumpWidget(
-        app(
-          controller: secondForeground,
-          taskFactory: (_) {
-            final client = FakeAgentClient();
-            newBackgroundClients.add(client);
-            return client;
-          },
-          taskFactoryKey: 'new',
-        ),
-      );
-      await _pumpUntil(
-        tester,
-        () =>
-            oldBackground.cancelled &&
-            oldBackground.disposed &&
-            taskController.tasks.single.status == TaskStatus.failed,
-      );
-
-      await taskController.retryTask('factory-restart-task');
-      await _pumpUntil(
-        tester,
-        () =>
-            newBackgroundClients.any((client) => client.lastPrompt != null) &&
-            taskController.tasks.single.status == TaskStatus.needsHumanReview,
-      );
-
-      expect(oldBackground.disposed, isTrue);
-      expect(
-        newBackgroundClients.single.lastPrompt,
-        contains('Task ID: factory-restart-task'),
-      );
-    },
-  );
-
-  testWidgets(
-    'AcpClientApp keeps injected inbox work running across foreground controller changes',
-    (tester) async {
-      final createdAt = DateTime(2026, 7, 10, 9);
-      final taskController = TaskInboxController(
-        repository: _MemoryTaskStore(
-          TaskInboxSnapshot(
-            updatedAt: createdAt,
-            tasks: [
-              TaskRecord(
-                id: 'foreground-switch-task',
-                title: 'Keep running in background',
-                description: '',
-                workspacePath: '/workspace/app',
-                agentName: 'Codex',
-                status: TaskStatus.queued,
-                priority: TaskPriority.normal,
-                createdAt: createdAt,
-                updatedAt: createdAt,
-              ),
-            ],
-          ),
-        ),
-      );
-      addTearDown(taskController.dispose);
-      final ownedForeground = _TrackingHangingAgentClient();
-      final injectedForeground = ChatController(
-        client: FakeAgentClient(),
-        cwd: '/workspace/injected',
-        agentName: 'Codex',
-      );
-      addTearDown(injectedForeground.shutdown);
-      final background = _TrackingHangingAgentClient();
-      final config = AcpClientConfig.fromJson({
-        'default_agent_server': 'Codex',
-        'agent_servers': {
-          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-        },
-      });
-      _TrackingHangingAgentClient foregroundFactory(AcpClientConfig _) {
-        return ownedForeground;
-      }
-
-      AcpClientApp app(ChatController? controller) => AcpClientApp(
-        key: const ValueKey('foreground-controller-switch'),
-        controller: controller,
-        config: config,
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskController,
-        createAgentClient: foregroundFactory,
-        createTaskAgentClient: (_) => background,
-      );
-
-      await tester.pumpWidget(app(null));
-      await _pumpUntil(tester, () => background.lastPrompt != null);
-
-      await tester.pumpWidget(app(injectedForeground));
-      await _pumpUntil(tester, () => ownedForeground.disposed);
-      await tester.pump(const Duration(milliseconds: 100));
-
-      expect(background.cancelled, isFalse);
-      expect(background.disposed, isFalse);
-      expect(taskController.tasks.single.status, TaskStatus.running);
-    },
-  );
-
-  testWidgets('AcpClientApp refreshes tasks only while in foreground', (
-    tester,
-  ) async {
-    final repository = _MemoryTaskStore();
-    final taskController = TaskInboxController(repository: repository);
-    addTearDown(taskController.dispose);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskController,
-      ),
-      const Size(1400, 900),
-    );
-    final createdAt = DateTime(2026, 7, 10, 9);
-    TaskRecord task(String id) => TaskRecord(
-      id: id,
-      title: id,
-      description: '',
-      workspacePath: '/workspace/app',
-      agentName: 'Codex',
-      status: TaskStatus.inbox,
-      priority: TaskPriority.normal,
-      createdAt: createdAt,
-      updatedAt: createdAt,
-    );
-
-    await repository.insertTask(task('task-foreground'));
-    await tester.pump(const Duration(seconds: 1));
-    await tester.pump();
-    expect(taskController.taskById('task-foreground'), isNotNull);
-
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-    await repository.insertTask(task('task-background'));
-    await tester.pump(const Duration(seconds: 2));
-    expect(taskController.taskById('task-background'), isNull);
-
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-    await tester.pump(const Duration(seconds: 1));
-    await tester.pump();
-    expect(taskController.taskById('task-background'), isNotNull);
-  });
-
-  testWidgets(
-    'AcpClientApp schedules raw payload maintenance only in foreground',
-    (tester) async {
-      final repository = _MemoryTaskStore();
-      var purgeAttempts = 0;
-      repository.beforeOperation = (operation) async {
-        if (operation == 'purgeRawPayloads') purgeAttempts += 1;
-      };
-      final taskController = TaskInboxController(repository: repository);
-      addTearDown(taskController.dispose);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-
-      await pumpWithWindowSize(
-        tester,
-        AcpClientApp(
-          autoLoadWorkspaceSessions: false,
-          taskInboxController: taskController,
-          taskInboxMaintenanceInterval: const Duration(seconds: 1),
-        ),
-        const Size(1400, 900),
-      );
-
-      expect(purgeAttempts, 0);
-      await tester.pump(const Duration(seconds: 1));
-      await tester.pump();
-      expect(purgeAttempts, 1);
-      expect(repository.rawPayloadPurgeCount, 1);
-
-      await tester.pump(const Duration(seconds: 1));
-      await tester.pump();
-      expect(purgeAttempts, 2);
-      expect(repository.rawPayloadPurgeCount, 1);
-
-      await pumpWithWindowSize(
-        tester,
-        AcpClientApp(
-          autoLoadWorkspaceSessions: false,
-          taskInboxController: taskController,
-          taskInboxMaintenanceInterval: const Duration(seconds: 10),
-        ),
-        const Size(1400, 900),
-      );
-      await tester.pump(const Duration(seconds: 2));
-      expect(purgeAttempts, 2);
-
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      await tester.pump(const Duration(seconds: 2));
-      expect(purgeAttempts, 2);
-
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pump();
-      expect(purgeAttempts, 3);
-      expect(repository.rawPayloadPurgeCount, 1);
-    },
-  );
-
-  testWidgets('AcpClientApp drains tasks before replacing configured agents', (
-    tester,
-  ) async {
-    final createdAt = DateTime(2026, 7, 10, 9);
-    final taskController = TaskInboxController(
-      repository: _MemoryTaskStore(
-        TaskInboxSnapshot(
-          updatedAt: createdAt,
-          tasks: [
-            TaskRecord(
-              id: 'queued-task',
-              title: 'Long-running task',
-              description: '',
-              workspacePath: '/workspace/app',
-              agentName: 'Codex',
-              status: TaskStatus.queued,
-              priority: TaskPriority.normal,
-              createdAt: createdAt,
-              updatedAt: createdAt,
-            ),
-          ],
-        ),
-      ),
-    );
-    addTearDown(taskController.dispose);
-    final clients = <_TrackingHangingAgentClient>[];
-    AcpClientConfig config(String version) => AcpClientConfig.fromJson({
-      'default_agent_server': 'Codex',
-      'agent_servers': {
-        'Codex': {
-          'type': 'custom',
-          'command': '/usr/local/bin/codex',
-          'args': [version],
-        },
-      },
-    });
-    _TrackingHangingAgentClient createClient(AcpClientConfig _) {
-      final client = _TrackingHangingAgentClient();
-      clients.add(client);
-      return client;
-    }
-
-    AcpClientApp app(String version) => AcpClientApp(
-      key: const ValueKey('config-replacement-app'),
-      config: config(version),
-      autoLoadWorkspaceSessions: false,
-      taskInboxController: taskController,
-      createAgentClient: createClient,
-      createTaskAgentClient: createClient,
-    );
-
-    await tester.pumpWidget(app('v1'));
-    await _pumpUntil(
-      tester,
-      () => clients.any((client) => client.lastPrompt != null),
-    );
-    final oldForegroundClient = clients.first;
-    final oldClient = clients.singleWhere(
-      (client) => client.lastPrompt != null,
-    );
-
-    await tester.pumpWidget(app('v2'));
-    await _pumpUntil(
-      tester,
-      () =>
-          oldClient.cancelled &&
-          oldClient.disposed &&
-          oldForegroundClient.disposed &&
-          taskController.taskById('queued-task')?.status == TaskStatus.failed,
-    );
-
-    expect(oldClient.cancelled, isTrue);
-    expect(oldClient.disposed, isTrue);
-    expect(oldForegroundClient.cancelled, isFalse);
-    expect(oldForegroundClient.disposed, isTrue);
-    expect(
-      taskController.taskById('queued-task')?.error,
-      contains('cancelled'),
-    );
-    final liveClients = clients.where((client) => !client.disposed).toList();
-    expect(liveClients, hasLength(1));
-    expect(identical(liveClients.single, oldClient), isFalse);
-    expect(identical(liveClients.single, oldForegroundClient), isFalse);
-  });
-
-  testWidgets('AcpClientApp serializes config changes during task startup', (
-    tester,
-  ) async {
-    final store = _BlockingFirstLoadTaskStore();
-    final taskController = TaskInboxController(repository: store);
-    addTearDown(taskController.dispose);
-    AcpClientConfig config(String version) => AcpClientConfig.fromJson({
-      'default_agent_server': 'Codex',
-      'agent_servers': {
-        'Codex': {
-          'type': 'custom',
-          'command': '/usr/local/bin/codex',
-          'args': [version],
-        },
-      },
-    });
-    AcpClientApp app(String version) => AcpClientApp(
-      key: const ValueKey('serial-config-app'),
-      config: config(version),
-      autoLoadWorkspaceSessions: false,
-      taskInboxController: taskController,
-      createAgentClient: (_) => FakeAgentClient(),
-    );
-
-    await tester.pumpWidget(app('v1'));
-    await store.firstLoadStarted.future;
-    await tester.pumpWidget(app('v2'));
-    await tester.pumpWidget(app('v3'));
-    await tester.pump();
-
-    expect(store.loadCount, 1);
-    expect(store.maxConcurrentLoads, 1);
-
-    store.releaseFirstLoad();
-    await _pumpUntil(
-      tester,
-      () => store.loadCount == 1 && find.text('Inbox').evaluate().isNotEmpty,
-    );
-
-    expect(store.maxConcurrentLoads, 1);
-  });
-
-  testWidgets('AcpClientApp reopens a pending task after migration retry', (
-    tester,
-  ) async {
-    final temp = (await tester.runAsync(
-      () => Directory.systemTemp.createTemp('acp-app-migration-retry-'),
-    ))!;
-    addTearDown(() {
-      if (temp.existsSync()) temp.deleteSync(recursive: true);
-    });
-    final configPath = '${temp.path}/settings.json';
-    final source = File('${temp.path}/task_inbox_state.json');
-    await tester.runAsync(() => source.writeAsString('{broken'));
-    // Intentionally omit injection: this verifies an app-owned repository can
-    // retry migration beside a systemTemp config path.
-    AcpClientApp app() => AcpClientApp(
-      key: const ValueKey('migration-retry-app'),
-      config: AcpClientConfig(configPath: configPath),
-      autoLoadWorkspaceSessions: false,
-      initialTaskId: 'legacy-task',
-      discoverAgentServers: (_) async => const <AgentServerConfig>[],
-    );
-
-    await pumpWithWindowSize(tester, app(), const Size(1400, 900));
-    await _pumpUntil(
-      tester,
-      () => find
-          .textContaining('Could not initialize Task Inbox')
-          .evaluate()
-          .isNotEmpty,
-    );
-    final createdAt = DateTime.utc(2026, 7, 10, 9);
-    final snapshot = TaskInboxSnapshot(
-      updatedAt: createdAt,
-      tasks: [
-        TaskRecord(
-          id: 'legacy-task',
-          title: 'Retry migration task',
-          description: '',
-          workspacePath: '/workspace/app',
-          agentName: 'Codex',
-          status: TaskStatus.inbox,
-          priority: TaskPriority.normal,
-          createdAt: createdAt,
-          updatedAt: createdAt,
-        ),
-      ],
-    );
-    await tester.runAsync(
-      () => source.writeAsString(jsonEncode(snapshot.toJson())),
-    );
-
-    await tester.pumpWidget(app());
-    await _pumpUntil(tester, () => !source.existsSync());
-    await _pumpUntil(
-      tester,
-      () => find.text('Retry migration task').evaluate().isNotEmpty,
-    );
-
-    expect(find.text('Retry migration task'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 20)),
-    );
-  });
-
   testWidgets('AcpClientApp does not dispose injected controller', (
     tester,
   ) async {
@@ -1794,12 +623,7 @@ void main() {
     await controller.connect();
     expect(fake.connected, isTrue);
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
     await tester.pumpWidget(const SizedBox.shrink());
 
     expect(fake.connected, isTrue);
@@ -1812,12 +636,7 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
     await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
 
@@ -1851,10 +670,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -1907,10 +723,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -1935,7 +748,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         controller: controller,
-        taskInboxController: taskHarness.controller,
         initialResumeSessionId: 'session-from-link',
         initialResumeCwd: '/workspace/from-link',
       ),
@@ -1962,7 +774,6 @@ void main() {
       await tester.pumpWidget(
         AcpClientApp(
           controller: controller,
-          taskInboxController: taskHarness.controller,
           initialResumeSessionId: 'session-from-link',
           initialResumeCwd: '/workspace/from-link',
         ),
@@ -2007,7 +818,6 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2066,7 +876,6 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2109,7 +918,6 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2151,7 +959,6 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2190,7 +997,6 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2242,7 +1048,6 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2279,7 +1084,6 @@ void main() {
       AcpClientApp(
         config: config,
         autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
         createAgentClient: (_) => fake,
       ),
     );
@@ -2304,133 +1108,6 @@ void main() {
     expect(fake.lastResumeCwd, isNull);
   });
 
-  testWidgets('AcpClientApp opens task review deep links in the Inbox', (
-    tester,
-  ) async {
-    const deepLinkChannel = MethodChannel('ianvs_acp/deep_links');
-    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      deepLinkChannel,
-      (call) async {
-        if (call.method == 'getInitialDeepLinks') {
-          return <Object?>['ianvs-acp://task-review?id=task-review-1'];
-        }
-        return null;
-      },
-    );
-    addTearDown(() {
-      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        deepLinkChannel,
-        null,
-      );
-    });
-
-    final taskController = TaskInboxController(
-      repository: _MemoryTaskStore(
-        TaskInboxSnapshot(
-          updatedAt: DateTime(2026, 7, 7, 9),
-          tasks: [
-            TaskRecord(
-              id: 'task-review-1',
-              title: 'Review from deep link',
-              description: '',
-              workspacePath: '/workspace/app',
-              agentName: 'Codex',
-              status: TaskStatus.needsHumanReview,
-              priority: TaskPriority.normal,
-              createdAt: DateTime(2026, 7, 7, 8),
-              updatedAt: DateTime(2026, 7, 7, 9),
-            ),
-          ],
-        ),
-      ),
-    );
-    addTearDown(taskController.dispose);
-    await taskController.load();
-
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        taskInboxController: taskController,
-        autoLoadWorkspaceSessions: false,
-      ),
-      const Size(1400, 900),
-    );
-
-    expect(find.text('Review from deep link'), findsWidgets);
-    expect(find.text('Needs Review'), findsOneWidget);
-    expect(find.byKey(const Key('task-approve-export-button')), findsNothing);
-    expect(
-      find.byKey(const Key('task-mark-done-locally-button')),
-      findsOneWidget,
-    );
-  });
-
-  testWidgets('AcpClientApp does not retain unique task deep links', (
-    tester,
-  ) async {
-    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
-    addTearDown(() => temp.deleteSync(recursive: true));
-    final workspace = Directory('${temp.path}/session')..createSync();
-    final taskController = TaskInboxController(
-      repository: _MemoryTaskStore(
-        TaskInboxSnapshot(
-          updatedAt: DateTime(2026, 7, 11, 9),
-          tasks: [
-            for (final index in [0, 99])
-              TaskRecord(
-                id: 'task-$index',
-                title: 'Task $index',
-                description: '',
-                workspacePath: '/workspace/app',
-                agentName: 'Codex',
-                status: index == 0
-                    ? TaskStatus.needsHumanReview
-                    : TaskStatus.queued,
-                priority: TaskPriority.normal,
-                createdAt: DateTime(2026, 7, 11, 8),
-                updatedAt: DateTime(2026, 7, 11, 9),
-              ),
-          ],
-        ),
-      ),
-    );
-    addTearDown(taskController.dispose);
-    await taskController.load();
-
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        taskInboxController: taskController,
-        autoLoadWorkspaceSessions: false,
-      ),
-      const Size(1400, 900),
-    );
-
-    for (var index = 0; index < 100; index += 1) {
-      await sendDeepLink(tester, 'ianvs-acp://task?id=task-$index');
-    }
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(const Key('task-mark-done-locally-button')),
-      findsNothing,
-    );
-
-    await sendDeepLink(tester, 'ianvs-acp://task?id=task-0');
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(const Key('task-mark-done-locally-button')),
-      findsOneWidget,
-    );
-
-    await sendDeepLink(
-      tester,
-      'ianvs-acp://session?id=session-after-tasks&cwd=${Uri.encodeQueryComponent(workspace.path)}',
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('Open external session?'), findsOneWidget);
-    expect(find.text('session-after-tasks'), findsOneWidget);
-  });
-
   testWidgets('AcpClientApp opens workspace worktree dialog from sidebar', (
     tester,
   ) async {
@@ -2441,11 +1118,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-        gitWorkspaceDetector: (_) => true,
-      ),
+      AcpClientApp(controller: controller, gitWorkspaceDetector: (_) => true),
       const Size(1400, 900),
     );
 
@@ -2493,10 +1166,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -2554,10 +1224,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -2634,11 +1301,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller, autoLoadWorkspaceSessions: false),
       const Size(1400, 900),
     );
 
@@ -2671,11 +1334,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        autoLoadWorkspaceSessions: false,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller, autoLoadWorkspaceSessions: false),
       const Size(1400, 900),
     );
 
@@ -2718,7 +1377,6 @@ void main() {
       tester,
       AcpClientApp(
         controller: controller,
-        taskInboxController: taskHarness.controller,
         openSessionWindow: (args) async {
           openedArgs = args;
         },
@@ -2760,10 +1418,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -2815,7 +1470,6 @@ void main() {
       tester,
       AcpClientApp(
         config: config,
-        taskInboxController: taskHarness.controller,
         workspaceStateStore: _SessionIndexWorkspaceStateStore(
           const <AgentSession>[],
         ),
@@ -2873,7 +1527,6 @@ void main() {
       await tester.pumpWidget(
         AcpClientApp(
           config: config,
-          taskInboxController: taskHarness.controller,
           workspaceStateStore: workspaceStateStore,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (agentConfig) {
@@ -2988,11 +1641,7 @@ void main() {
 
       await pumpWithWindowSize(
         tester,
-        AcpClientApp(
-          controller: controller,
-          taskInboxController: taskHarness.controller,
-          autoLoadWorkspaceSessions: false,
-        ),
+        AcpClientApp(controller: controller, autoLoadWorkspaceSessions: false),
         const Size(1400, 900),
       );
 
@@ -3049,7 +1698,6 @@ void main() {
           initialResumeSessionId: 'remote-pi-session',
           initialResumeCwd: '/workspace/pi-active',
           initialResumeAgentName: 'pi ACP',
-          taskInboxController: taskHarness.controller,
           createAgentClient: (agentConfig) {
             factoryCalls.update(
               agentConfig.agentName,
@@ -3117,7 +1765,6 @@ void main() {
         tester,
         AcpClientApp(
           config: config,
-          taskInboxController: taskHarness.controller,
           createAgentClient: (agentConfig) {
             factoryCalls.update(
               agentConfig.agentName,
@@ -3208,7 +1855,6 @@ void main() {
         initialResumeSessionId: 'shared-session',
         initialResumeCwd: '/workspace/codex-bound',
         initialResumeAgentName: 'Codex',
-        taskInboxController: taskHarness.controller,
         createAgentClient: (agentConfig) => clients.putIfAbsent(
           agentConfig.agentName,
           () => _SameIdAcrossAgentsClient(agentConfig.agentName),
@@ -3348,10 +1994,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -3370,7 +2013,7 @@ void main() {
     );
   });
 
-  testWidgets('AcpClientApp opens a blank side task from the session menu', (
+  testWidgets('AcpClientApp opens a blank side session from the session menu', (
     tester,
   ) async {
     final fake = FakeAgentClient();
@@ -3381,16 +2024,13 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
     await tester.tap(find.byTooltip('Session actions').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Open Side Task'));
+    await tester.tap(find.text('Open Side Session'));
     await tester.pumpAndSettle();
 
     expect(controller.currentSession?.id, isNot(sourceSessionId));
@@ -3399,49 +2039,6 @@ void main() {
       controller.sessions.map((session) => session.id),
       contains(sourceSessionId),
     );
-  });
-
-  testWidgets('AcpClientApp schedules the current session in Task Inbox', (
-    tester,
-  ) async {
-    final fake = FakeAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace/current');
-    addTearDown(controller.dispose);
-    await controller.newSession(cwd: '/workspace/current');
-    final sessionId = controller.currentSession!.id;
-
-    await pumpWithWindowSize(
-      tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-      const Size(1400, 900),
-    );
-
-    await tester.tap(find.byTooltip('Session actions').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Add Scheduled Task...'));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('Add Scheduled Task'),
-      findsOneWidget,
-      reason: tester
-          .widgetList<Text>(find.byType(Text))
-          .map((widget) => widget.data)
-          .whereType<String>()
-          .join(' | '),
-    );
-    await tester.tap(find.byKey(const Key('create-scheduled-task')));
-    await tester.pumpAndSettle();
-    await _pumpUntil(tester, () => taskHarness.controller.tasks.isNotEmpty);
-
-    final task = taskHarness.controller.tasks.singleWhere(
-      (task) => task.metadata['source_session_id'] == sessionId,
-    );
-    expect(task.status, TaskStatus.queued);
-    expect(task.metadata['scheduled_at'], isA<String>());
-    expect(task.metadata['next_retry_at'], task.metadata['scheduled_at']);
   });
 
   testWidgets('AcpClientApp opens session worktree fork dialog from menu', (
@@ -3454,11 +2051,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-        gitWorkspaceDetector: (_) => true,
-      ),
+      AcpClientApp(controller: controller, gitWorkspaceDetector: (_) => true),
       const Size(1400, 900),
     );
 
@@ -3491,7 +2084,6 @@ void main() {
       tester,
       AcpClientApp(
         controller: controller,
-        taskInboxController: taskHarness.controller,
         gitWorkspaceDetector: (_) => true,
         processRunner: (executable, arguments) async {
           commands.add(<String>[executable, ...arguments]);
@@ -3548,11 +2140,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-        gitWorkspaceDetector: (_) => false,
-      ),
+      AcpClientApp(controller: controller, gitWorkspaceDetector: (_) => false),
       const Size(1400, 900),
     );
 
@@ -3562,7 +2150,7 @@ void main() {
     expect(find.text('Continue in...'), findsOneWidget);
     await tester.tap(find.text('Continue in...'));
     await tester.pumpAndSettle();
-    expect(find.text('Continue in New Task'), findsOneWidget);
+    expect(find.text('Continue in New Session'), findsOneWidget);
     expect(find.text('Continue in New Worktree'), findsNothing);
   });
 
@@ -3577,10 +2165,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -3632,10 +2217,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -3692,10 +2274,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -3744,10 +2323,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
     await tester.tap(find.byTooltip('Workspace actions').first);
@@ -3787,10 +2363,7 @@ void main() {
       final sessionId = controller.currentSession!.id;
       await pumpWithWindowSize(
         tester,
-        AcpClientApp(
-          controller: controller,
-          taskInboxController: taskHarness.controller,
-        ),
+        AcpClientApp(controller: controller),
         const Size(1400, 900),
       );
       await _openSidebarSessionMenu(tester, controller);
@@ -3875,12 +2448,7 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
     final promptField = find.descendant(
       of: find.byKey(const Key('prompt-input-surface')),
       matching: find.byType(TextField),
@@ -3949,10 +2517,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
+      AcpClientApp(controller: controller),
       const Size(390, 844),
     );
 
@@ -3973,12 +2538,7 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
 
     expect(controller.canListSessions, isFalse);
     expect(controller.canResumeSessions, isFalse);
@@ -3997,12 +2557,7 @@ void main() {
       addTearDown(controller.dispose);
       await controller.connect();
 
-      await tester.pumpWidget(
-        AcpClientApp(
-          controller: controller,
-          taskInboxController: taskHarness.controller,
-        ),
-      );
+      await tester.pumpWidget(AcpClientApp(controller: controller));
 
       expect(controller.canListSessions, isTrue);
       expect(controller.canResumeSessions, isFalse);
@@ -4021,12 +2576,7 @@ void main() {
       final controller = ChatController(client: fake, cwd: '/workspace');
       addTearDown(controller.dispose);
 
-      await tester.pumpWidget(
-        AcpClientApp(
-          controller: controller,
-          taskInboxController: taskHarness.controller,
-        ),
-      );
+      await tester.pumpWidget(AcpClientApp(controller: controller));
 
       expect(controller.canResumeSessions, isTrue);
 
@@ -4054,12 +2604,7 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
@@ -4079,12 +2624,7 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
@@ -4126,7 +2666,6 @@ void main() {
             },
           },
         }),
-        taskInboxController: taskHarness.controller,
       ),
     );
 
@@ -4148,12 +2687,7 @@ void main() {
     addTearDown(controller.dispose);
     await controller.connect();
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
 
     expect(
       controller.toolCallExecutionPolicy,
@@ -4193,12 +2727,7 @@ void main() {
     addTearDown(controller.dispose);
     await controller.newSession();
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
     expect(find.text('GPT-5'), findsOneWidget);
 
     await tester.tap(find.text('GPT-5'));
@@ -4247,12 +2776,7 @@ void main() {
     addTearDown(controller.dispose);
     await controller.newSession();
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
     expect(find.text('Medium'), findsOneWidget);
 
     await tester.tap(find.text('Medium'));
@@ -4280,12 +2804,7 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        taskInboxController: taskHarness.controller,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: controller));
     fake.emitPermissionRequest(
       AcpPermissionRequest(
         id: 'permission-1',
@@ -4321,55 +2840,49 @@ void main() {
     expect(find.text('Allowed'), findsOneWidget);
   });
 
-  testWidgets(
-    'AcpClientApp migrates legacy pi ACP session index entries to Pi',
-    (tester) async {
-      final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
-        AgentSession(
-          id: 'pi-session',
-          cwd: '/workspace/pi',
-          createdAt: DateTime(2026, 7, 1),
-          title: 'Pi session',
-          agentName: 'pi ACP',
-        ),
-        AgentSession(
-          id: 'pi-session',
-          cwd: '/workspace/pi',
-          createdAt: DateTime(2026, 7, 1),
-          title: 'Pi session',
-          agentName: 'Pi',
-        ),
-      ]);
-      final config = AcpClientConfig.fromJson({
-        'default_agent_server': 'Codex',
-        'agent_servers': {
-          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
-          'Pi': {
-            'type': 'custom',
-            'command': '/Users/example/.local/bin/pi-acp',
-          },
-        },
-      }, configPath: '/tmp/ianvs-acp/settings.json');
+  testWidgets('AcpClientApp normalizes pi ACP session index entries to Pi', (
+    tester,
+  ) async {
+    final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+      AgentSession(
+        id: 'pi-session',
+        cwd: '/workspace/pi',
+        createdAt: DateTime(2026, 7, 1),
+        title: 'Pi session',
+        agentName: 'pi ACP',
+      ),
+      AgentSession(
+        id: 'pi-session',
+        cwd: '/workspace/pi',
+        createdAt: DateTime(2026, 7, 1),
+        title: 'Pi session',
+        agentName: 'Pi',
+      ),
+    ]);
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        'Pi': {'type': 'custom', 'command': '/Users/example/.local/bin/pi-acp'},
+      },
+    }, configPath: '/tmp/ianvs-acp/settings.json');
 
-      await tester.pumpWidget(
-        AcpClientApp(
-          config: config,
-          taskInboxController: taskHarness.controller,
-          workspaceStateStore: store,
-          discoverAgentServers: (_) => const <AgentServerConfig>[],
-          createAgentClient: (_) =>
-              FakeAgentClient(supportsListSessions: false),
-        ),
-      );
-      await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        workspaceStateStore: store,
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (_) => FakeAgentClient(supportsListSessions: false),
+      ),
+    );
+    await _pumpUntil(tester, () => store.lastSaved.isNotEmpty);
 
-      final savedPiSessions = store.lastSaved
-          .where((session) => session.id == 'pi-session')
-          .toList(growable: false);
-      expect(savedPiSessions, hasLength(1));
-      expect(savedPiSessions.single.agentName, 'Pi');
-    },
-  );
+    final savedPiSessions = store.lastSaved
+        .where((session) => session.id == 'pi-session')
+        .toList(growable: false);
+    expect(savedPiSessions, hasLength(1));
+    expect(savedPiSessions.single.agentName, 'Pi');
+  });
 
   testWidgets('AcpClientApp deduplicates shared ids across configured agents', (
     tester,
@@ -4422,7 +2935,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        taskInboxController: taskHarness.controller,
         workspaceStateStore: store,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         createAgentClient: (_) => FakeAgentClient(supportsListSessions: false),
@@ -4451,7 +2963,6 @@ void main() {
       await tester.pumpWidget(
         AcpClientApp(
           config: config,
-          taskInboxController: taskHarness.controller,
           workspaceStateStore: store,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (_) =>
@@ -4723,39 +3234,6 @@ class _TrackingHangingAgentClient extends FakeAgentClient {
   }
 }
 
-class _ProcessScopedAuthAgentClient extends FakeAgentClient {
-  _ProcessScopedAuthAgentClient()
-    : super(
-        authMethods: const [
-          <String, Object?>{'id': 'browser', 'name': 'Browser sign-in'},
-        ],
-      );
-
-  bool authenticated = false;
-
-  @override
-  Future<AgentSession> createSession({
-    required String cwd,
-    List<String> additionalDirectories = const <String>[],
-  }) {
-    if (!authenticated) throw StateError('auth_required');
-    return super.createSession(
-      cwd: cwd,
-      additionalDirectories: additionalDirectories,
-    );
-  }
-
-  @override
-  Future<void> authenticate({required String methodId}) async {
-    await super.authenticate(methodId: methodId);
-    authenticated = true;
-  }
-}
-
-class _MemoryTaskStore extends MemoryTaskRepository {
-  _MemoryTaskStore([super.snapshot]);
-}
-
 class _FailOnceWorkspaceStateStore extends WorkspaceSidebarStateStore {
   _FailOnceWorkspaceStateStore() : super(path: 'memory');
 
@@ -4790,42 +3268,5 @@ class _SessionIndexWorkspaceStateStore extends WorkspaceSidebarStateStore {
   @override
   Future<void> saveSessionIndex(Iterable<AgentSession> sessions) async {
     lastSaved = List<AgentSession>.unmodifiable(sessions);
-  }
-}
-
-class _DeterministicIds {
-  final Map<String, int> _counts = <String, int>{};
-
-  String next(String prefix) {
-    final count = (_counts[prefix] ?? 0) + 1;
-    _counts[prefix] = count;
-    return '$prefix-$count';
-  }
-}
-
-class _BlockingFirstLoadTaskStore extends MemoryTaskRepository {
-  _BlockingFirstLoadTaskStore() {
-    beforeOperation = (operation) async {
-      if (operation != 'load') return;
-      activeLoads += 1;
-      if (activeLoads > maxConcurrentLoads) maxConcurrentLoads = activeLoads;
-      try {
-        if (loadCount == 1) {
-          firstLoadStarted.complete();
-          await _firstLoadReleased.future;
-        }
-      } finally {
-        activeLoads -= 1;
-      }
-    };
-  }
-
-  final Completer<void> firstLoadStarted = Completer<void>();
-  final Completer<void> _firstLoadReleased = Completer<void>();
-  int activeLoads = 0;
-  int maxConcurrentLoads = 0;
-
-  void releaseFirstLoad() {
-    if (!_firstLoadReleased.isCompleted) _firstLoadReleased.complete();
   }
 }

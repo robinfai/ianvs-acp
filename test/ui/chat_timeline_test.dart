@@ -139,7 +139,7 @@ void main() {
   });
 
   testWidgets(
-    'ChatTimeline keeps legacy prompt and response visible while process is collapsed',
+    'ChatTimeline keeps unscoped prompt and response visible while process is collapsed',
     (tester) async {
       await tester.pumpWidget(
         timeline([
@@ -527,7 +527,7 @@ Review the screenshot''',
   );
 
   testWidgets(
-    'ChatTimeline legacy messages share their response in outline preview',
+    'ChatTimeline unscoped messages share their response in outline preview',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(980, 420));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -2419,7 +2419,7 @@ foregroundDecoration: BoxDecoration(
     expect(find.text('hover\n展开\n默认'), findsOneWidget);
   });
 
-  testWidgets('ChatTimeline restores legacy user image markers as thumbnails', (
+  testWidgets('ChatTimeline projects text image markers as thumbnails', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -2436,10 +2436,7 @@ foregroundDecoration: BoxDecoration(
     );
     await tester.pump();
 
-    expect(
-      find.byKey(const ValueKey('legacy-user-image-thumbnails')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('text-image-thumbnails')), findsOneWidget);
     expect(find.byType(Image), findsOneWidget);
     final thumbnailImage = tester.widget<Image>(find.byType(Image));
     final thumbnailProvider = thumbnailImage.image as ResizeImage;
@@ -2451,9 +2448,7 @@ foregroundDecoration: BoxDecoration(
     expect(find.textContaining('[@image]'), findsNothing);
 
     await tester.tap(
-      find.byKey(
-        const ValueKey('legacy-user-image-thumbnail:/tmp/reference.png'),
-      ),
+      find.byKey(const ValueKey('text-image-thumbnail:/tmp/reference.png')),
     );
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('image-preview-modal')), findsOneWidget);

@@ -16,8 +16,6 @@ import '../../platform/file_manager.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
 import '../../state/workspace_controller.dart';
-import '../../tasks/task_inbox_controller.dart';
-import '../../tasks/task_record.dart';
 import '../../workspace/workspace.dart';
 import '../../workspace/workspace_sidebar_state_store.dart';
 import '../components/agent_config_dialog.dart';
@@ -33,7 +31,6 @@ import '../components/protocol_feature_review_dialog.dart';
 import '../components/resume_session_dialog.dart';
 import '../components/session_settings_dialog.dart';
 import '../components/session_workspace_review_dialog.dart';
-import '../components/task_inbox_sidebar.dart';
 import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
 import '../image_decode_budget.dart';
@@ -41,18 +38,11 @@ import '../theme/app_design_tokens.dart';
 
 typedef AppShellProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
-typedef AppShellAgentAuthenticated =
-    FutureOr<void> Function(String agentName, String methodId);
-
-enum AppShellSidebarMode { workspaces, inbox }
 
 class AppShell extends StatelessWidget {
   const AppShell({
     super.key,
     required this.controller,
-    this.taskInboxController,
-    this.initialSidebarMode = AppShellSidebarMode.workspaces,
-    this.selectedTaskId,
     this.agentName = 'Codex',
     this.agentServers = const <AgentServerConfig>[],
     this.mcpServers = const <McpServerConfig>[],
@@ -74,9 +64,6 @@ class AppShell extends StatelessWidget {
     this.onSessionMenuAction,
     this.onCreateWorkspaceWorktree,
     this.onArchiveWorkspaceSessions,
-    this.onRunTask,
-    this.onOpenTaskSession,
-    this.onAgentAuthenticated,
     this.onSaveConfig,
     this.onValidateAssistantAgent,
     this.onLoadSessionCatalogs,
@@ -89,9 +76,6 @@ class AppShell extends StatelessWidget {
   });
 
   final ChatController controller;
-  final TaskInboxController? taskInboxController;
-  final AppShellSidebarMode initialSidebarMode;
-  final String? selectedTaskId;
   final String agentName;
   final List<AgentServerConfig> agentServers;
   final List<McpServerConfig> mcpServers;
@@ -127,11 +111,6 @@ class AppShell extends StatelessWidget {
     WorkspaceRecord workspace,
   )?
   onArchiveWorkspaceSessions;
-  final FutureOr<void> Function(BuildContext context, TaskRecord task)?
-  onRunTask;
-  final FutureOr<void> Function(BuildContext context, TaskRecord task)?
-  onOpenTaskSession;
-  final AppShellAgentAuthenticated? onAgentAuthenticated;
   final AcpConfigSaveCallback? onSaveConfig;
   final AssistantAgentValidationCallback? onValidateAssistantAgent;
   final Future<void> Function()? onLoadSessionCatalogs;
@@ -472,37 +451,6 @@ class AppShell extends StatelessWidget {
                                     stateStore: workspaceStateStore,
                                     gitWorkspaceDetector: gitWorkspaceDetector,
                                   ),
-                                  taskInboxController: taskInboxController,
-                                  initialMode: initialSidebarMode,
-                                  taskInboxSidebar: taskInboxController == null
-                                      ? null
-                                      : TaskInboxSidebar(
-                                          controller: taskInboxController!,
-                                          selectedTaskId: selectedTaskId,
-                                          defaultWorkspacePath:
-                                              currentWorkspace.path,
-                                          defaultAgentName: agentName,
-                                          defaultModel:
-                                              controller.currentModelValue,
-                                          agentNames: _agentNamesForTasks(),
-                                          onRunTask: onRunTask == null
-                                              ? null
-                                              : (task) =>
-                                                    onRunTask!(context, task),
-                                          onOpenLinkedSession:
-                                              onOpenTaskSession == null
-                                              ? null
-                                              : (task) {
-                                                  unawaited(
-                                                    Future<void>.sync(
-                                                      () => onOpenTaskSession!(
-                                                        context,
-                                                        task,
-                                                      ),
-                                                    ),
-                                                  );
-                                                },
-                                        ),
                                 ),
                               ),
                               const VerticalDivider(
@@ -613,10 +561,7 @@ class AppShell extends StatelessWidget {
           );
     if (methodId == null || methodId.isEmpty) return;
     if (!context.mounted) return;
-    final authenticated = await controller.authenticate(methodId);
-    final callback = onAgentAuthenticated;
-    if (!authenticated || callback == null) return;
-    await Future<void>.sync(() => callback(controller.agentName, methodId));
+    await controller.authenticate(methodId);
   }
 
   List<ChatController> _controllers() {
@@ -720,18 +665,6 @@ class AppShell extends StatelessWidget {
       if (controller.agentName == trimmed) return controller;
     }
     return null;
-  }
-
-  List<String> _agentNamesForTasks() {
-    final names = <String>{};
-    final active = agentName.trim();
-    if (active.isNotEmpty) names.add(active);
-    for (final server in agentServers) {
-      final name = server.name.trim();
-      if (name.isNotEmpty) names.add(name);
-    }
-    final sorted = names.toList()..sort();
-    return sorted;
   }
 
   Future<void> _revealWorkspaceInFinder(
@@ -886,76 +819,23 @@ class AppShell extends StatelessWidget {
   }
 }
 
-class _ShellSidebar extends StatefulWidget {
+class _ShellSidebar extends StatelessWidget {
   const _ShellSidebar({
     required this.agentName,
     required this.workspaceSidebar,
-    required this.taskInboxController,
-    required this.initialMode,
-    required this.taskInboxSidebar,
   });
 
   final String agentName;
   final Widget workspaceSidebar;
-  final TaskInboxController? taskInboxController;
-  final AppShellSidebarMode initialMode;
-  final Widget? taskInboxSidebar;
-
-  @override
-  State<_ShellSidebar> createState() => _ShellSidebarState();
-}
-
-class _ShellSidebarState extends State<_ShellSidebar> {
-  late AppShellSidebarMode _mode;
-
-  @override
-  void initState() {
-    super.initState();
-    _mode = widget.initialMode;
-  }
-
-  @override
-  void didUpdateWidget(covariant _ShellSidebar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.taskInboxController == null) {
-      _mode = AppShellSidebarMode.workspaces;
-      return;
-    }
-    if (oldWidget.taskInboxController == null &&
-        widget.initialMode == AppShellSidebarMode.inbox) {
-      _mode = AppShellSidebarMode.inbox;
-      return;
-    }
-    if (widget.initialMode != oldWidget.initialMode) {
-      _mode = widget.initialMode;
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
-    final hasInbox =
-        widget.taskInboxController != null && widget.taskInboxSidebar != null;
-
     return Container(
       color: AppColors.bg,
       child: Column(
         children: [
-          _SidebarBrandHeader(agentName: widget.agentName),
-          if (hasInbox)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
-              child: _SidebarModeSwitch(
-                selectedMode: _mode,
-                onChanged: (mode) {
-                  setState(() => _mode = mode);
-                },
-              ),
-            ),
-          Expanded(
-            child: !hasInbox || _mode == AppShellSidebarMode.workspaces
-                ? widget.workspaceSidebar
-                : widget.taskInboxSidebar!,
-          ),
+          _SidebarBrandHeader(agentName: agentName),
+          Expanded(child: workspaceSidebar),
         ],
       ),
     );
@@ -1002,119 +882,6 @@ class _SidebarBrandHeader extends StatelessWidget {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-class _SidebarModeSwitch extends StatelessWidget {
-  const _SidebarModeSwitch({
-    required this.selectedMode,
-    required this.onChanged,
-  });
-
-  final AppShellSidebarMode selectedMode;
-  final ValueChanged<AppShellSidebarMode> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 30,
-      width: double.infinity,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: AppColors.bg,
-          borderRadius: BorderRadius.circular(AppRadius.md),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(AppRadius.md),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _SidebarModeSegment(
-                flex: 7,
-                mode: AppShellSidebarMode.workspaces,
-                selected: selectedMode == AppShellSidebarMode.workspaces,
-                icon: Icons.folder_open_rounded,
-                label: 'Workspaces',
-                onChanged: onChanged,
-              ),
-              const SizedBox(width: 2),
-              _SidebarModeSegment(
-                flex: 5,
-                mode: AppShellSidebarMode.inbox,
-                selected: selectedMode == AppShellSidebarMode.inbox,
-                icon: Icons.inbox_rounded,
-                label: 'Inbox',
-                onChanged: onChanged,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SidebarModeSegment extends StatelessWidget {
-  const _SidebarModeSegment({
-    required this.flex,
-    required this.mode,
-    required this.selected,
-    required this.icon,
-    required this.label,
-    required this.onChanged,
-  });
-
-  final int flex;
-  final AppShellSidebarMode mode;
-  final bool selected;
-  final IconData icon;
-  final String label;
-  final ValueChanged<AppShellSidebarMode> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = selected ? AppColors.textPrimary : AppColors.textSecondary;
-    return Expanded(
-      flex: flex,
-      child: Semantics(
-        button: true,
-        selected: selected,
-        label: label,
-        child: Material(
-          color: selected ? AppColors.surfaceSelected : Colors.transparent,
-          child: InkWell(
-            onTap: selected ? null : () => onChanged(mode),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(icon, size: 15, color: color),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      label,
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: color,
-                        fontSize: 12,
-                        fontWeight: selected
-                            ? FontWeight.w600
-                            : FontWeight.w500,
-                        height: 1,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }

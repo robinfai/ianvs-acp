@@ -37,7 +37,7 @@ void main() {
     expect(capabilities.session.close, isTrue);
   });
 
-  test('legacy boolean true capabilities remain supported', () {
+  test('boolean shorthand capabilities remain supported', () {
     final capabilities = AcpAgentCapabilities.fromInitialize(
       protocolVersion: 1,
       agentCapabilities: <String, dynamic>{

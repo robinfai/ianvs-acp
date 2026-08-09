@@ -113,10 +113,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       TextEditingController(text: widget.storage.maxSizeGb.toString());
   late final TextEditingController _storageRetentionController =
       TextEditingController(text: widget.storage.retentionDays.toString());
-  late final TextEditingController _storageCleanupIntervalController =
-      TextEditingController(
-        text: widget.storage.cleanupIntervalHours.toString(),
-      );
   late String? _defaultAgentName = widget.defaultAgentName;
   bool _saving = false;
   String? _error;
@@ -138,7 +134,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _assistantFallbackTitleController.dispose();
     _storageMaxSizeController.dispose();
     _storageRetentionController.dispose();
-    _storageCleanupIntervalController.dispose();
     super.dispose();
   }
 
@@ -428,7 +423,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           const SizedBox(height: 4),
           const Text(
             'Uses a separate, read-only agent to improve session titles and '
-            'summarize completed work. It never participates in the main task.',
+            'summarize completed work. It never participates in the active session.',
             style: TextStyle(
               color: AppColors.textSecondary,
               fontSize: 12,
@@ -556,7 +551,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           ),
           _ConfigSwitch(
             key: const Key('assistant-turn-summary-switch'),
-            title: 'Task result summaries',
+            title: 'Completed turn summaries',
             value: _assistantSummarizeTurns,
             onChanged: !_assistantEnabled
                 ? null
@@ -759,9 +754,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'The limit is shared by workflow, legacy inbox, and '
-            'session-recovery databases. Expired operational history is '
-            'removed automatically; active tasks are retained.',
+            'The limit applies to the ACP session-recovery database. '
+            'Expired recovery metadata is removed automatically.',
             style: TextStyle(
               color: AppColors.textSecondary,
               fontSize: 12,
@@ -781,15 +775,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           _DialogTextField(
             key: const Key('storage-retention-days-field'),
             controller: _storageRetentionController,
-            label: 'Operational history retention (days)',
+            label: 'Session recovery retention (days)',
             icon: Icons.history_rounded,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('storage-cleanup-interval-hours-field'),
-            controller: _storageCleanupIntervalController,
-            label: 'Cleanup interval (hours)',
-            icon: Icons.cleaning_services_outlined,
           ),
         ],
       ),
@@ -805,10 +792,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       _storageRetentionController.text,
       'Storage retention',
     );
-    final cleanupInterval = _positiveIntValue(
-      _storageCleanupIntervalController.text,
-      'Storage cleanup interval',
-    );
     if (maxSize > 8192) {
       throw const FormatException(
         'SQLite total limit must be at most 8192 GB.',
@@ -819,16 +802,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         'Storage retention must be at most 3650 days.',
       );
     }
-    if (cleanupInterval > 24 * 30) {
-      throw const FormatException(
-        'Storage cleanup interval must be at most 720 hours.',
-      );
-    }
-    return SqliteStorageConfig(
-      maxSizeGb: maxSize,
-      retentionDays: retention,
-      cleanupIntervalHours: cleanupInterval,
-    );
+    return SqliteStorageConfig(maxSizeGb: maxSize, retentionDays: retention);
   }
 
   AssistantAgentConfig _assistantAgentConfig() {

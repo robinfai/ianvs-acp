@@ -1383,7 +1383,7 @@ enum WorkspaceSessionMenuAction {
   rename,
   archive,
   toggleUnread,
-  openSideTask,
+  openSideSession,
   revealInFinder,
   copyWorkingDirectory,
   copySessionId,
@@ -1391,7 +1391,6 @@ enum WorkspaceSessionMenuAction {
   copyMarkdown,
   forkLocally,
   forkToNewWorktree,
-  addScheduledTask,
   openInNewWindow,
 }
 
@@ -1979,9 +1978,9 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
     ),
     const PopupMenuDivider(height: 8),
     _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.openSideTask,
+      value: WorkspaceSessionMenuAction.openSideSession,
       icon: Icons.add_circle_outline_rounded,
-      label: 'Open Side Task',
+      label: 'Open Side Session',
     ),
     _sessionMenuItem(
       value: WorkspaceSessionMenuAction.revealInFinder,
@@ -2022,11 +2021,6 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
         label: 'Fork to New Worktree',
         enabled: canFork,
       ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.addScheduledTask,
-      icon: Icons.schedule_rounded,
-      label: 'Add Scheduled Task...',
-    ),
     const PopupMenuDivider(height: 8),
     _sessionMenuItem(
       value: WorkspaceSessionMenuAction.openInNewWindow,

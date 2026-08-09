@@ -162,7 +162,7 @@ void main() {
     );
   });
 
-  test('offers and applies migration from the legacy Codex adapter', () async {
+  test('upgrades the Zed Codex package to the ACP package', () async {
     final temp = await Directory.systemTemp.createTemp('ianvs_acp_migration');
     addTearDown(() => temp.delete(recursive: true));
     final configPath = '${temp.path}/settings.json';
@@ -203,7 +203,7 @@ void main() {
     expect(migrated.agentName, 'OpenAI Codex');
   });
 
-  test('migration upgrades every legacy Codex profile', () async {
+  test('package upgrade updates every Zed Codex profile', () async {
     final temp = await Directory.systemTemp.createTemp('ianvs_acp_migration');
     addTearDown(() => temp.delete(recursive: true));
     final configPath = '${temp.path}/settings.json';

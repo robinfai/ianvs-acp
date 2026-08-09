@@ -10,15 +10,17 @@ void main() {
       'ianvs-secure-reader-fifo-',
     );
     addTearDown(() => workspace.delete(recursive: true));
-    final outbox = Directory('${workspace.path}/.ianvs/outbox/task-1');
-    await outbox.create(recursive: true);
-    final fifoPath = '${outbox.path}/report';
+    final sessionCache = Directory(
+      '${workspace.path}/.ianvs/session-cache/session-1',
+    );
+    await sessionCache.create(recursive: true);
+    final fifoPath = '${sessionCache.path}/report';
     final result = await Process.run('mkfifo', <String>[fifoPath]);
     expect(result.exitCode, 0, reason: result.stderr.toString());
 
     final read = await readWorkspaceFileSecurely(
       resolvedWorkspacePath: await workspace.resolveSymbolicLinks(),
-      relativePath: '.ianvs/outbox/task-1/report',
+      relativePath: '.ianvs/session-cache/session-1/report',
       previewLimit: 64,
     ).timeout(const Duration(seconds: 1));
 

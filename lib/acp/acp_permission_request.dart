@@ -99,14 +99,14 @@ class AcpPermissionChoice {
           normalized == 'deny' ||
           normalized == 'reject';
     }
-    final legacyText = '$optionId $name'.trim().toLowerCase();
-    final words = legacyText
+    final fallbackText = '$optionId $name'.trim().toLowerCase();
+    final words = fallbackText
         .split(RegExp(r'[^a-z0-9]+'))
         .where((word) => word.isNotEmpty)
         .toSet();
     return words.contains('once') ||
-        legacyText.contains('this time') ||
-        legacyText.contains('one time');
+        fallbackText.contains('this time') ||
+        fallbackText.contains('one time');
   }
 
   Map<String, Object?> toJson() {

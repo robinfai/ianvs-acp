@@ -168,7 +168,7 @@ void main() {
     );
   });
 
-  test('legacy persistent choices are not treated as single use', () {
+  test('persistent choices without kind are not treated as single use', () {
     const choice = AcpPermissionChoice(
       optionId: 'allow-always',
       name: 'Always allow',
@@ -199,8 +199,8 @@ void main() {
     );
     expect(generated.contentFingerprint, request.contentFingerprint);
 
-    final legacy = AcpPermissionRequest(
-      id: 'legacy',
+    final unscoped = AcpPermissionRequest(
+      id: 'unscoped',
       title: '',
       rationale: '',
       sessionId: 'session-1',
@@ -208,14 +208,14 @@ void main() {
       options: const <String>[],
       requestedAt: DateTime.utc(2026),
     );
-    expect(legacy.lifecycleId, isEmpty);
+    expect(unscoped.lifecycleId, isEmpty);
     expect(
-      legacy.bindingKey,
-      'legacy:${legacy.contentFingerprint}:0',
-      reason: 'empty lifecycleId must preserve the pre-migration key format',
+      unscoped.bindingKey,
+      'unscoped:${unscoped.contentFingerprint}:0',
+      reason: 'empty lifecycleId must use the request identity',
     );
-    expect(legacy.withGeneration(3).lifecycleId, isEmpty);
-    expect(legacy.forAudit().lifecycleId, isEmpty);
+    expect(unscoped.withGeneration(3).lifecycleId, isEmpty);
+    expect(unscoped.forAudit().lifecycleId, isEmpty);
   });
 
   test('explicit permission decisions use kind without name fallback', () {
@@ -230,11 +230,11 @@ void main() {
       kind: 'reject_once',
     );
     const nameOnly = AcpPermissionChoice(
-      optionId: 'legacy-reject',
+      optionId: 'fallback-reject',
       name: 'Reject',
     );
     const nameOnlyAllow = AcpPermissionChoice(
-      optionId: 'legacy-allow',
+      optionId: 'fallback-allow',
       name: 'Allow',
     );
     const unknownKind = AcpPermissionChoice(

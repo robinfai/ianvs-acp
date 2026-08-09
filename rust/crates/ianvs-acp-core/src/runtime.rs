@@ -827,7 +827,7 @@ impl RuntimeHandle {
         }
     }
 
-    /// Bounded blocking receive for daemon hosts and integration tests.
+    /// Bounded blocking receive for native hosts and integration tests.
     pub fn recv_event_timeout(
         &self,
         timeout: Duration,

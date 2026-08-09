@@ -536,7 +536,7 @@ void main() {
   });
 
   testWidgets(
-    'SessionSettingsDialog renders legacy modes without config options',
+    'SessionSettingsDialog renders mode fallback without config options',
     (tester) async {
       final controller = ChatController(
         client: FakeAgentClient(sessionSettings: _settingsWithModesOnly),

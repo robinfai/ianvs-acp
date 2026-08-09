@@ -272,7 +272,7 @@ final class AcpConfigSecretMigrator {
         existingValues[entry.key] = value;
         referenceKinds[entry.key] = read.kind;
         if (shouldProtect(entry.key)) {
-          if (read.kind == _OwnedReferenceKind.legacy) {
+          if (read.kind == _OwnedReferenceKind.unscoped) {
             final migrated = await writes.put(
               owner,
               value,
@@ -303,7 +303,7 @@ final class AcpConfigSecretMigrator {
         }
         final referenceKind = referenceKinds[entry.key] ?? existingRead!.kind;
         var desiredReference = desiredRefs[entry.key];
-        if (referenceKind == _OwnedReferenceKind.legacy &&
+        if (referenceKind == _OwnedReferenceKind.unscoped &&
             desiredReference == null) {
           desiredReference = await writes.put(
             owner,
@@ -346,13 +346,13 @@ final class AcpConfigSecretMigrator {
           namespace: owner.namespace,
           key: owner.key,
         )
-        ? _OwnedReferenceKind.current
+        ? _OwnedReferenceKind.targetScoped
         : _store.referenceMatches(
             reference,
-            namespace: owner.legacyNamespace,
+            namespace: owner.unscopedNamespace,
             key: owner.key,
           )
-        ? _OwnedReferenceKind.legacy
+        ? _OwnedReferenceKind.unscoped
         : null;
     if (kind == null) {
       throw FormatException(
@@ -492,7 +492,7 @@ final class _OwnedSecretSnapshot {
   final String ownerLabel;
 }
 
-enum _OwnedReferenceKind { current, legacy }
+enum _OwnedReferenceKind { targetScoped, unscoped }
 
 final class _OwnedSecretRead {
   const _OwnedSecretRead(this.value, this.kind);
@@ -535,7 +535,13 @@ final class PreparedAcpConfigSecrets {
     final errors = <String, Object>{};
     for (final intent in intents) {
       final reference = intent.reference;
-      if (!secretStoreOwnsIntent(_store, intent, allowLegacy: true)) continue;
+      if (!secretStoreOwnsIntent(
+        _store,
+        intent,
+        allowUnscopedNamespace: true,
+      )) {
+        continue;
+      }
       try {
         await _store.delete(reference);
       } catch (error) {
@@ -638,7 +644,7 @@ Future<Map<String, SecretOwner>> collectSecretReferenceOwners(
 bool secretStoreOwnsIntent(
   SecretStore store,
   SecretCleanupIntent intent, {
-  bool allowLegacy = false,
+  bool allowUnscopedNamespace = false,
 }) {
   final owner = intent.owner;
   if (store.referenceMatches(
@@ -648,10 +654,10 @@ bool secretStoreOwnsIntent(
   )) {
     return true;
   }
-  return allowLegacy &&
+  return allowUnscopedNamespace &&
       store.referenceMatches(
         intent.reference,
-        namespace: owner.legacyNamespace,
+        namespace: owner.unscopedNamespace,
         key: owner.key,
       );
 }

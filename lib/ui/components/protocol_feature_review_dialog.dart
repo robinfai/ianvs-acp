@@ -350,13 +350,13 @@ class ProtocolFeatureReviewDialog extends StatelessWidget {
         status: _FeatureStatus.done,
         reference: 'protocol/v1/session-modes',
         implementation: [
-          'legacy modes are used only when configOptions are absent',
+          'session modes provide the fallback when configOptions are absent',
         ],
         gui: ['Session Settings shows a fallback Mode selector'],
         runtime: [
           _runtimeFlag(
-            'legacy modes visible',
-            settings.shouldUseLegacyModes && settings.hasModes,
+            'mode fallback visible',
+            settings.shouldUseModeFallback && settings.hasModes,
           ),
         ],
       ),

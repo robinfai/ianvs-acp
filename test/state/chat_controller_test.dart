@@ -11897,7 +11897,7 @@ void main() {
     expect(controller.lastError, isNull);
   });
 
-  test('runtime config option updates clear legacy modes', () async {
+  test('runtime config option updates clear the mode fallback', () async {
     final controller = ChatController(
       client: _ConfigOptionUpdateAgentClient(),
       cwd: '/workspace',

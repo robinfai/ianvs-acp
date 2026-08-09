@@ -1034,13 +1034,12 @@ void main() {
     expect(find.text('Rename Conversation'), findsOneWidget);
     expect(find.text('Archive Conversation'), findsOneWidget);
     expect(find.text('Mark as Unread'), findsOneWidget);
-    expect(find.text('Open Side Task'), findsOneWidget);
+    expect(find.text('Open Side Session'), findsOneWidget);
     expect(find.text('Copy Session ID'), findsOneWidget);
     expect(find.text('Copy Deep Link'), findsOneWidget);
     expect(find.text('Copy as Markdown'), findsOneWidget);
     expect(find.text('Fork Locally'), findsOneWidget);
     expect(find.text('Fork to New Worktree'), findsOneWidget);
-    expect(find.text('Add Scheduled Task...'), findsOneWidget);
     expect(find.text('Open in New Window'), findsOneWidget);
 
     await tester.tap(find.text('Copy Session ID'));
@@ -1651,7 +1650,7 @@ void main() {
         ),
         AgentEvent(
           type: AgentEventType.agentTextDone,
-          text: 'Advance Rust ACP runtime, Task Inbox, and tooling.',
+          text: 'Advance the Rust ACP runtime and workspace tooling.',
         ),
       ],
     );
@@ -1706,7 +1705,7 @@ void main() {
     );
     expect(find.text('codex/workspace-sidebar-actions'), findsOneWidget);
     expect(
-      find.text('Advance Rust ACP runtime, Task Inbox, and tooling.'),
+      find.text('Advance the Rust ACP runtime and workspace tooling.'),
       findsOneWidget,
     );
     expect(find.text('No CI checks'), findsOneWidget);

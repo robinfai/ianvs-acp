@@ -116,7 +116,7 @@ void main() {
     expect(config.configForSessionIndexAgent('Kimi'), isNull);
   });
 
-  test('resolves legacy pi ACP sessions to the single Pi adapter', () {
+  test('resolves the pi ACP alias to the single Pi adapter', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'Codex',
       'agent_servers': {
@@ -131,7 +131,7 @@ void main() {
     expect(resolved?.activeAgentServer?.command, endsWith('/pi-acp'));
   });
 
-  test('does not guess a legacy Pi alias when multiple adapters remain', () {
+  test('does not guess the Pi alias when multiple adapters remain', () {
     final config = AcpClientConfig.fromJson({
       'agent_servers': {
         'Pi local': {

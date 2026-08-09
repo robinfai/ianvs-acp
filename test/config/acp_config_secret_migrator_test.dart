@@ -14,7 +14,7 @@ void main() {
       final parsed = AcpClientConfig.fromJson({
         'mcp_servers': [
           {
-            'name': 'task-center',
+            'name': 'workspace-tools',
             'type': 'http',
             'url': 'http://127.0.0.1:38971/mcp',
           },
@@ -33,42 +33,37 @@ void main() {
     },
   );
 
-  test(
-    'migrates legacy secrets to refs and keeps resolved runtime values',
-    () async {
-      final temp = await Directory.systemTemp.createTemp(
-        'acp_secret_migration',
-      );
-      addTearDown(() => temp.delete(recursive: true));
-      final file = File('${temp.path}/settings.json');
-      await file.writeAsString('''
+  test('upgrades unscoped secrets and keeps resolved runtime values', () async {
+    final temp = await Directory.systemTemp.createTemp('acp_secret_migration');
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString('''
 {"unknown":"kept","agent_servers":{"Remote":{"type":"http","url":"https://agent.example/acp","headers":{"Authorization":"Bearer real-token"}}},"mcp_servers":[{"name":"tools","command":"tool","env":[{"name":"API_KEY","value":"mcp-secret"}]}]}
 ''');
-      final store = FakeSecretStore();
+    final store = FakeSecretStore();
 
-      final config = await AcpConfigStore.loadConfig(
-        configPath: file.path,
-        secretStore: store,
-      );
+    final config = await AcpConfigStore.loadConfig(
+      configPath: file.path,
+      secretStore: store,
+    );
 
-      final contents = await file.readAsString();
-      expect(contents, isNot(contains('Bearer real-token')));
-      expect(contents, isNot(contains('mcp-secret')));
-      final json = jsonDecode(contents) as Map<String, dynamic>;
-      expect(json['unknown'], 'kept');
-      expect(
-        json['agent_servers']['Remote']['header_refs']['Authorization'],
-        startsWith('keychain://ianvs-acp/'),
-      );
-      expect(
-        config.agentServers.single.headers['Authorization'],
-        'Bearer real-token',
-      );
-      expect(config.mcpServers.single.raw['env'].single['value'], 'mcp-secret');
-      expect(config.agentServers.single.explicitHeaderKeys, isEmpty);
-      expect(config.mcpServers.single.explicitEnvKeys, isEmpty);
-    },
-  );
+    final contents = await file.readAsString();
+    expect(contents, isNot(contains('Bearer real-token')));
+    expect(contents, isNot(contains('mcp-secret')));
+    final json = jsonDecode(contents) as Map<String, dynamic>;
+    expect(json['unknown'], 'kept');
+    expect(
+      json['agent_servers']['Remote']['header_refs']['Authorization'],
+      startsWith('keychain://ianvs-acp/'),
+    );
+    expect(
+      config.agentServers.single.headers['Authorization'],
+      'Bearer real-token',
+    );
+    expect(config.mcpServers.single.raw['env'].single['value'], 'mcp-secret');
+    expect(config.agentServers.single.explicitHeaderKeys, isEmpty);
+    expect(config.mcpServers.single.explicitEnvKeys, isEmpty);
+  });
 
   test(
     'persists ordinary env and headers without Keychain references',
@@ -313,74 +308,71 @@ void main() {
     },
   );
 
-  test(
-    'failed legacy migration restores a preexisting current-owner orphan',
-    () async {
-      final temp = await Directory.systemTemp.createTemp(
-        'acp_secret_legacy_owned_orphan',
-      );
-      addTearDown(() => temp.delete(recursive: true));
-      final file = File('${temp.path}/settings.json');
-      final store = FakeSecretStore();
-      const server = AgentServerConfig(
-        name: 'Local',
-        type: 'custom',
-        command: 'agent',
-      );
-      final owner = SecretOwner(
-        configIdentity: await configSecretIdentity(file.path),
-        targetKind: 'agent/Local',
-        targetIdentity: agentSecretTargetIdentity(server),
-        fieldName: 'env',
-        key: 'TOKEN',
-      );
-      final legacyReference = await store.put(
-        namespace: owner.legacyNamespace,
-        key: owner.key,
-        value: 'legacy-secret',
-      );
-      final currentReference = await store.put(
-        namespace: owner.namespace,
-        key: owner.key,
-        value: 'orphan-old',
-      );
-      await file.writeAsString(
-        jsonEncode({
-          'agent_servers': {
-            'Local': {
-              'type': 'custom',
-              'command': 'agent',
-              'env_refs': {'TOKEN': legacyReference},
-            },
+  test('failed namespace upgrade restores a target-scoped orphan', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'acp_secret_unscoped_owned_orphan',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    final store = FakeSecretStore();
+    const server = AgentServerConfig(
+      name: 'Local',
+      type: 'custom',
+      command: 'agent',
+    );
+    final owner = SecretOwner(
+      configIdentity: await configSecretIdentity(file.path),
+      targetKind: 'agent/Local',
+      targetIdentity: agentSecretTargetIdentity(server),
+      fieldName: 'env',
+      key: 'TOKEN',
+    );
+    final unscopedReference = await store.put(
+      namespace: owner.unscopedNamespace,
+      key: owner.key,
+      value: 'unscoped-secret',
+    );
+    final currentReference = await store.put(
+      namespace: owner.namespace,
+      key: owner.key,
+      value: 'orphan-old',
+    );
+    await file.writeAsString(
+      jsonEncode({
+        'agent_servers': {
+          'Local': {
+            'type': 'custom',
+            'command': 'agent',
+            'env_refs': {'TOKEN': unscopedReference},
           },
-        }),
-      );
+        },
+      }),
+    );
 
-      await expectLater(
-        AcpConfigStore.writeConfig(
-          config: AcpClientConfig(
-            configPath: file.path,
-            agentServers: const [
-              AgentServerConfig(
-                name: 'Local',
-                type: 'custom',
-                command: 'agent',
-                env: {'TOKEN': 'new-value'},
-              ),
-            ],
-          ),
-          secretStore: store,
-          atomicWriter: (_, _) async => throw StateError('rename failed'),
+    await expectLater(
+      AcpConfigStore.writeConfig(
+        config: AcpClientConfig(
+          configPath: file.path,
+          agentServers: const [
+            AgentServerConfig(
+              name: 'Local',
+              type: 'custom',
+              command: 'agent',
+              env: {'TOKEN': 'new-value'},
+            ),
+          ],
         ),
-        throwsStateError,
-      );
+        secretStore: store,
+        atomicWriter: (_, _) async => throw StateError('rename failed'),
+      ),
+      throwsStateError,
+    );
 
-      expect(store.getCount, 2);
-      expect(store.putCount, 5);
-      expect(await store.get(currentReference), 'orphan-old');
-      expect(store.deleted, isNot(contains(currentReference)));
-    },
-  );
+    expect(store.getCount, 2);
+    expect(store.putCount, 5);
+    expect(await store.get(currentReference), 'orphan-old');
+    expect(store.deleted, isNot(contains(currentReference)));
+  });
 
   test(
     'atomic write failure restores existing secret when proposal lost refs',
@@ -639,56 +631,53 @@ void main() {
     expect((jsonDecode(await queue.readAsString()) as Map)['intents'], isEmpty);
   });
 
-  test(
-    'rejects an unowned legacy-looking reference without reading it',
-    () async {
-      final temp = await Directory.systemTemp.createTemp(
-        'acp_secret_reference_mismatch',
-      );
-      addTearDown(() => temp.delete(recursive: true));
-      final file = File('${temp.path}/settings.json');
-      final store = FakeSecretStore();
-      final legacyRef = await store.put(
-        namespace: 'legacy',
-        key: 'TOKEN',
-        value: 'old',
-      );
-      await file.writeAsString(
-        jsonEncode({
-          'agent_servers': {
-            'Local': {
-              'type': 'custom',
-              'command': 'agent',
-              'env_refs': {'TOKEN': legacyRef},
-            },
+  test('rejects an unowned reference without reading it', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'acp_secret_reference_mismatch',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    final store = FakeSecretStore();
+    final unscopedRef = await store.put(
+      namespace: 'unowned',
+      key: 'TOKEN',
+      value: 'old',
+    );
+    await file.writeAsString(
+      jsonEncode({
+        'agent_servers': {
+          'Local': {
+            'type': 'custom',
+            'command': 'agent',
+            'env_refs': {'TOKEN': unscopedRef},
           },
-        }),
-      );
+        },
+      }),
+    );
 
-      await expectLater(
-        AcpConfigStore.writeConfig(
-          config: AcpClientConfig(
-            configPath: file.path,
-            agentServers: const [
-              AgentServerConfig(
-                name: 'Local',
-                type: 'custom',
-                command: 'agent',
-                env: {'TOKEN': 'new'},
-              ),
-            ],
-          ),
-          secretStore: store,
+    await expectLater(
+      AcpConfigStore.writeConfig(
+        config: AcpClientConfig(
+          configPath: file.path,
+          agentServers: const [
+            AgentServerConfig(
+              name: 'Local',
+              type: 'custom',
+              command: 'agent',
+              env: {'TOKEN': 'new'},
+            ),
+          ],
         ),
-        throwsA(isA<FormatException>()),
-      );
+        secretStore: store,
+      ),
+      throwsA(isA<FormatException>()),
+    );
 
-      expect(store.getCount, 0);
-      expect(await store.get(legacyRef), 'old');
-      expect(store.values, {legacyRef: 'old'});
-      expect(store.deleted, isNot(contains(legacyRef)));
-    },
-  );
+    expect(store.getCount, 0);
+    expect(await store.get(unscopedRef), 'old');
+    expect(store.values, {unscopedRef: 'old'});
+    expect(store.deleted, isNot(contains(unscopedRef)));
+  });
 
   test(
     'migrates inline review MCP secrets without dropping unknown fields',
@@ -1342,17 +1331,17 @@ void main() {
   );
 
   test(
-    'migrates an exact same-config legacy reference to target owner',
+    'upgrades an exact same-config unscoped reference to its target owner',
     () async {
-      final temp = await Directory.systemTemp.createTemp('acp_secret_legacy');
+      final temp = await Directory.systemTemp.createTemp('acp_secret_unscoped');
       addTearDown(() => temp.delete(recursive: true));
       final file = File('${temp.path}/settings.json');
       final store = FakeSecretStore();
       final configIdentity = await configSecretIdentity(file.path);
-      final legacyReference = await store.put(
+      final unscopedReference = await store.put(
         namespace: '$configIdentity/agent/Local/env',
         key: 'TOKEN',
-        value: 'legacy-secret',
+        value: 'unscoped-secret',
       );
       await file.writeAsString(
         jsonEncode({
@@ -1360,7 +1349,7 @@ void main() {
             'Local': {
               'type': 'custom',
               'command': 'agent',
-              'env_refs': {'TOKEN': legacyReference},
+              'env_refs': {'TOKEN': unscopedReference},
             },
           },
         }),
@@ -1372,66 +1361,28 @@ void main() {
       );
       final migratedReference = loaded.agentServers.single.envRefs['TOKEN']!;
 
-      expect(migratedReference, isNot(legacyReference));
-      expect(loaded.agentServers.single.env['TOKEN'], 'legacy-secret');
-      expect(await store.get(migratedReference), 'legacy-secret');
-      expect(await store.get(legacyReference), isNull);
-      expect(store.deleted, contains(legacyReference));
+      expect(migratedReference, isNot(unscopedReference));
+      expect(loaded.agentServers.single.env['TOKEN'], 'unscoped-secret');
+      expect(await store.get(migratedReference), 'unscoped-secret');
+      expect(await store.get(unscopedReference), isNull);
+      expect(store.deleted, contains(unscopedReference));
     },
   );
 
-  test('failed legacy load persistence keeps the legacy reference', () async {
-    final temp = await Directory.systemTemp.createTemp(
-      'acp_secret_legacy_persist_failure',
-    );
-    addTearDown(() => temp.delete(recursive: true));
-    final file = File('${temp.path}/settings.json');
-    final store = FakeSecretStore();
-    final configIdentity = await configSecretIdentity(file.path);
-    final legacyReference = await store.put(
-      namespace: '$configIdentity/agent/Local/env',
-      key: 'TOKEN',
-      value: 'legacy-secret',
-    );
-    await file.writeAsString(
-      jsonEncode({
-        'agent_servers': {
-          'Local': {
-            'type': 'custom',
-            'command': 'agent',
-            'env_refs': {'TOKEN': legacyReference},
-          },
-        },
-      }),
-    );
-
-    await expectLater(
-      AcpConfigStore.loadConfig(
-        configPath: file.path,
-        secretStore: store,
-        atomicWriter: (_, _) async => throw StateError('rename failed'),
-      ),
-      throwsStateError,
-    );
-
-    expect(await store.get(legacyReference), 'legacy-secret');
-    expect(store.deleted, isNot(contains(legacyReference)));
-  });
-
   test(
-    'failed legacy cleanup is queued after load returns resolved config',
+    'failed namespace upgrade persistence keeps the unscoped reference',
     () async {
       final temp = await Directory.systemTemp.createTemp(
-        'acp_secret_legacy_cleanup_queue',
+        'acp_secret_unscoped_persist_failure',
       );
       addTearDown(() => temp.delete(recursive: true));
       final file = File('${temp.path}/settings.json');
       final store = FakeSecretStore();
       final configIdentity = await configSecretIdentity(file.path);
-      final legacyReference = await store.put(
+      final unscopedReference = await store.put(
         namespace: '$configIdentity/agent/Local/env',
         key: 'TOKEN',
-        value: 'legacy-secret',
+        value: 'unscoped-secret',
       );
       await file.writeAsString(
         jsonEncode({
@@ -1439,7 +1390,48 @@ void main() {
             'Local': {
               'type': 'custom',
               'command': 'agent',
-              'env_refs': {'TOKEN': legacyReference},
+              'env_refs': {'TOKEN': unscopedReference},
+            },
+          },
+        }),
+      );
+
+      await expectLater(
+        AcpConfigStore.loadConfig(
+          configPath: file.path,
+          secretStore: store,
+          atomicWriter: (_, _) async => throw StateError('rename failed'),
+        ),
+        throwsStateError,
+      );
+
+      expect(await store.get(unscopedReference), 'unscoped-secret');
+      expect(store.deleted, isNot(contains(unscopedReference)));
+    },
+  );
+
+  test(
+    'failed unscoped cleanup is queued after load returns resolved config',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_secret_unscoped_cleanup_queue',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      final store = FakeSecretStore();
+      final configIdentity = await configSecretIdentity(file.path);
+      final unscopedReference = await store.put(
+        namespace: '$configIdentity/agent/Local/env',
+        key: 'TOKEN',
+        value: 'unscoped-secret',
+      );
+      await file.writeAsString(
+        jsonEncode({
+          'agent_servers': {
+            'Local': {
+              'type': 'custom',
+              'command': 'agent',
+              'env_refs': {'TOKEN': unscopedReference},
             },
           },
         }),
@@ -1451,18 +1443,21 @@ void main() {
         secretStore: store,
       );
 
-      expect(loaded.agentServers.single.env, {'TOKEN': 'legacy-secret'});
+      expect(loaded.agentServers.single.env, {'TOKEN': 'unscoped-secret'});
       expect(
         loaded.agentServers.single.envRefs['TOKEN'],
-        isNot(legacyReference),
+        isNot(unscopedReference),
       );
-      expect(await store.get(legacyReference), 'legacy-secret');
+      expect(await store.get(unscopedReference), 'unscoped-secret');
       final queue = File(
         '${file.parent.path}/.${file.uri.pathSegments.last}.secret-cleanup.json',
       );
       final queued = jsonDecode(await queue.readAsString()) as Map;
       expect(queued['version'], 1);
-      expect((queued['intents'] as List).single['reference'], legacyReference);
+      expect(
+        (queued['intents'] as List).single['reference'],
+        unscopedReference,
+      );
     },
   );
 
@@ -1864,7 +1859,7 @@ void main() {
     expect(await store.get(forged), 'foreign-secret');
   });
 
-  test('legacy and forged cleanup sidecars never delete secrets', () async {
+  test('unscoped and forged cleanup sidecars never delete secrets', () async {
     final temp = await Directory.systemTemp.createTemp('acp_forged_sidecar');
     addTearDown(() => temp.delete(recursive: true));
     final file = File('${temp.path}/settings.json');

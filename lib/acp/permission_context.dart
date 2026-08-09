@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import '../acp/acp_permission_request.dart';
+import 'acp_permission_request.dart';
 
 class PermissionDisplayEntry {
   const PermissionDisplayEntry({required this.label, required this.value});

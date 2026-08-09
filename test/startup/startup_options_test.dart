@@ -35,11 +35,10 @@ void main() {
   test('StartupOptions does not execute deep links from command line args', () {
     final options = StartupOptions.fromArgs([
       '--some-other-flag',
-      'ianvs-acp://task?id=task-from-link',
+      'ianvs-acp://session?id=session-from-link&cwd=%2Flink',
     ]);
 
-    expect(options.taskId, isNull);
-    expect(options.hasTaskLink, isFalse);
+    expect(options.resumeSessionId, isNull);
   });
 
   test('DeepLinkRequest rejects oversized external links', () {
@@ -64,7 +63,6 @@ void main() {
     expect(request?.sessionId, 'session-2');
     expect(request?.cwd, workspace.resolveSymbolicLinksSync());
     expect(request?.agentName, 'Codex');
-    expect(request?.taskId, isNull);
     expect(request?.validationErrors, isEmpty);
   });
 
@@ -113,15 +111,7 @@ void main() {
     }
   });
 
-  test('DeepLinkRequest parses task links without a session confirmation', () {
-    final task = StartupOptions.fromDeepLink('ianvs-acp://task?id=task-2');
-    final review = StartupOptions.fromDeepLink(
-      'ianvs-acp://task-review?id=task-review-1',
-    );
-
-    expect(task?.taskId, 'task-2');
-    expect(task?.requiresConfirmation, isFalse);
-    expect(review?.taskId, 'task-review-1');
-    expect(review?.requiresConfirmation, isFalse);
+  test('DeepLinkRequest rejects unsupported link targets', () {
+    expect(StartupOptions.fromDeepLink('ianvs-acp://unsupported?id=1'), isNull);
   });
 }

@@ -221,63 +221,7 @@ git add lib/config/acp_config_secret_migrator.dart lib/config/acp_client_config.
 git commit -m "fix: remove ACP secrets from JSON"
 ```
 
-### Task 4: 默认清洗任务敏感数据并落实保留期限
-
-**Files:**
-- Modify: `lib/tasks/task_data_sanitizer.dart`
-- Modify: `lib/tasks/task_runner.dart`
-- Modify: `lib/tasks/artifact_collector.dart`
-- Modify: `lib/tasks/task_inbox_sqlite_store.dart`
-- Modify: `lib/ui/components/task_inbox_sidebar.dart`
-- Test: `test/tasks/task_data_sanitizer_test.dart`
-- Test: `test/tasks/artifact_collector_test.dart`
-- Test: `test/ui/task_inbox_sidebar_test.dart`
-
-- [ ] **Step 1: 写入常见秘密清洗和 30 天清理测试**
-
-```dart
-expect(
-  sanitizer.sanitize(<String, Object?>{
-    'Authorization': 'Bearer abc',
-    'env': <String, Object?>{'OPENAI_API_KEY': 'sk-test'},
-    'command': 'echo safe',
-  }),
-  <String, Object?>{
-    'Authorization': '<redacted>',
-    'env': <String, Object?>{'OPENAI_API_KEY': '<redacted>'},
-    'command': 'echo safe',
-  },
-);
-await repository.purgeRawPayloads(before: now.subtract(const Duration(days: 30)));
-expect((await repository.load()).snapshot.events.single.metadata, isEmpty);
-```
-
-- [ ] **Step 2: 运行测试并确认秘密原样保存**
-
-Run: `flutter test --no-pub test/tasks/task_data_sanitizer_test.dart test/tasks/artifact_collector_test.dart`
-
-Expected: FAIL。
-
-- [ ] **Step 3: 实现递归 key/value 清洗和 diff 默认摘要**
-
-清洗 key 使用大小写无关的精确/后缀集合：authorization、cookie、token、secret、password、api_key、env value。字符串值额外识别 Bearer、GitHub token、OpenAI key 和 PEM header。默认 Git artifact 只保存文件名、增删行数和状态；完整 diff 仅在 task metadata `retain_full_diff == true` 时保存，最大 1 MiB。
-
-- [ ] **Step 4: 加入清除入口和定时 purge**
-
-repository 初始化后每天最多运行一次 30 天 raw payload purge。Task Inbox 菜单增加“清除原始工具数据”，二次确认后立即清除但保留事件文字、摘要和文件名。
-
-- [ ] **Step 5: 运行测试并提交**
-
-Run: `flutter test --no-pub test/tasks/task_data_sanitizer_test.dart test/tasks/artifact_collector_test.dart test/ui/task_inbox_sidebar_test.dart`
-
-Expected: PASS。
-
-```bash
-git add lib/tasks/task_data_sanitizer.dart lib/tasks/task_runner.dart lib/tasks/artifact_collector.dart lib/tasks/task_inbox_sqlite_store.dart lib/ui/components/task_inbox_sidebar.dart test/tasks/task_data_sanitizer_test.dart test/tasks/artifact_collector_test.dart test/ui/task_inbox_sidebar_test.dart
-git commit -m "fix: redact retained task data"
-```
-
-### Task 5: 非 loopback 远程连接强制 TLS
+### Task 4: 非 loopback 远程连接强制 TLS
 
 **Files:**
 - Modify: `lib/config/acp_client_config.dart`
@@ -330,7 +274,7 @@ git add lib/config/acp_client_config.dart lib/acp/acp_permission_reviewer.dart t
 git commit -m "fix: require TLS for remote ACP endpoints"
 ```
 
-### Task 6: 固定自动发现 adapter 的精确版本
+### Task 5: 固定自动发现 adapter 的精确版本
 
 **Files:**
 - Modify: `lib/config/acp_agent_discovery.dart`
@@ -376,7 +320,7 @@ git add lib/config/acp_agent_discovery.dart README.md test/config/acp_agent_disc
 git commit -m "fix: pin discovered ACP adapters"
 ```
 
-### Task 7: Deep link 必须确认且 cwd 受限
+### Task 6: Deep link 必须确认且 cwd 受限
 
 **Files:**
 - Create: `lib/startup/deep_link_request.dart`
@@ -417,7 +361,7 @@ App 收到 deep link 后只加入待确认队列。对话框展示 agent/session
 
 - [ ] **Step 5: 运行第三批测试与全量守门**
 
-Run: `flutter test --no-pub test/config test/startup test/ui/acp_client_app_test.dart test/workspace/workspace_sidebar_state_store_test.dart test/tasks/task_data_sanitizer_test.dart`
+Run: `flutter test --no-pub test/config test/startup test/ui/acp_client_app_test.dart test/workspace/workspace_sidebar_state_store_test.dart`
 
 Expected: PASS。
 

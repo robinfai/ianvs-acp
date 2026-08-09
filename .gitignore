@@ -35,7 +35,6 @@ migrate_working_dir/
 /coverage/
 /rust/target/
 .worktrees/
-/prototypes/inbox-autopilot/qa/
 .superpowers/
 .serena/
 .fastembed_cache/

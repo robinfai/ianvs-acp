@@ -307,7 +307,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   }
 
   String _turnItemIdentity(_TimelineTurn turn, int index) =>
-      '${turn.turnId ?? 'legacy'}-$index';
+      '${turn.turnId ?? 'turn'}-$index';
 
   Widget _buildTimelineTurn(List<_TimelineTurn> turns, int index) {
     final turn = turns[index];
@@ -578,18 +578,18 @@ String _userPromptDisplayText(String text) {
       ? text.trim()
       : text.substring(markerIndex + marker.length).trim();
   final display = request.isEmpty ? text.trim() : request;
-  return display.replaceAll(_legacyUserImageMarkerPattern, '').trim();
+  return display.replaceAll(_textImageMarkerPattern, '').trim();
 }
 
-final RegExp _legacyUserImageMarkerPattern = RegExp(
+final RegExp _textImageMarkerPattern = RegExp(
   r'\[@(?:codex-clipboard-[^\]]+|image)\]\(([^)]+)\)',
   caseSensitive: false,
 );
 
-List<String> _legacyUserImagePaths(String text) {
+List<String> _textImagePaths(String text) {
   final paths = <String>[];
   final seen = <String>{};
-  for (final match in _legacyUserImageMarkerPattern.allMatches(text)) {
+  for (final match in _textImageMarkerPattern.allMatches(text)) {
     final source = match.group(1)?.trim();
     if (source == null || source.isEmpty) continue;
     final uri = Uri.tryParse(source);
@@ -1549,10 +1549,10 @@ class _MessageBubble extends StatelessWidget {
     if (user) {
       final hasContentBlocks =
           _lazyMapCount(message.metadata['contentBlocks']) > 0;
-      final legacyImagePaths = hasContentBlocks
+      final textImagePaths = hasContentBlocks
           ? const <String>[]
-          : _legacyUserImagePaths(message.text);
-      final hasImages = hasContentBlocks || legacyImagePaths.isNotEmpty;
+          : _textImagePaths(message.text);
+      final hasImages = hasContentBlocks || textImagePaths.isNotEmpty;
       return Align(
         alignment: Alignment.centerRight,
         child: ConstrainedBox(
@@ -1568,8 +1568,8 @@ class _MessageBubble extends StatelessWidget {
                   beforeText: true,
                   compactImages: true,
                 ),
-              if (legacyImagePaths.isNotEmpty)
-                _LegacyUserImageThumbnails(paths: legacyImagePaths),
+              if (textImagePaths.isNotEmpty)
+                _TextImageThumbnails(paths: textImagePaths),
               if (hasImages &&
                   (markdownDecision != null || omissions.isNotEmpty))
                 const SizedBox(height: 8),
@@ -1824,15 +1824,15 @@ class _AssistantSummaryBubble extends StatelessWidget {
   }
 }
 
-class _LegacyUserImageThumbnails extends StatelessWidget {
-  const _LegacyUserImageThumbnails({required this.paths});
+class _TextImageThumbnails extends StatelessWidget {
+  const _TextImageThumbnails({required this.paths});
 
   final List<String> paths;
 
   @override
   Widget build(BuildContext context) {
     return Wrap(
-      key: const ValueKey('legacy-user-image-thumbnails'),
+      key: const ValueKey('text-image-thumbnails'),
       spacing: 8,
       runSpacing: 8,
       alignment: WrapAlignment.end,
@@ -1845,7 +1845,7 @@ class _LegacyUserImageThumbnails extends StatelessWidget {
             child: Tooltip(
               message: 'Preview image',
               child: InkWell(
-                key: ValueKey('legacy-user-image-thumbnail:$path'),
+                key: ValueKey('text-image-thumbnail:$path'),
                 borderRadius: BorderRadius.circular(AppRadius.lg),
                 onTap: () => _showImagePreviewDialog(
                   context,
@@ -5485,10 +5485,14 @@ class _ParsedTool {
     final metadata = message.metadata;
     var title = _stringMetadata(metadata, 'title') ?? message.text;
     var status = _stringMetadata(metadata, 'status') ?? '';
-    final legacy = RegExp(r'^\[Tool:\s*(.*?)\]\s*(.*)$').firstMatch(title);
-    if (legacy != null) {
-      title = legacy.group(1)?.trim() ?? title;
-      status = status.isEmpty ? legacy.group(2)?.trim() ?? '' : status;
+    final embeddedToolTitle = RegExp(
+      r'^\[Tool:\s*(.*?)\]\s*(.*)$',
+    ).firstMatch(title);
+    if (embeddedToolTitle != null) {
+      title = embeddedToolTitle.group(1)?.trim() ?? title;
+      status = status.isEmpty
+          ? embeddedToolTitle.group(2)?.trim() ?? ''
+          : status;
     }
     status = status.replaceFirst('ToolCallStatus.', '');
     if (status.isEmpty) status = 'completed';

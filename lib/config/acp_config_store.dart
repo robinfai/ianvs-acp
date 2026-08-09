@@ -271,7 +271,11 @@ Future<void> _retryPendingSecretCleanup(
   for (final intent in intents) {
     final reference = intent.reference;
     if (intent.owner.configIdentity != configIdentity ||
-        !secretStoreOwnsIntent(secretStore, intent, allowLegacy: true)) {
+        !secretStoreOwnsIntent(
+          secretStore,
+          intent,
+          allowUnscopedNamespace: true,
+        )) {
       continue;
     }
     if (!seen.add(reference)) continue;
@@ -390,13 +394,12 @@ bool _deepJsonEquals(Object? left, Object? right) =>
 
 Map<String, Object?> _mergeConfigMapPreservingUnknown(
   Map existing,
-  Map canonical, {
-  Set<String> deprecatedKeys = const <String>{},
-}) {
+  Map canonical,
+) {
   final merged = <String, Object?>{};
   for (final entry in existing.entries) {
     final key = entry.key;
-    if (key is! String || deprecatedKeys.contains(key)) continue;
+    if (key is! String) continue;
     merged[key] = entry.value;
   }
   for (final entry in canonical.entries) {

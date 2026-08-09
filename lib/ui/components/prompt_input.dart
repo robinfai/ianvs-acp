@@ -17,7 +17,7 @@ import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
 import '../../platform/prompt_image_clipboard.dart';
 import '../../state/chat_controller.dart';
-import '../../tasks/permission_context.dart';
+import '../../acp/permission_context.dart';
 import '../theme/app_design_tokens.dart';
 import '../bounded_metadata_preview.dart';
 

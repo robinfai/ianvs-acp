@@ -244,7 +244,7 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
     final modelOption = _projection.modelOption;
     final reasoningOption = _projection.reasoningEffortOption;
     final hasConfiguration = modelOption != null || reasoningOption != null;
-    final hasModes = settings.shouldUseLegacyModes;
+    final hasModes = settings.shouldUseModeFallback;
     final optionIndexes = _projection.nonModelOptionIndexes;
     final configBodyCount = optionIndexes.isEmpty ? 1 : optionIndexes.length;
     final hasIncompleteNotice =

@@ -123,7 +123,7 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
       try {
         await _client.closeSession(sessionId: session.id);
       } on Object {
-        // A failed helper cleanup must not affect the main task.
+        // A failed helper cleanup must not affect the active session.
       }
     }
   }

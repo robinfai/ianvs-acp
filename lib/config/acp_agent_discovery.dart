@@ -15,7 +15,7 @@ class AcpAgentDiscovery {
 
   static const String codexAgentName = 'Codex';
   static const String codexAcpPackage = AcpAdapterPackages.codex;
-  static const String legacyCodexAcpPackage = AcpAdapterPackages.legacyCodex;
+  static const String zedCodexAcpPackage = AcpAdapterPackages.zedCodex;
   static const String piAgentName = AcpAdapterPackages.piAgentName;
   static const String piAcpVersion = AcpAdapterPackages.piVersion;
   static const String piAcpPackage = AcpAdapterPackages.pi;
@@ -126,7 +126,7 @@ class AcpAgentDiscovery {
         final hadConfiguredAgents = existingServers.isNotEmpty;
 
         for (final server in servers) {
-          if (_upgradeLegacyCodexServer(existingServers, server)) continue;
+          if (_upgradeZedCodexServer(existingServers, server)) continue;
           if (existingServers.containsKey(server.name)) continue;
           existingServers[server.name] = server.toRuntimeJson();
         }
@@ -177,7 +177,7 @@ class AcpAgentDiscovery {
     AgentServerConfig candidate,
   ) {
     for (final server in config.selectableAgentServers) {
-      if (_isLegacyCodexInvocation(server) &&
+      if (_isZedCodexInvocation(server) &&
           _isCurrentCodexInvocation(candidate)) {
         continue;
       }
@@ -190,7 +190,7 @@ class AcpAgentDiscovery {
     return false;
   }
 
-  static bool _upgradeLegacyCodexServer(
+  static bool _upgradeZedCodexServer(
     Map<String, dynamic> existingServers,
     AgentServerConfig candidate,
   ) {
@@ -203,7 +203,7 @@ class AcpAgentDiscovery {
       final args = mapped['args'];
       if (args is! List ||
           args.length != 1 ||
-          !_isLegacyCodexPackage(args.single)) {
+          !_isZedCodexPackage(args.single)) {
         continue;
       }
       mapped['args'] = <String>[codexAcpPackage];
@@ -218,10 +218,10 @@ class AcpAgentDiscovery {
       server.args.length == 1 &&
       server.args.single == codexAcpPackage;
 
-  static bool _isLegacyCodexInvocation(AgentServerConfig server) =>
+  static bool _isZedCodexInvocation(AgentServerConfig server) =>
       server.isStdio &&
       server.args.length == 1 &&
-      _isLegacyCodexPackage(server.args.single);
+      _isZedCodexPackage(server.args.single);
 
   static bool _isPiAcpInvocation(AgentServerConfig server) =>
       server.isStdio &&
@@ -230,8 +230,8 @@ class AcpAgentDiscovery {
         args: server.args,
       );
 
-  static bool _isLegacyCodexPackage(Object? value) =>
-      AcpAdapterPackages.isLegacyCodexPackage(value);
+  static bool _isZedCodexPackage(Object? value) =>
+      AcpAdapterPackages.isZedCodexPackage(value);
 
   static bool _sameStdioInvocation(
     AgentServerConfig left,

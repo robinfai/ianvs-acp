@@ -6,14 +6,10 @@ import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
-import 'package:ianvs_acp/tasks/task_inbox_controller.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
-import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
-
-import '../support/memory_task_repository.dart';
 
 void _noop() {}
 
@@ -363,7 +359,6 @@ void main() {
     expect(find.text('Pin Conversation'), findsOneWidget);
     expect(find.text('Rename Conversation'), findsOneWidget);
     expect(find.text('Archive Conversation'), findsOneWidget);
-    expect(find.text('Pin Task'), findsNothing);
   });
 
   testWidgets('AppShell loads session catalogs for every controller', (
@@ -543,103 +538,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.widgetWithText(FilledButton, 'New Session'), findsOneWidget);
-  });
-
-  testWidgets('AppShell keeps sidebar mode labels on one line', (tester) async {
-    final client = FakeAgentClient();
-    final controller = ChatController(
-      client: client,
-      cwd: '/workspace/app',
-      agentName: 'Codex',
-    );
-    addTearDown(controller.dispose);
-    final taskInboxController = TaskInboxController(
-      repository: _EmptyTaskStore(),
-    );
-    addTearDown(taskInboxController.dispose);
-    await taskInboxController.load();
-
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: AppShell(
-          controller: controller,
-          taskInboxController: taskInboxController,
-          agentName: 'Codex',
-        ),
-      ),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 1));
-    await tester.pump(const Duration(milliseconds: 100));
-
-    final workspacesLabelRects = find.text('Workspaces').evaluate().map((
-      element,
-    ) {
-      final box = element.renderObject! as RenderBox;
-      return box.localToGlobal(Offset.zero) & box.size;
-    }).toList();
-    final modeLabelRect = workspacesLabelRects.reduce(
-      (currentTop, rect) => rect.top < currentTop.top ? rect : currentTop,
-    );
-
-    expect(modeLabelRect.height, lessThanOrEqualTo(18));
-  });
-
-  testWidgets('AppShell stretches active sidebar mode fill to switch height', (
-    tester,
-  ) async {
-    final client = FakeAgentClient();
-    final controller = ChatController(
-      client: client,
-      cwd: '/workspace/app',
-      agentName: 'Codex',
-    );
-    addTearDown(controller.dispose);
-    final taskInboxController = TaskInboxController(
-      repository: _EmptyTaskStore(),
-    );
-    addTearDown(taskInboxController.dispose);
-    await taskInboxController.load();
-
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: AppShell(
-          controller: controller,
-          taskInboxController: taskInboxController,
-          agentName: 'Codex',
-        ),
-      ),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 1));
-    await tester.pump(const Duration(milliseconds: 100));
-
-    final activeFillRects = find
-        .byWidgetPredicate(
-          (widget) =>
-              widget is Material && widget.color == AppColors.surfaceSelected,
-        )
-        .evaluate()
-        .map((element) {
-          final box = element.renderObject! as RenderBox;
-          return box.localToGlobal(Offset.zero) & box.size;
-        })
-        .toList();
-    final modeFillRect = activeFillRects.reduce(
-      (currentTop, rect) => rect.top < currentTop.top ? rect : currentTop,
-    );
-
-    expect(modeFillRect.height, 30);
   });
 
   testWidgets('AppShell resumes sessions from another agent', (tester) async {
@@ -865,8 +763,6 @@ Future<void> _pumpUntil(
   }
   fail('Condition was not met before timeout.');
 }
-
-class _EmptyTaskStore extends MemoryTaskRepository {}
 
 class _CountingResumeClient extends FakeAgentClient {
   int resumeCalls = 0;

@@ -17,7 +17,7 @@ class AcpSessionSettings {
 
   bool get hasConfigOptions => configOptions.isNotEmpty;
 
-  bool get shouldUseLegacyModes => !hasConfigOptions;
+  bool get shouldUseModeFallback => !hasConfigOptions;
 
   AcpConfigOption? get modelOption {
     for (final option in configOptions) {

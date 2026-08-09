@@ -1,4 +1,8 @@
 use std::fs;
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -80,9 +84,7 @@ impl PersistedSession {
     }
 }
 
-/// Dedicated `SQLite` store for ACP session recovery metadata. It intentionally
-/// does not share a schema with `TaskInbox` so either authority can evolve and
-/// be opened independently.
+/// Dedicated `SQLite` store for ACP workspace-session recovery metadata.
 pub struct SqliteSessionStore {
     connection: Connection,
     path: Option<PathBuf>,
@@ -108,6 +110,7 @@ impl SqliteSessionStore {
         storage_policy: SqliteStoragePolicy,
     ) -> Result<Self, SessionStoreError> {
         let path = safe_database_path(path.as_ref())?;
+        prepare_private_database_file(&path)?;
         let connection = Connection::open_with_flags(
             &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -116,12 +119,14 @@ impl SqliteSessionStore {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW
                 | OpenFlags::SQLITE_OPEN_EXRESCODE,
         )?;
+        protect_private_file(&path)?;
         let mut store = Self {
             connection,
             path: Some(path),
             storage_policy,
         };
         store.initialize()?;
+        store.protect_sqlite_files()?;
         Ok(store)
     }
 
@@ -192,6 +197,7 @@ impl SqliteSessionStore {
             ],
         )?;
         transaction.commit()?;
+        self.protect_sqlite_files()?;
         Ok(())
     }
 
@@ -202,6 +208,7 @@ impl SqliteSessionStore {
             "DELETE FROM active_sessions WHERE agent_name = ?1 AND session_id = ?2",
             params![agent_name, session_id],
         )?;
+        self.protect_sqlite_files()?;
         Ok(())
     }
 
@@ -297,6 +304,22 @@ impl SqliteSessionStore {
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
+
+    fn protect_sqlite_files(&self) -> Result<(), SessionStoreError> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(());
+        };
+        protect_private_file(path)?;
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            if sidecar.exists() {
+                protect_private_file(&sidecar)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn delete_expired_sessions(
@@ -342,14 +365,105 @@ fn safe_database_path(path: &Path) -> Result<PathBuf, SessionStoreError> {
         return Err(SessionStoreError::SymlinkPath(path.display().to_string()));
     }
     let parent = path.parent().ok_or(SessionStoreError::InvalidPath)?;
-    fs::create_dir_all(parent)?;
+    let parent_existed = parent.exists();
+    create_private_directories(parent)?;
     let parent = parent.canonicalize()?;
+    if !parent_existed || is_app_owned_state_directory(&parent) {
+        protect_private_directory(&parent)?;
+    }
     Ok(parent.join(path.file_name().ok_or(SessionStoreError::InvalidPath)?))
+}
+
+fn is_app_owned_state_directory(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name.eq_ignore_ascii_case("ianvs-acp") || name.eq_ignore_ascii_case(".ianvs-acp")
+}
+
+#[cfg(unix)]
+fn create_private_directories(path: &Path) -> Result<(), std::io::Error> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_directories(path: &Path) -> Result<(), std::io::Error> {
+    fs::create_dir_all(path)
+}
+
+#[cfg(unix)]
+fn prepare_private_database_file(path: &Path) -> Result<(), std::io::Error> {
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+fn prepare_private_database_file(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn protect_private_directory(path: &Path) -> Result<(), std::io::Error> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn protect_private_directory(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn protect_private_file(path: &Path) -> Result<(), std::io::Error> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn protect_private_file(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 #[cfg(test)]
 mod storage_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn session_store_protects_app_state_directory_and_database() {
+        let root = std::env::temp_dir().join(format!(
+            "ianvs-acp-session-permissions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let state_directory = root.join(".ianvs-acp");
+        let database = state_directory.join("acp_sessions.sqlite3");
+
+        let store = SqliteSessionStore::open(&database).unwrap();
+        assert_eq!(
+            fs::metadata(&state_directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&database).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn expired_session_recovery_rows_are_removed() {

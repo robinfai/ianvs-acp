@@ -5,21 +5,14 @@ class StartupOptions {
     this.resumeSessionId,
     this.resumeCwd,
     this.resumeAgentName,
-    this.taskId,
   });
 
   final String? resumeSessionId;
   final String? resumeCwd;
   final String? resumeAgentName;
-  final String? taskId;
 
   bool get hasResumeSession {
     final id = resumeSessionId?.trim();
-    return id != null && id.isNotEmpty;
-  }
-
-  bool get hasTaskLink {
-    final id = taskId?.trim();
     return id != null && id.isNotEmpty;
   }
 
@@ -41,17 +34,6 @@ class StartupOptions {
     if (uri == null || uri.scheme != 'ianvs-acp') return null;
 
     final query = uri.queryParameters;
-    if (uri.host == 'task' || uri.host == 'task-review') {
-      final taskId = _trimmedOrNull(query['id'] ?? query['task_id']);
-      if (taskId == null) return null;
-      return DeepLinkRequest(
-        rawLink: normalizedLink,
-        source: DeepLinkSource.external,
-        kind: DeepLinkRequestKind.task,
-        taskId: taskId,
-      );
-    }
-
     if (uri.host != 'session') return null;
     final sessionId = _trimmedOrNull(query['id'] ?? query['session_id']);
     final workspace = validateDeepLinkWorkspace(query['cwd']);

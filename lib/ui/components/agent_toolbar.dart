@@ -626,9 +626,9 @@ class _ToolbarSessionActions extends StatelessWidget {
         ),
         const Divider(height: 9),
         _toolbarMenuItem(
-          WorkspaceSessionMenuAction.openSideTask,
+          WorkspaceSessionMenuAction.openSideSession,
           Icons.add_circle_outline_rounded,
-          'Open Side Task',
+          'Open Side Session',
           onSelected,
         ),
         SubmenuButton(
@@ -669,7 +669,7 @@ class _ToolbarSessionActions extends StatelessWidget {
             _toolbarMenuItem(
               WorkspaceSessionMenuAction.forkLocally,
               Icons.call_split_rounded,
-              'Continue in New Task',
+              'Continue in New Session',
               onSelected,
               enabled: canFork,
             ),
@@ -683,12 +683,6 @@ class _ToolbarSessionActions extends StatelessWidget {
               ),
           ],
           child: const Text('Continue in...'),
-        ),
-        _toolbarMenuItem(
-          WorkspaceSessionMenuAction.addScheduledTask,
-          Icons.schedule_rounded,
-          'Add Scheduled Task...',
-          onSelected,
         ),
         const Divider(height: 9),
         _toolbarMenuItem(

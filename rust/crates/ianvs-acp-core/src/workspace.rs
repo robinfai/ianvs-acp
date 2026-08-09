@@ -15,7 +15,7 @@ pub enum WorkspaceError {
     IdentityChanged(String),
 }
 
-/// Canonical workspace roots used by filesystem, terminal, and task execution.
+/// Canonical workspace roots used by filesystem, terminal, and session execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceScope {
     cwd: PathBuf,
@@ -129,7 +129,7 @@ fn canonical_root(path: &Path) -> Result<PathBuf, WorkspaceError> {
 
 /// Normalize a persisted workspace identity without requiring the final path
 /// to exist. Existing ancestors are canonicalized so a pre-existing symlink
-/// cannot be smuggled into durable task state.
+/// cannot be smuggled into durable session state.
 pub(crate) fn normalize_workspace_identity(path: &Path) -> Result<PathBuf, WorkspaceError> {
     if !path.is_absolute() {
         return Err(WorkspaceError::RelativePath(path.display().to_string()));

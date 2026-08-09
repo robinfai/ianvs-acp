@@ -143,7 +143,7 @@ class StatusBar extends StatelessWidget {
   }
 
   String? _currentModeLabel(ChatController controller) {
-    if (!controller.sessionSettings.shouldUseLegacyModes) return null;
+    if (!controller.sessionSettings.shouldUseModeFallback) return null;
     final modeId = controller.sessionSettings.modes.currentModeId;
     if (modeId == null || modeId.isEmpty) return null;
     for (final mode in controller.sessionSettings.modes.availableModes) {

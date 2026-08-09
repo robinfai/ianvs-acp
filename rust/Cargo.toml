@@ -1,6 +1,5 @@
 [workspace]
 members = [
-  "crates/ianvs-acpd",
   "crates/ianvs-acp-core",
   "crates/ianvs-acp-ffi",
 ]
@@ -15,7 +14,6 @@ rust-version = "1.90"
 agent-client-protocol = "=1.2.0"
 async-process = "2.5.0"
 base64 = "=0.22.1"
-chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 futures = "0.3.31"
 libc = "=0.2.186"
 nix = { version = "=0.28.0", features = ["term"] }
@@ -23,7 +21,6 @@ portable-pty = "=0.9.0"
 rusqlite = { version = "=0.39.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sha2 = "=0.10.9"
 thiserror = "2.0.17"
 tokio = { version = "1.49.0", features = ["macros", "rt", "sync", "time"] }
 uuid = { version = "1.20.0", features = ["v4"] }

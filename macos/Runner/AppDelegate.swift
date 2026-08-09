@@ -82,7 +82,7 @@ final class KeychainSecretStore {
           return value
         }
         // Ad-hoc builds have no application-identifier entitlement. Checking
-        // the legacy keychain keeps their secrets readable after a later
+        // the standard keychain keeps their secrets readable after a later
         // development- or distribution-signed launch.
         if !allowInteraction {
           if try itemExists(account: account, useDataProtectionKeychain: false) {

@@ -575,7 +575,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   }
 
   @override
-  int get ffiVersion => 9;
+  int get ffiVersion => 10;
 
   @override
   Object createRuntime() => handle;

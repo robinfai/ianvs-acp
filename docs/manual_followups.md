@@ -1,6 +1,6 @@
 # Manual follow-ups
 
-Updated: 2026-07-21
+Updated: 2026-08-09
 
 This list contains only work that still requires a product decision, a real
 external service, or desktop interaction. Implemented runtime work belongs in
@@ -62,8 +62,7 @@ Run before a release candidate:
   permission, cancel, restore, close, and recovery flows;
 - validate file/image/audio attachment behavior for each advertised model;
 - verify macOS keychain entitlements in the signed application;
-- exercise Inbox automatic execution, human-decision pause/resume, retry wakeup,
-  and application restart recovery;
+- exercise session recovery after an agent-process restart;
 - verify compact-window keyboard focus, screen-reader labels, drag/drop, file
   pickers, and terminal presentation.
 

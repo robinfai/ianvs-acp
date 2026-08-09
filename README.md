@@ -9,10 +9,6 @@ filesystem callbacks, and terminal callbacks. Prompt attachments can be
 selected or dropped onto the composer; file, image, and audio content follows
 the negotiated prompt capabilities, with resource-link fallback where needed.
 
-Task Inbox uses the same Rust Core for durable Task/Run state, automatic
-scheduling, retry admission, runtime quotas, and workspace leases. Human-input
-and approval waits pause the run and surface the decision context in Inbox.
-
 See [Product capabilities](docs/product_capabilities.md),
 [ACP runtime coverage](docs/acp_runtime_coverage.md), and
 [Runtime architecture](docs/runtime_architecture.md). Open decisions and manual
@@ -98,17 +94,15 @@ Saved shape example for automation and debugging:
   },
   "storage": {
     "max_size_gb": 50,
-    "retention_days": 30,
-    "cleanup_interval_hours": 24
+    "retention_days": 30
   }
 }
 ```
 
-`storage.max_size_gb` is the shared upper budget for all application SQLite
-files, not a per-file allowance. The workflow, legacy migration, and ACP
-session stores receive fixed shares of that total and automatically remove
-expired operational history. See [SQLite storage policy](docs/sqlite_storage.md)
-for the data inventory, allocation, and compaction behavior.
+`storage.max_size_gb` is the upper budget for the ACP session-recovery
+database. Expired recovery metadata is removed automatically. See
+[SQLite storage policy](docs/sqlite_storage.md) for the data inventory and
+compaction behavior.
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
 `headers`; enter secret header values through Agent Configuration so they are
@@ -215,11 +209,11 @@ use `FakeAgentClient` instead of launching a real agent.
 
 ## Runtime architecture
 
-ACP and Workflow have one production authority: a pure Rust Core behind a typed
-FFI host. Rust owns the local stdio/session/prompt/permission path, stable
-session lifecycle and configuration, workspace-scoped attachments, configured
-filesystem and terminal reverse requests, process recovery, Task/Run state,
-and scheduler admission. Flutter owns product projections and human interaction.
+ACP has one production authority: a pure Rust Core behind a typed FFI host.
+Rust owns the local stdio/session/prompt/permission path, stable session
+lifecycle and configuration, workspace-scoped attachments, configured
+filesystem and terminal reverse requests, and process recovery. Flutter owns
+workspace/session projections and human interaction.
 
 Stable stdio/HTTP/SSE MCP server configuration is projected by Rust into session
 new/load/resume. Filesystem and terminal reverse requests use the ordinary
@@ -235,19 +229,8 @@ flutter run -d macos
 That verification script covers the Rust workspace and the Flutter/Rust
 integration boundary used by the packaged macOS app.
 
-The same dylib exposes a typed, revisioned, transactionally durable Task/Run
-Workflow authority. Imported TaskInbox v1 snapshots follow an explicit
-`staged -> ready -> active` migration with an immutable source archive. Once
-active, typed host operations atomically update
-Rust-owned Task/Run state, events, artifacts, approvals, resources, and the
-revisioned UI projection; generic state overwrites remain unavailable. Rust
-also owns atomic scheduler claims with priority, retry-readiness, runtime quota,
-workspace-lease, and per-agent availability admission. Flutter consumes the
-Core-selected claim and retry wake-up without recomputing those decisions.
-
 Remote ACP transports and unstable MCP-over-ACP are explicitly unavailable
 until their Rust transports are implemented; the production app never opens a
-parallel compatibility connection. The legacy TaskInbox database is read only
-as a migration source before Rust activation. The ownership contract,
-implemented scope, and remaining transport and runtime work are tracked in
+parallel compatibility connection. The ownership contract, implemented scope,
+and remaining transport and runtime work are tracked in
 [Runtime architecture](docs/runtime_architecture.md).

@@ -1,38 +1,31 @@
 # Product capabilities
 
-Updated: 2026-07-21
+Updated: 2026-08-09
 
-This is the user-facing capability map. The product has one production authority
-for ACP and Workflow state. Runtime ownership and protocol details live in
-[Runtime architecture](runtime_architecture.md) and
+ianvs is a workspace and ACP session client. Runtime ownership and protocol
+details live in [Runtime architecture](runtime_architecture.md) and
 [ACP runtime coverage](acp_runtime_coverage.md).
 
-## Sessions and prompts
+## Workspaces and sessions
 
-- Create, list, restore, close, and delete local stdio ACP sessions.
+- Group local ACP sessions by canonical workspace.
+- Create, list, restore, close, delete, fork, pin, rename, archive, and open
+  sessions in another window.
 - Stream text, plan, tool-call, status, usage, and terminal events into the
-  timeline.
-- Send text and workspace-scoped file attachments. Images, audio, embedded
-  resources, and resource links are selected from the negotiated capability
-  intersection.
-- Change advertised session modes and select/boolean configuration options.
-- Authenticate with advertised methods and log out when supported.
+  conversation timeline.
+- Send text and workspace-scoped attachments using the negotiated prompt
+  capabilities.
+- Change advertised modes and select/boolean configuration options.
 - Recover registered sessions after a recoverable agent-process restart.
 
-## Human decisions and automation
+## Human decisions
 
-- Permission requests pause in Rust until a matching client response, timeout,
+- Permission requests remain pending in Rust until a response, timeout,
   cancellation, or lifecycle invalidation wins.
-- The UI offers the agent-provided choices, explicit allow/deny/cancel actions,
-  trust rules, automatic sidecar review, and an in-process bounded audit view.
+- The UI offers agent-provided choices, allow/deny/cancel actions, trust rules,
+  sidecar review, and a bounded audit view.
 - Filesystem access and terminal creation follow the same permission policy as
-  other agent tool calls. The agent owns external-side-effect decisions; the
-  ACP client does not attempt command-based egress isolation.
-- Task Inbox scheduling, priority, retries, runtime quota, and workspace leases
-  are decided atomically by Rust. Flutter starts only the claimed worker and
-  uses the Core-provided next wake time.
-- Task approval/user-input waits remain visible in Inbox with their background
-  context and resume only after a decision is submitted.
+  other ACP tool calls.
 
 ## Providers and MCP
 
@@ -46,32 +39,14 @@ for ACP and Workflow state. Runtime ownership and protocol details live in
 ## Intentionally unavailable
 
 - Remote WebSocket or HTTP/SSE ACP agent connections.
-- Unstable session fork and MCP-over-ACP.
+- Unstable MCP-over-ACP.
 - Generic raw JSON-RPC or vendor-extension requests from Flutter.
 - A second ACP runtime or fallback connection in the Flutter process.
-
-Configuration entries for unsupported agent transports are rejected at runtime
-with a user-visible unavailable reason. They are not silently downgraded.
-
-## Configuration
-
-Use `Agents` → `Agent Configuration`. The default file is:
-
-```text
-~/.config/ianvs-acp/settings.json
-```
-
-The UI manages agent commands, arguments, environment variables, the default
-agent, additional workspace directories, MCP servers, provider switches,
-permission trust rules, and review-agent settings. Secrets use the configured
-secret store instead of being included in exported task or permission context.
 
 ## Evidence
 
 - Rust behavior: `rust/crates/ianvs-acp-core/tests` and
   `rust/crates/ianvs-acp-ffi/tests`.
-- FFI contract and runtime projection: `test/rust` and
+- FFI and Flutter projection: `test/rust` and
   `test/acp/rust_acp_agent_client_test.dart`.
-- UI/state behavior: `test/state`, `test/tasks`, and `test/ui`.
-- Remaining decisions and environment-dependent checks:
-  [Manual follow-ups](manual_followups.md).
+- UI/state behavior: `test/state` and `test/ui`.

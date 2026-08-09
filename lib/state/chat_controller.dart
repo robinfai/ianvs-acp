@@ -20,7 +20,7 @@ import '../acp/session_title.dart';
 import '../config/assistant_agent_config.dart';
 import '../storage/session_transcript_cache.dart';
 import 'connection_state.dart';
-import '../tasks/permission_context.dart';
+import '../acp/permission_context.dart';
 
 enum ChatMessageRole { user, assistant, tool, error, status }
 
@@ -4368,7 +4368,7 @@ class ChatController extends ChangeNotifier {
     final trimmedModeId = modeId.trim();
     if (sessionId == null ||
         trimmedModeId.isEmpty ||
-        !sessionSettings.shouldUseLegacyModes ||
+        !sessionSettings.shouldUseModeFallback ||
         isStreaming ||
         isSessionOperationRunning) {
       return;

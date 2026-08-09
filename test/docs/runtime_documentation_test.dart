@@ -8,14 +8,13 @@ void main() {
   final capabilities = File('docs/product_capabilities.md').readAsStringSync();
   final followUps = File('docs/manual_followups.md').readAsStringSync();
 
-  test('canonical runtime documents describe one Rust authority', () {
-    expect(architecture, contains('authoritative ownership contract'));
-    expect(architecture, contains('Rust-only production authority'));
-    expect(architecture, contains('No generic JSON-RPC client'));
-    expect(coverage, contains('Raw JSON-RPC envelopes do not cross the ABI'));
-    expect(coverage, contains('Unsupported operations fail'));
-    expect(coverage, contains('closed instead of switching runtimes'));
-    expect(capabilities, contains('one production authority'));
+  test('canonical runtime documents describe one workspace runtime', () {
+    expect(architecture, contains('workspace-oriented ACP desktop client'));
+    expect(architecture, contains('Flutter presents workspaces and sessions'));
+    expect(architecture, contains('Raw protocol frames never cross the ABI'));
+    expect(coverage, contains('envelopes do not cross the ABI'));
+    expect(coverage, contains('Remote agent transports are intentionally'));
+    expect(capabilities, contains('workspace and ACP session client'));
   });
 
   test('documentation links resolve to the canonical files', () {
@@ -27,7 +26,7 @@ void main() {
     ];
     for (final path in docs) {
       expect(File(path).existsSync(), isTrue, reason: 'Missing $path');
-      expect(File(path).readAsStringSync(), contains('Updated: 2026-07-21'));
+      expect(File(path).readAsStringSync(), contains('Updated: 2026-08-09'));
     }
 
     final readme = File('README.md').readAsStringSync();

@@ -125,9 +125,9 @@ class RunnerTests: XCTestCase {
       true
     )
 
-    let legacyQueries = queries.filter { $0[kSecUseDataProtectionKeychain] == nil }
-    XCTAssertFalse(legacyQueries.isEmpty)
-    for query in legacyQueries {
+    let standardQueries = queries.filter { $0[kSecUseDataProtectionKeychain] == nil }
+    XCTAssertFalse(standardQueries.isEmpty)
+    for query in standardQueries {
       XCTAssertEqual(query[kSecClass] as? String, kSecClassGenericPassword as String)
       XCTAssertEqual(query[kSecAttrService] as? String, service)
       XCTAssertEqual(query[kSecAttrAccount] as? String, account)
@@ -135,7 +135,7 @@ class RunnerTests: XCTestCase {
     }
   }
 
-  func testFallsBackToLegacyKeychainWhenDataProtectionEntitlementIsMissing() throws {
+  func testFallsBackToStandardKeychainWhenDataProtectionEntitlementIsMissing() throws {
     securityClient.updateStatuses = [errSecMissingEntitlement]
 
     let reference = try store.put(namespace: "namespace", key: "key", value: "value")
@@ -146,9 +146,9 @@ class RunnerTests: XCTestCase {
       true
     )
     XCTAssertNil(securityClient.updateQueries.last?[kSecUseDataProtectionKeychain])
-    let legacyAdd = try XCTUnwrap(securityClient.addQueries.last)
-    XCTAssertNil(legacyAdd[kSecUseDataProtectionKeychain])
-    XCTAssertNil(legacyAdd[kSecAttrAccessible])
+    let standardAdd = try XCTUnwrap(securityClient.addQueries.last)
+    XCTAssertNil(standardAdd[kSecUseDataProtectionKeychain])
+    XCTAssertNil(standardAdd[kSecAttrAccessible])
     XCTAssertEqual(try store.get(account: account), "value")
     try store.delete(account: account)
     XCTAssertNil(try store.get(account: account))
@@ -443,7 +443,7 @@ private final class FakeKeychainSecurityClient: KeychainSecurityClient {
     }
     let backend = query[kSecUseDataProtectionKeychain] as? Bool == true
       ? "data-protection"
-      : "legacy"
+      : "standard"
     return "\(backend)\u{0}\(service)\u{0}\(account)"
   }
 

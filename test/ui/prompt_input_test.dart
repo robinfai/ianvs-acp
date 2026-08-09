@@ -1973,8 +1973,8 @@ void main() {
                 name: 'Deny once',
                 kind: 'deny_once',
               ),
-              AcpPermissionChoice(optionId: 'legacy-reject', name: 'Reject'),
-              AcpPermissionChoice(optionId: 'legacy-allow', name: 'Allow'),
+              AcpPermissionChoice(optionId: 'fallback-reject', name: 'Reject'),
+              AcpPermissionChoice(optionId: 'fallback-allow', name: 'Allow'),
               AcpPermissionChoice(
                 optionId: 'unknown-kind',
                 name: 'Mystery',
@@ -1998,8 +1998,8 @@ void main() {
 
       expect(choice('allow-once').onPressed, isNull);
       expect(choice('deny-once').onPressed, isNotNull);
-      expect(choice('legacy-reject').onPressed, isNull);
-      expect(choice('legacy-allow').onPressed, isNull);
+      expect(choice('fallback-reject').onPressed, isNull);
+      expect(choice('fallback-allow').onPressed, isNull);
       expect(choice('unknown-kind').onPressed, isNull);
 
       await tester.tap(
@@ -2013,7 +2013,7 @@ void main() {
     },
   );
 
-  testWidgets('PromptInput keeps legacy empty context allow action enabled', (
+  testWidgets('PromptInput keeps empty-context allow action enabled', (
     tester,
   ) async {
     var allowed = false;
@@ -2022,7 +2022,7 @@ void main() {
         isSending: false,
         onSend: (_, _) {},
         pendingPermissionRequest: AcpPermissionRequest(
-          id: 'permission-legacy',
+          id: 'permission-unscoped',
           title: 'Read file',
           rationale: 'Requested by agent',
           sessionId: 'session-1',

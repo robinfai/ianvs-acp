@@ -1,58 +1,22 @@
-# SQLite storage policy
+# SQLite storage
 
-ianvs uses three independent SQLite files. The application setting
-`storage.max_size_gb` is a shared budget, not a per-file limit. It defaults to
-50 GB and is allocated as follows:
+Updated: 2026-08-09
 
-| Store | File | Budget | Retained data |
-| --- | --- | ---: | --- |
-| Workflow authority | `task_inbox_workflow.sqlite3` | 95% | Tasks, runs, current TaskInbox projection, runtime events, workflow definitions/runs, leases, recovery and idempotency records |
-| Legacy TaskInbox migration store | `task_inbox_state.sqlite3` | 4% | Normalized legacy tasks/runs/events/artifacts/approvals used during migration |
-| ACP session recovery | `acp_sessions.sqlite3` | 1% | Agent/session/workspace metadata needed to resume active ACP sessions |
+The application keeps one local SQLite database:
 
-The percentages always sum to the configured total. SQLite
-`max_page_count` enforces each physical allocation for new databases. If an
-existing database is already larger than its allocation, SQLite cannot reduce
-the file in place; the current page count becomes the temporary ceiling and
-deleted pages are reused.
+| Store | Default file | Purpose |
+| --- | --- | --- |
+| ACP session registry | `acp_sessions.sqlite3` | Agent-scoped workspace and session metadata used for recovery |
 
-## Retention and automatic cleanup
+The configured `storage.max_size_gb` value applies directly to this database.
+The default is 50 GB. `storage.retention_days` bounds stale recovery metadata;
+the registry applies this policy when it initializes and when sessions are
+updated.
 
-`storage.retention_days` defaults to 30 days.
-`storage.cleanup_interval_hours` defaults to 24 hours.
+The session registry stores only identifiers and canonical workspace roots
+needed to restore active sessions. Prompt content and background automation
+state are not stored by the client.
 
-- Workflow writes remove expired and excess idempotency results in bounded
-  batches before inserting a new result. Resolved recovery records and terminal
-  leases also expire. Cleanup is deliberately batched so a very large existing
-  database cannot create an equally large WAL file during one startup.
-- The legacy TaskInbox store sanitizes old prompt, event metadata, and artifact
-  previews using the configured retention window. Active task identity and
-  status rows remain.
-- ACP session recovery metadata expires by `updated_at`; active use refreshes
-  the timestamp.
-
-WAL files are checkpointed after maintenance. Logical cleanup frees pages for
-reuse, but shrinking an oversized database file requires a separate offline
-compaction because SQLite cannot safely rewrite an open database file.
-
-## Configuration
-
-```json
-{
-  "storage": {
-    "max_size_gb": 50,
-    "retention_days": 30,
-    "cleanup_interval_hours": 24
-  }
-}
-```
-
-The same values are editable under **Agent Configuration → SQLite Storage**.
-
-## Growth-risk note
-
-Idempotency records contain serialized command results so retries can return
-the original projection. A result can include the full TaskInbox projection,
-which makes an unbounded record table grow much faster than its row count
-suggests. The workflow store therefore limits this table by age and by a
-quota-derived record count, while preserving a bounded retry window.
+SQLite paths must be absolute, must not be symlinks, and are opened with
+defensive flags. Writes use transactions and the database applies its page
+limit before accepting new records.

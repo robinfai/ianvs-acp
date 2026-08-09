@@ -2,7 +2,7 @@ import 'dart:io';
 
 enum DeepLinkSource { external }
 
-enum DeepLinkRequestKind { session, task }
+enum DeepLinkRequestKind { session }
 
 class DeepLinkRequest {
   const DeepLinkRequest({
@@ -12,7 +12,6 @@ class DeepLinkRequest {
     this.sessionId,
     this.cwd,
     this.agentName,
-    this.taskId,
     this.validationErrors = const <String>[],
   });
 
@@ -22,12 +21,11 @@ class DeepLinkRequest {
   final String? sessionId;
   final String? cwd;
   final String? agentName;
-  final String? taskId;
   final List<String> validationErrors;
 
   static const int maxRawLinkLength = 8 * 1024;
 
-  bool get requiresConfirmation => kind == DeepLinkRequestKind.session;
+  bool get requiresConfirmation => true;
   bool get canConfirm => validationErrors.isEmpty;
 }
 

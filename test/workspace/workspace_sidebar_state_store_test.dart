@@ -218,7 +218,7 @@ void main() {
     },
   );
 
-  test('WorkspaceSidebarStateStore recognizes legacy blank sessions', () async {
+  test('WorkspaceSidebarStateStore recognizes blank session entries', () async {
     final tempDir = await Directory.systemTemp.createTemp(
       'ianvs-acp-sidebar-store-',
     );
@@ -228,7 +228,7 @@ void main() {
       jsonEncode({
         'session_index': [
           {
-            'id': 'legacy-blank',
+            'id': 'blank-session',
             'cwd': '/workspace/project',
             'created_at': '2026-07-15T20:47:46.586319',
             'agent_name': 'Codex',

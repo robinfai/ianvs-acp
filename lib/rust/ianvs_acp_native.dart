@@ -152,7 +152,7 @@ final class IanvsRustRuntime {
     });
   }
 
-  static const int expectedFfiVersion = 9;
+  static const int expectedFfiVersion = 10;
   static const int maxNativeEventsPerPoll = 4096;
   static const int maxNativeBytesPerPoll = 64 * 1024 * 1024;
   static const int _backgroundDecodeThresholdBytes = 128 * 1024;

@@ -21,7 +21,7 @@ final class SecretOwner {
   String get namespace =>
       '$configIdentity/$targetKind/target/$targetIdentity/$fieldName';
 
-  String get legacyNamespace => '$configIdentity/$targetKind/$fieldName';
+  String get unscopedNamespace => '$configIdentity/$targetKind/$fieldName';
 
   Map<String, Object?> toJson() => <String, Object?>{
     'config_identity': configIdentity,
