@@ -38,13 +38,24 @@ the exact field and keeps configuration editing disabled until the credential
 is restored or re-entered.
 
 On startup, the app can detect missing local ACP agents and ask whether to add
-them to `agent_servers`. The built-in detectors cover Codex through a local
-`npx` command running `@agentclientprotocol/codex-acp`, and Pi through the
-`pi-acp` adapter when both `npx` and the `pi` command are available. A direct
-`pi-acp` command or wrapper and `npx -y pi-acp[@version]` are treated as the same
-Pi agent, so discovery does not add a duplicate profile. Model provider
-credentials for Pi remain user-managed through Pi itself or the agent server
-`env` fields in Agent Configuration.
+them to `agent_servers`. The built-in detectors cover:
+
+- Codex through a local `npx` command running
+  `@agentclientprotocol/codex-acp`.
+- Pi through the `pi-acp` adapter when both `npx` and the `pi` command are
+  available.
+- Cursor through its separately installed CLI (`agent acp`), including the
+  `cursor-agent` executable alias. The official installer places `agent` in
+  `~/.local/bin` by default.
+- CodeBuddy through an installed `codebuddy --acp` command, with
+  `npx -y @tencent-ai/codebuddy-code --acp` as a fallback.
+
+Equivalent direct commands, aliases, and npx packages are treated as the same
+agent so discovery does not add duplicate profiles. Provider credentials remain
+user-managed through each CLI or the agent server `env` fields in Agent
+Configuration. Install and authenticate the Cursor CLI before using its ACP
+profile; installing the Cursor desktop editor alone does not guarantee that the
+separate CLI is available.
 
 Saved shape example for automation and debugging:
 
@@ -63,6 +74,18 @@ Saved shape example for automation and debugging:
       "command": "/opt/homebrew/bin/npx",
       "cwd": "/Users/example/project",
       "args": ["-y", "pi-acp@0.0.31"]
+    },
+    "Cursor": {
+      "type": "custom",
+      "command": "/Users/example/.local/bin/agent",
+      "cwd": "/Users/example/project",
+      "args": ["acp"]
+    },
+    "CodeBuddy": {
+      "type": "custom",
+      "command": "/opt/homebrew/bin/codebuddy",
+      "cwd": "/Users/example/project",
+      "args": ["--acp"]
     }
   },
   "additional_directories": [

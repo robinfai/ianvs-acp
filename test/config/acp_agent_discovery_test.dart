@@ -7,27 +7,41 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
 
 void main() {
-  test('uses current Codex adapter and reviewed pi adapter', () {
+  test('uses reviewed package invocations for npx-backed agents', () {
     final agents = AcpAgentDiscovery.discover(
       environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
       fileExists: (_) => true,
     );
 
-    expect(agents.first.args.single, '@agentclientprotocol/codex-acp');
-    expect(agents.last.args.last, 'pi-acp@0.0.31');
+    expect(
+      agents.singleWhere((agent) => agent.name == 'Codex').args.single,
+      '@agentclientprotocol/codex-acp',
+    );
+    expect(
+      agents.singleWhere((agent) => agent.name == 'Pi').args.last,
+      'pi-acp@0.0.31',
+    );
+    expect(agents.singleWhere((agent) => agent.name == 'CodeBuddy').args, [
+      '--acp',
+    ]);
   });
 
-  test('discovers Codex ACP through npx on PATH', () {
+  test('discovers npx-backed ACP agents through npx on PATH', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
       const AcpClientConfig(),
       environment: const <String, String>{'PATH': '/usr/local/bin:/bin'},
       fileExists: (path) => path == '/usr/local/bin/npx',
     );
 
-    expect(discovered, hasLength(1));
-    expect(discovered.single.name, 'Codex');
-    expect(discovered.single.command, '/usr/local/bin/npx');
-    expect(discovered.single.args, ['@agentclientprotocol/codex-acp']);
+    final codex = discovered.singleWhere((agent) => agent.name == 'Codex');
+    expect(codex.command, '/usr/local/bin/npx');
+    expect(codex.args, ['@agentclientprotocol/codex-acp']);
+
+    final codeBuddy = discovered.singleWhere(
+      (agent) => agent.name == 'CodeBuddy',
+    );
+    expect(codeBuddy.command, '/usr/local/bin/npx');
+    expect(codeBuddy.args, ['-y', '@tencent-ai/codebuddy-code', '--acp']);
   });
 
   test('discovers Pi through npx when pi is installed', () {
@@ -41,7 +55,6 @@ void main() {
           path == '/usr/local/bin/npx' || path == '/usr/local/bin/pi',
     );
 
-    expect(discovered, hasLength(2));
     final pi = discovered.singleWhere((server) => server.name == 'Pi');
     expect(pi.command, '/usr/local/bin/npx');
     expect(pi.args, ['-y', 'pi-acp@0.0.31']);
@@ -75,9 +88,96 @@ void main() {
         fileExists: (path) => path == '/opt/homebrew/bin/npx',
       );
 
-      expect(discovered, isEmpty);
+      expect(discovered.map((server) => server.name), isNot(contains('Codex')));
     },
   );
+
+  test('discovers Cursor from its default standalone CLI location', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      const AcpClientConfig(),
+      environment: const <String, String>{
+        'HOME': '/Users/example',
+        'PATH': '/usr/bin:/bin',
+      },
+      fileExists: (path) => path == '/Users/example/.local/bin/agent',
+    );
+
+    expect(discovered, hasLength(1));
+    expect(discovered.single.name, 'Cursor');
+    expect(discovered.single.command, '/Users/example/.local/bin/agent');
+    expect(discovered.single.args, ['acp']);
+  });
+
+  test('discovers Cursor through the cursor-agent CLI alias', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      const AcpClientConfig(),
+      environment: const <String, String>{'PATH': '/custom/bin:/usr/bin'},
+      fileExists: (path) => path == '/custom/bin/cursor-agent',
+    );
+
+    expect(discovered, hasLength(1));
+    expect(discovered.single.name, 'Cursor');
+    expect(discovered.single.command, '/custom/bin/cursor-agent');
+    expect(discovered.single.args, ['acp']);
+  });
+
+  test('prefers an installed CodeBuddy CLI over the npx package', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      const AcpClientConfig(),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin:/bin'},
+      fileExists: (path) =>
+          path == '/opt/homebrew/bin/npx' ||
+          path == '/opt/homebrew/bin/codebuddy',
+    );
+
+    final codeBuddy = discovered.singleWhere(
+      (agent) => agent.name == 'CodeBuddy',
+    );
+    expect(codeBuddy.command, '/opt/homebrew/bin/codebuddy');
+    expect(codeBuddy.args, ['--acp']);
+  });
+
+  test('does not duplicate Cursor across its CLI aliases', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'Cursor Agent': {
+            'type': 'custom',
+            'command': '/custom/bin/cursor-agent',
+            'args': ['acp'],
+          },
+        },
+      }),
+      environment: const <String, String>{
+        'HOME': '/Users/example',
+        'PATH': '/usr/bin:/bin',
+      },
+      fileExists: (path) => path == '/Users/example/.local/bin/agent',
+    );
+
+    expect(discovered.map((server) => server.name), isNot(contains('Cursor')));
+  });
+
+  test('does not duplicate direct and npx CodeBuddy invocations', () {
+    final discovered = AcpAgentDiscovery.discoverMissing(
+      AcpClientConfig.fromJson({
+        'agent_servers': {
+          'CodeBuddy Code': {
+            'type': 'custom',
+            'command': '/usr/local/bin/npx',
+            'args': ['--yes', '@tencent-ai/codebuddy-code@2.106.7', '--acp'],
+          },
+        },
+      }),
+      environment: const <String, String>{'PATH': '/opt/homebrew/bin:/bin'},
+      fileExists: (path) => path == '/opt/homebrew/bin/codebuddy',
+    );
+
+    expect(
+      discovered.map((server) => server.name),
+      isNot(contains('CodeBuddy')),
+    );
+  });
 
   test('does not suggest Pi when the versioned npx adapter is configured', () {
     final discovered = AcpAgentDiscovery.discoverMissing(
@@ -189,13 +289,12 @@ void main() {
       config,
       environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
       fileExists: (path) => path == '/opt/homebrew/bin/npx',
-    );
-    expect(migration.single.args, ['@agentclientprotocol/codex-acp']);
+    ).singleWhere((server) => server.name == 'Codex');
+    expect(migration.args, ['@agentclientprotocol/codex-acp']);
 
-    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(
-      config,
+    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(config, [
       migration,
-    );
+    ]);
     final server = migrated.agentServers.single;
     expect(server.name, 'OpenAI Codex');
     expect(server.args, ['@agentclientprotocol/codex-acp']);
@@ -238,12 +337,11 @@ void main() {
       config,
       environment: const <String, String>{'PATH': '/opt/homebrew/bin'},
       fileExists: (path) => path == '/opt/homebrew/bin/npx',
-    );
+    ).singleWhere((server) => server.name == 'Codex');
 
-    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(
-      config,
+    final migrated = await AcpAgentDiscovery.writeSelectedAgentServers(config, [
       migration,
-    );
+    ]);
 
     expect(
       migrated.agentServers

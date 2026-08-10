@@ -19,6 +19,10 @@ class AcpAgentDiscovery {
   static const String piAgentName = AcpAdapterPackages.piAgentName;
   static const String piAcpVersion = AcpAdapterPackages.piVersion;
   static const String piAcpPackage = AcpAdapterPackages.pi;
+  static const String cursorAgentName = AcpAdapterPackages.cursorAgentName;
+  static const String codeBuddyAgentName =
+      AcpAdapterPackages.codeBuddyAgentName;
+  static const String codeBuddyAcpPackage = AcpAdapterPackages.codeBuddy;
 
   static List<AgentServerConfig> discoverMissing(
     AcpClientConfig config, {
@@ -38,42 +42,89 @@ class AcpAgentDiscovery {
     Map<String, String>? environment,
     FileExists? fileExists,
   }) {
+    final env = environment ?? Platform.environment;
     final npx = _resolveExecutable(
       'npx',
-      environment: environment,
+      environment: env,
       fileExists: fileExists,
-      preferredPaths: const <String>[
-        '/opt/homebrew/bin/npx',
-        '/usr/local/bin/npx',
-      ],
+      preferredPaths: _preferredExecutablePaths('npx', env),
     );
-    if (npx == null) return const <AgentServerConfig>[];
 
-    final agents = <AgentServerConfig>[
-      AgentServerConfig(
-        name: codexAgentName,
-        type: 'custom',
-        command: npx,
-        args: const <String>[codexAcpPackage],
-      ),
-    ];
+    final agents = <AgentServerConfig>[];
+    if (npx != null) {
+      agents.add(
+        AgentServerConfig(
+          name: codexAgentName,
+          type: 'custom',
+          command: npx,
+          args: const <String>[codexAcpPackage],
+        ),
+      );
+    }
 
     final pi = _resolveExecutable(
       'pi',
-      environment: environment,
+      environment: env,
       fileExists: fileExists,
-      preferredPaths: const <String>[
-        '/opt/homebrew/bin/pi',
-        '/usr/local/bin/pi',
-      ],
+      preferredPaths: _preferredExecutablePaths('pi', env),
     );
-    if (pi != null) {
+    if (npx != null && pi != null) {
       agents.add(
         AgentServerConfig(
           name: piAgentName,
           type: 'custom',
           command: npx,
           args: const <String>['-y', piAcpPackage],
+        ),
+      );
+    }
+
+    final cursor =
+        _resolveExecutable(
+          'agent',
+          environment: env,
+          fileExists: fileExists,
+          preferredPaths: _preferredExecutablePaths('agent', env),
+        ) ??
+        _resolveExecutable(
+          'cursor-agent',
+          environment: env,
+          fileExists: fileExists,
+          preferredPaths: _preferredExecutablePaths('cursor-agent', env),
+        );
+    if (cursor != null) {
+      agents.add(
+        AgentServerConfig(
+          name: cursorAgentName,
+          type: 'custom',
+          command: cursor,
+          args: const <String>['acp'],
+        ),
+      );
+    }
+
+    final codeBuddy = _resolveExecutable(
+      'codebuddy',
+      environment: env,
+      fileExists: fileExists,
+      preferredPaths: _preferredExecutablePaths('codebuddy', env),
+    );
+    if (codeBuddy != null) {
+      agents.add(
+        AgentServerConfig(
+          name: codeBuddyAgentName,
+          type: 'custom',
+          command: codeBuddy,
+          args: const <String>['--acp'],
+        ),
+      );
+    } else if (npx != null) {
+      agents.add(
+        AgentServerConfig(
+          name: codeBuddyAgentName,
+          type: 'custom',
+          command: npx,
+          args: const <String>['-y', codeBuddyAcpPackage, '--acp'],
         ),
       );
     }
@@ -184,6 +235,13 @@ class AcpAgentDiscovery {
       if (_isPiAcpInvocation(server) && _isPiAcpInvocation(candidate)) {
         return true;
       }
+      if (_isCursorAcpInvocation(server) && _isCursorAcpInvocation(candidate)) {
+        return true;
+      }
+      if (_isCodeBuddyAcpInvocation(server) &&
+          _isCodeBuddyAcpInvocation(candidate)) {
+        return true;
+      }
       if (server.name == candidate.name) return true;
       if (_sameStdioInvocation(server, candidate)) return true;
     }
@@ -230,6 +288,20 @@ class AcpAgentDiscovery {
         args: server.args,
       );
 
+  static bool _isCursorAcpInvocation(AgentServerConfig server) =>
+      server.isStdio &&
+      AcpAdapterPackages.isCursorAdapterInvocation(
+        command: server.command,
+        args: server.args,
+      );
+
+  static bool _isCodeBuddyAcpInvocation(AgentServerConfig server) =>
+      server.isStdio &&
+      AcpAdapterPackages.isCodeBuddyAdapterInvocation(
+        command: server.command,
+        args: server.args,
+      );
+
   static bool _isZedCodexPackage(Object? value) =>
       AcpAdapterPackages.isZedCodexPackage(value);
 
@@ -249,6 +321,18 @@ class AcpAgentDiscovery {
     final trimmed = command.trim();
     if (trimmed.isEmpty) return '';
     return trimmed.split(Platform.pathSeparator).last;
+  }
+
+  static List<String> _preferredExecutablePaths(
+    String executable,
+    Map<String, String> environment,
+  ) {
+    final home = environment['HOME']?.trim();
+    return <String>[
+      if (home != null && home.isNotEmpty) '$home/.local/bin/$executable',
+      '/opt/homebrew/bin/$executable',
+      '/usr/local/bin/$executable',
+    ];
   }
 
   static String? _resolveExecutable(
