@@ -7,6 +7,7 @@ import '../config/acp_client_config.dart';
 import '../config/acp_config_store.dart';
 import '../config/macos_keychain_secret_store.dart';
 import '../config/secret_store.dart';
+import '../ui/theme/app_theme.dart';
 import 'startup_options.dart';
 
 typedef AcpBootstrapConfigLoader =
@@ -129,8 +130,8 @@ final class _AcpClientBootstrapState extends State<AcpClientBootstrap> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'ACP Client',
+      theme: AppTheme.light,
       home: Scaffold(
-        backgroundColor: const Color(0xfffafafa),
         body: Center(
           child: _loading
               ? const SizedBox.square(
@@ -217,7 +218,7 @@ final class _KeychainApprovalPrompt extends StatelessWidget {
                         'access.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: const Color(0xff666666),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 height: 1.45,
               ),
             ),

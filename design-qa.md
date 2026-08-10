@@ -268,3 +268,34 @@ final result: passed
 - The dedicated visual golden test passes at 1000 × 600 and will catch future regressions to nested borders or heavy file-link styling.
 
 final result: passed
+
+## ACP hosted terminal core and theme system — 2026-08-11
+
+### Visual truth and native evidence
+
+- Source visual truth: `artifacts/design-reference/conversation-canvas-option-2.png`.
+- Implementation screenshot: `artifacts/theme-system-2026-08-11/native-theme-terminal-pubdev-0.1.0.jpeg`.
+- Viewport and density: native macOS full-window captures. The source is 1487 × 1058 px; the implementation is 1230 × 768 px. CSS pixels and device density do not apply. The comparison was normalized by pane proportions, role-based color use, type hierarchy, component density, and shape rhythm; it is not a pixel-for-pixel clone review.
+- State: the source shows an active conversation with the Context inspector; the implementation shows the same three-pane workspace in an empty session, with Context visible and a two-tab terminal panel open. Conversation content differs intentionally because this pass validates the shared design language and the newly integrated terminal state.
+- Full-view evidence: both original-resolution images were provided together in the same comparison input on 2026-08-11.
+- Focused-region evidence: no separate crop was required; the original captures keep the sidebar, toolbar, composer, inspector, terminal header, active tab, cursor, and scrollbar legible in the same comparison input.
+
+### Findings
+
+No P0, P1, or P2 discrepancies remain for the selected light Conversation Canvas direction.
+
+- Typography: the implementation uses the macOS system font stack, restrained 12–20 pt hierarchy, compact labels, and SF Mono-compatible terminal text.
+- Spacing and layout: the three-pane hierarchy, compact macOS toolbar density, 8 pt spacing rhythm, restrained radii, and content separation match the source direction. The terminal remains subordinate to the conversation and preserves the existing resizable workspace layout.
+- Colors and tokens: warm neutral surfaces, graphite text, teal active/focus roles, semantic borders, and low-shadow elevation are consistent across the shell. Terminal foreground, cursor, selection, scrollbar, tab chrome, and warm-charcoal viewport are provided through the same ThemeData extension; normal text and terminal foreground/cursor pairs meet WCAG AA contrast.
+- Image and asset quality: this product surface uses native icons and controls; no placeholder imagery, custom SVG substitute, or generated visual asset was introduced.
+- Copy and content: session, workspace, context, and terminal labels remain coherent in the standalone empty-session state.
+- States and accessibility: active/inactive terminal tabs, disabled/open toggle states, semantic labels, keyboard toggle (Control+backquote), smart cursor contrast, narrow-window coverage, and text scaling/overflow regression paths are covered by the application tests.
+
+### Comparison history
+
+- Pass 1: the initial native implementation was compared with the source and retained ACP's established three-column information architecture while adopting the warm-neutral and restrained-teal direction.
+- Pass 2: the published-package build was compared again with two live terminal tabs. Terminal chrome was verified as part of the app hierarchy rather than a pure-black visual island. No P0/P1/P2 follow-up remained.
+
+The source is explicitly a light-appearance reference. System dark appearance is not claimed by this QA result and was not used to judge this light-theme delivery.
+
+final result: passed

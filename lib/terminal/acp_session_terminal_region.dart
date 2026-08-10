@@ -171,7 +171,12 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
                     minimumContrastRatio: 4.5,
                     smartCursorColor: true,
                   ),
-                  viewportPadding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                  viewportPadding: const EdgeInsets.only(
+                    left: 12,
+                    top: 8,
+                    right: 12,
+                    bottom: 10,
+                  ),
                   useFrameDefaultColors: false,
                 ),
               );
