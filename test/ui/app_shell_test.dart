@@ -10,8 +10,7 @@ import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
-import 'package:ianvs_pty/ianvs_pty.dart';
-import 'package:ianvs_terminal/ianvs_terminal.dart';
+import 'package:ianvs_terminal_core/ianvs_terminal_core.dart';
 
 void _noop() {}
 

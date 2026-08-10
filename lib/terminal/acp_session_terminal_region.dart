@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:ianvs_terminal/ianvs_terminal.dart';
+import 'package:ianvs_terminal_core/ianvs_terminal_core.dart';
 import 'package:path/path.dart' as path;
 
 import '../acp/agent_session.dart';
@@ -133,6 +133,11 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final theme = Theme.of(context);
+        final colorScheme = theme.colorScheme;
+        final terminalTheme =
+            theme.extension<AppTerminalTheme>() ??
+            AppTerminalTheme.conversationCanvas;
         final desiredHeight = constraints.maxHeight * 0.36;
         final availableHeight = math.max<double>(
           140.0,
@@ -150,15 +155,24 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
                 style: TerminalBottomPanelStyle(
                   height: panelHeight,
                   headerHeight: 38,
-                  backgroundColor: AppColors.textPrimary,
-                  headerColor: AppColors.surfaceMuted,
-                  borderColor: AppColors.border,
-                  activeTabColor: AppColors.surface,
-                  activeTabForegroundColor: AppColors.textPrimary,
-                  inactiveTabForegroundColor: AppColors.textSecondary,
-                  viewportColors: TerminalViewportColors.dark,
+                  backgroundColor: terminalTheme.background,
+                  headerColor: colorScheme.surfaceContainerLow,
+                  borderColor: colorScheme.outlineVariant,
+                  activeTabColor: colorScheme.surfaceContainerLowest,
+                  activeTabForegroundColor: colorScheme.onSurface,
+                  inactiveTabForegroundColor: colorScheme.onSurfaceVariant,
+                  viewportColors: TerminalViewportColors(
+                    canvasBackground: terminalTheme.background,
+                    foreground: terminalTheme.foreground,
+                    cursor: terminalTheme.cursor,
+                    selection: terminalTheme.selection,
+                    scrollbarTrack: terminalTheme.scrollbarTrack,
+                    scrollbarThumb: terminalTheme.scrollbarThumb,
+                    minimumContrastRatio: 4.5,
+                    smartCursorColor: true,
+                  ),
                   viewportPadding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-                  useFrameDefaultColors: true,
+                  useFrameDefaultColors: false,
                 ),
               );
         final content = widget.builder(
@@ -221,6 +235,7 @@ class _AcpTerminalToggleAction extends StatelessWidget {
   }
 
   Widget _button(BuildContext context, {required bool open}) {
+    final colorScheme = Theme.of(context).colorScheme;
     final tooltip = !enabled
         ? 'Start a session to use the terminal'
         : open
@@ -241,10 +256,14 @@ class _AcpTerminalToggleAction extends StatelessWidget {
             maximumSize: const Size.square(32),
             padding: EdgeInsets.zero,
             foregroundColor: open
-                ? AppColors.accentDark
-                : AppColors.primaryDark,
-            backgroundColor: open ? AppColors.accentSoft : Colors.transparent,
-            disabledForegroundColor: AppColors.textTertiary,
+                ? colorScheme.onPrimaryContainer
+                : colorScheme.onSurfaceVariant,
+            backgroundColor: open
+                ? colorScheme.primaryContainer
+                : Colors.transparent,
+            disabledForegroundColor: colorScheme.onSurfaceVariant.withValues(
+              alpha: 0.45,
+            ),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(AppRadius.sm),
             ),

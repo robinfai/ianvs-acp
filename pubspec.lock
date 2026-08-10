@@ -192,24 +192,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.1.2"
-  ianvs_pty:
-    dependency: "direct dev"
-    description:
-      path: "packages/ianvs_pty"
-      ref: e30d09e3f10218d397c6b114f58bf0c121d3a351
-      resolved-ref: e30d09e3f10218d397c6b114f58bf0c121d3a351
-      url: "https://github.com/robinfai/ianvs-terminal.git"
-    source: git
-    version: "0.0.0"
-  ianvs_terminal:
+  ianvs_terminal_core:
     dependency: "direct main"
     description:
-      path: "packages/ianvs_terminal"
-      ref: e30d09e3f10218d397c6b114f58bf0c121d3a351
-      resolved-ref: e30d09e3f10218d397c6b114f58bf0c121d3a351
-      url: "https://github.com/robinfai/ianvs-terminal.git"
-    source: git
-    version: "0.0.0"
+      name: ianvs_terminal_core
+      sha256: "91c0747fb9ac54907c6b55fbbe10756c2a85b11a016ceeb9004122b0e6c1846c"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.1.0"
   leak_tracker:
     dependency: transitive
     description:

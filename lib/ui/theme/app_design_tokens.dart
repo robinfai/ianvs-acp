@@ -3,39 +3,105 @@ import 'package:flutter/material.dart';
 class AppColors {
   const AppColors._();
 
-  // Conversation Canvas keeps the persistent navigation one quiet step away
-  // from the pure-white reading surface. The teal is deliberately reserved for
-  // focus, selection, and success so long coding sessions stay visually calm.
-  static const Color bg = Color(0xfff7f7f5);
+  // Conversation Canvas uses a warm graphite neutral scale so the navigation,
+  // reading surface, inspector, and terminal chrome feel like one workspace.
+  // Teal is the product primary: it is reserved for focus, selection, active
+  // state, and primary actions rather than being used as decorative color.
+  static const Color bg = Color(0xfff3f5f3);
   static const Color surface = Color(0xffffffff);
-  static const Color surfaceMuted = Color(0xfff4f4f2);
-  static const Color surfaceRaised = Color(0xfffbfbfa);
-  static const Color surfaceSelected = Color(0xffeaf4f2);
-  static const Color surfaceHover = Color(0xfff0f1ef);
-  static const Color userMessageSurface = Color(0xfff4f4f3);
-  static const Color border = Color(0xffe4e5e2);
-  static const Color borderSoft = Color(0xffeeeeeb);
+  static const Color surfaceMuted = Color(0xfff1f3f1);
+  static const Color surfaceRaised = Color(0xfffafbfa);
+  static const Color surfaceSelected = Color(0xffe2f2ee);
+  static const Color surfaceHover = Color(0xffebf0ed);
+  static const Color userMessageSurface = Color(0xfff0f2f0);
+  static const Color border = Color(0xffdce1de);
+  static const Color borderSoft = Color(0xffe8ece9);
 
-  static const Color textPrimary = Color(0xff242526);
-  static const Color textSecondary = Color(0xff6b6f74);
-  static const Color textTertiary = Color(0xff989ca1);
+  static const Color textPrimary = Color(0xff202422);
+  static const Color textSecondary = Color(0xff5f6864);
+  static const Color textTertiary = Color(0xff6f7773);
 
-  static const Color primary = textPrimary;
-  static const Color primaryDark = textPrimary;
-  static const Color primarySoft = Color(0xffececea);
-  static const Color primaryMist = Color(0xfff6f6f4);
+  static const Color accent = Color(0xff0b7e75);
+  static const Color accentDark = Color(0xff08645d);
+  static const Color accentSoft = Color(0xffdcefea);
+  static const Color accentMist = Color(0xfff0f9f6);
+  static const Color accentBorder = Color(0xffa9d7cf);
+  static const Color focusRing = Color(0x520b7e75);
 
-  static const Color accent = Color(0xff0f8a83);
-  static const Color accentDark = Color(0xff0c6f6a);
-  static const Color accentSoft = Color(0xffe6f4f2);
-  static const Color accentMist = Color(0xfff3faf8);
-  static const Color accentBorder = Color(0xffb7ddd8);
-  static const Color focusRing = Color(0x520f8a83);
+  // Keep the legacy primary aliases while making their intent match
+  // ColorScheme.primary. Existing components now inherit the product accent
+  // instead of treating graphite text as an action color.
+  static const Color primary = accent;
+  static const Color primaryDark = accentDark;
+  static const Color primarySoft = accentSoft;
+  static const Color primaryMist = accentMist;
 
-  static const Color disabled = Color(0xffdedfdd);
-  static const Color success = Color(0xff1f9d55);
-  static const Color warning = Color(0xffb7791f);
-  static const Color danger = Color(0xffd14343);
+  static const Color disabled = Color(0xffd7ddda);
+  static const Color success = Color(0xff218758);
+  static const Color warning = Color(0xffa56a15);
+  static const Color danger = Color(0xffc33f43);
+}
+
+@immutable
+class AppTerminalTheme extends ThemeExtension<AppTerminalTheme> {
+  const AppTerminalTheme({
+    required this.background,
+    required this.foreground,
+    required this.cursor,
+    required this.selection,
+    required this.scrollbarTrack,
+    required this.scrollbarThumb,
+  });
+
+  // A warm charcoal terminal keeps the focus benefits of a dark viewport
+  // without introducing a pure-black visual island inside the light app shell.
+  static const AppTerminalTheme conversationCanvas = AppTerminalTheme(
+    background: Color(0xff171b1a),
+    foreground: Color(0xffd7e3df),
+    cursor: Color(0xff64c7b8),
+    selection: Color(0x665c968c),
+    scrollbarTrack: Color(0x242e3734),
+    scrollbarThumb: Color(0x9974827d),
+  );
+
+  final Color background;
+  final Color foreground;
+  final Color cursor;
+  final Color selection;
+  final Color scrollbarTrack;
+  final Color scrollbarThumb;
+
+  @override
+  AppTerminalTheme copyWith({
+    Color? background,
+    Color? foreground,
+    Color? cursor,
+    Color? selection,
+    Color? scrollbarTrack,
+    Color? scrollbarThumb,
+  }) {
+    return AppTerminalTheme(
+      background: background ?? this.background,
+      foreground: foreground ?? this.foreground,
+      cursor: cursor ?? this.cursor,
+      selection: selection ?? this.selection,
+      scrollbarTrack: scrollbarTrack ?? this.scrollbarTrack,
+      scrollbarThumb: scrollbarThumb ?? this.scrollbarThumb,
+    );
+  }
+
+  @override
+  AppTerminalTheme lerp(covariant AppTerminalTheme? other, double t) {
+    if (other == null) return this;
+    return AppTerminalTheme(
+      background: Color.lerp(background, other.background, t)!,
+      foreground: Color.lerp(foreground, other.foreground, t)!,
+      cursor: Color.lerp(cursor, other.cursor, t)!,
+      selection: Color.lerp(selection, other.selection, t)!,
+      scrollbarTrack: Color.lerp(scrollbarTrack, other.scrollbarTrack, t)!,
+      scrollbarThumb: Color.lerp(scrollbarThumb, other.scrollbarThumb, t)!,
+    );
+  }
 }
 
 class AppTypography {
@@ -109,7 +175,7 @@ class AppTypography {
     color: AppColors.textSecondary,
     fontFamily: family,
     fontFamilyFallback: familyFallback,
-    fontSize: 11.5,
+    fontSize: 12,
     height: 1.35,
     fontWeight: FontWeight.w500,
   );
@@ -138,10 +204,11 @@ class AppSpacing {
 class AppRadius {
   const AppRadius._();
 
-  static const double sm = 7;
+  static const double xs = 4;
+  static const double sm = 8;
   static const double md = 10;
-  static const double lg = 12;
-  static const double xl = 16;
+  static const double lg = 14;
+  static const double xl = 18;
   static const double pill = 999;
 }
 
@@ -149,15 +216,24 @@ class AppShadows {
   const AppShadows._();
 
   static const List<BoxShadow> soft = [
-    BoxShadow(color: Color(0x09000000), blurRadius: 12, offset: Offset(0, 3)),
+    BoxShadow(color: Color(0x080d1b17), blurRadius: 12, offset: Offset(0, 3)),
   ];
 
   static const List<BoxShadow> raised = [
-    BoxShadow(color: Color(0x10000000), blurRadius: 20, offset: Offset(0, 7)),
+    BoxShadow(color: Color(0x0d0d1b17), blurRadius: 20, offset: Offset(0, 7)),
   ];
 
   static const List<BoxShadow> floatingPanel = [
-    BoxShadow(color: Color(0x0d000000), blurRadius: 24, offset: Offset(0, 8)),
-    BoxShadow(color: Color(0x07000000), blurRadius: 3, offset: Offset(0, 1)),
+    BoxShadow(color: Color(0x120d1b17), blurRadius: 24, offset: Offset(0, 8)),
+    BoxShadow(color: Color(0x080d1b17), blurRadius: 3, offset: Offset(0, 1)),
   ];
+}
+
+class AppMotion {
+  const AppMotion._();
+
+  static const Duration quick = Duration(milliseconds: 120);
+  static const Duration standard = Duration(milliseconds: 200);
+  static const Duration emphasized = Duration(milliseconds: 300);
+  static const Curve curve = Cubic(0.2, 0, 0, 1);
 }

@@ -35,11 +35,7 @@ dependencies:
   file_picker: ^10.2.0
   flutter_markdown_plus: ^1.0.7
   mcp_dart: ^1.3.0
-  ianvs_terminal:
-    git:
-      url: https://github.com/robinfai/ianvs-terminal.git
-      ref: e30d09e3f10218d397c6b114f58bf0c121d3a351
-      path: packages/ianvs_terminal
+  ianvs_terminal_core: ^0.1.0
   mime: ^2.0.0
   merman: ^0.7.0
   flutter_svg: ^2.3.0
@@ -54,12 +50,6 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-
-  ianvs_pty:
-    git:
-      url: https://github.com/robinfai/ianvs-terminal.git
-      ref: e30d09e3f10218d397c6b114f58bf0c121d3a351
-      path: packages/ianvs_pty
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
