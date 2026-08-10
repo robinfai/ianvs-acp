@@ -17,6 +17,7 @@ import '../../platform/file_manager.dart';
 import '../../state/chat_controller.dart';
 import '../../state/connection_state.dart';
 import '../../state/workspace_controller.dart';
+import '../../terminal/acp_session_terminal_region.dart';
 import '../../workspace/workspace.dart';
 import '../../workspace/workspace_sidebar_state_store.dart';
 import '../components/agent_config_dialog.dart';
@@ -75,6 +76,7 @@ class AppShell extends StatelessWidget {
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
     this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
+    this.terminalRuntimeFactory = createAcpTerminalRuntime,
   });
 
   final ChatController controller;
@@ -123,6 +125,7 @@ class AppShell extends StatelessWidget {
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
   final bool Function(String path) gitWorkspaceDetector;
+  final AcpTerminalRuntimeFactory terminalRuntimeFactory;
 
   @override
   Widget build(BuildContext context) {
@@ -371,6 +374,7 @@ class AppShell extends StatelessWidget {
                         Widget conversationColumn(
                           BuildContext context,
                           FilePreviewLinkHandler onTapLink,
+                          Widget terminalToggle,
                         ) => PromptAttachmentDropRegion(
                           controller: promptAttachmentController,
                           enabled: !controller.isSessionOperationRunning,
@@ -433,6 +437,7 @@ class AppShell extends StatelessWidget {
                                 onReconnect: canReconnect
                                     ? controller.reconnect
                                     : null,
+                                terminalPanelAction: terminalToggle,
                               ),
                               if (hideSidebar || hideInspector)
                                 _CompactShellNavigation(
@@ -482,13 +487,33 @@ class AppShell extends StatelessWidget {
                           ),
                         );
 
-                        final previewWorkspace = FilePreviewWorkspace(
-                          workspacePath: currentWorkspace.path,
-                          additionalDirectories: additionalDirectories,
-                          conversationBuilder: conversationColumn,
-                          showInspector: !hideInspector,
-                          processRunner: processRunner,
-                          inspector: buildInspector(),
+                        final previewWorkspace = AcpSessionTerminalRegion(
+                          session: activeSession,
+                          runtimeFactory: terminalRuntimeFactory,
+                          builder: (context, terminalToggle, terminalPanel) =>
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Expanded(
+                                    child: FilePreviewWorkspace(
+                                      workspacePath: currentWorkspace.path,
+                                      additionalDirectories:
+                                          additionalDirectories,
+                                      conversationBuilder:
+                                          (context, onTapLink) =>
+                                              conversationColumn(
+                                                context,
+                                                onTapLink,
+                                                terminalToggle,
+                                              ),
+                                      showInspector: !hideInspector,
+                                      processRunner: processRunner,
+                                      inspector: buildInspector(),
+                                    ),
+                                  ),
+                                  terminalPanel,
+                                ],
+                              ),
                         );
 
                         if (hideSidebar) return previewWorkspace;

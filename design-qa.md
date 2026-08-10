@@ -128,6 +128,35 @@ Old ACP replay events do not always carry the original elapsed-time metadata or 
 
 final result: passed
 
+## ACP bottom terminal integration — 2026-08-10
+
+### Visual truth and native evidence
+
+- Source reference: `/Users/luobinghui/.codex/attachments/01281bee-8ece-4966-b0cd-796ff4965293/image-2.png` (3456 × 2158 px).
+- Native implementation: `artifacts/terminal-integration-2026-08-10/native-two-tabs.png` (800 × 628 px), captured from the rebuilt macOS ACP Client with two live local terminal sessions.
+- Required same-input comparison: `artifacts/terminal-integration-2026-08-10/reference-vs-native.png` (2400 × 942 px). Both full-window states were normalized to the same width and padded rather than cropped.
+- Runtime evidence: the app bundle contains a signed arm64 `ianvs_core.framework`; the terminal opened from that packaged framework and rendered the actual zsh prompt in the ACP workspace.
+
+### Fidelity and behavior review
+
+- The terminal drawer starts after the workspace sidebar and spans the complete remaining content width, matching the reference's ownership boundary.
+- The upper-right terminal icon is compact, uses the existing toolbar language, exposes selected/disabled semantics, and highlights only while the panel is open.
+- Terminal tabs are in one restrained header strip. Each tab has its own close action, the `+` sits immediately after the tabs, and the panel-level close action remains at the far right.
+- The drawer uses the existing ACP neutral surfaces and border tokens for its chrome, while the viewport keeps the terminal's native dark palette. The composer placeholder remains secondary and visually quieter than active content.
+- The panel height remains useful at the compact 800 px window without hiding the active ACP session controls. Wider layouts retain the inspector above the same full-width terminal drawer.
+- Native interaction confirmed that the first toggle lazily creates a shell in the ACP session working directory and the adjacent `+` creates and activates a second local shell.
+
+### Automated and packaging acceptance
+
+- `flutter test test/ui/app_shell_test.dart`: 24/24 passed, including session-switch and host-disposal cleanup for all terminal tabs.
+- `flutter test packages/ianvs_terminal/test/terminal_bottom_panel_test.dart`: 4/4 passed.
+- `dart test packages/ianvs_pty/test/native_pty_backend_test.dart`: 46/46 passed, including packaged code-asset framework resolution.
+- `flutter analyze` in ACP and package analysis for `ianvs_terminal` / `ianvs_pty`: no issues.
+- `flutter build macos --debug`: passed. Deep code-sign verification passed for the app and bundled terminal framework.
+- Same-input visual review found no remaining actionable P0, P1, or P2 layout, typography, color, image-quality, responsiveness, or interaction issue.
+
+final result: passed
+
 ## Conversation Canvas full-flow redesign — 2026-08-09
 
 ### Visual truth and evidence

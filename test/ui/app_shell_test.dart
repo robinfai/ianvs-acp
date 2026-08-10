@@ -10,6 +10,8 @@ import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
+import 'package:ianvs_pty/ianvs_pty.dart';
+import 'package:ianvs_terminal/ianvs_terminal.dart';
 
 void _noop() {}
 
@@ -438,6 +440,90 @@ void main() {
     expect(promptRect.right, lessThan(inspectorRect.left));
   });
 
+  testWidgets('AppShell terminal follows the active ACP session lifecycle', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    final backend = _RecordingTerminalBackend();
+    TerminalRuntimeController createRuntime() => TerminalRuntimeController(
+      backend: backend,
+      copyToClipboard: (_) async {},
+      readClipboard: () async => '',
+      enableSessionPolling: false,
+    );
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.newSession);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          agentName: 'Codex',
+          terminalRuntimeFactory: createRuntime,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final toggle = find.byKey(const Key('acp-terminal-panel-toggle'));
+    expect(toggle, findsOneWidget);
+    expect(find.byKey(const Key('acp-terminal-panel')), findsNothing);
+    expect(backend.createdSessionIds, isEmpty);
+
+    await tester.tap(toggle);
+    await tester.pump();
+
+    final panel = find.byKey(const Key('acp-terminal-panel'));
+    expect(panel, findsOneWidget);
+    expect(
+      find.descendant(of: panel, matching: find.text('app')),
+      findsOneWidget,
+    );
+    expect(backend.createdSessionIds, ['terminal-session-1']);
+    final panelRect = tester.getRect(panel);
+    final sidebarRect = tester.getRect(find.byType(WorkspaceSidebar));
+    final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
+    expect(panelRect.left, moreOrLessEquals(sidebarRect.right, epsilon: 1.1));
+    expect(panelRect.right, greaterThan(inspectorRect.right - 1));
+
+    await tester.tap(find.byKey(const Key('terminal-panel-add')));
+    await tester.pump();
+    expect(
+      find.descendant(of: panel, matching: find.text('app 2')),
+      findsOneWidget,
+    );
+    expect(backend.createdSessionIds, [
+      'terminal-session-1',
+      'terminal-session-2',
+    ]);
+
+    await tester.runAsync(controller.newSession);
+    await tester.pump();
+
+    expect(find.byKey(const Key('acp-terminal-panel')), findsNothing);
+    expect(
+      backend.closedSessionIds,
+      containsAll(['terminal-session-1', 'terminal-session-2']),
+    );
+
+    await tester.tap(toggle);
+    await tester.pump();
+    expect(backend.createdSessionIds.last, 'terminal-session-3');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(backend.closedSessionIds, contains('terminal-session-3'));
+  });
+
   testWidgets(
     'AppShell queues composer submissions while the active turn is streaming',
     (tester) async {
@@ -847,4 +933,51 @@ class _CountingResumeClient extends FakeAgentClient {
       additionalDirectories: additionalDirectories,
     );
   }
+}
+
+class _RecordingTerminalBackend implements PtySessionBackend {
+  final List<String> createdSessionIds = <String>[];
+  final List<String> closedSessionIds = <String>[];
+  int _nextSessionId = 0;
+
+  @override
+  int ping() => 1;
+
+  @override
+  String createSession(String sessionConfigJson) {
+    final sessionId = 'terminal-session-${++_nextSessionId}';
+    createdSessionIds.add(sessionId);
+    return sessionId;
+  }
+
+  @override
+  void closeSession(String sessionId) {
+    closedSessionIds.add(sessionId);
+  }
+
+  @override
+  List<PtyEvent> pollEvents(String sessionId) => const <PtyEvent>[];
+
+  @override
+  void resizeSession(
+    String sessionId, {
+    required int cols,
+    required int rows,
+    required int pixelWidth,
+    required int pixelHeight,
+    int cellWidth = 0,
+    int cellHeight = 0,
+  }) {}
+
+  @override
+  void scrollViewport(String sessionId, int deltaLines) {}
+
+  @override
+  void scrollViewportTo(String sessionId, int offset) {}
+
+  @override
+  String? takeFrameDiffJson(String sessionId) => null;
+
+  @override
+  void writeInput(String sessionId, List<int> bytes) {}
 }

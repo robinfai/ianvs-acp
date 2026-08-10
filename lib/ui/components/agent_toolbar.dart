@@ -28,6 +28,7 @@ class AgentToolbar extends StatelessWidget {
     this.canForkSession = false,
     this.supportsGitWorktrees = false,
     this.onSessionMenuAction,
+    this.terminalPanelAction,
   });
 
   final String title;
@@ -49,6 +50,7 @@ class AgentToolbar extends StatelessWidget {
   final bool canForkSession;
   final bool supportsGitWorktrees;
   final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
+  final Widget? terminalPanelAction;
 
   @override
   Widget build(BuildContext context) {
@@ -119,6 +121,10 @@ class AgentToolbar extends StatelessWidget {
                     tooltip: 'Reconnect',
                     onPressed: onReconnect,
                   ),
+                ],
+                if (terminalPanelAction != null) ...[
+                  SizedBox(width: compact ? 5 : 8),
+                  terminalPanelAction!,
                 ],
                 SizedBox(width: compact ? 6 : 10),
                 _PrimaryToolbarAction(
