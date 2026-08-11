@@ -1133,6 +1133,7 @@ AcpPermissionReviewAgentConfig _inheritReviewReferences(
         ? null
         : _inheritMcpReferences(server, current?.mcpServer),
     mcpServerName: proposal.mcpServerName,
+    agentServerName: proposal.agentServerName,
     toolName: proposal.toolName,
     model: proposal.model,
     timeout: proposal.timeout,

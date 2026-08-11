@@ -145,7 +145,7 @@ void main() {
           ],
           reviewAgent: AcpPermissionReviewAgentConfig(
             enabled: true,
-            mcpServerName: 'api-tools',
+            agentServerName: 'Codex',
             toolName: 'review_permission',
             model: 'review-model',
             timeout: Duration(milliseconds: 5000),
@@ -204,8 +204,8 @@ void main() {
       'decision': 'allow',
     });
     expect(
-      decoded['client_providers']['permissions']['review_agent']['mcp_server_name'],
-      'api-tools',
+      decoded['client_providers']['permissions']['review_agent']['agent_server_name'],
+      'Codex',
     );
     expect(
       decoded['client_providers']['permissions']['review_agent']['timeout_ms'],

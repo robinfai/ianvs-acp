@@ -2049,10 +2049,30 @@ class _AcpClientAppState extends State<AcpClientApp> {
       }
     }
 
+    final configuredAgentName = reviewAgent.enabled
+        ? reviewAgent.agentServerName?.trim()
+        : null;
+    final reviewServer =
+        configuredAgentName == null || configuredAgentName.isEmpty
+        ? activeAgent
+        : config.agentServerNamed(configuredAgentName);
+    if (reviewServer == null) {
+      return AcpAgentPermissionReviewer(
+        agentName: configuredAgentName!,
+        modelOverride: reviewAgent.model,
+        timeout: reviewAgent.timeout,
+        clientFactory: () => UnavailableAcpAgentClient(
+          message:
+              'Permission-review agent "$configuredAgentName" is not configured.',
+        ),
+      );
+    }
     return AcpAgentPermissionReviewer(
-      agentName: config.agentName,
+      agentName: reviewServer.name,
       modelOverride: reviewAgent.model,
-      clientFactory: () => _reviewAgentClient(activeAgent),
+      canAutoApprove: true,
+      timeout: reviewAgent.timeout,
+      clientFactory: () => _reviewAgentClient(reviewServer),
     );
   }
 
@@ -2082,13 +2102,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
     AcpPermissionReviewAgentConfig base,
     AcpPermissionReviewAgentConfig override,
   ) {
-    final hasOverrideTarget = override.hasMcpTarget;
+    final hasOverrideTarget = override.hasExplicitTarget;
     return AcpPermissionReviewAgentConfig(
       enabled: override.enabled || base.enabled,
       mcpServer: hasOverrideTarget ? override.mcpServer : base.mcpServer,
       mcpServerName: hasOverrideTarget
           ? override.mcpServerName
           : base.mcpServerName,
+      agentServerName: hasOverrideTarget
+          ? override.agentServerName
+          : base.agentServerName,
       toolName: override.toolName != 'review_permission'
           ? override.toolName
           : base.toolName,
@@ -2223,6 +2246,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           ? null
           : _mcpServerSignature(config.mcpServer!),
       'mcpServerName': config.mcpServerName,
+      'agentServerName': config.agentServerName,
       'toolName': config.toolName,
       'model': config.model,
       'timeoutMs': config.timeout.inMilliseconds,

@@ -11,6 +11,8 @@ import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/acp_permission_reviewer.dart'
+    show AcpAgentPermissionReviewer;
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
@@ -2712,6 +2714,78 @@ void main() {
     expect(find.text('Agent Configuration'), findsOneWidget);
     expect(find.text('permission-reviewer'), findsNWidgets(2));
     expect(find.text('agent-review-model'), findsWidgets);
+  });
+
+  testWidgets('AcpClientApp uses an independent configured ACP reviewer', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    await tester.pumpWidget(
+      AcpClientApp(
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Cursor',
+          'agent_servers': {
+            'Cursor': {
+              'type': 'custom',
+              'command': '/usr/local/bin/cursor-agent',
+            },
+            'Codex': {
+              'type': 'custom',
+              'command': '/usr/local/bin/npx',
+              'args': ['@agentclientprotocol/codex-acp'],
+            },
+          },
+          'client_providers': {
+            'permissions': {
+              'review_agent': {
+                'agent_server_name': 'Codex',
+                'model': 'review-model',
+              },
+            },
+          },
+        }),
+      ),
+    );
+    await tester.pump();
+
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    final reviewer =
+        shell.controller.permissionReviewer as AcpAgentPermissionReviewer;
+    expect(reviewer.agentName, 'Codex');
+    expect(reviewer.modelOverride, 'review-model');
+    expect(reviewer.canAutoApprove, isTrue);
+  });
+
+  testWidgets('AcpClientApp trusts an isolated same-agent reviewer', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    await tester.pumpWidget(
+      AcpClientApp(
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Codex',
+          'agent_servers': {
+            'Codex': {
+              'type': 'custom',
+              'command': '/usr/local/bin/npx',
+              'args': ['@agentclientprotocol/codex-acp'],
+            },
+          },
+        }),
+      ),
+    );
+    await tester.pump();
+
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    final reviewer =
+        shell.controller.permissionReviewer as AcpAgentPermissionReviewer;
+    expect(reviewer.agentName, 'Codex');
+    expect(reviewer.modelOverride, isNull);
+    expect(reviewer.canAutoApprove, isTrue);
   });
 
   testWidgets('AcpClientApp changes tool policy from prompt composer', (

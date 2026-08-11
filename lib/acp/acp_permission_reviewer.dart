@@ -33,6 +33,7 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     required this.agentName,
     required this.clientFactory,
     this.modelOverride,
+    this.canAutoApprove = false,
     this.timeout = const Duration(seconds: 10),
     this.cleanupTimeout = const Duration(seconds: 2),
     this.maxPendingReviews = 32,
@@ -59,6 +60,8 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
   final String agentName;
   final AcpAgentClientFactory clientFactory;
   final String? modelOverride;
+  @override
+  final bool canAutoApprove;
   final Duration timeout;
   final Duration cleanupTimeout;
   final int maxPendingReviews;

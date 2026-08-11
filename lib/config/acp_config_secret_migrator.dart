@@ -212,6 +212,7 @@ final class AcpConfigSecretMigrator {
               writes: writes,
             ),
       mcpServerName: config.mcpServerName,
+      agentServerName: config.agentServerName,
       toolName: config.toolName,
       model: config.model,
       timeout: config.timeout,

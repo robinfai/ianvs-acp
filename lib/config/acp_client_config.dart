@@ -457,6 +457,7 @@ class AcpPermissionReviewAgentConfig {
     this.enabled = false,
     this.mcpServer,
     this.mcpServerName,
+    this.agentServerName,
     this.toolName = 'review_permission',
     this.model,
     this.timeout = const Duration(seconds: 10),
@@ -465,6 +466,7 @@ class AcpPermissionReviewAgentConfig {
   final bool enabled;
   final McpServerConfig? mcpServer;
   final String? mcpServerName;
+  final String? agentServerName;
   final String toolName;
   final String? model;
   final Duration timeout;
@@ -474,15 +476,21 @@ class AcpPermissionReviewAgentConfig {
     return mcpServer != null || (name != null && name.isNotEmpty);
   }
 
+  bool get hasAgentTarget => agentServerName?.trim().isNotEmpty == true;
+
+  bool get hasExplicitTarget => hasMcpTarget || hasAgentTarget;
+
   bool get isConfigured {
     return enabled ||
-        hasMcpTarget ||
+        hasExplicitTarget ||
         model?.trim().isNotEmpty == true ||
         toolName != 'review_permission' ||
         timeout != const Duration(seconds: 10);
   }
 
   String get displayTarget {
+    final agentName = agentServerName?.trim();
+    if (agentName != null && agentName.isNotEmpty) return agentName;
     final server = mcpServer;
     if (server != null) return server.name;
     final name = mcpServerName?.trim();
@@ -523,9 +531,23 @@ class AcpPermissionReviewAgentConfig {
         fieldName: 'client_providers.permissions.review_agent.mcp_server_name',
       ),
     );
+    final agentServerName = _stringValue(
+      _aliasedValue(
+        map,
+        const <String>['agent_server_name', 'agentServerName'],
+        fieldName:
+            'client_providers.permissions.review_agent.agent_server_name',
+      ),
+    );
     if (mcpServer != null && mcpServerName != null) {
       throw const FormatException(
         'client_providers.permissions.review_agent must define either mcp_server or mcp_server_name, not both.',
+      );
+    }
+    if ((mcpServer != null || mcpServerName != null) &&
+        agentServerName != null) {
+      throw const FormatException(
+        'client_providers.permissions.review_agent must define either an MCP target or agent_server_name, not both.',
       );
     }
     final toolName =
@@ -547,6 +569,7 @@ class AcpPermissionReviewAgentConfig {
       enabled: enabled,
       mcpServer: mcpServer,
       mcpServerName: mcpServerName,
+      agentServerName: agentServerName,
       toolName: toolName,
       model: _stringValue(map['model']),
       timeout: timeoutMs == null
@@ -561,6 +584,8 @@ class AcpPermissionReviewAgentConfig {
       if (mcpServer != null) 'mcp_server': mcpServer!.toJson(),
       if (mcpServerName?.trim().isNotEmpty == true)
         'mcp_server_name': mcpServerName!.trim(),
+      if (agentServerName?.trim().isNotEmpty == true)
+        'agent_server_name': agentServerName!.trim(),
       if (toolName != 'review_permission') 'tool_name': toolName,
       if (model?.trim().isNotEmpty == true) 'model': model!.trim(),
       if (timeout != const Duration(seconds: 10))

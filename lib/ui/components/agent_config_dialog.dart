@@ -64,6 +64,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   );
   late bool _reviewAgentEnabled =
       widget.clientProviders.permissions.reviewAgent.enabled;
+  late final TextEditingController
+  _reviewAgentServerNameController = TextEditingController(
+    text: widget.clientProviders.permissions.reviewAgent.agentServerName ?? '',
+  );
   late final TextEditingController _reviewServerNameController =
       TextEditingController(
         text:
@@ -126,6 +130,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   @override
   void dispose() {
     _contentScrollController.dispose();
+    _reviewAgentServerNameController.dispose();
     _reviewServerNameController.dispose();
     _reviewToolNameController.dispose();
     _reviewModelController.dispose();
@@ -452,6 +457,13 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                       _assistantValidationStatus = null;
                     });
                   },
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('review-agent-server-name-field'),
+            controller: _reviewAgentServerNameController,
+            label: 'Review ACP agent name',
+            icon: Icons.smart_toy_outlined,
           ),
           const SizedBox(height: 8),
           _DialogTextField(
@@ -888,11 +900,22 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   }
 
   AcpPermissionReviewAgentConfig _reviewAgentConfig() {
-    final serverName = _trimmedOrNull(_reviewServerNameController.text);
+    final mcpServerName = _trimmedOrNull(_reviewServerNameController.text);
+    final agentServerName = _trimmedOrNull(
+      _reviewAgentServerNameController.text,
+    );
+    if (mcpServerName != null && agentServerName != null) {
+      throw const FormatException(
+        'Choose either a review ACP agent or a review MCP server, not both.',
+      );
+    }
     return AcpPermissionReviewAgentConfig(
       enabled: _reviewAgentEnabled,
-      mcpServer: serverName == null ? _reviewInlineMcpServer : null,
-      mcpServerName: serverName,
+      mcpServer: mcpServerName == null && agentServerName == null
+          ? _reviewInlineMcpServer
+          : null,
+      mcpServerName: mcpServerName,
+      agentServerName: agentServerName,
       toolName:
           _trimmedOrNull(_reviewToolNameController.text) ?? 'review_permission',
       model: _trimmedOrNull(_reviewModelController.text),
@@ -1701,6 +1724,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                 headerRefs: const <String, String>{},
               ),
               mcpServerName: initialReview.mcpServerName,
+              agentServerName: initialReview.agentServerName,
               toolName: initialReview.toolName,
               model: initialReview.model,
               timeout: initialReview.timeout,
@@ -2506,7 +2530,9 @@ String _permissionTrustRuleLabel(AcpPermissionTrustRule rule) {
 }
 
 String _reviewAgentTargetLabel(AcpPermissionReviewAgentConfig reviewAgent) {
-  return reviewAgent.hasMcpTarget ? reviewAgent.displayTarget : 'Same agent';
+  return reviewAgent.hasExplicitTarget
+      ? reviewAgent.displayTarget
+      : 'Same agent';
 }
 
 class _McpServersPanel extends StatelessWidget {
