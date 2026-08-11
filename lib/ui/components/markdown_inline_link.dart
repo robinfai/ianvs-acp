@@ -10,6 +10,23 @@ class MarkdownInlineLinkBuilder extends MarkdownElementBuilder {
   final MarkdownTapLinkCallback? onTapLink;
 
   @override
+  void visitElementBefore(md.Element element) {
+    final label = element.textContent;
+    final children = element.children;
+    if (children == null ||
+        children.length == 1 && children.single is md.Text) {
+      return;
+    }
+
+    // flutter_markdown_plus replaces only the first parsed inline child with
+    // a custom builder result. Flatten labels such as `prompt_input.dart`
+    // first so emphasis-like fragments cannot remain beside the file chip.
+    children
+      ..clear()
+      ..add(md.Text(label));
+  }
+
+  @override
   Widget? visitElementAfterWithContext(
     BuildContext context,
     md.Element element,
@@ -118,15 +135,19 @@ class _MarkdownInlineLinkState extends State<_MarkdownInlineLink> {
             color: AppColors.textTertiary,
           ),
           const SizedBox(width: 4),
-          Text(
-            widget.label,
-            style: widget.preferredStyle?.copyWith(
-              color: AppColors.textPrimary,
-              backgroundColor: Colors.transparent,
-              decoration: TextDecoration.none,
-              fontSize: 12.5,
-              height: 1.25,
-              fontWeight: FontWeight.w600,
+          Flexible(
+            child: Text(
+              widget.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: widget.preferredStyle?.copyWith(
+                color: AppColors.textPrimary,
+                backgroundColor: Colors.transparent,
+                decoration: TextDecoration.none,
+                fontSize: 12.5,
+                height: 1.25,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ],

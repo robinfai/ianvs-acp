@@ -60,6 +60,7 @@ void main() {
     PromptDroppedImageReader? readDroppedImage,
     List<String> workspaceRoots = const <String>[],
     String? imageAttachmentLimitation,
+    List<String> promptHistory = const <String>[],
     List<ChatQueuedPrompt> queuedPrompts = const <ChatQueuedPrompt>[],
     ValueChanged<int>? onGuideQueuedPrompt,
     ValueChanged<int>? onRemoveQueuedPrompt,
@@ -102,6 +103,7 @@ void main() {
       readDroppedImage: readDroppedImage ?? readDroppedImageForTest,
       workspaceRoots: workspaceRoots,
       imageAttachmentLimitation: imageAttachmentLimitation,
+      promptHistory: promptHistory,
       queuedPrompts: queuedPrompts,
       onGuideQueuedPrompt: onGuideQueuedPrompt,
       onRemoveQueuedPrompt: onRemoveQueuedPrompt,
@@ -429,6 +431,79 @@ void main() {
     await tester.pump();
 
     expect(sentText, 'Line one\nLine two');
+  });
+
+  testWidgets('PromptInput navigates prompt history and ends with blank', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        promptHistory: const ['First prompt', 'Second prompt'],
+        onSend: (_, _) {},
+      ),
+    );
+    final field = find.byType(TextField);
+    await tester.tap(field);
+
+    String text() => tester.widget<TextField>(field).controller!.text;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(text(), 'Second prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(text(), 'First prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(text(), 'First prompt');
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    expect(text(), 'Second prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    expect(text(), isEmpty);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    expect(text(), isEmpty);
+  });
+
+  testWidgets('PromptInput preserves multiline arrow navigation', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        promptHistory: const ['Earlier prompt'],
+        onSend: (_, _) {},
+      ),
+    );
+    final field = find.byType(TextField);
+    await tester.enterText(field, 'Line one\nLine two');
+    await tester.pump();
+    await tester.tap(field);
+    final controller = tester.widget<TextField>(field).controller!;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(controller.text, 'Line one\nLine two');
+
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(controller.text, 'Earlier prompt');
+  });
+
+  testWidgets('PromptInput resets history navigation after manual edits', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        promptHistory: const ['First prompt', 'Second prompt'],
+        onSend: (_, _) {},
+      ),
+    );
+    final field = find.byType(TextField);
+    await tester.tap(field);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.enterText(field, 'Edited prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+
+    expect(tester.widget<TextField>(field).controller!.text, 'Second prompt');
   });
 
   testWidgets('PromptInput suggests and inserts slash commands', (
@@ -1400,6 +1475,50 @@ void main() {
         tester.widget<TextField>(find.byType(TextField)).controller?.text,
         'plain clipboard text',
       );
+    },
+  );
+
+  testWidgets(
+    'PromptInput keeps the inline image provider stable while typing',
+    (tester) async {
+      final inlineImage = PromptAttachment.fromBytes(
+        bytes: Uint8List.fromList(<int>[1, 2, 3]),
+        name: 'stable-preview.png',
+        mimeType: 'image/png',
+      );
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          promptCapabilities: const AcpPromptCapabilities(
+            image: true,
+            audio: false,
+            embeddedContext: false,
+          ),
+          pickAttachmentsForKind: (kind) async =>
+              kind == PromptAttachmentKind.image
+              ? <PromptAttachment>[inlineImage]
+              : const <PromptAttachment>[],
+        ),
+      );
+
+      await tester.tap(attachFinder());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add image'));
+      await tester.pumpAndSettle();
+
+      final imageFinder = find.descendant(
+        of: find.byKey(const Key('prompt-image-attachment-stable-preview.png')),
+        matching: find.byType(Image),
+      );
+      final providerBeforeTyping = tester.widget<Image>(imageFinder).image;
+
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+
+      final providerAfterTyping = tester.widget<Image>(imageFinder).image;
+      expect(providerAfterTyping, same(providerBeforeTyping));
     },
   );
 

@@ -44,6 +44,15 @@ const Color _permissionAccentSoft = Color(0xfffffcf8);
 const Color _permissionAccentMist = Color(0xffffedd5);
 const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
 
+bool _samePromptHistory(List<String> left, List<String> right) {
+  if (identical(left, right)) return true;
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
 class PromptAttachmentController {
   _PromptInputState? _state;
   Future<void> _pendingIngress = Future<void>.value();
@@ -110,6 +119,7 @@ class PromptInput extends StatefulWidget {
     this.readDroppedImage = readDroppedImageAttachment,
     this.workspaceRoots = const <String>[],
     this.imageAttachmentLimitation,
+    this.promptHistory = const <String>[],
     this.queuedPrompts = const <ChatQueuedPrompt>[],
     this.onGuideQueuedPrompt,
     this.onRemoveQueuedPrompt,
@@ -149,6 +159,7 @@ class PromptInput extends StatefulWidget {
   final PromptDroppedImageReader readDroppedImage;
   final List<String> workspaceRoots;
   final String? imageAttachmentLimitation;
+  final List<String> promptHistory;
   final List<ChatQueuedPrompt> queuedPrompts;
   final ValueChanged<int>? onGuideQueuedPrompt;
   final ValueChanged<int>? onRemoveQueuedPrompt;
@@ -163,6 +174,7 @@ class PromptInput extends StatefulWidget {
 class _PromptInputState extends State<PromptInput> {
   final TextEditingController _controller = TextEditingController();
   final List<PromptAttachment> _attachments = <PromptAttachment>[];
+  int? _historyIndex;
   bool _isDraggingAttachments = false;
   String? _commandQuery;
   List<_CommandSearchEntry> _commandSearchEntries =
@@ -230,6 +242,9 @@ class _PromptInputState extends State<PromptInput> {
           );
         });
       }
+    }
+    if (!_samePromptHistory(oldWidget.promptHistory, widget.promptHistory)) {
+      _historyIndex = null;
     }
   }
 
@@ -348,11 +363,11 @@ class _PromptInputState extends State<PromptInput> {
         .toDouble();
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxWidth: 760,
+            maxWidth: 848,
             maxHeight: maximumContentHeight,
           ),
           child: SingleChildScrollView(
@@ -400,7 +415,7 @@ class _PromptInputState extends State<PromptInput> {
                     child: AnimatedContainer(
                       key: const Key('prompt-input-surface'),
                       duration: const Duration(milliseconds: 120),
-                      constraints: const BoxConstraints(minHeight: 124),
+                      constraints: const BoxConstraints(minHeight: 114),
                       decoration: BoxDecoration(
                         color: _isDraggingAttachments
                             ? AppColors.accentMist
@@ -563,6 +578,10 @@ class _PromptInputState extends State<PromptInput> {
   }
 
   KeyEventResult _handlePromptKeyEvent(FocusNode node, KeyEvent event) {
+    if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+        _handleHistoryKey(event)) {
+      return KeyEventResult.handled;
+    }
     final composing = _controller.value.composing;
     if (event is! KeyDownEvent ||
         event.logicalKey != LogicalKeyboardKey.enter ||
@@ -580,6 +599,7 @@ class _PromptInputState extends State<PromptInput> {
     final attachments = List<PromptAttachment>.unmodifiable(_attachments);
     widget.onSend(text, attachments);
     _controller.clear();
+    _historyIndex = null;
     _commandQuery = null;
     _attachments.clear();
     setState(() {});
@@ -596,7 +616,71 @@ class _PromptInputState extends State<PromptInput> {
   }
 
   void _handlePromptChanged(String value) {
+    _historyIndex = null;
     _commandQuery = _scanBoundedCommandQuery(value, budget: widget.inputBudget);
+    setState(() {});
+  }
+
+  bool _handleHistoryKey(KeyEvent event) {
+    final key = event.logicalKey;
+    if (key != LogicalKeyboardKey.arrowUp &&
+        key != LogicalKeyboardKey.arrowDown) {
+      return false;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isShiftPressed ||
+        keyboard.isAltPressed ||
+        keyboard.isControlPressed ||
+        keyboard.isMetaPressed) {
+      return false;
+    }
+    final composing = _controller.value.composing;
+    if (composing.isValid && !composing.isCollapsed) return false;
+
+    final history = widget.promptHistory;
+    if (history.isEmpty) return false;
+    if (!_isAtHistoryBoundary(moveUp: key == LogicalKeyboardKey.arrowUp)) {
+      return false;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      final current = _historyIndex;
+      _historyIndex = current == null
+          ? history.length - 1
+          : math.max(0, current - 1);
+      _showHistoryText(history[_historyIndex!]);
+      return true;
+    }
+
+    final current = _historyIndex;
+    if (current == null) return false;
+    if (current >= history.length - 1) {
+      _historyIndex = null;
+      _showHistoryText('');
+      return true;
+    }
+    _historyIndex = current + 1;
+    _showHistoryText(history[_historyIndex!]);
+    return true;
+  }
+
+  bool _isAtHistoryBoundary({required bool moveUp}) {
+    final value = _controller.value;
+    final selection = value.selection;
+    if (!selection.isValid || !selection.isCollapsed) return false;
+    final caret = selection.extentOffset;
+    if (moveUp) {
+      return !value.text.substring(0, caret).contains('\n');
+    }
+    return !value.text.substring(caret).contains('\n');
+  }
+
+  void _showHistoryText(String text) {
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _commandQuery = _scanBoundedCommandQuery(text, budget: widget.inputBudget);
     setState(() {});
   }
 
@@ -3854,6 +3938,7 @@ class _AttachmentTray extends StatelessWidget {
           children: [
             for (final attachment in attachments)
               _AttachmentChip(
+                key: ValueKey(attachment.identity),
                 attachment: attachment,
                 promptCapabilities: promptCapabilities,
                 onRemove: () => onRemove(attachment),
@@ -3915,6 +4000,7 @@ class _ImageAttachmentLimitationNotice extends StatelessWidget {
 
 class _AttachmentChip extends StatelessWidget {
   const _AttachmentChip({
+    super.key,
     required this.attachment,
     required this.promptCapabilities,
     required this.onRemove,
@@ -3998,7 +4084,7 @@ class _AttachmentChip extends StatelessWidget {
   }
 }
 
-class _ImageAttachmentPreview extends StatelessWidget {
+class _ImageAttachmentPreview extends StatefulWidget {
   const _ImageAttachmentPreview({
     required this.attachment,
     required this.onRemove,
@@ -4008,34 +4094,65 @@ class _ImageAttachmentPreview extends StatelessWidget {
   final VoidCallback onRemove;
 
   @override
-  Widget build(BuildContext context) {
-    Widget preview;
-    final data = attachment.data;
-    if (data != null) {
-      try {
-        preview = Image.memory(
-          base64Decode(data),
-          width: 82,
-          height: 82,
-          fit: BoxFit.cover,
-          cacheWidth: 164,
-          cacheHeight: 164,
-          errorBuilder: _imageErrorBuilder,
-        );
-      } on FormatException {
-        preview = _imageErrorBuilder(context, const FormatException(), null);
-      }
-    } else {
-      preview = Image.file(
-        File(attachment.path),
-        width: 82,
-        height: 82,
-        fit: BoxFit.cover,
-        cacheWidth: 164,
-        cacheHeight: 164,
-        errorBuilder: _imageErrorBuilder,
-      );
+  State<_ImageAttachmentPreview> createState() =>
+      _ImageAttachmentPreviewState();
+}
+
+class _ImageAttachmentPreviewState extends State<_ImageAttachmentPreview> {
+  ImageProvider<Object>? _previewProvider;
+  Object? _previewError;
+
+  @override
+  void initState() {
+    super.initState();
+    _updatePreviewProvider();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ImageAttachmentPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.attachment.data != widget.attachment.data ||
+        oldWidget.attachment.path != widget.attachment.path) {
+      _updatePreviewProvider();
     }
+  }
+
+  void _updatePreviewProvider() {
+    _previewProvider = null;
+    _previewError = null;
+    final attachment = widget.attachment;
+    final data = attachment.data;
+    try {
+      final ImageProvider<Object> source;
+      if (data == null) {
+        source = FileImage(File(attachment.path));
+      } else {
+        source = MemoryImage(base64Decode(data));
+      }
+      _previewProvider = ResizeImage.resizeIfNeeded(164, 164, source);
+    } on FormatException catch (error) {
+      _previewError = error;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final attachment = widget.attachment;
+    final provider = _previewProvider;
+    final preview = provider == null
+        ? _imageErrorBuilder(
+            context,
+            _previewError ?? const FormatException('Invalid image data'),
+            null,
+          )
+        : Image(
+            image: provider,
+            width: 82,
+            height: 82,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            errorBuilder: _imageErrorBuilder,
+          );
 
     return Semantics(
       label: 'Attached image ${attachment.name}',
@@ -4071,7 +4188,7 @@ class _ImageAttachmentPreview extends StatelessWidget {
                     key: Key(
                       'prompt-image-attachment-remove-${attachment.name}',
                     ),
-                    onPressed: onRemove,
+                    onPressed: widget.onRemove,
                     tooltip: 'Remove image',
                     padding: EdgeInsets.zero,
                     visualDensity: VisualDensity.compact,

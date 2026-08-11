@@ -1086,6 +1086,17 @@ void main() {
     );
   });
 
+  test('independent ACP reviewer can be trusted to auto approve', () {
+    final reviewer = AcpAgentPermissionReviewer(
+      agentName: 'Codex',
+      canAutoApprove: true,
+      clientFactory: FakeAgentClient.new,
+    );
+    addTearDown(reviewer.dispose);
+
+    expect(reviewer.canAutoApprove, isTrue);
+  });
+
   test(
     'agent reviewer bounds pending work and restores capacity after drain',
     () async {

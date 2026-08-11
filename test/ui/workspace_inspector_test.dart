@@ -86,6 +86,12 @@ void main() {
       ),
     );
 
+    expect(find.text('会话'), findsOneWidget);
+    expect(find.text('上下文'), findsOneWidget);
+    expect(find.text('Build workspace shell'), findsOneWidget);
+    expect(find.text('app'), findsOneWidget);
+    await tester.tap(find.text('查看全部'));
+    await tester.pumpAndSettle();
     expect(find.text('Workspace'), findsOneWidget);
     expect(find.text('Overview'), findsOneWidget);
     // Active sessions open directly on Context, matching the selected design.
@@ -95,6 +101,8 @@ void main() {
     expect(find.text('/workspace/shared'), findsOneWidget);
     expect(find.text('Filesystem MCP'), findsOneWidget);
     expect(find.text('read'), findsOneWidget);
+    await tester.drag(find.byType(ListView).last, const Offset(0, -260));
+    await tester.pumpAndSettle();
     expect(find.text('Enabled'), findsOneWidget);
 
     await tester.tap(find.text('Overview'));
@@ -156,6 +164,8 @@ void main() {
       ),
     );
 
+    await tester.tap(find.text('查看全部'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Overview'));
     await tester.pumpAndSettle();
     expect(find.text('Codex - 4h ago'), findsOneWidget);

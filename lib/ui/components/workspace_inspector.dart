@@ -42,6 +42,72 @@ class WorkspaceInspector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sourceTitle = currentSession?.displayTitle ?? workspace.name;
+    final sessionSummary = currentSession == null ? '尚未开始会话' : '会话设置与工作区上下文';
+    return Material(
+      color: AppColors.surface,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _CompactInspectorHeader(
+              label: '会话',
+              actionIcon: Icons.tune_rounded,
+              actionTooltip: '会话设置',
+              onAction: onShowSessionSettings,
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(0, 4, 0, 12),
+              child: Text(
+                sessionSummary,
+                style: const TextStyle(
+                  color: AppColors.textTertiary,
+                  fontSize: 13,
+                  height: 1.35,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+            ),
+            const Divider(height: 1, color: AppColors.borderSoft),
+            const SizedBox(height: 12),
+            _CompactInspectorHeader(
+              label: '上下文',
+              actionIcon: Icons.info_outline_rounded,
+              actionTooltip: '查看代理能力',
+              onAction: onShowCapabilities,
+            ),
+            const SizedBox(height: 4),
+            _CompactSourceRow(
+              icon: Icons.chat_bubble_outline_rounded,
+              label: sourceTitle,
+            ),
+            _CompactSourceRow(
+              icon: Icons.folder_outlined,
+              label: workspace.name,
+            ),
+            _CompactSourceRow(
+              icon: Icons.link_rounded,
+              label: '查看全部',
+              muted: true,
+              onTap: () => _showDetails(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showDetails(BuildContext context) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) => Dialog(
+        child: SizedBox(width: 680, height: 620, child: _detailsBody()),
+      ),
+    );
+  }
+
+  Widget _detailsBody() {
     return DefaultTabController(
       key: ValueKey(
         currentSession == null
@@ -135,6 +201,97 @@ class WorkspaceInspector extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactInspectorHeader extends StatelessWidget {
+  const _CompactInspectorHeader({
+    required this.label,
+    required this.actionIcon,
+    required this.actionTooltip,
+    required this.onAction,
+  });
+
+  final String label;
+  final IconData actionIcon;
+  final String actionTooltip;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 28,
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+                height: 1.3,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          if (onAction != null)
+            IconButton(
+              tooltip: actionTooltip,
+              onPressed: onAction,
+              icon: Icon(actionIcon, size: 17),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactSourceRow extends StatelessWidget {
+  const _CompactSourceRow({
+    required this.icon,
+    required this.label,
+    this.muted = false,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool muted;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        onTap: onTap,
+        child: SizedBox(
+          height: 31,
+          child: Row(
+            children: [
+              Icon(icon, size: 17, color: AppColors.textSecondary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: muted
+                        ? AppColors.textTertiary
+                        : AppColors.textSecondary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

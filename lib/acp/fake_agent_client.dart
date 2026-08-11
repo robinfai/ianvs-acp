@@ -66,6 +66,9 @@ class FakeAgentClient implements AcpAgentClient {
            ],
        _settings = sessionSettings ?? _defaultSessionSettings;
 
+  @override
+  bool get supportsConcurrentPrompts => false;
+
   final Object? connectError;
   final Object? createSessionError;
   final Object? promptError;
@@ -535,6 +538,9 @@ class FakeAgentClient implements AcpAgentClient {
     }
     cancelled = true;
   }
+
+  @override
+  Future<void> cancelSession({required String sessionId}) => cancel();
 
   void emitPermissionRequest(AcpPermissionRequest request) {
     if (_permissionRequestsClosed) return;

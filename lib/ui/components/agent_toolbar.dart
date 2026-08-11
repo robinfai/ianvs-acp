@@ -18,6 +18,7 @@ class AgentToolbar extends StatelessWidget {
     this.agentServers = const <AgentServerConfig>[],
     this.canSwitchAgent = true,
     this.forceFullActions = false,
+    this.windowControlsInset = 0,
     this.onSelectAgent,
     this.onShowAgentConfig,
     this.onShowProtocolCoverage,
@@ -40,6 +41,7 @@ class AgentToolbar extends StatelessWidget {
   final List<AgentServerConfig> agentServers;
   final bool canSwitchAgent;
   final bool forceFullActions;
+  final double windowControlsInset;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowProtocolCoverage;
@@ -55,7 +57,7 @@ class AgentToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 52,
+      height: 54,
       decoration: const BoxDecoration(
         color: AppColors.surface,
         border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
@@ -73,7 +75,7 @@ class AgentToolbar extends StatelessWidget {
 
           return Padding(
             padding: EdgeInsets.fromLTRB(
-              horizontalPadding,
+              horizontalPadding + windowControlsInset,
               8,
               horizontalPadding,
               8,
@@ -483,6 +485,11 @@ class _ToolbarButtonShell extends StatelessWidget {
             ? EdgeInsets.zero
             : const EdgeInsets.symmetric(horizontal: 8),
         alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.surfaceMuted,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: AppColors.borderSoft),
+        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -558,16 +565,28 @@ class _BrandMark extends StatelessWidget {
   }
 
   Widget _buildTitle() {
-    final label = Text(
-      title,
-      overflow: TextOverflow.ellipsis,
-      softWrap: false,
-      style: TextStyle(
-        color: AppColors.textPrimary,
-        fontSize: veryCompact ? 14.5 : 15.5,
-        fontWeight: FontWeight.w600,
-        letterSpacing: -0.05,
-      ),
+    final label = Row(
+      children: [
+        const Icon(
+          Icons.work_outline_rounded,
+          size: 17,
+          color: AppColors.textSecondary,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            overflow: TextOverflow.ellipsis,
+            softWrap: false,
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: veryCompact ? 14.5 : 15.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.05,
+            ),
+          ),
+        ),
+      ],
     );
     final session = currentSession;
     final onSelected = onSessionMenuAction;
@@ -599,123 +618,123 @@ class _ToolbarSessionActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MenuAnchor(
-      alignmentOffset: const Offset(0, 7),
-      consumeOutsideTap: true,
-      style: _toolbarMenuStyle(),
-      menuChildren: [
-        _toolbarMenuItem(
-          WorkspaceSessionMenuAction.togglePinned,
-          session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-          session.pinned ? 'Unpin Conversation' : 'Pin Conversation',
-          onSelected,
-        ),
-        _toolbarMenuItem(
-          WorkspaceSessionMenuAction.rename,
-          Icons.edit_outlined,
-          'Rename Conversation',
-          onSelected,
-        ),
-        _toolbarMenuItem(
-          WorkspaceSessionMenuAction.toggleUnread,
-          session.unread
-              ? Icons.mark_email_read_outlined
-              : Icons.mark_chat_unread_outlined,
-          session.unread ? 'Mark as Read' : 'Mark as Unread',
-          onSelected,
-        ),
-        _toolbarMenuItem(
-          WorkspaceSessionMenuAction.archive,
-          Icons.archive_outlined,
-          'Archive Conversation',
-          onSelected,
-        ),
-        const Divider(height: 9),
-        _toolbarMenuItem(
-          WorkspaceSessionMenuAction.openSideSession,
-          Icons.add_circle_outline_rounded,
-          'Open Side Session',
-          onSelected,
-        ),
-        SubmenuButton(
-          menuStyle: _toolbarMenuStyle(),
-          leadingIcon: const Icon(Icons.copy_all_outlined, size: 17),
+    return Row(
+      children: [
+        Expanded(child: label),
+        const SizedBox(width: 6),
+        MenuAnchor(
+          alignmentOffset: const Offset(0, 7),
+          consumeOutsideTap: true,
+          style: _toolbarMenuStyle(),
           menuChildren: [
             _toolbarMenuItem(
-              WorkspaceSessionMenuAction.copyWorkingDirectory,
-              Icons.folder_copy_outlined,
-              'Copy Working Directory',
+              WorkspaceSessionMenuAction.togglePinned,
+              session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+              session.pinned ? 'Unpin Conversation' : 'Pin Conversation',
               onSelected,
             ),
             _toolbarMenuItem(
-              WorkspaceSessionMenuAction.copySessionId,
-              Icons.tag_rounded,
-              'Copy Session ID',
+              WorkspaceSessionMenuAction.rename,
+              Icons.edit_outlined,
+              'Rename Conversation',
               onSelected,
             ),
             _toolbarMenuItem(
-              WorkspaceSessionMenuAction.copyDeepLink,
-              Icons.link_rounded,
-              'Copy Deep Link',
+              WorkspaceSessionMenuAction.toggleUnread,
+              session.unread
+                  ? Icons.mark_email_read_outlined
+                  : Icons.mark_chat_unread_outlined,
+              session.unread ? 'Mark as Read' : 'Mark as Unread',
               onSelected,
             ),
             _toolbarMenuItem(
-              WorkspaceSessionMenuAction.copyMarkdown,
-              Icons.description_outlined,
-              'Copy as Markdown',
+              WorkspaceSessionMenuAction.archive,
+              Icons.archive_outlined,
+              'Archive Conversation',
+              onSelected,
+            ),
+            const Divider(height: 9),
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.openSideSession,
+              Icons.add_circle_outline_rounded,
+              'Open Side Session',
+              onSelected,
+            ),
+            SubmenuButton(
+              menuStyle: _toolbarMenuStyle(),
+              leadingIcon: const Icon(Icons.copy_all_outlined, size: 17),
+              menuChildren: [
+                _toolbarMenuItem(
+                  WorkspaceSessionMenuAction.copyWorkingDirectory,
+                  Icons.folder_copy_outlined,
+                  'Copy Working Directory',
+                  onSelected,
+                ),
+                _toolbarMenuItem(
+                  WorkspaceSessionMenuAction.copySessionId,
+                  Icons.tag_rounded,
+                  'Copy Session ID',
+                  onSelected,
+                ),
+                _toolbarMenuItem(
+                  WorkspaceSessionMenuAction.copyDeepLink,
+                  Icons.link_rounded,
+                  'Copy Deep Link',
+                  onSelected,
+                ),
+                _toolbarMenuItem(
+                  WorkspaceSessionMenuAction.copyMarkdown,
+                  Icons.description_outlined,
+                  'Copy as Markdown',
+                  onSelected,
+                ),
+              ],
+              child: const Text('Copy'),
+            ),
+            SubmenuButton(
+              menuStyle: _toolbarMenuStyle(),
+              leadingIcon: const Icon(Icons.account_tree_outlined, size: 17),
+              menuChildren: [
+                _toolbarMenuItem(
+                  WorkspaceSessionMenuAction.forkLocally,
+                  Icons.call_split_rounded,
+                  'Continue in New Session',
+                  onSelected,
+                  enabled: canFork,
+                ),
+                if (supportsGitWorktrees)
+                  _toolbarMenuItem(
+                    WorkspaceSessionMenuAction.forkToNewWorktree,
+                    Icons.account_tree_outlined,
+                    'Continue in New Worktree',
+                    onSelected,
+                    enabled: canFork,
+                  ),
+              ],
+              child: const Text('Continue in...'),
+            ),
+            const Divider(height: 9),
+            _toolbarMenuItem(
+              WorkspaceSessionMenuAction.openInNewWindow,
+              Icons.open_in_new_rounded,
+              'Open in New Window',
               onSelected,
             ),
           ],
-          child: const Text('Copy'),
-        ),
-        SubmenuButton(
-          menuStyle: _toolbarMenuStyle(),
-          leadingIcon: const Icon(Icons.account_tree_outlined, size: 17),
-          menuChildren: [
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.forkLocally,
-              Icons.call_split_rounded,
-              'Continue in New Session',
-              onSelected,
-              enabled: canFork,
-            ),
-            if (supportsGitWorktrees)
-              _toolbarMenuItem(
-                WorkspaceSessionMenuAction.forkToNewWorktree,
-                Icons.account_tree_outlined,
-                'Continue in New Worktree',
-                onSelected,
-                enabled: canFork,
-              ),
-          ],
-          child: const Text('Continue in...'),
-        ),
-        const Divider(height: 9),
-        _toolbarMenuItem(
-          WorkspaceSessionMenuAction.openInNewWindow,
-          Icons.open_in_new_rounded,
-          'Open in New Window',
-          onSelected,
-        ),
-      ],
-      builder: (context, controller, child) {
-        return Tooltip(
-          message: 'Session actions',
-          child: InkWell(
-            key: const Key('toolbar-session-actions'),
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            onTap: () {
-              if (controller.isOpen) {
-                controller.close();
-              } else {
-                controller.open();
-              }
-            },
-            child: Row(
-              children: [
-                Expanded(child: label),
-                const SizedBox(width: 6),
-                Container(
+          builder: (context, controller, child) {
+            return Tooltip(
+              message: 'Session actions',
+              child: InkWell(
+                key: const Key('toolbar-session-actions'),
+                borderRadius: BorderRadius.circular(AppRadius.sm),
+                onTap: () {
+                  if (controller.isOpen) {
+                    controller.close();
+                  } else {
+                    controller.open();
+                  }
+                },
+                child: Container(
                   width: 32,
                   height: 32,
                   alignment: Alignment.center,
@@ -731,11 +750,11 @@ class _ToolbarSessionActions extends StatelessWidget {
                     size: 17,
                   ),
                 ),
-              ],
-            ),
-          ),
-        );
-      },
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 }
@@ -840,6 +859,13 @@ class _ToolbarAction extends StatelessWidget {
               ? EdgeInsets.zero
               : const EdgeInsets.symmetric(horizontal: 8),
           alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: onPressed == null
+                ? AppColors.surfaceRaised
+                : AppColors.surfaceMuted,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+            border: Border.all(color: AppColors.borderSoft),
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [

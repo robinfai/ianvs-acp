@@ -135,16 +135,28 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
       builder: (context, constraints) {
         final theme = Theme.of(context);
         final colorScheme = theme.colorScheme;
-        final terminalColors = TerminalViewportColors.fromBrightness(
-          theme.brightness,
-        ).copyWith(minimumContrastRatio: 4.5, smartCursorColor: true);
-        final desiredHeight = constraints.maxHeight * 0.36;
+        final terminalTheme = theme.extension<AppTerminalTheme>();
+        final terminalColors = terminalTheme == null
+            ? TerminalViewportColors.fromBrightness(
+                theme.brightness,
+              ).copyWith(minimumContrastRatio: 4.5, smartCursorColor: true)
+            : TerminalViewportColors(
+                canvasBackground: terminalTheme.background,
+                foreground: terminalTheme.foreground,
+                cursor: terminalTheme.cursor,
+                selection: terminalTheme.selection,
+                scrollbarTrack: terminalTheme.scrollbarTrack,
+                scrollbarThumb: terminalTheme.scrollbarThumb,
+                minimumContrastRatio: 4.5,
+                smartCursorColor: true,
+              );
+        final desiredHeight = constraints.maxHeight * 0.29;
         final availableHeight = math.max<double>(
           140.0,
           constraints.maxHeight - 190,
         );
         final panelHeight = desiredHeight
-            .clamp(140.0, math.min<double>(340.0, availableHeight))
+            .clamp(160.0, math.min<double>(310.0, availableHeight))
             .toDouble();
         final controller = _panelController;
         final terminalPanel = controller == null
@@ -154,7 +166,7 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
                 controller: controller,
                 style: TerminalBottomPanelStyle(
                   height: panelHeight,
-                  headerHeight: 38,
+                  headerHeight: 44,
                   backgroundColor: terminalColors.canvasBackground,
                   headerColor: colorScheme.surfaceContainerLow,
                   borderColor: colorScheme.outlineVariant,

@@ -1626,7 +1626,7 @@ class _SessionTileState extends State<_SessionTile> {
     bool showActions, {
     required bool selected,
   }) {
-    final titleColor = selected ? AppColors.accentDark : AppColors.textPrimary;
+    final titleColor = AppColors.textPrimary;
     return Row(
       children: [
         Expanded(

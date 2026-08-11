@@ -1,6 +1,6 @@
 # Manual follow-ups
 
-Updated: 2026-08-09
+Updated: 2026-08-11
 
 This list contains only work that still requires a product decision, a real
 external service, or desktop interaction. Implemented runtime work belongs in

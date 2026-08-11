@@ -4,22 +4,22 @@ import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 import 'package:ianvs_acp/ui/theme/app_theme.dart';
 
 void main() {
-  test('the primary role uses the restrained product teal', () {
-    expect(AppColors.primary, AppColors.accent);
-    expect(AppColors.primaryDark, AppColors.accentDark);
-    expect(AppColors.primarySoft, AppColors.accentSoft);
-    expect(AppColors.primaryMist, AppColors.accentMist);
+  test('primary actions stay neutral while focus uses restrained blue', () {
+    expect(AppColors.primary, AppColors.textPrimary);
+    expect(AppColors.primaryDark, const Color(0xff171717));
+    expect(AppColors.primarySoft, const Color(0xffe9e9e9));
+    expect(AppColors.accent, const Color(0xff0b57d0));
   });
 
   test(
     'Conversation Canvas keeps navigation and content surfaces distinct',
     () {
-      expect(AppColors.bg, const Color(0xfff3f5f3));
+      expect(AppColors.bg, const Color(0xfff7f7f7));
       expect(AppColors.surface, const Color(0xffffffff));
-      expect(AppColors.surfaceSelected, const Color(0xffe2f2ee));
-      expect(AppColors.userMessageSurface, const Color(0xfff0f2f0));
-      expect(AppColors.textPrimary, const Color(0xff202422));
-      expect(AppColors.accent, const Color(0xff0b7e75));
+      expect(AppColors.surfaceSelected, const Color(0xffe9e9e9));
+      expect(AppColors.userMessageSurface, const Color(0xfff2f2f2));
+      expect(AppColors.textPrimary, const Color(0xff242424));
+      expect(AppColors.accent, const Color(0xff0b57d0));
     },
   );
 
@@ -35,8 +35,8 @@ void main() {
     final theme = AppTheme.light;
     final scheme = theme.colorScheme;
 
-    expect(scheme.primary, AppColors.accent);
-    expect(scheme.primaryContainer, AppColors.accentSoft);
+    expect(scheme.primary, AppColors.primary);
+    expect(scheme.primaryContainer, AppColors.primarySoft);
     expect(scheme.surfaceContainer, AppColors.surfaceMuted);
     expect(scheme.outlineVariant, AppColors.border);
   });

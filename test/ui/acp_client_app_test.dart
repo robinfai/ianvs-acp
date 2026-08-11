@@ -11,6 +11,8 @@ import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/acp_permission_reviewer.dart'
+    show AcpAgentPermissionReviewer;
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
@@ -203,7 +205,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Discovered ACP Agents'), findsOneWidget);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Codex'),
+      ),
+      findsOneWidget,
+    );
 
     await tester.tap(find.widgetWithText(FilledButton, 'Add Agents'));
     await tester.pumpAndSettle();
@@ -1515,6 +1523,347 @@ void main() {
     expect(client.lastResumeCwd, '/workspace/current');
   });
 
+  testWidgets(
+    'AcpClientApp keeps prompts active while switching between sessions',
+    (tester) async {
+      final workspace = Directory.current.resolveSymbolicLinksSync();
+      final clients = <_ConcurrentPromptAgentClient>[];
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+      final firstSession = AgentSession(
+        id: 'concurrent-session-a',
+        cwd: workspace,
+        createdAt: DateTime(2026, 8, 11, 10),
+        title: 'Concurrent session A',
+        agentName: 'Codex',
+      );
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          initialResumeSessionId: firstSession.id,
+          initialResumeCwd: firstSession.cwd,
+          initialResumeAgentName: 'Codex',
+          autoLoadWorkspaceSessions: false,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) {
+            final client = _ConcurrentPromptAgentClient();
+            clients.add(client);
+            return client;
+          },
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            tester
+                .widget<AppShell>(find.byType(AppShell))
+                .controller
+                .currentSession
+                ?.id ==
+            firstSession.id,
+      );
+
+      final firstController = tester
+          .widget<AppShell>(find.byType(AppShell))
+          .controller;
+      await firstController.sendPrompt('Run session A');
+      await tester.pump();
+      expect(firstController.isStreaming, isTrue);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.descendant(
+                of: find.byTooltip('New Session'),
+                matching: find.byType(FilledButton),
+              ),
+            )
+            .onPressed,
+        isNotNull,
+      );
+
+      await tester.tap(find.byTooltip('New Session'));
+      await tester.pumpAndSettle();
+      final workspaceField = find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(workspaceField, workspace);
+      await tester.tap(find.widgetWithText(FilledButton, 'Start'));
+      await _pumpUntil(tester, () {
+        final active = tester
+            .widget<AppShell>(find.byType(AppShell))
+            .controller;
+        return !identical(active, firstController) &&
+            active.currentSession != null;
+      });
+
+      final concurrentShell = tester.widget<AppShell>(find.byType(AppShell));
+      final secondController = concurrentShell.controller;
+      final secondSession = secondController.currentSession!;
+      expect(secondController, isNot(same(firstController)));
+      expect(concurrentShell.sessionControllers, hasLength(2));
+      expect(clients, hasLength(1));
+
+      await secondController.sendPrompt('Run session B');
+      await tester.pump();
+      expect(firstController.isStreaming, isTrue);
+      expect(secondController.isStreaming, isTrue);
+
+      tester.widget<AppShell>(find.byType(AppShell)).onSelectSession!(
+        firstSession,
+      );
+      await _pumpUntil(
+        tester,
+        () => identical(
+          tester.widget<AppShell>(find.byType(AppShell)).controller,
+          firstController,
+        ),
+      );
+      expect(find.text('Review Session Workspace'), findsNothing);
+      expect(firstController.isStreaming, isTrue);
+      expect(secondController.isStreaming, isTrue);
+
+      await sendDeepLink(
+        tester,
+        'ianvs-acp://session?id=${Uri.encodeQueryComponent(secondSession.id)}'
+        '&cwd=${Uri.encodeQueryComponent(workspace)}&agent=Codex',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Open external session?'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await _pumpUntil(
+        tester,
+        () => identical(
+          tester.widget<AppShell>(find.byType(AppShell)).controller,
+          secondController,
+        ),
+      );
+      expect(find.text('Review Session Workspace'), findsNothing);
+
+      await secondController.stop();
+      await tester.pump();
+      expect(firstController.isStreaming, isTrue);
+      expect(secondController.isStreaming, isFalse);
+      expect(clients.single.cancelledSessionIds, contains(secondSession.id));
+      expect(
+        clients.single.cancelledSessionIds,
+        isNot(contains(firstSession.id)),
+      );
+
+      await firstController.stop();
+      await tester.pump();
+      expect(firstController.isStreaming, isFalse);
+      expect(clients.single.cancelledSessionIds, contains(firstSession.id));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await _pumpUntil(
+        tester,
+        () => clients.every((client) => client.disposed),
+      );
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp switches idle local snapshots back and forth without resume',
+    (tester) async {
+      final clients = <_CountingResumeAgentClient>[];
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+      final firstSession = AgentSession(
+        id: 'idle-snapshot-session-a',
+        cwd: '/workspace/idle-snapshots',
+        createdAt: DateTime(2026, 8, 11, 11),
+        title: 'Idle snapshot session A',
+        agentName: 'Codex',
+      );
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          initialResumeSessionId: firstSession.id,
+          initialResumeCwd: firstSession.cwd,
+          initialResumeAgentName: 'Codex',
+          autoLoadWorkspaceSessions: false,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) {
+            final client = _CountingResumeAgentClient();
+            clients.add(client);
+            return client;
+          },
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            tester
+                .widget<AppShell>(find.byType(AppShell))
+                .controller
+                .currentSession
+                ?.id ==
+            firstSession.id,
+      );
+
+      final controller = tester
+          .widget<AppShell>(find.byType(AppShell))
+          .controller;
+      await controller.newSession(cwd: firstSession.cwd);
+      final secondSession = controller.currentSession!;
+      expect(secondSession.id, isNot(firstSession.id));
+
+      tester.widget<AppShell>(find.byType(AppShell)).onSelectSession!(
+        firstSession,
+      );
+      await _pumpUntil(
+        tester,
+        () => controller.currentSession?.id == firstSession.id,
+      );
+      expect(find.text('Review Session Workspace'), findsNothing);
+      expect(find.widgetWithText(FilledButton, 'Resume Session'), findsNothing);
+
+      final result = await controller.sendPrompt('Continue snapshot A');
+      await tester.pumpAndSettle();
+
+      expect(result, ChatPromptSubmissionResult.submitted);
+      expect(clients, hasLength(1));
+      expect(clients.single.resumeCalls, 1);
+      expect(clients.single.lastPrompt, 'Continue snapshot A');
+
+      tester.widget<AppShell>(find.byType(AppShell)).onSelectSession!(
+        secondSession,
+      );
+      await _pumpUntil(
+        tester,
+        () => controller.currentSession?.id == secondSession.id,
+      );
+      expect(find.text('Review Session Workspace'), findsNothing);
+      expect(find.widgetWithText(FilledButton, 'Resume Session'), findsNothing);
+      expect(clients.single.resumeCalls, 1);
+
+      tester.widget<AppShell>(find.byType(AppShell)).onSelectSession!(
+        firstSession,
+      );
+      await _pumpUntil(
+        tester,
+        () => controller.currentSession?.id == firstSession.id,
+      );
+      expect(find.text('Review Session Workspace'), findsNothing);
+      expect(find.widgetWithText(FilledButton, 'Resume Session'), findsNothing);
+      expect(clients.single.resumeCalls, 1);
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp disables concurrent session actions for legacy clients',
+    (tester) async {
+      final workspace = Directory.current.resolveSymbolicLinksSync();
+      final client = _LegacyHangingAgentClient();
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          initialResumeSessionId: 'legacy-session',
+          initialResumeCwd: workspace,
+          initialResumeAgentName: 'Codex',
+          autoLoadWorkspaceSessions: false,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (_) => client,
+        ),
+        const Size(1400, 900),
+      );
+      final shell = tester.widget<AppShell>(find.byType(AppShell));
+      await shell.controller.sendPrompt('Keep running');
+      await tester.pump();
+
+      final updatedShell = tester.widget<AppShell>(find.byType(AppShell));
+      expect(updatedShell.supportsConcurrentSessions, isFalse);
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.descendant(
+                of: find.byTooltip('New Session'),
+                matching: find.byType(FilledButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      await client.finishPrompt();
+      await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets(
+    'AcpClientApp keeps deep links on the requested same-source agent',
+    (tester) async {
+      final workspace = Directory.current.resolveSymbolicLinksSync();
+      final clients = <String, _CountingResumeAgentClient>{};
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Agent A',
+        'agent_servers': {
+          'Agent A': {
+            'type': 'custom',
+            'command': '/usr/local/bin/shared-acp',
+            'default_reasoning_effort': 'low',
+          },
+          'Agent B': {
+            'type': 'custom',
+            'command': '/usr/local/bin/shared-acp',
+            'default_reasoning_effort': 'high',
+          },
+        },
+      });
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          initialResumeSessionId: 'same-source-session',
+          initialResumeCwd: workspace,
+          initialResumeAgentName: 'Agent A',
+          autoLoadWorkspaceSessions: false,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          createAgentClient: (agentConfig) => clients.putIfAbsent(
+            agentConfig.agentName,
+            _CountingResumeAgentClient.new,
+          ),
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(tester, () => clients['Agent A']?.resumeCalls == 1);
+
+      await sendDeepLink(
+        tester,
+        'ianvs-acp://session?id=same-source-session'
+        '&cwd=${Uri.encodeQueryComponent(workspace)}&agent=Agent%20B',
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await _pumpUntil(tester, () => clients['Agent B']?.resumeCalls == 1);
+
+      final shell = tester.widget<AppShell>(find.byType(AppShell));
+      expect(shell.agentName, 'Agent B');
+      expect(shell.controller.agentName, 'Agent B');
+      expect(clients['Agent A']?.resumeCalls, 1);
+    },
+  );
+
   testWidgets('AcpClientApp opens sessions in a new window from the menu', (
     tester,
   ) async {
@@ -2698,7 +3047,7 @@ void main() {
     await tester.tap(find.byKey(const Key('compact-context-button')));
     await tester.pumpAndSettle();
     expect(find.byTooltip('Close Context'), findsOneWidget);
-    expect(find.text('Session'), findsWidgets);
+    expect(find.text('会话'), findsWidgets);
     await tester.tap(find.byTooltip('Close Context'));
     await tester.pumpAndSettle();
 
@@ -2854,6 +3203,78 @@ void main() {
     expect(find.text('Agent Configuration'), findsOneWidget);
     expect(find.text('permission-reviewer'), findsNWidgets(2));
     expect(find.text('agent-review-model'), findsWidgets);
+  });
+
+  testWidgets('AcpClientApp uses an independent configured ACP reviewer', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    await tester.pumpWidget(
+      AcpClientApp(
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Cursor',
+          'agent_servers': {
+            'Cursor': {
+              'type': 'custom',
+              'command': '/usr/local/bin/cursor-agent',
+            },
+            'Codex': {
+              'type': 'custom',
+              'command': '/usr/local/bin/npx',
+              'args': ['@agentclientprotocol/codex-acp'],
+            },
+          },
+          'client_providers': {
+            'permissions': {
+              'review_agent': {
+                'agent_server_name': 'Codex',
+                'model': 'review-model',
+              },
+            },
+          },
+        }),
+      ),
+    );
+    await tester.pump();
+
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    final reviewer =
+        shell.controller.permissionReviewer as AcpAgentPermissionReviewer;
+    expect(reviewer.agentName, 'Codex');
+    expect(reviewer.modelOverride, 'review-model');
+    expect(reviewer.canAutoApprove, isTrue);
+  });
+
+  testWidgets('AcpClientApp trusts an isolated same-agent reviewer', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    await tester.pumpWidget(
+      AcpClientApp(
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+        config: AcpClientConfig.fromJson({
+          'default_agent_server': 'Codex',
+          'agent_servers': {
+            'Codex': {
+              'type': 'custom',
+              'command': '/usr/local/bin/npx',
+              'args': ['@agentclientprotocol/codex-acp'],
+            },
+          },
+        }),
+      ),
+    );
+    await tester.pump();
+
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    final reviewer =
+        shell.controller.permissionReviewer as AcpAgentPermissionReviewer;
+    expect(reviewer.agentName, 'Codex');
+    expect(reviewer.modelOverride, isNull);
+    expect(reviewer.canAutoApprove, isTrue);
   });
 
   testWidgets('AcpClientApp changes tool policy from prompt composer', (
@@ -3847,6 +4268,77 @@ class _ControllableListAgentClient extends FakeAgentClient {
   Future<List<AcpProjectSessions>> listSessions() async {
     await _listReleased.future;
     return super.listSessions();
+  }
+}
+
+class _ConcurrentPromptAgentClient extends FakeAgentClient {
+  final Map<String, StreamController<AgentEvent>> _promptEvents =
+      <String, StreamController<AgentEvent>>{};
+  final Set<String> cancelledSessionIds = <String>{};
+  bool disposed = false;
+
+  @override
+  bool get supportsConcurrentPrompts => true;
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    lastPrompt = prompt;
+    lastAttachments = attachments;
+    final events = StreamController<AgentEvent>();
+    _promptEvents[sessionId] = events;
+    return events.stream;
+  }
+
+  @override
+  Future<void> cancel() async {
+    if (_promptEvents.length != 1) {
+      throw StateError('Expected exactly one active prompt.');
+    }
+    await cancelSession(sessionId: _promptEvents.keys.single);
+  }
+
+  @override
+  Future<void> cancelSession({required String sessionId}) async {
+    cancelledSessionIds.add(sessionId);
+    final events = _promptEvents.remove(sessionId);
+    if (events != null && !events.isClosed) await events.close();
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    for (final events in _promptEvents.values.toList(growable: false)) {
+      if (!events.isClosed) await events.close();
+    }
+    _promptEvents.clear();
+    await super.dispose();
+  }
+}
+
+class _LegacyHangingAgentClient extends FakeAgentClient {
+  final StreamController<AgentEvent> _events = StreamController<AgentEvent>();
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) {
+    return _events.stream;
+  }
+
+  Future<void> finishPrompt() async {
+    if (!_events.isClosed) await _events.close();
+  }
+
+  @override
+  Future<void> dispose() async {
+    await finishPrompt();
+    await super.dispose();
   }
 }
 

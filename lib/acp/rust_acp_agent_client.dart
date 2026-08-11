@@ -148,7 +148,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
   StreamSubscription<IanvsRuntimeEvent>? _eventSubscription;
   Completer<void>? _connecting;
   AcpAgentCapabilities? _capabilities;
-  String? _activePromptSessionId;
   int _nextRequestId = 1;
   bool _connected = false;
   bool _disposed = false;
@@ -172,6 +171,9 @@ final class RustAcpAgentClient implements AcpAgentClient {
 
   @override
   AcpAgentCapabilities? get capabilities => _capabilities;
+
+  @override
+  bool get supportsConcurrentPrompts => true;
 
   @override
   Stream<AcpPermissionRequest> get permissionRequests =>
@@ -318,7 +320,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
     final requestId = _requestId('prompt');
     _promptStreams[sessionId] = output;
     _promptRequestIds[sessionId] = requestId;
-    _activePromptSessionId = sessionId;
     try {
       _runtimeInstance.prompt(
         requestId: requestId,
@@ -343,7 +344,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
     } on Object catch (error, stackTrace) {
       _promptStreams.remove(sessionId);
       _promptRequestIds.remove(sessionId);
-      _activePromptSessionId = null;
       output.addError(error, stackTrace);
       unawaited(output.close());
     }
@@ -353,11 +353,23 @@ final class RustAcpAgentClient implements AcpAgentClient {
   @override
   Future<void> cancel() async {
     _ensureConnected();
-    final sessionId = _activePromptSessionId;
-    if (sessionId == null) return;
+    if (_promptStreams.isEmpty) return;
+    if (_promptStreams.length != 1) {
+      throw StateError(
+        'Multiple sessions have active prompts; cancel a specific session.',
+      );
+    }
+    await cancelSession(sessionId: _promptStreams.keys.single);
+  }
+
+  @override
+  Future<void> cancelSession({required String sessionId}) async {
+    _ensureConnected();
+    final normalizedSessionId = sessionId.trim();
+    if (!_promptStreams.containsKey(normalizedSessionId)) return;
     _runtimeInstance.cancel(
       requestId: _requestId('cancel'),
-      sessionId: sessionId,
+      sessionId: normalizedSessionId,
     );
   }
 
@@ -742,15 +754,18 @@ final class RustAcpAgentClient implements AcpAgentClient {
       case IanvsRuntimeEventType.runtimeError:
         _handleRuntimeError(event);
       case IanvsRuntimeEventType.stderrLog:
-        final output = _activeOutput;
-        output?.add(
-          AgentEvent(
-            type: AgentEventType.status,
-            text: event.data['line'] as String? ?? '',
-            metadata: const <String, Object?>{'kind': 'stderr'},
-            timestamp: DateTime.now(),
-          ),
+        final statusEvent = AgentEvent(
+          type: AgentEventType.status,
+          text: event.data['line'] as String? ?? '',
+          metadata: const <String, Object?>{'kind': 'stderr'},
+          timestamp: DateTime.now(),
         );
+        // Stderr is process-global and carries no session identity. Preserve
+        // the legacy single-prompt projection, but do not contaminate several
+        // independent timelines when prompts overlap.
+        if (_promptStreams.length == 1) {
+          _promptStreams.values.single.add(statusEvent);
+        }
       case IanvsRuntimeEventType.terminalAttached:
         final output = _promptStreams[event.data['sessionId'] as String?];
         output?.add(
@@ -1336,7 +1351,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _configRequestBySession.clear();
     _promptStreams.clear();
     _promptRequestIds.clear();
-    _activePromptSessionId = null;
     _pruneOrphanedAvailableCommands();
   }
 
@@ -1417,7 +1431,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
   void _finishPrompt(String sessionId) {
     final output = _promptStreams.remove(sessionId);
     _promptRequestIds.remove(sessionId);
-    if (_activePromptSessionId == sessionId) _activePromptSessionId = null;
     if (output != null) unawaited(output.close());
   }
 
@@ -1463,11 +1476,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
     }
     _restoreEvents.remove(requestId);
     _restoreNextSnapshotChunk.remove(requestId);
-  }
-
-  StreamController<AgentEvent>? get _activeOutput {
-    final sessionId = _activePromptSessionId;
-    return sessionId == null ? null : _promptStreams[sessionId];
   }
 
   AcpAgentCapabilities _capabilitiesFromProjection(Object? raw) {

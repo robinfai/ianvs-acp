@@ -853,6 +853,44 @@ void main() {
     expect(reviewAgent.model, 'review-model');
   });
 
+  test('loads permission review agent by configured ACP agent name', () {
+    final config = AcpClientConfig.fromJson({
+      'client_providers': {
+        'permissions': {
+          'review_agent': {
+            'agent_server_name': 'Codex',
+            'model': 'review-model',
+          },
+        },
+      },
+    });
+
+    final reviewAgent = config.clientProviders.permissions.reviewAgent;
+    expect(reviewAgent.enabled, isTrue);
+    expect(reviewAgent.agentServerName, 'Codex');
+    expect(reviewAgent.hasAgentTarget, isTrue);
+    expect(reviewAgent.hasMcpTarget, isFalse);
+    expect(reviewAgent.displayTarget, 'Codex');
+    expect(reviewAgent.model, 'review-model');
+    expect(reviewAgent.toJson()['agent_server_name'], 'Codex');
+  });
+
+  test('rejects simultaneous ACP and MCP permission review targets', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'client_providers': {
+          'permissions': {
+            'review_agent': {
+              'agent_server_name': 'Codex',
+              'mcp_server_name': 'permission-reviewer',
+            },
+          },
+        },
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('loads permission review model from agent server config', () {
     final config = AcpClientConfig.fromJson({
       'default_agent_server': 'Kimi Code Dev',

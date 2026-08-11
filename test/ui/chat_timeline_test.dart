@@ -1245,6 +1245,61 @@ Review the screenshot''',
     );
   });
 
+  testWidgets(
+    'ChatTimeline renders underscored file links without a duplicate suffix',
+    (tester) async {
+      tester.view.physicalSize = const Size(520, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        timeline([
+          ChatMessage(
+            role: ChatMessageRole.assistant,
+            text:
+                'See [prompt_input.dart](/workspace/lib/ui/components/prompt_input.dart:582) for details.',
+          ),
+        ], onTapLink: (_, _, _) {}),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('markdown-file-reference')),
+        findsOneWidget,
+      );
+      expect(find.text('prompt_input.dart'), findsOneWidget);
+      expect(find.text('_input.dart'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('ChatTimeline constrains long file reference labels', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const label =
+        'a_very_long_generated_file_reference_that_cannot_fit_in_one_line.dart';
+
+    await tester.pumpWidget(
+      timeline([
+        ChatMessage(
+          role: ChatMessageRole.assistant,
+          text: 'See [$label](/workspace/$label) for details.',
+        ),
+      ], onTapLink: (_, _, _) {}),
+    );
+    await tester.pumpAndSettle();
+
+    final labelWidget = tester.widget<Text>(find.text(label));
+    expect(labelWidget.maxLines, 1);
+    expect(labelWidget.overflow, TextOverflow.ellipsis);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('ChatTimeline renders fenced code with the shared code block', (
     tester,
   ) async {
@@ -1620,7 +1675,7 @@ foregroundDecoration: BoxDecoration(
 
     expect(find.text('User'), findsNothing);
     expect(find.text('Agent'), findsNothing);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsNothing);
     expect(find.text('Hello'), findsOneWidget);
     expect(find.text('Hello, human.'), findsOneWidget);
   });
@@ -1679,7 +1734,7 @@ foregroundDecoration: BoxDecoration(
     );
 
     expect(find.text('Agent'), findsNothing);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsNothing);
     expect(find.text('Hello, I am Codex.'), findsOneWidget);
   });
 

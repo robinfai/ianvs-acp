@@ -1,6 +1,6 @@
 # Product capabilities
 
-Updated: 2026-08-09
+Updated: 2026-08-11
 
 ianvs is a workspace and ACP session client. Runtime ownership and protocol
 details live in [Runtime architecture](runtime_architecture.md) and
@@ -13,6 +13,9 @@ details live in [Runtime architecture](runtime_architecture.md) and
   sessions in another window.
 - Stream text, plan, tool-call, status, usage, and terminal events into the
   conversation timeline.
+- Keep multiple conversations active in one app window, with independent
+  timelines, permission handling, and session-targeted cancellation while each
+  configured agent retains one authoritative ACP runtime.
 - Send text and workspace-scoped attachments using the negotiated prompt
   capabilities.
 - Change advertised modes and select/boolean configuration options.

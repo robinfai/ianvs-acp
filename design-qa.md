@@ -128,6 +128,83 @@ Old ACP replay events do not always carry the original elapsed-time metadata or 
 
 final result: passed
 
+## macOS 一体化窗口顶栏 — 2026-08-11
+
+### 视觉依据与最终证据
+
+- Source visual: `/var/folders/k2/8qbf3nrs7t1749d198rw0df40000gn/T/codex-clipboard-3cb348a0-9174-462e-8ab2-969cdd93af3b.png` (1990 × 1258 px).
+- Native implementation: `artifacts/reference-replica-2026-08-11/native-macos-top-chrome-final.jpeg` (1225 × 768 px), captured from the rebuilt macOS app.
+- Viewport normalization: the reference was proportionally normalized to 1225 × 768 for comparison with the native implementation; both top regions retain the same full-window coordinate system.
+- Full comparison: `artifacts/reference-replica-2026-08-11/full-comparison-top-chrome-final.jpg`.
+- Focused top-region comparison: `artifacts/reference-replica-2026-08-11/focused-window-chrome-final.jpg`, showing the first 150 px of both source and implementation in one input.
+
+### 对比记录
+
+- Pass 1 — P1 window hierarchy: the default native title row sat above the Flutter toolbar, creating a duplicate application top area. Fixed with a transparent, separator-free, full-size macOS titlebar and unified toolbar so the app toolbar starts at the window edge.
+- Pass 1 — P2 sidebar alignment: the first 44 px sidebar reservation placed the product name visibly below the source relationship. Reduced the reservation to 28 px so the native window controls, product title, and first navigation item follow the reference's vertical rhythm.
+- Pass 2: the source and rebuilt native app were recomposed in full-window and 150 px focused comparison inputs. No actionable P0, P1, or P2 discrepancy remains in the requested top-window region.
+
+### 设计与行为检查
+
+- Typography: the product title remains a restrained system semibold, aligned below the native controls without introducing a second app title.
+- Spacing and layout: the traffic-light area is owned by the sidebar; the main toolbar begins at y = 0; compact macOS layouts reserve 70 px before toolbar actions to avoid collisions with the controls.
+- Colors: the sidebar and transparent titlebar share one neutral surface. The native controls keep the operating system's active/inactive appearance instead of being simulated in Flutter.
+- Image and asset quality: close, minimize, and full-screen are genuine `NSWindow` standard controls; no custom circles, emoji, SVG substitutes, or decorative fake controls were added.
+- Copy and content: this pass only changes window chrome and spacing. It does not add navigation entries, commands, routes, or product capabilities.
+- Accessibility and native behavior: close, minimize, full screen/zoom, standard titlebar dragging, and accessibility roles remain supplied by AppKit. The app does not turn blank conversation content into a global drag surface.
+
+### 验证
+
+- `xcodebuild ... -only-testing:RunnerTests/RunnerTests/testMainWindowUsesUnifiedFullSizeChrome`: passed.
+- `flutter analyze`: no issues.
+- `flutter test docs/design-audit-2026-06-05/audit_screenshots_test.dart --plain-name "11 desktop reference replica with terminal" --update-goldens`: passed.
+- The same visual test in non-update mode: passed.
+- Native macOS rebuild and launch: passed; the integrated top region and real window controls were inspected in the running app.
+
+final result: passed
+
+## ChatGPT Desktop 大框架 UI 复刻 — 2026-08-11
+
+### Source visual truth and implementation evidence
+
+- Source visual truth: `/var/folders/k2/8qbf3nrs7t1749d198rw0df40000gn/T/codex-clipboard-3cb348a0-9174-462e-8ab2-969cdd93af3b.png` (1990 × 1258 px).
+- Native implementation screenshot: `artifacts/reference-replica-2026-08-11/native-macos-final.jpeg` (1225 × 768 px), captured from the running Flutter macOS ACP Client with the terminal panel open.
+- Deterministic implementation screenshot: `docs/design-audit-2026-06-05/screenshots/11-desktop-reference-replica.png` (1990 × 1258 logical px at DPR 1).
+- State: light desktop window, active conversation, left workspace/session navigation, global toolbar, compact right session/context inspector, grounded composer, and bottom terminal panel.
+- Viewport and density normalization: CSS pixels do not apply to the native Flutter app. For the combined native comparison, the 1990 × 1258 source was normalized to 1225 × 768 px and placed beside the native 1225 × 768 capture. The deterministic 1990 × 1258 capture independently verifies the source-sized layout constraints.
+- Full-view comparison: `artifacts/reference-replica-2026-08-11/full-comparison-final.jpg`.
+- Focused top comparison: `artifacts/reference-replica-2026-08-11/focused-top-final.jpg` covers toolbar, conversation measure, message surfaces, and right inspector.
+- Focused bottom comparison: `artifacts/reference-replica-2026-08-11/focused-bottom-final.jpg` covers the response tail, composer, terminal tabs, prompt, and panel ownership boundary.
+
+### Findings
+
+No actionable P0, P1, or P2 difference remains for the requested large-framework recreation.
+
+- Fonts and typography: native macOS rendering uses the Apple system/PingFang fallback stack with regular, medium, and semibold hierarchy; code and terminal content use SF Mono/Menlo-compatible metrics. Labels, body copy, code, and metadata retain the reference's restrained scale and line-height contrast.
+- Spacing and layout rhythm: the 1990 px source-sized state keeps a 360 px sidebar, 54 px toolbar, 848 px reading/composer measure, 362 px inspector reservation, 346 px floating inspector card, 20 px composer/card radius, and a bottom terminal owned only by the main workspace. At 1280–1899 px the truthful 320 px sidebar prevents the reference proportions from becoming oversized.
+- Colors and visual tokens: the shell now uses `#F7F7F7` secondary background, white reading surfaces, `#F4F4F4` muted controls, `#E9E9E9` selection, `#DEDEDE/#ECECEC` borders, graphite text, grayscale shadows, and blue only for real focus/activity semantics.
+- Image quality and assets: the target contains no required product imagery. The implementation uses the project's Material icon system and a real native terminal; no custom SVG, emoji, placeholder illustration, or fabricated bitmap asset was introduced.
+- Copy and content: reference-only capabilities were not copied. The visible navigation and inspector expose only the project's existing new/resume session, agent settings, permission history, current session, workspace context, capabilities, composer, and terminal behaviors. App-specific fixture titles remain dynamic rather than hard-coded to the source product.
+- Icons, states, and accessibility: active selection, toolbar controls, inspector actions, composer controls, terminal toggle/tab/close states, semantic labels, and the native accessibility tree were checked. The final native tree contains no `站点`, `网页搜索`, `已安排`, or `插件` product entry.
+
+### Comparison history
+
+- Iteration 1 — P1 content/affordance drift: the first pass copied source-only entries such as sites, scheduled items, plugins, web search, and site creation. These would imply capabilities the ACP Client does not have. They were removed; the reference's visual row rhythm was remapped only to existing ACP actions and real session/workspace context.
+- Iteration 1 — P2 responsive proportion: a 1728-logical-px native window still used the 360 px sidebar, making navigation visibly wider than the normalized source. The 360 px breakpoint was moved to 1900 px; 1280–1899 px now uses 320 px. The revised native comparison shows the corrected sidebar-to-main ratio.
+- Iteration 2 — P1 false status cues: a decorative brand dropdown arrow, hard-coded schedule/unread marks, `置顶` semantics, and a nonfunctional help glyph suggested unavailable actions or status. They were removed, and the section was relabeled `当前会话` with only the actual session title.
+- Iteration 3: the source and final native build were recomposed in one full-view comparison plus two focused comparisons. The shell proportions, reading axis, inspector elevation, composer, and terminal boundary align with the source while product-specific capability differences remain intentionally truthful. No actionable P0/P1/P2 finding remains.
+
+### Interaction and regression verification
+
+- Native macOS smoke: latest build launched, the actual terminal toggle opened the panel, and a real zsh prompt rendered in the selected workspace.
+- `flutter analyze`: no issues.
+- `flutter test test/ui/app_shell_test.dart test/ui/workspace_inspector_test.dart`: 26/26 passed.
+- `flutter test test/ui/chat_timeline_test.dart --update-goldens`: 81/81 passed; the refreshed accepted visual baselines subsequently passed in the focused UI suite.
+- `flutter test docs/design-audit-2026-06-05/audit_screenshots_test.dart --plain-name "11 desktop reference replica with terminal"`: passed at 1990 × 1258.
+- `git diff --check`: passed.
+
+final result: passed
+
 ## ACP bottom terminal integration — 2026-08-10
 
 ### Visual truth and native evidence

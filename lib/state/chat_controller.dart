@@ -2851,6 +2851,20 @@ class ChatController extends ChangeNotifier {
             (supportsSessionList && supportsSessionResume));
   }
 
+  /// Whether [sessionId] can be activated from controller-owned state without
+  /// asking the ACP agent to restore its transcript.
+  bool canActivateSessionLocally(String sessionId) {
+    final normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty ||
+        isStreaming ||
+        isSessionOperationRunning) {
+      return false;
+    }
+    if (_sessionViewSnapshotWithId(normalizedSessionId) != null) return true;
+    return _sessionWithId(normalizedSessionId) != null &&
+        _isLocalUnstartedSessionId(normalizedSessionId);
+  }
+
   bool get canLogout {
     return supportsAuthLogout && !isStreaming && !isSessionOperationRunning;
   }
@@ -4320,7 +4334,12 @@ class ChatController extends ChangeNotifier {
       cancelError = error;
     }
     try {
-      await client.cancel().timeout(cancellationTimeout);
+      final sessionId = currentSession?.id;
+      if (sessionId != null) {
+        await client
+            .cancelSession(sessionId: sessionId)
+            .timeout(cancellationTimeout);
+      }
     } on Object catch (error) {
       cancelError ??= error;
     }
@@ -7937,6 +7956,7 @@ class ChatController extends ChangeNotifier {
   // ignore: must_call_super
   void dispose() {
     if (_isDisposed) return;
+    final activePromptSessionId = isStreaming ? currentSession?.id : null;
     _sessionOperationGeneration += 1;
     _sessionSettingsLoadSerial += 1;
     _finishTurnBudget();
@@ -7948,7 +7968,10 @@ class ChatController extends ChangeNotifier {
     _isDisposed = true;
     final promptSubscription = _promptSubscription;
     _promptSubscription = null;
-    _disposalFuture = _disposeResources(promptSubscription);
+    _disposalFuture = _disposeResources(
+      promptSubscription,
+      activePromptSessionId,
+    );
     unawaited(_disposalFuture);
     _resolvingPermissionRequestIds.clear();
     _reviewingPermissionRequestIds.clear();
@@ -7957,7 +7980,13 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _disposeResources(
     StreamSubscription<AgentEvent>? promptSubscription,
+    String? activePromptSessionId,
   ) async {
+    if (activePromptSessionId != null) {
+      await _ignoreCleanup(
+        () => client.cancelSession(sessionId: activePromptSessionId),
+      );
+    }
     await _ignoreCleanup(() => promptSubscription?.cancel());
     await _ignoreCleanup(_permissionSubscription.cancel);
     await _ignoreCleanup(_permissionInvalidationSubscription.cancel);

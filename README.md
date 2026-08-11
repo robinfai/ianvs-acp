@@ -17,6 +17,11 @@ release checks are tracked in [Manual follow-ups](docs/manual_followups.md).
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.
 
+Multiple conversations can remain active in the same window. Switching or
+starting another session does not interrupt an in-flight response; prompt
+cancellation and permission requests remain scoped to their session while each
+configured agent continues to use one authoritative ACP runtime.
+
 ## Configuration
 
 Use `Agents` -> `Agent Configuration` to manage the saved configuration:
@@ -105,13 +110,8 @@ Saved shape example for automation and debugging:
   "client_providers": {
     "permissions": {
       "review_agent": {
-        "mcp_server": {
-          "name": "permission-reviewer",
-          "command": "/opt/homebrew/bin/npx",
-          "args": ["-y", "@example/permission-reviewer-mcp"]
-        },
-        "tool_name": "review_permission",
-        "model": "gpt-5-mini"
+        "agent_server_name": "Codex",
+        "model": "review-model"
       }
     }
   },
@@ -152,15 +152,13 @@ only to agents that advertise `sessionCapabilities.additionalDirectories`, and
 filesystem/terminal provider jail checks treat those roots as part of the
 session workspace.
 
-`client_providers.permissions.review_agent` can point at a sidecar MCP server
-used by the prompt composer’s `自动审查` policy. If no review agent is configured,
-`自动审查` starts a sidecar session with the same active ACP agent and passes the
-current model. An individual `agent_servers.<name>.review_agent.model` can
-override the sidecar review model for that agent. The app sends command
-execution context, local workspace/risk analysis, and the selected review model
-to the reviewer, records the review opinion, and auto-applies allow/deny
-decisions returned by that sidecar. If the sidecar cannot decide or fails, the
-request remains available for manual approval.
+`client_providers.permissions.review_agent` can select a configured ACP agent
+with `agent_server_name`, or point at a sidecar MCP server, for the prompt
+composer's `自动审查` policy. ACP reviewers run in an isolated sidecar client and
+session, so they can automatically approve a low-risk `allow` decision even
+when they use the same agent or model as the main session. An individual
+`agent_servers.<name>.review_agent.model` can override the review model for that
+agent. High-risk or inconclusive results remain available for manual approval.
 
 Supported environment overrides:
 

@@ -1,5 +1,6 @@
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
@@ -337,6 +338,10 @@ void main() {
   testWidgets('AgentToolbar uses conversation labels for session actions', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1400, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -363,6 +368,21 @@ void main() {
     expect(find.text('Pin Conversation'), findsOneWidget);
     expect(find.text('Rename Conversation'), findsOneWidget);
     expect(find.text('Archive Conversation'), findsOneWidget);
+
+    final actionRect = tester.getRect(
+      find.byKey(const Key('toolbar-session-actions')),
+    );
+    final menuRect = tester.getRect(
+      find.ancestor(
+        of: find.text('Pin Conversation'),
+        matching: find.byType(MenuItemButton),
+      ),
+    );
+    expect(
+      actionRect.center.dx,
+      inInclusiveRange(menuRect.left, menuRect.right),
+    );
+    expect(menuRect.top, greaterThan(actionRect.bottom));
   });
 
   testWidgets('AppShell loads session catalogs for every controller', (
@@ -493,6 +513,51 @@ void main() {
     expect(tester.widget<TextField>(promptField).controller?.text, '/review ');
   });
 
+  testWidgets('AppShell exposes current conversation user prompts as history', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'First user prompt'),
+      startsNewTurn: true,
+    );
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.assistant, text: 'Assistant response'),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Second user prompt'),
+      startsNewTurn: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pump();
+    final field = find.descendant(
+      of: find.byKey(const Key('prompt-input-surface')),
+      matching: find.byType(TextField),
+    );
+    await tester.tap(field);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      'Second user prompt',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      'First user prompt',
+    );
+  });
+
   testWidgets('AppShell terminal follows the active ACP session lifecycle', (
     tester,
   ) async {
@@ -577,6 +642,7 @@ void main() {
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
     expect(panelRect.left, moreOrLessEquals(sidebarRect.right, epsilon: 1.1));
     expect(panelRect.right, greaterThan(inspectorRect.right - 1));
+    expect(panelRect.height, moreOrLessEquals(261, epsilon: 1.1));
 
     await tester.tap(find.byKey(const Key('terminal-panel-add')));
     await tester.pump();

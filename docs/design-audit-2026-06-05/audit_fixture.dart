@@ -36,7 +36,9 @@ Future<AuditFixture> createAuditFixture(String scenario) async {
         'description': 'Open a browser session for this ACP agent.',
       },
     ],
-    createSessionEvents: auditSeedEvents,
+    createSessionEvents: scenario == 'reference'
+        ? referenceReplicaEvents
+        : auditSeedEvents,
     sessionSettings: auditSeedSettings,
   );
   final controller = ChatController(
@@ -215,6 +217,74 @@ const List<AgentEvent> auditSeedEvents = [
         {'name': 'test', 'description': 'Run the focused Flutter test suite.'},
       ],
     },
+  ),
+];
+
+final List<AgentEvent> referenceReplicaEvents = [
+  AgentEvent(
+    type: AgentEventType.userMessage,
+    text: '本地干线合并并提交推送',
+    timestamp: DateTime(2026, 8, 11, 9),
+  ),
+  AgentEvent(
+    type: AgentEventType.toolCall,
+    text: 'git status --short --branch',
+    timestamp: DateTime(2026, 8, 11, 9, 0, 8),
+    metadata: const {
+      'toolCallId': 'git-status-1',
+      'title': 'git status',
+      'status': 'completed',
+      'kind': 'execute',
+      'rawInput': {'cmd': 'git status --short --branch'},
+      'rawOutput': '## main\n',
+    },
+  ),
+  AgentEvent(
+    type: AgentEventType.agentTextDelta,
+    timestamp: DateTime(2026, 8, 11, 9, 0, 22),
+    text: '''当前已在本地 `main`，变更范围只有本次适配的 4 个文件，没有无关改动。
+
+但 GitHub CLI 的 `robinfai` 登录令牌已失效。请先运行：
+
+```bash
+gh auth login -h github.com
+```
+
+认证完成后告诉我“继续”，我会直接提交到本地 `main` 并推送 `origin/main`。''',
+  ),
+  AgentEvent(
+    type: AgentEventType.userMessage,
+    text: 'git 命令操作试试',
+    timestamp: DateTime(2026, 8, 11, 9, 1),
+  ),
+  AgentEvent(
+    type: AgentEventType.toolCall,
+    text: 'git push origin main',
+    timestamp: DateTime(2026, 8, 11, 9, 1, 34),
+    metadata: const {
+      'toolCallId': 'git-push-2',
+      'title': 'git push',
+      'status': 'completed',
+      'kind': 'execute',
+      'rawInput': {'cmd': 'git push origin main'},
+      'rawOutput': 'main -> main',
+    },
+  ),
+  AgentEvent(
+    type: AgentEventType.agentTextDelta,
+    timestamp: DateTime(2026, 8, 11, 9, 1, 56),
+    text: '''已直接提交并推送到本地主线及远端 `main`。
+
+- 提交：`4a1f2b3 Add Cursor and CodeBuddy ACP support`
+- 推送：`origin/main`
+- 本地与远端完全同步，工作区干净
+- 相关 95 项测试及静态检查已通过''',
+  ),
+  AgentEvent(
+    type: AgentEventType.status,
+    text: 'Turn completed',
+    timestamp: DateTime(2026, 8, 11, 9, 1, 56),
+    metadata: const {'kind': 'turn'},
   ),
 ];
 

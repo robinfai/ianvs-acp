@@ -38,7 +38,7 @@ const double _turnNavigationMarkerPitch = 16;
 const double _turnNavigationMarkerWidth = 38;
 const double _turnNavigationIdleBarWidth = 7;
 const double _turnNavigationHoverBarWidth = 34;
-const double _conversationContentWidth = 744;
+const double _conversationContentWidth = 848;
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -1642,31 +1642,6 @@ class _MessageBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (assistant) ...[
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.auto_awesome_rounded,
-                      size: 17,
-                      color: AppColors.accent,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      agentName,
-                      style: TextStyle(
-                        color: emphasizeAssistant
-                            ? AppColors.accentDark
-                            : AppColors.textPrimary,
-                        fontSize: 13.5,
-                        height: 1.3,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-                if (markdownDecision != null) const SizedBox(height: 8),
-              ],
               if (!user && !assistant)
                 Wrap(
                   spacing: 6,

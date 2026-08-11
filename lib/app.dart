@@ -14,6 +14,7 @@ import 'acp/agent_event.dart';
 import 'acp/agent_session.dart';
 import 'acp/rust_acp_agent_client.dart';
 import 'acp/acp_permission_reviewer.dart';
+import 'acp/session_scoped_agent_client.dart';
 import 'acp/unavailable_acp_agent_client.dart';
 import 'config/acp_agent_discovery.dart';
 import 'config/acp_client_config.dart';
@@ -181,7 +182,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
   late final String _cwd;
   final Map<String, ChatController> _controllersByAgent =
       <String, ChatController>{};
+  // A ChatController intentionally owns one mutable foreground timeline and
+  // prompt subscription. Extra controllers keep simultaneously running
+  // conversations isolated while the primary per-agent controllers continue
+  // to own catalog loading and ordinary idle session switching.
+  final List<ChatController> _supplementalControllers = <ChatController>[];
   final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
+  final Map<String, SessionScopedAgentClientPool> _clientPoolsByAgent =
+      <String, SessionScopedAgentClientPool>{};
+  final Map<String, String> _clientPoolSignaturesByAgent = <String, String>{};
   final Map<ChatController, VoidCallback> _sessionIndexListeners =
       <ChatController, VoidCallback>{};
   final Set<String> _handledDeepLinks = <String>{};
@@ -521,7 +530,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           continue;
         }
         try {
-          await _resumeFromStartupOptions(
+          final opened = await _resumeFromStartupOptions(
             StartupOptions(
               resumeSessionId: request.sessionId,
               resumeCwd: workspace.path,
@@ -532,6 +541,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
             _handledDeepLinks.remove(pending.key);
             return;
           }
+          if (!opened) _handledDeepLinks.remove(pending.key);
         } on Object catch (error) {
           _handledDeepLinks.remove(pending.key);
           if (_ownsDeepLinkHandler(pending.handlerEpoch)) {
@@ -548,23 +558,83 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
   }
 
-  Future<void> _resumeFromStartupOptions(StartupOptions options) async {
+  Future<bool> _resumeFromStartupOptions(StartupOptions options) async {
     final sessionId = _trimmedOrNull(options.resumeSessionId);
-    if (sessionId == null || !mounted) return;
+    if (sessionId == null || !mounted) return false;
 
-    var controller = _controller;
+    var config = _config;
     final agentName = _trimmedOrNull(options.resumeAgentName);
     if (widget.controller == null && agentName != null) {
-      final config = _configForAgent(_config, agentName);
-      if (config == null) {
+      final selectedConfig = _configForAgent(_config, agentName);
+      if (selectedConfig == null) {
         _showSnackBar('Could not select agent "$agentName".');
-        return;
+        return false;
       }
-      controller = _activateAgent(config);
+      config = selectedConfig;
     }
 
-    await controller.resumeSession(sessionId, cwd: options.resumeCwd);
+    final knownSession = _knownSessionForResume(sessionId, config);
+    final explicitCwd = _trimmedOrNull(options.resumeCwd);
+    final targetSession =
+        knownSession?.copyWith(cwd: explicitCwd ?? knownSession.cwd) ??
+        AgentSession(
+          id: sessionId,
+          cwd: explicitCwd ?? _controller.cwd,
+          createdAt: DateTime.now(),
+          additionalDirectories: config.additionalDirectories,
+          agentName:
+              config.activeAgentServer?.persistenceIdentity ?? config.agentName,
+        );
+
+    final activeController = _controllerWithCurrentSession(
+      targetSession,
+      config: config,
+    );
+    if (activeController != null) {
+      _activateController(config, activeController);
+      return true;
+    }
+    if (_hasBoundSessionWorkspaceConflict(targetSession, config)) {
+      _showSnackBar(sessionWorkspaceConflictMessage(sessionId));
+      return false;
+    }
+
+    final localController = _controllerWithLocalSessionState(
+      targetSession,
+      config,
+    );
+    final controller =
+        localController ??
+        (widget.controller == null
+            ? _availableControllerFor(config)
+            : _controller);
+    if (controller == null) {
+      _showSnackBar(
+        'Wait for the current response before opening this session.',
+      );
+      return false;
+    }
+    _activateController(config, controller);
+    await controller.resumeSession(
+      sessionId,
+      cwd: targetSession.cwd,
+      additionalDirectories: targetSession.additionalDirectories,
+      title: targetSession.title,
+      updatedAt: targetSession.updatedAt,
+    );
     if (mounted) setState(() {});
+    final resumed = controller.currentSession;
+    final succeeded =
+        resumed != null &&
+        resumed.id.trim() == sessionId &&
+        normalizeWorkspacePath(resumed.cwd) ==
+            normalizeWorkspacePath(targetSession.cwd);
+    if (!succeeded) {
+      _showSnackBar(
+        controller.lastError ?? 'Could not open session "$sessionId".',
+      );
+    }
+    return succeeded;
   }
 
   String? _trimmedOrNull(String? value) {
@@ -605,6 +675,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
             ? _loadAllAgentSessionCatalogs
             : null,
         sessionControllers: _sessionControllers,
+        supportsConcurrentSessions:
+            widget.controller == null &&
+            _controller.client.supportsConcurrentPrompts,
         onNewSession: (context) => unawaited(_startNewSession(context)),
         onNewSessionInWorkspace: (context, workspace) =>
             unawaited(_startNewSession(context, initialCwd: workspace.path)),
@@ -679,15 +752,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController _controllerFor(AcpClientConfig config) {
-    final createAgentClient = widget.createAgentClient ?? _defaultAgentClient;
-    return _controllerForWithFactory(config, createAgentClient);
+    return _controllerForClient(config, _acquireAgentClient(config));
   }
 
-  ChatController _controllerForWithFactory(
-    AcpClientConfig config,
-    AcpAgentClientFactory createAgentClient,
-  ) {
-    return _controllerForClient(config, createAgentClient(config));
+  AcpAgentClient _acquireAgentClient(AcpClientConfig config) {
+    final agentName = config.agentName.trim();
+    final signature = _controllerSignature(config);
+    var pool = _clientPoolsByAgent[agentName];
+    if (pool == null || _clientPoolSignaturesByAgent[agentName] != signature) {
+      final createAgentClient = widget.createAgentClient ?? _defaultAgentClient;
+      pool = SessionScopedAgentClientPool(createAgentClient(config));
+      _clientPoolsByAgent[agentName] = pool;
+      _clientPoolSignaturesByAgent[agentName] = signature;
+    }
+    return pool.acquire();
   }
 
   ChatController _controllerForClient(
@@ -792,6 +870,42 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return controller;
   }
 
+  ChatController _createSupplementalController(AcpClientConfig config) {
+    final controller = _controllerFor(config);
+    _supplementalControllers.add(controller);
+    _attachSessionIndexPersistence(controller);
+    return controller;
+  }
+
+  ChatController? _idleControllerFor(AcpClientConfig config) {
+    final agentName = config.agentName.trim();
+    final candidates = <ChatController>[
+      if (_controller.agentName.trim() == agentName) _controller,
+      ?_controllersByAgent[agentName],
+      ..._supplementalControllers.where(
+        (controller) => controller.agentName.trim() == agentName,
+      ),
+    ];
+    final seen = <ChatController>{};
+    for (final controller in candidates) {
+      if (!seen.add(controller) ||
+          controller.isStreaming ||
+          controller.isSessionOperationRunning) {
+        continue;
+      }
+      return controller;
+    }
+    return null;
+  }
+
+  ChatController? _availableControllerFor(AcpClientConfig config) {
+    final idle = _idleControllerFor(config);
+    if (idle != null) return idle;
+    final primary = _controllersByAgent[config.agentName.trim()];
+    if (primary?.client.supportsConcurrentPrompts != true) return null;
+    return _createSupplementalController(config);
+  }
+
   void _replaceOwnedControllerConfiguration(
     AcpClientConfig nextConfig, {
     bool rebuild = true,
@@ -831,12 +945,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   List<ChatController> _takeCachedControllers() {
-    final controllers = _controllersByAgent.values.toList(growable: false);
+    final controllers = <ChatController>{
+      ..._controllersByAgent.values,
+      ..._supplementalControllers,
+    }.toList(growable: false);
     for (final controller in controllers) {
       _detachSessionIndexPersistence(controller);
     }
     _controllersByAgent.clear();
+    _supplementalControllers.clear();
     _controllerSignaturesByAgent.clear();
+    // Pools remain alive through their controller leases and dispose their
+    // single underlying ACP client after the final controller finishes.
+    _clientPoolsByAgent.clear();
+    _clientPoolSignaturesByAgent.clear();
     return controllers;
   }
 
@@ -1045,7 +1167,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       sessionsByKey['$cwd\u0000$persistenceIdentity\u0000$id'] = session;
     }
     final workspaceController = WorkspaceController(
-      controllers: _controllersByAgent.values.toList(growable: false),
+      controllers: _sessionControllers,
       currentWorkspacePath: _cwd,
       defaultAgentName: _config.defaultAgentServerName ?? _config.agentName,
       includeArchived: true,
@@ -1143,7 +1265,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
     BuildContext dialogContext, {
     String? initialCwd,
   }) async {
-    if (_controller.isStreaming || _controller.isSessionOperationRunning) {
+    if (_controller.isSessionOperationRunning ||
+        (widget.controller != null && _controller.isStreaming)) {
       return;
     }
 
@@ -1174,7 +1297,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     final selected = selection.agentServer;
     if (selected == null) {
-      await _controller.newSession(cwd: selection.cwd);
+      final controller = _availableControllerFor(_config);
+      if (controller == null) {
+        _showSnackBar(
+          'Wait for the current response before starting a session.',
+        );
+        return;
+      }
+      _activateController(_config, controller);
+      await controller.newSession(cwd: selection.cwd);
       if (mounted) setState(() {});
       return;
     }
@@ -1187,7 +1318,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
 
-    final controller = _activateAgent(nextConfig);
+    final controller = _availableControllerFor(nextConfig);
+    if (controller == null) {
+      _showSnackBar('Wait for the current response before starting a session.');
+      return;
+    }
+    _activateController(nextConfig, controller);
     await controller.newSession(cwd: selection.cwd);
     if (mounted) setState(() {});
   }
@@ -1207,31 +1343,65 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   Future<void> _selectSessionOnce(AgentSession session) async {
-    if (_controller.isStreaming) {
-      _showSnackBar('Wait for the current response before switching sessions.');
+    if (!mounted) return;
+    final sessionConfig = widget.controller == null
+        ? _configForSessionIndex(session)
+        : _config;
+    if (sessionConfig == null) {
+      _showSnackBar(
+        'Could not select the agent for "${session.displayTitle}".',
+      );
       return;
     }
 
-    final existingTargetController = _existingControllerForAgentName(
-      session.agentName,
+    final activeTargetController = _controllerWithCurrentSession(
+      session,
+      config: sessionConfig,
     );
-    if (existingTargetController?.isStreaming == true) {
-      _showSnackBar('Wait for the current response before switching sessions.');
+    if (activeTargetController != null) {
+      _restoreSessionAcrossCatalogAliases(
+        session,
+        preferred: activeTargetController,
+      );
+      _activateController(sessionConfig, activeTargetController);
       return;
     }
-    if (existingTargetController?.hasBoundSessionWorkspaceConflict(session) ==
-        true) {
+
+    if (_hasBoundSessionWorkspaceConflict(session, sessionConfig)) {
       _showSnackBar(sessionWorkspaceConflictMessage(session.id));
       return;
     }
-    final existingTargetSession = existingTargetController?.currentSession;
-    if (existingTargetSession != null &&
-        existingTargetSession.id.trim() == session.id.trim()) {
-      _restoreSessionAcrossCatalogAliases(
-        session,
-        preferred: existingTargetController!,
+
+    final localTargetController = _controllerWithLocalSessionState(
+      session,
+      sessionConfig,
+    );
+    if (localTargetController != null) {
+      _activateController(sessionConfig, localTargetController);
+      await localTargetController.resumeSession(
+        session.id,
+        cwd: session.cwd,
+        additionalDirectories: session.additionalDirectories,
+        title: session.title,
+        updatedAt: session.updatedAt,
       );
-      if (identical(existingTargetController, _controller)) return;
+      final activated = localTargetController.currentSession;
+      if (activated != null &&
+          activated.id.trim() == session.id.trim() &&
+          normalizeWorkspacePath(activated.cwd) ==
+              normalizeWorkspacePath(session.cwd)) {
+        _restoreSessionAcrossCatalogAliases(
+          session,
+          preferred: localTargetController,
+        );
+      }
+      if (mounted) setState(() {});
+      return;
+    }
+
+    if (widget.controller != null && _controller.isStreaming) {
+      _showSnackBar('Wait for the current response before switching sessions.');
+      return;
     }
 
     if (!mounted) return;
@@ -1242,43 +1412,29 @@ class _AcpClientAppState extends State<AcpClientApp> {
       session,
     );
     if (!approved || !mounted) return;
-    if (existingTargetController?.hasBoundSessionWorkspaceConflict(session) ==
-        true) {
+    if (_hasBoundSessionWorkspaceConflict(session, sessionConfig)) {
       _showSnackBar(sessionWorkspaceConflictMessage(session.id));
       return;
     }
 
-    var controller = _controller;
-    if (widget.controller == null) {
-      final sessionAgentName = session.agentName?.trim();
-      if (sessionAgentName != null &&
-          sessionAgentName.isNotEmpty &&
-          sessionAgentName != _config.agentName) {
-        try {
-          controller = _activateAgent(
-            _config.withActiveAgentServer(sessionAgentName),
-          );
-        } catch (error) {
-          _showSnackBar('Could not select agent: $error');
-          return;
-        }
-      }
+    final controller = widget.controller == null
+        ? _availableControllerFor(sessionConfig)
+        : _controller;
+    if (controller == null) {
+      _showSnackBar('Wait for the current response before switching sessions.');
+      return;
     }
-
     if (controller.isSessionOperationRunning) {
       _showSnackBar('Waiting for the current session operation to finish.');
       await controller.waitForSessionOperationIdle();
       if (!mounted) return;
-    }
-    if (_controller.isStreaming || controller.isStreaming) {
-      _showSnackBar('Wait for the current response before switching sessions.');
-      return;
     }
     if (controller.hasBoundSessionWorkspaceConflict(session)) {
       _showSnackBar(sessionWorkspaceConflictMessage(session.id));
       return;
     }
 
+    _activateController(sessionConfig, controller);
     await controller.resumeSession(
       session.id,
       cwd: session.cwd,
@@ -1297,14 +1453,104 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (mounted) setState(() {});
   }
 
-  ChatController? _existingControllerForAgentName(String? agentName) {
-    final trimmed = agentName?.trim();
-    if (trimmed == null ||
-        trimmed.isEmpty ||
-        trimmed == _controller.agentName.trim()) {
-      return _controller;
+  ChatController? _controllerWithCurrentSession(
+    AgentSession session, {
+    AcpClientConfig? config,
+  }) {
+    final sessionId = session.id.trim();
+    final workspacePath = normalizeWorkspacePath(session.cwd);
+    final agentName = session.agentName?.trim();
+    final sourceKey = config == null
+        ? null
+        : _sessionCatalogSourceKeyForConfig(config);
+    for (final controller in _sessionControllers) {
+      if (sourceKey != null &&
+          controller.sessionCatalogSourceKey?.trim() != sourceKey) {
+        continue;
+      }
+      final current = controller.currentSession;
+      if (current == null ||
+          current.id.trim() != sessionId ||
+          normalizeWorkspacePath(current.cwd) != workspacePath) {
+        continue;
+      }
+      if (agentName == null ||
+          agentName.isEmpty ||
+          controller.agentName.trim() == agentName ||
+          controller.sessionPersistenceIdentity.trim() == agentName) {
+        return controller;
+      }
     }
-    return _controllersByAgent[trimmed];
+    return null;
+  }
+
+  ChatController? _controllerWithLocalSessionState(
+    AgentSession session,
+    AcpClientConfig config,
+  ) {
+    if (widget.controller != null) {
+      return _controller.canActivateSessionLocally(session.id)
+          ? _controller
+          : null;
+    }
+
+    final agentName = config.agentName.trim();
+    final persistenceIdentity =
+        config.activeAgentServer?.persistenceIdentity ?? agentName;
+    for (final controller in _sessionControllers) {
+      if (!controller.canActivateSessionLocally(session.id)) continue;
+      if (controller.agentName.trim() == agentName ||
+          controller.sessionPersistenceIdentity.trim() == persistenceIdentity) {
+        return controller;
+      }
+    }
+    return null;
+  }
+
+  AgentSession? _knownSessionForResume(
+    String sessionId,
+    AcpClientConfig config,
+  ) {
+    final normalizedSessionId = sessionId.trim();
+    final sourceKey = _sessionCatalogSourceKeyForConfig(config);
+    final agentName = config.agentName.trim();
+    final persistenceIdentity =
+        config.activeAgentServer?.persistenceIdentity ?? agentName;
+    final controllers = _sessionControllers.where(
+      (controller) =>
+          widget.controller != null ||
+          (controller.sessionCatalogSourceKey?.trim() == sourceKey &&
+              (controller.agentName.trim() == agentName ||
+                  controller.sessionPersistenceIdentity.trim() ==
+                      persistenceIdentity)),
+    );
+    for (final controller in controllers) {
+      final current = controller.currentSession;
+      if (current != null && current.id.trim() == normalizedSessionId) {
+        return current;
+      }
+    }
+    for (final controller in controllers) {
+      for (final session in controller.sessions) {
+        if (session.id.trim() == normalizedSessionId) return session;
+      }
+    }
+    return null;
+  }
+
+  bool _hasBoundSessionWorkspaceConflict(
+    AgentSession session,
+    AcpClientConfig config,
+  ) {
+    if (widget.controller != null) {
+      return _controller.hasBoundSessionWorkspaceConflict(session);
+    }
+    final sourceKey = _sessionCatalogSourceKeyForConfig(config);
+    return _sessionControllers.any(
+      (controller) =>
+          controller.sessionCatalogSourceKey?.trim() == sourceKey &&
+          controller.hasBoundSessionWorkspaceConflict(session),
+    );
   }
 
   bool _canForkSession(AgentSession session) {
@@ -1389,6 +1635,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController _controllerForSession(AgentSession session) {
+    final active = _controllerWithCurrentSession(
+      session,
+      config: widget.controller == null
+          ? _configForSessionIndex(session)
+          : _config,
+    );
+    if (active != null) return active;
+
     late final ChatController preferred;
     final agentName = session.agentName?.trim();
     if (widget.controller == null &&
@@ -1557,25 +1811,30 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   Future<void> _openSideSession(AgentSession session) async {
-    var controller = _controllerForSession(session);
-    final agentName = session.agentName?.trim();
-    if (widget.controller == null &&
-        agentName != null &&
-        agentName.isNotEmpty &&
-        agentName != _config.agentName) {
-      final config = _configForAgent(_config, agentName);
-      if (config == null) {
-        _showSnackBar('Could not select agent "$agentName".');
-        return;
-      }
-      controller = _activateAgent(config);
+    final config = widget.controller == null
+        ? _configForSessionIndex(session)
+        : _config;
+    if (config == null) {
+      _showSnackBar('Could not select the session agent.');
+      return;
     }
-    if (controller.isStreaming || controller.isSessionOperationRunning) {
+    if (widget.controller != null &&
+        (_controller.isStreaming || _controller.isSessionOperationRunning)) {
       _showSnackBar(
         'Finish the active operation before opening a side session.',
       );
       return;
     }
+    final controller = widget.controller == null
+        ? _availableControllerFor(config)
+        : _controller;
+    if (controller == null) {
+      _showSnackBar(
+        'Finish the active response before opening a side session.',
+      );
+      return;
+    }
+    _activateController(config, controller);
     final created = await controller.newSession(cwd: session.cwd);
     if (!created) {
       _showSnackBar('Could not open a side session.');
@@ -1672,7 +1931,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
     BuildContext context,
     WorkspaceRecord workspace,
   ) async {
-    if (_controller.isStreaming || _controller.isSessionOperationRunning) {
+    if (_controller.isSessionOperationRunning ||
+        (widget.controller != null && _controller.isStreaming)) {
       return;
     }
 
@@ -1699,11 +1959,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
       if (result.exitCode != 0) throw StateError(result.stderr.toString());
       worktreeCreated = true;
 
-      await _controller.newSession(cwd: worktreePath);
-      if (_controller.currentSession == null ||
-          normalizeWorkspacePath(_controller.currentSession!.cwd) !=
+      final controller = widget.controller == null
+          ? _availableControllerFor(_config)
+          : _controller;
+      if (controller == null) {
+        throw StateError(
+          'Finish the active response before creating a worktree session.',
+        );
+      }
+      _activateController(_config, controller);
+      await controller.newSession(cwd: worktreePath);
+      if (controller.currentSession == null ||
+          normalizeWorkspacePath(controller.currentSession!.cwd) !=
               normalizeWorkspacePath(worktreePath) ||
-          _controller.lastError != null) {
+          controller.lastError != null) {
         throw StateError('The ACP agent did not create the worktree session.');
       }
       _showSnackBar('Created worktree "$branchName".');
@@ -2040,12 +2309,19 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   ChatController _activateAgent(AcpClientConfig nextConfig) {
     final controller = _cachedControllerFor(nextConfig);
+    _activateController(nextConfig, controller);
+    return controller;
+  }
+
+  void _activateController(
+    AcpClientConfig nextConfig,
+    ChatController controller,
+  ) {
     _ensureControllersForSelectableAgents(nextConfig);
     setState(() {
       _config = nextConfig;
       _controller = controller;
     });
-    return controller;
   }
 
   void _showSnackBar(String message) {
@@ -2170,10 +2446,30 @@ class _AcpClientAppState extends State<AcpClientApp> {
       }
     }
 
+    final configuredAgentName = reviewAgent.enabled
+        ? reviewAgent.agentServerName?.trim()
+        : null;
+    final reviewServer =
+        configuredAgentName == null || configuredAgentName.isEmpty
+        ? activeAgent
+        : config.agentServerNamed(configuredAgentName);
+    if (reviewServer == null) {
+      return AcpAgentPermissionReviewer(
+        agentName: configuredAgentName!,
+        modelOverride: reviewAgent.model,
+        timeout: reviewAgent.timeout,
+        clientFactory: () => UnavailableAcpAgentClient(
+          message:
+              'Permission-review agent "$configuredAgentName" is not configured.',
+        ),
+      );
+    }
     return AcpAgentPermissionReviewer(
-      agentName: config.agentName,
+      agentName: reviewServer.name,
       modelOverride: reviewAgent.model,
-      clientFactory: () => _reviewAgentClient(activeAgent),
+      canAutoApprove: true,
+      timeout: reviewAgent.timeout,
+      clientFactory: () => _reviewAgentClient(reviewServer),
     );
   }
 
@@ -2203,13 +2499,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
     AcpPermissionReviewAgentConfig base,
     AcpPermissionReviewAgentConfig override,
   ) {
-    final hasOverrideTarget = override.hasMcpTarget;
+    final hasOverrideTarget = override.hasExplicitTarget;
     return AcpPermissionReviewAgentConfig(
       enabled: override.enabled || base.enabled,
       mcpServer: hasOverrideTarget ? override.mcpServer : base.mcpServer,
       mcpServerName: hasOverrideTarget
           ? override.mcpServerName
           : base.mcpServerName,
+      agentServerName: hasOverrideTarget
+          ? override.agentServerName
+          : base.agentServerName,
       toolName: override.toolName != 'review_permission'
           ? override.toolName
           : base.toolName,
@@ -2250,7 +2549,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   List<ChatController> get _sessionControllers {
     if (widget.controller != null) return <ChatController>[_controller];
-    return _controllersByAgent.values.toList();
+    return <ChatController>{
+      ..._controllersByAgent.values,
+      ..._supplementalControllers,
+    }.toList(growable: false);
   }
 
   String _configSignature(AcpClientConfig config) {
@@ -2344,6 +2646,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
           ? null
           : _mcpServerSignature(config.mcpServer!),
       'mcpServerName': config.mcpServerName,
+      'agentServerName': config.agentServerName,
       'toolName': config.toolName,
       'model': config.model,
       'timeoutMs': config.timeout.inMilliseconds,
