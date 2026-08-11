@@ -71,6 +71,7 @@ class AppShell extends StatelessWidget {
     this.onValidateAssistantAgent,
     this.onLoadSessionCatalogs,
     this.sessionControllers = const <ChatController>[],
+    this.supportsConcurrentSessions = false,
     this.processRunner,
     this.inputBudget = const AcpInputBudget(),
     this.imageDecodeLedger,
@@ -120,6 +121,7 @@ class AppShell extends StatelessWidget {
   final AssistantAgentValidationCallback? onValidateAssistantAgent;
   final Future<void> Function()? onLoadSessionCatalogs;
   final List<ChatController> sessionControllers;
+  final bool supportsConcurrentSessions;
   final AppShellProcessRunner? processRunner;
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
@@ -133,15 +135,24 @@ class AppShell extends StatelessWidget {
     return AnimatedBuilder(
       animation: Listenable.merge(sessionControllerList),
       builder: (context, _) {
+        final agentLifecycleBusy = sessionControllerList.any(
+          (candidate) =>
+              !identical(candidate, controller) &&
+              candidate.agentName.trim() == controller.agentName.trim() &&
+              (candidate.isStreaming || candidate.isSessionOperationRunning),
+        );
         final sessionActionsEnabled =
             !controller.isStreaming && !controller.isSessionOperationRunning;
-        final VoidCallback? startNewSession = sessionActionsEnabled
+        final canStartNewSession =
+            !controller.isSessionOperationRunning &&
+            (!controller.isStreaming || supportsConcurrentSessions);
+        final VoidCallback? startNewSession = canStartNewSession
             ? onNewSession == null
                   ? controller.newSession
                   : () => onNewSession!(context)
             : null;
         final ValueChanged<WorkspaceRecord>? startNewSessionInWorkspace =
-            sessionActionsEnabled
+            canStartNewSession
             ? (workspace) {
                 if (onNewSessionInWorkspace != null) {
                   onNewSessionInWorkspace!(context, workspace);
@@ -467,7 +478,10 @@ class AppShell extends StatelessWidget {
                                         ? 70
                                         : 0,
                                     canSwitchAgent:
-                                        canSwitchAgent && sessionActionsEnabled,
+                                        canSwitchAgent &&
+                                        !controller.isSessionOperationRunning &&
+                                        (!controller.isStreaming ||
+                                            supportsConcurrentSessions),
                                     onSelectAgent: onSelectAgent,
                                     onShowAgentConfig: () =>
                                         _showAgentConfigDialog(context),
@@ -475,14 +489,18 @@ class AppShell extends StatelessWidget {
                                         _showProtocolFeatureReviewDialog(
                                           context,
                                         ),
-                                    onAuthenticate: controller.canAuthenticate
+                                    onAuthenticate:
+                                        controller.canAuthenticate &&
+                                            !agentLifecycleBusy
                                         ? () => unawaited(
                                             _showAuthenticateDialog(context),
                                           )
                                         : null,
                                     onShowPermissionHistory: () =>
                                         _showPermissionHistoryDialog(context),
-                                    onLogout: controller.canLogout
+                                    onLogout:
+                                        controller.canLogout &&
+                                            !agentLifecycleBusy
                                         ? () =>
                                               unawaited(_confirmLogout(context))
                                         : null,

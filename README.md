@@ -17,6 +17,11 @@ release checks are tracked in [Manual follow-ups](docs/manual_followups.md).
 Starting a new session prompts for the session working directory and offers
 local directory path completions while typing.
 
+Multiple conversations can remain active in the same window. Switching or
+starting another session does not interrupt an in-flight response; prompt
+cancellation and permission requests remain scoped to their session while each
+configured agent continues to use one authoritative ACP runtime.
+
 ## Configuration
 
 Use `Agents` -> `Agent Configuration` to manage the saved configuration:

@@ -69,48 +69,38 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
       ),
     );
     if (_activeTab < 0 || _tabs.isEmpty) {
-      return LayoutBuilder(
-        builder: (context, constraints) {
-          final inspectorHeight = (constraints.maxHeight - 28)
-              .clamp(190.0, 258.0)
-              .toDouble();
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                child: ColoredBox(
-                  key: const Key('conversation-canvas-surface'),
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Container(
+                key: const Key('conversation-canvas-surface'),
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
                   color: AppColors.surface,
-                  child: conversation,
+                  borderRadius: BorderRadius.circular(AppRadius.xl),
+                  border: Border.all(color: AppColors.borderSoft),
+                  boxShadow: AppShadows.soft,
                 ),
+                child: conversation,
               ),
-              if (widget.showInspector)
-                SizedBox(
-                  width: 362,
-                  child: ColoredBox(
-                    color: AppColors.surface,
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: Container(
-                        key: const Key('workspace-inspector-surface'),
-                        width: 346,
-                        height: inspectorHeight,
-                        margin: const EdgeInsets.only(top: 14, right: 8),
-                        clipBehavior: Clip.antiAlias,
-                        decoration: BoxDecoration(
-                          color: AppColors.surface,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: AppColors.borderSoft),
-                          boxShadow: AppShadows.floatingPanel,
-                        ),
-                        child: widget.inspector,
-                      ),
-                    ),
-                  ),
+            ),
+          ),
+          if (widget.showInspector)
+            SizedBox(
+              width: 320,
+              child: Container(
+                key: const Key('workspace-inspector-surface'),
+                decoration: const BoxDecoration(
+                  color: AppColors.surface,
+                  border: Border(left: BorderSide(color: AppColors.border)),
                 ),
-            ],
-          );
-        },
+                child: widget.inspector,
+              ),
+            ),
+        ],
       );
     }
 

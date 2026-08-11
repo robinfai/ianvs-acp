@@ -20,6 +20,9 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   AcpAgentCapabilities? get capabilities => null;
 
   @override
+  bool get supportsConcurrentPrompts => false;
+
+  @override
   Stream<AcpPermissionRequest> get permissionRequests =>
       const Stream<AcpPermissionRequest>.empty();
 
@@ -32,6 +35,9 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
 
   @override
   Future<void> cancel() async {}
+
+  @override
+  Future<void> cancelSession({required String sessionId}) async {}
 
   @override
   Future<void> closeSession({required String sessionId}) => _failure<void>();

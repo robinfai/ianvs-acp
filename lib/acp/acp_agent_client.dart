@@ -21,6 +21,10 @@ final class AcpSessionRestoreSummary {
 abstract class AcpAgentClient {
   AcpAgentCapabilities? get capabilities;
 
+  /// Whether this client can keep prompts active in multiple sessions and
+  /// cancel each prompt independently with [cancelSession].
+  bool get supportsConcurrentPrompts => false;
+
   Stream<AcpPermissionRequest> get permissionRequests;
 
   Stream<AcpPermissionInvalidation> get permissionInvalidations;
@@ -79,6 +83,10 @@ abstract class AcpAgentClient {
   });
 
   Future<void> cancel();
+
+  /// Cancels the active prompt for [sessionId]. Clients advertising
+  /// [supportsConcurrentPrompts] must not affect any other session.
+  Future<void> cancelSession({required String sessionId}) => cancel();
 
   Future<void> respondToPermissionRequest({
     required String id,

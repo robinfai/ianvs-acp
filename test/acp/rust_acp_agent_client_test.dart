@@ -113,6 +113,85 @@ void main() {
     },
   );
 
+  test('cancels only the requested session when prompts overlap', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+    await client.connect();
+    final firstSession = await client.createSession(cwd: '/tmp/first');
+    await client.restoreSession(
+      sessionId: 'session-2',
+      cwd: '/tmp/second',
+      onEvent: (_) {},
+    );
+
+    final firstPrompt = client
+        .sendPrompt(sessionId: firstSession.id, prompt: 'first')
+        .listen(null);
+    final secondPrompt = client
+        .sendPrompt(sessionId: 'session-2', prompt: 'second')
+        .listen(null);
+    addTearDown(firstPrompt.cancel);
+    addTearDown(secondPrompt.cancel);
+
+    await client.cancelSession(sessionId: 'session-2');
+    expect(native.cancelledSessionIds, ['session-2']);
+    await expectLater(client.cancel(), throwsStateError);
+  });
+
+  test('does not project process stderr into concurrent sessions', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+    await client.connect();
+    final firstSession = await client.createSession(cwd: '/tmp/first');
+    await client.restoreSession(
+      sessionId: 'session-2',
+      cwd: '/tmp/second',
+      onEvent: (_) {},
+    );
+
+    final firstEvents = <AgentEvent>[];
+    final secondEvents = <AgentEvent>[];
+    final firstPrompt = client
+        .sendPrompt(sessionId: firstSession.id, prompt: 'first')
+        .listen(firstEvents.add);
+    addTearDown(firstPrompt.cancel);
+    native.emit('stderr_log', <String, Object?>{'line': 'single prompt'});
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(firstEvents.map((event) => event.text), contains('single prompt'));
+
+    final secondPrompt = client
+        .sendPrompt(sessionId: 'session-2', prompt: 'second')
+        .listen(secondEvents.add);
+    addTearDown(secondPrompt.cancel);
+    native.emit('stderr_log', <String, Object?>{'line': 'ambiguous prompt'});
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+
+    expect(
+      firstEvents.map((event) => event.text),
+      isNot(contains('ambiguous prompt')),
+    );
+    expect(
+      secondEvents.map((event) => event.text),
+      isNot(contains('ambiguous prompt')),
+    );
+  });
+
   test('passes a GUI-safe PATH to absolute script-based agents', () async {
     final native = _ClientFakeNative();
     final client = RustAcpAgentClient(
@@ -548,6 +627,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   final List<String> events = <String>[];
   var _sequence = 1;
   Map<String, Object?>? permissionDecision;
+  final List<String> cancelledSessionIds = <String>[];
   Map<String, Object?>? startedConfig;
   List<Map<String, Object?>>? promptAttachments;
   bool completeCreates = true;
@@ -833,7 +913,10 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
     Object runtime, {
     required String requestId,
     required String sessionId,
-  }) => true;
+  }) {
+    cancelledSessionIds.add(sessionId);
+    return true;
+  }
 
   @override
   bool setMode(
