@@ -138,13 +138,13 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
         final terminalTheme =
             theme.extension<AppTerminalTheme>() ??
             AppTerminalTheme.conversationCanvas;
-        final desiredHeight = constraints.maxHeight * 0.36;
+        final desiredHeight = constraints.maxHeight * 0.29;
         final availableHeight = math.max<double>(
           140.0,
           constraints.maxHeight - 190,
         );
         final panelHeight = desiredHeight
-            .clamp(140.0, math.min<double>(340.0, availableHeight))
+            .clamp(160.0, math.min<double>(310.0, availableHeight))
             .toDouble();
         final controller = _panelController;
         final terminalPanel = controller == null
@@ -154,7 +154,7 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
                 controller: controller,
                 style: TerminalBottomPanelStyle(
                   height: panelHeight,
-                  headerHeight: 38,
+                  headerHeight: 44,
                   backgroundColor: terminalTheme.background,
                   headerColor: colorScheme.surfaceContainerLow,
                   borderColor: colorScheme.outlineVariant,

@@ -18,6 +18,7 @@ class AgentToolbar extends StatelessWidget {
     this.agentServers = const <AgentServerConfig>[],
     this.canSwitchAgent = true,
     this.forceFullActions = false,
+    this.windowControlsInset = 0,
     this.onSelectAgent,
     this.onShowAgentConfig,
     this.onShowProtocolCoverage,
@@ -40,6 +41,7 @@ class AgentToolbar extends StatelessWidget {
   final List<AgentServerConfig> agentServers;
   final bool canSwitchAgent;
   final bool forceFullActions;
+  final double windowControlsInset;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowProtocolCoverage;
@@ -55,7 +57,7 @@ class AgentToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 52,
+      height: 54,
       decoration: const BoxDecoration(
         color: AppColors.surface,
         border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
@@ -73,7 +75,7 @@ class AgentToolbar extends StatelessWidget {
 
           return Padding(
             padding: EdgeInsets.fromLTRB(
-              horizontalPadding,
+              horizontalPadding + windowControlsInset,
               8,
               horizontalPadding,
               8,
@@ -483,6 +485,11 @@ class _ToolbarButtonShell extends StatelessWidget {
             ? EdgeInsets.zero
             : const EdgeInsets.symmetric(horizontal: 8),
         alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.surfaceMuted,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: AppColors.borderSoft),
+        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -558,16 +565,28 @@ class _BrandMark extends StatelessWidget {
   }
 
   Widget _buildTitle() {
-    final label = Text(
-      title,
-      overflow: TextOverflow.ellipsis,
-      softWrap: false,
-      style: TextStyle(
-        color: AppColors.textPrimary,
-        fontSize: veryCompact ? 14.5 : 15.5,
-        fontWeight: FontWeight.w600,
-        letterSpacing: -0.05,
-      ),
+    final label = Row(
+      children: [
+        const Icon(
+          Icons.work_outline_rounded,
+          size: 17,
+          color: AppColors.textSecondary,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            overflow: TextOverflow.ellipsis,
+            softWrap: false,
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: veryCompact ? 14.5 : 15.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.05,
+            ),
+          ),
+        ),
+      ],
     );
     final session = currentSession;
     final onSelected = onSessionMenuAction;
@@ -840,6 +859,13 @@ class _ToolbarAction extends StatelessWidget {
               ? EdgeInsets.zero
               : const EdgeInsets.symmetric(horizontal: 8),
           alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: onPressed == null
+                ? AppColors.surfaceRaised
+                : AppColors.surfaceMuted,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+            border: Border.all(color: AppColors.borderSoft),
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [

@@ -342,10 +342,10 @@ class _PromptInputState extends State<PromptInput> {
     final pendingPermissionRequest = widget.pendingPermissionRequest;
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
+          constraints: const BoxConstraints(maxWidth: 848),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -401,7 +401,7 @@ class _PromptInputState extends State<PromptInput> {
                     child: AnimatedContainer(
                       key: const Key('prompt-input-surface'),
                       duration: const Duration(milliseconds: 120),
-                      constraints: const BoxConstraints(minHeight: 124),
+                      constraints: const BoxConstraints(minHeight: 114),
                       decoration: BoxDecoration(
                         color: _isDraggingAttachments
                             ? AppColors.accentMist

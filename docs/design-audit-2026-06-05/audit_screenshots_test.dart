@@ -169,4 +169,11 @@ void main() {
     }
     await capture('10-narrow-width');
   });
+
+  testWidgets('11 desktop reference replica with terminal', (tester) async {
+    await pumpScenario(tester, 'reference', size: const Size(1990, 1258));
+    await tester.tap(find.byTooltip('Show terminal panel (⌃`)'));
+    await tester.pumpAndSettle();
+    await capture('11-desktop-reference-replica');
+  });
 }

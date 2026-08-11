@@ -493,6 +493,7 @@ void main() {
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
     expect(panelRect.left, moreOrLessEquals(sidebarRect.right, epsilon: 1.1));
     expect(panelRect.right, greaterThan(inspectorRect.right - 1));
+    expect(panelRect.height, moreOrLessEquals(261, epsilon: 1.1));
 
     await tester.tap(find.byKey(const Key('terminal-panel-add')));
     await tester.pump();

@@ -176,6 +176,10 @@ final class AccessibleTextFieldProxyView: NSView {
 }
 
 class MainFlutterWindow: NSWindow {
+  static let chromeToolbarIdentifier = NSToolbar.Identifier(
+    "com.ianvs.acp.window-chrome"
+  )
+
   private var promptImageClipboardChannel: FlutterMethodChannel?
 
   override func awakeFromNib() {
@@ -220,6 +224,33 @@ class MainFlutterWindow: NSWindow {
     promptImageClipboardChannel = clipboardChannel
 
     super.awakeFromNib()
+    configureWindowChrome()
+  }
+
+  func configureWindowChrome() {
+    title = ""
+    titleVisibility = .hidden
+    titlebarAppearsTransparent = true
+    titlebarSeparatorStyle = .none
+    styleMask.insert(.fullSizeContentView)
+
+    let chromeToolbar = NSToolbar(
+      identifier: Self.chromeToolbarIdentifier
+    )
+    chromeToolbar.displayMode = .iconOnly
+    chromeToolbar.sizeMode = .regular
+    chromeToolbar.showsBaselineSeparator = false
+    chromeToolbar.allowsUserCustomization = false
+    chromeToolbar.autosavesConfiguration = false
+    toolbar = chromeToolbar
+    toolbarStyle = .unified
+
+    backgroundColor = NSColor(
+      calibratedRed: 247.0 / 255.0,
+      green: 247.0 / 255.0,
+      blue: 247.0 / 255.0,
+      alpha: 1
+    )
   }
 
   private static func readPromptImage() throws -> [String: Any]? {

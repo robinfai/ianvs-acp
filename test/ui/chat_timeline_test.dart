@@ -1576,7 +1576,7 @@ foregroundDecoration: BoxDecoration(
 
     expect(find.text('User'), findsNothing);
     expect(find.text('Agent'), findsNothing);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsNothing);
     expect(find.text('Hello'), findsOneWidget);
     expect(find.text('Hello, human.'), findsOneWidget);
   });
@@ -1635,7 +1635,7 @@ foregroundDecoration: BoxDecoration(
     );
 
     expect(find.text('Agent'), findsNothing);
-    expect(find.text('Codex'), findsOneWidget);
+    expect(find.text('Codex'), findsNothing);
     expect(find.text('Hello, I am Codex.'), findsOneWidget);
   });
 

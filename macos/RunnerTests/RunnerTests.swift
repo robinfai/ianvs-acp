@@ -1,3 +1,4 @@
+import Cocoa
 import Foundation
 import FlutterMacOS
 import LocalAuthentication
@@ -26,6 +27,30 @@ class RunnerTests: XCTestCase {
 
   func testBundleIdentifierIsProductionIdentifier() {
     XCTAssertEqual(Bundle.main.bundleIdentifier, "com.ianvs.acp")
+  }
+
+  func testMainWindowUsesUnifiedFullSizeChrome() {
+    let window = MainFlutterWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+
+    window.configureWindowChrome()
+
+    XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
+    XCTAssertEqual(window.titleVisibility, .hidden)
+    XCTAssertTrue(window.titlebarAppearsTransparent)
+    XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+    XCTAssertEqual(window.toolbarStyle, .unified)
+    XCTAssertEqual(
+      window.toolbar?.identifier,
+      MainFlutterWindow.chromeToolbarIdentifier
+    )
+    XCTAssertFalse(window.toolbar?.showsBaselineSeparator ?? true)
+    XCTAssertFalse(window.toolbar?.allowsUserCustomization ?? true)
+    XCTAssertFalse(window.toolbar?.autosavesConfiguration ?? true)
   }
 
   func testRegisteredDeepLinkScheme() {

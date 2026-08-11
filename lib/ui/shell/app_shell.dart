@@ -244,6 +244,7 @@ class AppShell extends StatelessWidget {
         return Scaffold(
           backgroundColor: AppColors.bg,
           body: SafeArea(
+            top: false,
             child: Column(
               children: [
                 if (startupError != null)
@@ -276,7 +277,7 @@ class AppShell extends StatelessWidget {
                     child: LayoutBuilder(
                       builder: (context, constraints) {
                         final hideSidebar = constraints.maxWidth < 780;
-                        final hideInspector = constraints.maxWidth < 1180;
+                        final hideInspector = constraints.maxWidth < 1280;
                         Widget buildInspector() => WorkspaceInspector(
                           workspace: currentWorkspace,
                           agentName: agentName,
@@ -302,6 +303,15 @@ class AppShell extends StatelessWidget {
                         );
                         Widget buildSidebar() => _ShellSidebar(
                           agentName: agentName,
+                          sessionTitle: controller.currentSession?.displayTitle,
+                          onNewSession: startNewSession,
+                          onResumeSession: canResumeSessions
+                              ? () => _showResumeDialog(context)
+                              : null,
+                          onShowAgentConfig: () =>
+                              _showAgentConfigDialog(context),
+                          onShowPermissionHistory: () =>
+                              _showPermissionHistoryDialog(context),
                           workspaceSidebar: WorkspaceSidebar(
                             agentName: agentName,
                             workspaces: workspaceController.workspaces,
@@ -374,71 +384,12 @@ class AppShell extends StatelessWidget {
                         Widget conversationColumn(
                           BuildContext context,
                           FilePreviewLinkHandler onTapLink,
-                          Widget terminalToggle,
                         ) => PromptAttachmentDropRegion(
                           controller: promptAttachmentController,
                           enabled: !controller.isSessionOperationRunning,
                           promptCapabilities: promptCapabilities,
                           child: Column(
                             children: [
-                              AgentToolbar(
-                                title:
-                                    controller.currentSession?.displayTitle ??
-                                    currentWorkspace.name,
-                                agentName: agentName,
-                                agentServers: agentServers,
-                                status: controller.status,
-                                forceFullActions: constraints.maxWidth >= 1120,
-                                canSwitchAgent:
-                                    canSwitchAgent && sessionActionsEnabled,
-                                onSelectAgent: onSelectAgent,
-                                onShowAgentConfig: () =>
-                                    _showAgentConfigDialog(context),
-                                onShowProtocolCoverage: () =>
-                                    _showProtocolFeatureReviewDialog(context),
-                                onAuthenticate: controller.canAuthenticate
-                                    ? () => unawaited(
-                                        _showAuthenticateDialog(context),
-                                      )
-                                    : null,
-                                onShowPermissionHistory: () =>
-                                    _showPermissionHistoryDialog(context),
-                                onLogout: controller.canLogout
-                                    ? () => unawaited(_confirmLogout(context))
-                                    : null,
-                                currentSession: controller.currentSession,
-                                canForkSession:
-                                    controller.currentSession != null &&
-                                    (canForkSession?.call(
-                                          controller.currentSession!,
-                                        ) ??
-                                        false),
-                                supportsGitWorktrees: gitWorkspaceDetector(
-                                  currentWorkspace.path,
-                                ),
-                                onSessionMenuAction:
-                                    controller.currentSession == null ||
-                                        onSessionMenuAction == null
-                                    ? null
-                                    : (action) {
-                                        final result = onSessionMenuAction!(
-                                          context,
-                                          controller.currentSession!,
-                                          action,
-                                        );
-                                        if (result is Future<void>) {
-                                          unawaited(result);
-                                        }
-                                      },
-                                onNewSession: startNewSession,
-                                onResumeSession: canResumeSessions
-                                    ? () => _showResumeDialog(context)
-                                    : null,
-                                onReconnect: canReconnect
-                                    ? controller.reconnect
-                                    : null,
-                                terminalPanelAction: terminalToggle,
-                              ),
                               if (hideSidebar || hideInspector)
                                 _CompactShellNavigation(
                                   showWorkspaces: hideSidebar,
@@ -494,6 +445,74 @@ class AppShell extends StatelessWidget {
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
+                                  AgentToolbar(
+                                    title:
+                                        controller
+                                            .currentSession
+                                            ?.displayTitle ??
+                                        currentWorkspace.name,
+                                    agentName: agentName,
+                                    agentServers: agentServers,
+                                    status: controller.status,
+                                    forceFullActions:
+                                        constraints.maxWidth >= 1120,
+                                    windowControlsInset:
+                                        hideSidebar && Platform.isMacOS
+                                        ? 70
+                                        : 0,
+                                    canSwitchAgent:
+                                        canSwitchAgent && sessionActionsEnabled,
+                                    onSelectAgent: onSelectAgent,
+                                    onShowAgentConfig: () =>
+                                        _showAgentConfigDialog(context),
+                                    onShowProtocolCoverage: () =>
+                                        _showProtocolFeatureReviewDialog(
+                                          context,
+                                        ),
+                                    onAuthenticate: controller.canAuthenticate
+                                        ? () => unawaited(
+                                            _showAuthenticateDialog(context),
+                                          )
+                                        : null,
+                                    onShowPermissionHistory: () =>
+                                        _showPermissionHistoryDialog(context),
+                                    onLogout: controller.canLogout
+                                        ? () =>
+                                              unawaited(_confirmLogout(context))
+                                        : null,
+                                    currentSession: controller.currentSession,
+                                    canForkSession:
+                                        controller.currentSession != null &&
+                                        (canForkSession?.call(
+                                              controller.currentSession!,
+                                            ) ??
+                                            false),
+                                    supportsGitWorktrees: gitWorkspaceDetector(
+                                      currentWorkspace.path,
+                                    ),
+                                    onSessionMenuAction:
+                                        controller.currentSession == null ||
+                                            onSessionMenuAction == null
+                                        ? null
+                                        : (action) {
+                                            final result = onSessionMenuAction!(
+                                              context,
+                                              controller.currentSession!,
+                                              action,
+                                            );
+                                            if (result is Future<void>) {
+                                              unawaited(result);
+                                            }
+                                          },
+                                    onNewSession: startNewSession,
+                                    onResumeSession: canResumeSessions
+                                        ? () => _showResumeDialog(context)
+                                        : null,
+                                    onReconnect: canReconnect
+                                        ? controller.reconnect
+                                        : null,
+                                    terminalPanelAction: terminalToggle,
+                                  ),
                                   Expanded(
                                     child: FilePreviewWorkspace(
                                       workspacePath: currentWorkspace.path,
@@ -504,7 +523,6 @@ class AppShell extends StatelessWidget {
                                               conversationColumn(
                                                 context,
                                                 onTapLink,
-                                                terminalToggle,
                                               ),
                                       showInspector: !hideInspector,
                                       processRunner: processRunner,
@@ -518,10 +536,16 @@ class AppShell extends StatelessWidget {
 
                         if (hideSidebar) return previewWorkspace;
 
+                        final sidebarWidth = constraints.maxWidth >= 1900
+                            ? 360.0
+                            : 320.0;
                         return Row(
                           children: [
                             if (!hideSidebar) ...[
-                              SizedBox(width: 320, child: buildSidebar()),
+                              SizedBox(
+                                width: sidebarWidth,
+                                child: buildSidebar(),
+                              ),
                               const VerticalDivider(
                                 width: 1,
                                 color: AppColors.border,
@@ -1084,10 +1108,20 @@ class _CompactPanelSheet extends StatelessWidget {
 class _ShellSidebar extends StatelessWidget {
   const _ShellSidebar({
     required this.agentName,
+    required this.sessionTitle,
+    required this.onNewSession,
+    required this.onResumeSession,
+    required this.onShowAgentConfig,
+    required this.onShowPermissionHistory,
     required this.workspaceSidebar,
   });
 
   final String agentName;
+  final String? sessionTitle;
+  final VoidCallback? onNewSession;
+  final VoidCallback? onResumeSession;
+  final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onShowPermissionHistory;
   final Widget workspaceSidebar;
 
   @override
@@ -1096,8 +1130,17 @@ class _ShellSidebar extends StatelessWidget {
       color: AppColors.bg,
       child: Column(
         children: [
-          _SidebarBrandHeader(agentName: agentName),
+          _SidebarBrandHeader(
+            agentName: agentName,
+            sessionTitle: sessionTitle,
+            windowControlsInset: Platform.isMacOS ? 28 : 0,
+            onNewSession: onNewSession,
+            onResumeSession: onResumeSession,
+            onShowAgentConfig: onShowAgentConfig,
+            onShowPermissionHistory: onShowPermissionHistory,
+          ),
           Expanded(child: workspaceSidebar),
+          _SidebarAccountFooter(agentName: agentName),
         ],
       ),
     );
@@ -1105,44 +1148,201 @@ class _ShellSidebar extends StatelessWidget {
 }
 
 class _SidebarBrandHeader extends StatelessWidget {
-  const _SidebarBrandHeader({required this.agentName});
+  const _SidebarBrandHeader({
+    required this.agentName,
+    required this.sessionTitle,
+    required this.windowControlsInset,
+    required this.onNewSession,
+    required this.onResumeSession,
+    required this.onShowAgentConfig,
+    required this.onShowPermissionHistory,
+  });
+
+  final String agentName;
+  final String? sessionTitle;
+  final double windowControlsInset;
+  final VoidCallback? onNewSession;
+  final VoidCallback? onResumeSession;
+  final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onShowPermissionHistory;
+
+  @override
+  Widget build(BuildContext context) {
+    final pinnedTitle = sessionTitle?.trim();
+    return Container(
+      padding: EdgeInsets.fromLTRB(14, 12 + windowControlsInset, 12, 10),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 38,
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'ACP Client',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.25,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 7),
+          _SidebarNavItem(
+            icon: Icons.edit_square,
+            label: '新对话',
+            onTap: onNewSession,
+          ),
+          _SidebarNavItem(
+            icon: Icons.history_rounded,
+            label: '恢复会话',
+            onTap: onResumeSession,
+          ),
+          _SidebarNavItem(
+            icon: Icons.manage_accounts_outlined,
+            label: '代理设置',
+            onTap: onShowAgentConfig,
+          ),
+          _SidebarNavItem(
+            icon: Icons.manage_history_rounded,
+            label: '权限记录',
+            onTap: onShowPermissionHistory,
+          ),
+          const SizedBox(height: 10),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              '当前会话',
+              style: TextStyle(
+                color: AppColors.textTertiary,
+                fontSize: 12,
+                height: 1.35,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          if (pinnedTitle != null && pinnedTitle.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Container(
+              height: 34,
+              padding: const EdgeInsets.symmetric(horizontal: 7),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceHover,
+                borderRadius: BorderRadius.circular(AppRadius.sm),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      pinnedTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SidebarNavItem extends StatelessWidget {
+  const _SidebarNavItem({required this.icon, required this.label, this.onTap});
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        onTap: onTap,
+        child: SizedBox(
+          height: 35,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Row(
+              children: [
+                Icon(icon, size: 18, color: AppColors.textSecondary),
+                const SizedBox(width: 10),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarAccountFooter extends StatelessWidget {
+  const _SidebarAccountFooter({required this.agentName});
 
   final String agentName;
 
   @override
   Widget build(BuildContext context) {
+    final trimmed = agentName.trim();
+    final initial = trimmed.isEmpty ? 'A' : trimmed.characters.first;
     return Container(
       height: 52,
-      padding: const EdgeInsets.symmetric(horizontal: 18),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.border)),
+        border: Border(top: BorderSide(color: AppColors.borderSoft)),
       ),
       child: Row(
         children: [
-          const Text(
-            'ACP Client',
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.1,
-            ),
-          ),
-          if (agentName != 'Codex') ...[
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                agentName,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                ),
+          CircleAvatar(
+            radius: 11,
+            backgroundColor: const Color(0xff9aa6a2),
+            child: Text(
+              initial.toUpperCase(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 9,
+                fontWeight: FontWeight.w600,
               ),
             ),
-          ],
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              agentName,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
         ],
       ),
     );
