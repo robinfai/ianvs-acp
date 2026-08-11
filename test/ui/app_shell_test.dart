@@ -334,6 +334,10 @@ void main() {
   testWidgets('AgentToolbar uses conversation labels for session actions', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1400, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -360,6 +364,21 @@ void main() {
     expect(find.text('Pin Conversation'), findsOneWidget);
     expect(find.text('Rename Conversation'), findsOneWidget);
     expect(find.text('Archive Conversation'), findsOneWidget);
+
+    final actionRect = tester.getRect(
+      find.byKey(const Key('toolbar-session-actions')),
+    );
+    final menuRect = tester.getRect(
+      find.ancestor(
+        of: find.text('Pin Conversation'),
+        matching: find.byType(MenuItemButton),
+      ),
+    );
+    expect(
+      actionRect.center.dx,
+      inInclusiveRange(menuRect.left, menuRect.right),
+    );
+    expect(menuRect.top, greaterThan(actionRect.bottom));
   });
 
   testWidgets('AppShell loads session catalogs for every controller', (
