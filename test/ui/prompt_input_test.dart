@@ -1216,6 +1216,50 @@ void main() {
   );
 
   testWidgets(
+    'PromptInput keeps the inline image provider stable while typing',
+    (tester) async {
+      final inlineImage = PromptAttachment.fromBytes(
+        bytes: Uint8List.fromList(<int>[1, 2, 3]),
+        name: 'stable-preview.png',
+        mimeType: 'image/png',
+      );
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          promptCapabilities: const AcpPromptCapabilities(
+            image: true,
+            audio: false,
+            embeddedContext: false,
+          ),
+          pickAttachmentsForKind: (kind) async =>
+              kind == PromptAttachmentKind.image
+              ? <PromptAttachment>[inlineImage]
+              : const <PromptAttachment>[],
+        ),
+      );
+
+      await tester.tap(attachFinder());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add image'));
+      await tester.pumpAndSettle();
+
+      final imageFinder = find.descendant(
+        of: find.byKey(const Key('prompt-image-attachment-stable-preview.png')),
+        matching: find.byType(Image),
+      );
+      final providerBeforeTyping = tester.widget<Image>(imageFinder).image;
+
+      await tester.enterText(find.byType(TextField), 'hello');
+      await tester.pump();
+
+      final providerAfterTyping = tester.widget<Image>(imageFinder).image;
+      expect(providerAfterTyping, same(providerBeforeTyping));
+    },
+  );
+
+  testWidgets(
     'conversation drop region attaches an external image into the composer',
     (tester) async {
       final controller = PromptAttachmentController();

@@ -3831,6 +3831,7 @@ class _AttachmentTray extends StatelessWidget {
           children: [
             for (final attachment in attachments)
               _AttachmentChip(
+                key: ValueKey(attachment.identity),
                 attachment: attachment,
                 promptCapabilities: promptCapabilities,
                 onRemove: () => onRemove(attachment),
@@ -3892,6 +3893,7 @@ class _ImageAttachmentLimitationNotice extends StatelessWidget {
 
 class _AttachmentChip extends StatelessWidget {
   const _AttachmentChip({
+    super.key,
     required this.attachment,
     required this.promptCapabilities,
     required this.onRemove,
@@ -3975,7 +3977,7 @@ class _AttachmentChip extends StatelessWidget {
   }
 }
 
-class _ImageAttachmentPreview extends StatelessWidget {
+class _ImageAttachmentPreview extends StatefulWidget {
   const _ImageAttachmentPreview({
     required this.attachment,
     required this.onRemove,
@@ -3985,34 +3987,65 @@ class _ImageAttachmentPreview extends StatelessWidget {
   final VoidCallback onRemove;
 
   @override
-  Widget build(BuildContext context) {
-    Widget preview;
-    final data = attachment.data;
-    if (data != null) {
-      try {
-        preview = Image.memory(
-          base64Decode(data),
-          width: 82,
-          height: 82,
-          fit: BoxFit.cover,
-          cacheWidth: 164,
-          cacheHeight: 164,
-          errorBuilder: _imageErrorBuilder,
-        );
-      } on FormatException {
-        preview = _imageErrorBuilder(context, const FormatException(), null);
-      }
-    } else {
-      preview = Image.file(
-        File(attachment.path),
-        width: 82,
-        height: 82,
-        fit: BoxFit.cover,
-        cacheWidth: 164,
-        cacheHeight: 164,
-        errorBuilder: _imageErrorBuilder,
-      );
+  State<_ImageAttachmentPreview> createState() =>
+      _ImageAttachmentPreviewState();
+}
+
+class _ImageAttachmentPreviewState extends State<_ImageAttachmentPreview> {
+  ImageProvider<Object>? _previewProvider;
+  Object? _previewError;
+
+  @override
+  void initState() {
+    super.initState();
+    _updatePreviewProvider();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ImageAttachmentPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.attachment.data != widget.attachment.data ||
+        oldWidget.attachment.path != widget.attachment.path) {
+      _updatePreviewProvider();
     }
+  }
+
+  void _updatePreviewProvider() {
+    _previewProvider = null;
+    _previewError = null;
+    final attachment = widget.attachment;
+    final data = attachment.data;
+    try {
+      final ImageProvider<Object> source;
+      if (data == null) {
+        source = FileImage(File(attachment.path));
+      } else {
+        source = MemoryImage(base64Decode(data));
+      }
+      _previewProvider = ResizeImage.resizeIfNeeded(164, 164, source);
+    } on FormatException catch (error) {
+      _previewError = error;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final attachment = widget.attachment;
+    final provider = _previewProvider;
+    final preview = provider == null
+        ? _imageErrorBuilder(
+            context,
+            _previewError ?? const FormatException('Invalid image data'),
+            null,
+          )
+        : Image(
+            image: provider,
+            width: 82,
+            height: 82,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            errorBuilder: _imageErrorBuilder,
+          );
 
     return Semantics(
       label: 'Attached image ${attachment.name}',
@@ -4048,7 +4081,7 @@ class _ImageAttachmentPreview extends StatelessWidget {
                     key: Key(
                       'prompt-image-attachment-remove-${attachment.name}',
                     ),
-                    onPressed: onRemove,
+                    onPressed: widget.onRemove,
                     tooltip: 'Remove image',
                     padding: EdgeInsets.zero,
                     visualDensity: VisualDensity.compact,
