@@ -81,7 +81,8 @@ void main() {
       "command": "agent",
       "env": {
         "PATH": "/opt/tools/bin",
-        "OPENAI_API_KEY": "api-secret"
+        "OPENAI_API_KEY": "api-secret",
+        "REDIS_URL": "redis://user:redis-secret@cache.example/0"
       }
     },
     "Remote": {
@@ -110,15 +111,21 @@ void main() {
         agents['Local']['env_refs']['OPENAI_API_KEY'],
         startsWith('keychain://ianvs-acp/'),
       );
+      expect(
+        agents['Local']['env_refs']['REDIS_URL'],
+        startsWith('keychain://ianvs-acp/'),
+      );
+      expect(await file.readAsString(), isNot(contains('redis-secret')));
       expect(agents['Remote']['headers'], {'User-Agent': 'ianvs-acp'});
       expect(
         agents['Remote']['header_refs']['Authorization'],
         startsWith('keychain://ianvs-acp/'),
       );
-      expect(store.values, hasLength(2));
+      expect(store.values, hasLength(3));
       expect(config.agentServers[0].env, {
         'PATH': '/opt/tools/bin',
         'OPENAI_API_KEY': 'api-secret',
+        'REDIS_URL': 'redis://user:redis-secret@cache.example/0',
       });
       expect(config.agentServers[1].headers, {
         'User-Agent': 'ianvs-acp',
@@ -261,6 +268,51 @@ void main() {
     expect(await file.readAsString(), original);
     expect(await store.get(ref), 'old-value');
   });
+
+  test(
+    'ancestor directory sync failure does not commit Keychain state',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'acp_secret_directory_sync',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/new/inner/settings.json');
+      final store = FakeSecretStore();
+      final synced = <String>[];
+
+      await expectLater(
+        AcpConfigStore.writeConfig(
+          config: AcpClientConfig(
+            configPath: file.path,
+            agentServers: const <AgentServerConfig>[
+              AgentServerConfig(
+                name: 'Local',
+                type: 'custom',
+                command: 'agent',
+                env: <String, String>{'TOKEN': 'private-value'},
+              ),
+            ],
+          ),
+          secretStore: store,
+          directorySync: (directory) {
+            synced.add(directory.path);
+            if (directory.path == temp.path) {
+              throw FileSystemException(
+                'injected ancestor sync failure',
+                directory.path,
+              );
+            }
+          },
+        ),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      expect(synced, <String>['${temp.path}/new', temp.path]);
+      expect(store.putCount, 0);
+      expect(store.values, isEmpty);
+      expect(await file.exists(), isFalse);
+    },
+  );
 
   test(
     'atomic write failure restores a preexisting owned orphan for plaintext',

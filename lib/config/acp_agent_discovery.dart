@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../acp/acp_adapter_packages.dart';
+import '../platform/bounded_file_snapshot.dart';
 import '../platform/secure_atomic_file.dart';
 import 'acp_client_config.dart';
 import 'acp_config_secret_migrator.dart';
@@ -158,7 +159,12 @@ class AcpAgentDiscovery {
       (file) async {
         Map<String, dynamic> raw;
         if (await file.exists()) {
-          final decoded = jsonDecode(await file.readAsString());
+          final decoded = jsonDecode(
+            await readBoundedFileStringSnapshot(
+              file,
+              maxBytes: AcpClientConfig.maxConfigFileBytes,
+            ),
+          );
           if (decoded is! Map<String, dynamic>) {
             throw const FormatException(
               'ACP config root must be a JSON object.',

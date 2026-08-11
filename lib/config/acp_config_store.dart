@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../platform/bounded_file_snapshot.dart';
 import '../platform/secure_atomic_file.dart';
 import 'acp_client_config.dart';
 import 'acp_config_secret_migrator.dart';
@@ -18,6 +19,7 @@ class AcpConfigStore {
     String? configPath,
     SecretStore? secretStore,
     AcpConfigAtomicWriter? atomicWriter,
+    SecureAtomicDirectorySync? directorySync,
   }) async {
     final path = (configPath ?? config.configPath)?.trim();
     if (path == null || path.isEmpty) {
@@ -68,6 +70,7 @@ class AcpConfigStore {
           await SecureAtomicFile.writeString(
             file,
             contents,
+            directorySync: directorySync,
             protectExistingParent: false,
           );
         } else {
@@ -104,13 +107,14 @@ class AcpConfigStore {
         }
       }
       return committed;
-    });
+    }, directorySync: directorySync);
   }
 
   static Future<AcpClientConfig> loadConfig({
     required String? configPath,
     required SecretStore secretStore,
     AcpConfigAtomicWriter? atomicWriter,
+    SecureAtomicDirectorySync? directorySync,
   }) async {
     final path = configPath?.trim();
     if (path == null || path.isEmpty) {
@@ -147,6 +151,7 @@ class AcpConfigStore {
             await SecureAtomicFile.writeString(
               file,
               contents,
+              directorySync: directorySync,
               protectExistingParent: false,
             );
           } else {
@@ -183,7 +188,7 @@ class AcpConfigStore {
         }
       }
       return resolved;
-    });
+    }, directorySync: directorySync);
   }
 
   static Map<String, Object?> toSettingsJson(AcpClientConfig config) {
@@ -220,7 +225,12 @@ class AcpConfigStore {
 
   static Future<Map<String, dynamic>> _readExistingJson(File file) async {
     if (!await file.exists()) return <String, dynamic>{};
-    final decoded = jsonDecode(await file.readAsString());
+    final decoded = jsonDecode(
+      await readBoundedFileStringSnapshot(
+        file,
+        maxBytes: AcpClientConfig.maxConfigFileBytes,
+      ),
+    );
     if (decoded is! Map<String, dynamic>) {
       throw const FormatException('ACP config root must be a JSON object.');
     }
@@ -319,7 +329,12 @@ Future<File> _secretCleanupQueueFile(File configFile) async {
 }
 
 Future<List<SecretCleanupIntent>> _readSecretCleanupQueue(File queue) async {
-  final decoded = jsonDecode(await queue.readAsString());
+  final decoded = jsonDecode(
+    await readBoundedFileStringSnapshot(
+      queue,
+      maxBytes: _maxSecretCleanupQueueBytes,
+    ),
+  );
   if (decoded is List) {
     await _writeSecretCleanupQueue(queue, const <SecretCleanupIntent>[]);
     return const <SecretCleanupIntent>[];
@@ -342,6 +357,8 @@ Future<List<SecretCleanupIntent>> _readSecretCleanupQueue(File queue) async {
   }
   return intents;
 }
+
+const int _maxSecretCleanupQueueBytes = 4 * 1024 * 1024;
 
 Future<void> _writeSecretCleanupQueue(
   File queue,

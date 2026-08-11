@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -92,6 +93,398 @@ void main() {
       ]);
     },
   );
+
+  test('caches and streams session available command updates', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await client.connect();
+    final session = await client.createSession(cwd: '/tmp');
+    final updateFuture = client.availableCommandsUpdates.first;
+    native.emit('session_update', <String, Object?>{
+      'update': <String, Object?>{
+        'sessionId': session.id,
+        'kind': 'commands_changed',
+        'payload': <String, Object?>{
+          'availableCommands': <Object?>[
+            <String, Object?>{
+              'name': 'review',
+              'description': 'Review the current change.',
+              'input': <String, Object?>{'hint': '[focus]'},
+            },
+          ],
+        },
+      },
+    });
+
+    final update = await updateFuture;
+    expect(update.sessionId, session.id);
+    expect(update.commands.single['name'], 'review');
+    expect((update.commands.single['input'] as Map)['hint'], '[focus]');
+    expect(
+      (await client.sessionAvailableCommands(session.id))?.commands,
+      update.commands,
+    );
+
+    final clearedFuture = client.availableCommandsUpdates.first;
+    native.emit('session_update', <String, Object?>{
+      'update': <String, Object?>{
+        'sessionId': session.id,
+        'kind': 'commands_changed',
+        'payload': <String, Object?>{'availableCommands': <Object?>[]},
+      },
+    });
+    expect((await clearedFuture).commands, isEmpty);
+    expect(
+      (await client.sessionAvailableCommands(session.id))?.commands,
+      isEmpty,
+    );
+  });
+
+  test('ignores command updates for unknown sessions', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await client.connect();
+    final updates = <Object>[];
+    final subscription = client.availableCommandsUpdates.listen(updates.add);
+    addTearDown(subscription.cancel);
+    native.emit('session_update', <String, Object?>{
+      'update': <String, Object?>{
+        'sessionId': 'unknown-session',
+        'kind': 'commands_changed',
+        'payload': <String, Object?>{
+          'availableCommands': <Object?>[
+            <String, Object?>{
+              'name': 'bogus',
+              'description': 'Must not be retained.',
+            },
+          ],
+        },
+      },
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(updates, isEmpty);
+    expect(await client.sessionAvailableCommands('unknown-session'), isNull);
+  });
+
+  test('recovery clears cached available commands', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await client.connect();
+    final session = await client.createSession(cwd: '/tmp');
+    native.emit('session_update', <String, Object?>{
+      'update': <String, Object?>{
+        'sessionId': session.id,
+        'kind': 'commands_changed',
+        'payload': <String, Object?>{
+          'availableCommands': <Object?>[
+            <String, Object?>{
+              'name': 'review',
+              'description': 'Review the current change.',
+            },
+          ],
+        },
+      },
+    });
+    await client.availableCommandsUpdates.first;
+    final cleared = client.availableCommandsUpdates.first;
+
+    native.emit('status_changed', <String, Object?>{
+      'status': 'recovering',
+      'detail': 'restarting fixture',
+    });
+
+    expect((await cleared).commands, isEmpty);
+    expect(await client.sessionAvailableCommands(session.id), isNull);
+  });
+
+  test('logout clears cached available commands', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await client.connect();
+    final session = await client.createSession(cwd: '/tmp');
+    final populated = client.availableCommandsUpdates.first;
+    native.emitAvailableCommands(session.id, name: 'review');
+    await populated;
+    final cleared = client.availableCommandsUpdates.first;
+
+    await client.logout();
+
+    expect((await cleared).commands, isEmpty);
+    expect(await client.sessionAvailableCommands(session.id), isNull);
+  });
+
+  test(
+    'available command cache evicts the least recently used session',
+    () async {
+      final native = _ClientFakeNative();
+      final client = RustAcpAgentClient(
+        agentName: 'fixture',
+        agentCommand: 'fixture-agent',
+        runtime: IanvsRustRuntime(
+          native: native,
+          pollInterval: const Duration(milliseconds: 1),
+        ),
+      );
+      addTearDown(client.dispose);
+
+      await client.connect();
+      for (var index = 0; index <= 64; index += 1) {
+        await client.restoreSession(
+          sessionId: 'session-$index',
+          cwd: '/tmp',
+          replayHistory: false,
+          onEvent: (_) {},
+        );
+      }
+      for (var index = 0; index < 64; index += 1) {
+        final update = client.availableCommandsUpdates.first;
+        native.emitAvailableCommands('session-$index', name: 'command-$index');
+        await update;
+      }
+      expect(await client.sessionAvailableCommands('session-0'), isNotNull);
+      final newest = client.availableCommandsUpdates.first;
+      native.emitAvailableCommands('session-64', name: 'command-64');
+      await newest;
+
+      expect(await client.sessionAvailableCommands('session-0'), isNotNull);
+      expect(await client.sessionAvailableCommands('session-1'), isNull);
+      expect(await client.sessionAvailableCommands('session-64'), isNotNull);
+    },
+  );
+
+  test('oversized available command snapshots are not retained', () async {
+    final native = _ClientFakeNative();
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await client.connect();
+    final session = await client.createSession(cwd: '/tmp');
+    final description = List<String>.filled(8 * 1024, 'd').join();
+    final hint = List<String>.filled(8 * 1024, 'h').join();
+    final update = client.availableCommandsUpdates.first;
+    native.emitAvailableCommands(
+      session.id,
+      commands: List<Map<String, Object?>>.generate(
+        1024,
+        (index) => <String, Object?>{
+          'name': 'command-$index',
+          'description': description,
+          'input': <String, Object?>{'hint': hint},
+        },
+      ),
+    );
+
+    expect((await update).commands, isEmpty);
+    expect(await client.sessionAvailableCommands(session.id), isNull);
+  });
+
+  test('connection timeout does not start a second runtime', () async {
+    final native = _ClientFakeNative()..emitReadyOnStart = false;
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      connectTimeout: const Duration(milliseconds: 5),
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await expectLater(client.connect(), throwsA(isA<TimeoutException>()));
+    expect(native.startCalls, 1);
+
+    final retry = client.connect();
+    expect(native.startCalls, 1);
+    native.emitReady();
+    await retry;
+    expect(native.startCalls, 1);
+  });
+
+  test('connection timeout includes a pending MCP server provider', () async {
+    final native = _ClientFakeNative()..emitReadyOnStart = false;
+    final providedServers = Completer<List<Map<String, Object?>>>();
+    var providerCalls = 0;
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      connectTimeout: const Duration(milliseconds: 10),
+      mcpServersProvider: () {
+        providerCalls += 1;
+        return providedServers.future;
+      },
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await expectLater(client.connect(), throwsA(isA<TimeoutException>()));
+    expect(providerCalls, 1);
+    expect(native.startCalls, 0);
+
+    await expectLater(client.connect(), throwsA(isA<TimeoutException>()));
+    expect(providerCalls, 1);
+    expect(native.startCalls, 0);
+
+    providedServers.complete(const <Map<String, Object?>>[]);
+    await _waitUntil(() => native.startCalls == 1);
+    final connected = client.connect();
+    native.emitReady();
+    await connected;
+    expect(native.startCalls, 1);
+  });
+
+  test(
+    'dispose prevents a late MCP provider from starting the runtime',
+    () async {
+      final native = _ClientFakeNative()..emitReadyOnStart = false;
+      final providedServers = Completer<List<Map<String, Object?>>>();
+      final client = RustAcpAgentClient(
+        agentName: 'fixture',
+        agentCommand: 'fixture-agent',
+        mcpServersProvider: () => providedServers.future,
+        runtime: IanvsRustRuntime(
+          native: native,
+          pollInterval: const Duration(milliseconds: 1),
+        ),
+      );
+
+      final connecting = client.connect();
+      final connectionFailure = expectLater(
+        connecting,
+        throwsA(isA<StateError>()),
+      );
+      await client.dispose();
+      await connectionFailure;
+      providedServers.complete(const <Map<String, Object?>>[]);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(native.startCalls, 0);
+    },
+  );
+
+  test('late ready completion is not reused after a later recovery', () async {
+    final native = _ClientFakeNative()..emitReadyOnStart = false;
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      connectTimeout: const Duration(milliseconds: 20),
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await expectLater(client.connect(), throwsA(isA<TimeoutException>()));
+    native.emitReady();
+    await _waitUntil(() => native.events.isEmpty);
+    native.emit('status_changed', <String, Object?>{
+      'status': 'recovering',
+      'detail': 'restarting fixture',
+    });
+    await _waitUntil(() => native.events.isEmpty);
+
+    var reconnectCompleted = false;
+    final reconnect = client.connect().whenComplete(
+      () => reconnectCompleted = true,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(reconnectCompleted, isFalse);
+    expect(native.startCalls, 2);
+
+    native.emitReady();
+    await reconnect;
+  });
+
+  test(
+    'dispose tolerates a completed connection before waiter cleanup',
+    () async {
+      final native = _ClientFakeNative()..emitReadyOnStart = false;
+      final runtime = IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      );
+      final client = RustAcpAgentClient(
+        agentName: 'fixture',
+        agentCommand: 'fixture-agent',
+        runtime: runtime,
+      );
+      final disposed = Completer<void>();
+      final observer = runtime.events.listen((event) {
+        if (event.status != 'ready' || disposed.isCompleted) return;
+        client.dispose().then(
+          (_) => disposed.complete(),
+          onError: (Object error, StackTrace stackTrace) =>
+              disposed.completeError(error, stackTrace),
+        );
+      });
+      addTearDown(observer.cancel);
+
+      final connecting = client.connect();
+      native.emitReady();
+
+      await disposed.future;
+      await connecting;
+    },
+  );
+
+  test('rejects a non-positive connection timeout', () {
+    expect(
+      () => RustAcpAgentClient(
+        agentName: 'fixture',
+        agentCommand: 'fixture-agent',
+        connectTimeout: Duration.zero,
+      ),
+      throwsArgumentError,
+    );
+  });
 
   test(
     'does not open a parallel protocol connection for unsupported methods',
@@ -551,6 +944,8 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   Map<String, Object?>? startedConfig;
   List<Map<String, Object?>>? promptAttachments;
   bool completeCreates = true;
+  bool emitReadyOnStart = true;
+  int startCalls = 0;
   String sessionTitle = 'Fixture session';
   Map<String, Object?>? restoredUserPayload;
   bool? lastRestoreReplayHistory;
@@ -589,7 +984,15 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
 
   @override
   bool startAgent(Object runtime, Map<String, Object?> config) {
+    startCalls += 1;
     startedConfig = Map<String, Object?>.from(config);
+    if (!emitReadyOnStart) return true;
+    emitReady();
+    return true;
+  }
+
+  void emitReady() {
+    final config = startedConfig ?? const <String, Object?>{};
     final terminal = config['enableTerminalProvider'] == true;
     emit('status_changed', <String, Object?>{
       'status': 'ready',
@@ -621,7 +1024,29 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
         'terminal': terminal,
       },
     });
-    return true;
+  }
+
+  void emitAvailableCommands(
+    String sessionId, {
+    String name = 'review',
+    List<Map<String, Object?>>? commands,
+  }) {
+    emit('session_update', <String, Object?>{
+      'update': <String, Object?>{
+        'sessionId': sessionId,
+        'kind': 'commands_changed',
+        'payload': <String, Object?>{
+          'availableCommands':
+              commands ??
+              <Object?>[
+                <String, Object?>{
+                  'name': name,
+                  'description': 'Description for $name.',
+                },
+              ],
+        },
+      },
+    });
   }
 
   @override
@@ -913,3 +1338,11 @@ List<Map<String, Object?>> _fakeConfigOptions(String current) =>
         ],
       },
     ];
+
+Future<void> _waitUntil(bool Function() condition) async {
+  for (var attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+  }
+  fail('Condition was not satisfied before the test deadline.');
+}

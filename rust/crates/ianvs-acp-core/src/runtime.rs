@@ -1,21 +1,23 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AuthMethod, AuthenticateRequest, CancelNotification, ClientCapabilities, CloseSessionRequest,
-    ContentBlock, CreateTerminalRequest, CreateTerminalResponse, DeleteSessionRequest, EnvVariable,
-    FileSystemCapabilities, HttpHeader, InitializeRequest, KillTerminalRequest,
-    KillTerminalResponse, ListSessionsRequest, LoadSessionRequest, LogoutRequest,
-    McpServer as AcpMcpServer, McpServerHttp, McpServerSse, McpServerStdio, NewSessionRequest,
-    NewSessionResponse, PermissionOptionKind, PromptRequest, ReadTextFileRequest,
-    ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+    AuthMethod, AuthenticateRequest, AvailableCommand, AvailableCommandInput, CancelNotification,
+    ClientCapabilities, CloseSessionRequest, ContentBlock, CreateTerminalRequest,
+    CreateTerminalResponse, DeleteSessionRequest, EnvVariable, FileSystemCapabilities, HttpHeader,
+    InitializeRequest, KillTerminalRequest, KillTerminalResponse, ListSessionsRequest,
+    LoadSessionRequest, LogoutRequest, McpServer as AcpMcpServer, McpServerHttp, McpServerSse,
+    McpServerStdio, NewSessionRequest, NewSessionResponse, PermissionOptionKind, PromptRequest,
+    ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
     SessionConfigOptionValue, SessionConfigSelectOptions, SessionInfo, SessionModeState,
@@ -25,8 +27,8 @@ use agent_client_protocol::schema::v1::{
     WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::{Agent, ConnectTo, ConnectionTo, Error as AcpError, Lines, Responder};
-use futures::io::BufReader;
-use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
+use futures::io::{AsyncBufRead, BufReader};
+use futures::{AsyncBufReadExt, AsyncWriteExt};
 use thiserror::Error;
 use tokio::sync::mpsc as tokio_mpsc;
 use uuid::Uuid;
@@ -47,15 +49,53 @@ use crate::{
 
 const COMMAND_CAPACITY: usize = 256;
 const EVENT_CAPACITY: usize = 2_048;
+const EVENT_RETAINED_BYTES_MAX: usize = 32 * 1024 * 1024;
+const EVENT_SINGLE_BYTES_MAX: usize = 2 * 1024 * 1024;
+const HOST_REQUEST_ID_MAX_BYTES: usize = 8 * 1024;
+const EVENT_ERROR_CODE_MAX_BYTES: usize = 1024;
+const EVENT_ERROR_MESSAGE_MAX_BYTES: usize = 64 * 1024;
 const DEFAULT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_PENDING_PERMISSIONS: usize = 64;
+const MAX_PENDING_PERMISSIONS_PER_SESSION: usize = 8;
+const PERMISSION_MAX_OPTIONS: usize = 16;
+const PERMISSION_MAX_TEXT_BYTES: usize = 8 * 1024;
+const PERMISSION_MAX_RAW_INPUT_BYTES: usize = 48 * 1024;
+const PERMISSION_MAX_PROJECTION_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_RESTART_ATTEMPTS: u32 = 2;
 const DEFAULT_RESTART_BASE_DELAY: Duration = Duration::from_millis(250);
 const SESSION_LIST_MAX_PAGES: usize = 100;
 const SESSION_LIST_MAX_ENTRIES: usize = 10_000;
 const SESSION_LIST_MAX_CURSOR_BYTES: usize = 8 * 1024;
+const SESSION_CATALOG_MAX_ADDITIONAL_DIRECTORIES: usize = 128;
+const SESSION_CATALOG_PATH_MAX_BYTES: usize = 32 * 1024;
+const SESSION_CATALOG_METADATA_MAX_BYTES: usize = 64 * 1024;
+const SESSION_CATALOG_ENTRY_MAX_BYTES: usize = 128 * 1024;
+const SESSION_CATALOG_MAX_PROJECTION_BYTES: usize = 1024 * 1024;
+const SESSION_ID_MAX_BYTES: usize = 8 * 1024;
 const SESSION_TITLE_MAX_CHARACTERS: usize = 256;
 const SESSION_CONFIG_MAX_OPTIONS: usize = 256;
 const SESSION_CONFIG_MAX_CHOICES: usize = 4_096;
+const SESSION_CONFIG_MAX_TEXT_BYTES: usize = 8 * 1024;
+const SESSION_CONFIG_MAX_PROJECTION_BYTES: usize = 256 * 1024;
+const STAGED_CONFIG_MAX_ENTRIES: usize = 4;
+const STAGED_CONFIG_MAX_BYTES: usize = 512 * 1024;
+const SESSION_MODES_MAX_ENTRIES: usize = 256;
+const SESSION_MODE_TEXT_MAX_BYTES: usize = 8 * 1024;
+const SESSION_MODES_MAX_PROJECTION_BYTES: usize = 256 * 1024;
+const AVAILABLE_COMMANDS_MAX_ENTRIES: usize = 1_024;
+const AVAILABLE_COMMAND_NAME_MAX_BYTES: usize = 1_024;
+const AVAILABLE_COMMAND_DESCRIPTION_MAX_BYTES: usize = 8 * 1_024;
+const AVAILABLE_COMMAND_HINT_MAX_BYTES: usize = 8 * 1_024;
+const AVAILABLE_COMMANDS_MAX_PROJECTION_BYTES: usize = 512 * 1024;
+const AUTH_METHODS_MAX_ENTRIES: usize = 32;
+const AUTH_METHOD_ID_MAX_BYTES: usize = 1024;
+const AUTH_METHOD_NAME_MAX_BYTES: usize = 4 * 1024;
+const AUTH_METHOD_DESCRIPTION_MAX_BYTES: usize = 8 * 1024;
+const AUTH_METHODS_MAX_PROJECTION_BYTES: usize = 64 * 1024;
+const INITIALIZE_DETAIL_MAX_BYTES: usize = 16 * 1024;
+const INITIALIZE_MAX_PROJECTION_BYTES: usize = 512 * 1024;
+const ACP_PROTOCOL_LINE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const AGENT_STDERR_LINE_MAX_BYTES: usize = 256 * 1024;
 // Keep replay projection work below a frame-sized slice once it crosses FFI.
 // The Dart host cooperatively drains several chunks instead of projecting a
 // whole restored transcript in one event-loop turn.
@@ -64,6 +104,9 @@ const RENDER_SNAPSHOT_CHUNK_MAX_UPDATES: usize = 16;
 const RENDER_COALESCED_TEXT_TARGET_BYTES: usize = RENDER_SNAPSHOT_CHUNK_TARGET_BYTES / 2;
 const RENDER_TOOL_DETAIL_MAX_BYTES: usize = 128 * 1024;
 const RENDER_TOOL_CONTENT_MAX_BYTES: usize = 512 * 1024;
+const RENDER_TEXT_CHUNK_MAX_BYTES: usize = 256 * 1024;
+const RENDER_METADATA_MAX_BYTES: usize = 1024 * 1024;
+const RENDER_TITLE_MAX_BYTES: usize = 128 * 1024;
 const TERMINAL_ALLOW_ONCE_OPTION_ID: &str = "ianvs_terminal_allow_once";
 const TERMINAL_REJECT_ONCE_OPTION_ID: &str = "ianvs_terminal_reject_once";
 const FILESYSTEM_ALLOW_ONCE_OPTION_ID: &str = "ianvs_filesystem_allow_once";
@@ -159,6 +202,7 @@ enum InternalEvent {
     },
     SessionRestored {
         request_id: String,
+        requested_session_id: String,
         cwd: String,
         scope: WorkspaceScope,
         result: Result<RestoredSession, String>,
@@ -244,6 +288,77 @@ impl PendingPermission {
             | Self::Terminal { session_id, .. }
             | Self::FilesystemRead { session_id, .. }
             | Self::FilesystemWrite { session_id, .. } => session_id,
+        }
+    }
+}
+
+struct PermissionAdmissionError {
+    pending: PendingPermission,
+    message: &'static str,
+}
+
+fn admit_pending_permission(
+    pending: &Mutex<HashMap<String, PendingPermission>>,
+    request_id: String,
+    permission: PendingPermission,
+) -> Result<(), Box<PermissionAdmissionError>> {
+    let session_id = permission.session_id();
+    let mut pending = pending.lock().expect("permission mutex poisoned");
+    let message = if pending.len() >= MAX_PENDING_PERMISSIONS {
+        Some("global pending permission capacity reached")
+    } else if pending
+        .values()
+        .filter(|value| value.session_id() == session_id)
+        .count()
+        >= MAX_PENDING_PERMISSIONS_PER_SESSION
+    {
+        Some("session pending permission capacity reached")
+    } else if pending.contains_key(&request_id) {
+        Some("duplicate pending permission request id")
+    } else {
+        None
+    };
+    if let Some(message) = message {
+        return Err(Box::new(PermissionAdmissionError {
+            pending: permission,
+            message,
+        }));
+    }
+    pending.insert(request_id, permission);
+    Ok(())
+}
+
+fn reject_unadmitted_permission(error: PermissionAdmissionError) -> Result<(), AcpError> {
+    let PermissionAdmissionError { pending, message } = error;
+    let response_error = || AcpError::new(-32000, message);
+    match pending {
+        PendingPermission::Acp { responder, .. } => responder.respond_with_error(response_error()),
+        PendingPermission::Terminal {
+            approval_id,
+            manager,
+            responder,
+            ..
+        } => {
+            let _ = manager.deny_create(&approval_id);
+            responder.respond_with_error(response_error())
+        }
+        PendingPermission::FilesystemRead {
+            approval_id,
+            manager,
+            responder,
+            ..
+        } => {
+            let _ = manager.deny(&approval_id);
+            responder.respond_with_error(response_error())
+        }
+        PendingPermission::FilesystemWrite {
+            approval_id,
+            manager,
+            responder,
+            ..
+        } => {
+            let _ = manager.deny(&approval_id);
+            responder.respond_with_error(response_error())
         }
     }
 }
@@ -349,13 +464,15 @@ impl SessionRecoveryRegistry {
     }
 
     fn remove(&mut self, session_id: &str) -> Result<(), String> {
-        if let Some(store) = self.store.as_mut() {
+        let store_result = if let Some(store) = self.store.as_mut() {
             store
                 .remove(&self.persistence_identity, session_id)
-                .map_err(|error| error.to_string())?;
-        }
+                .map_err(|error| error.to_string())
+        } else {
+            Ok(())
+        };
         self.active.remove(session_id);
-        Ok(())
+        store_result
     }
 
     fn touch(&mut self, session_id: &str) -> Result<(), String> {
@@ -378,11 +495,13 @@ impl SessionRecoveryRegistry {
 struct RecoveredRuntimeSessions {
     scopes: HashMap<String, WorkspaceScope>,
     config_options: HashMap<String, Vec<SessionConfigOptionProjection>>,
+    failures: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
 struct EventSink {
-    sender: SyncSender<RuntimeEventEnvelope>,
+    sender: SyncSender<QueuedRuntimeEvent>,
+    budget: Arc<EventQueueBudget>,
     next_sequence: Arc<Mutex<u64>>,
 }
 
@@ -394,11 +513,18 @@ impl EventSink {
             .expect("event sequence mutex poisoned");
         let sequence = *next_sequence;
         *next_sequence = next_sequence.saturating_add(1);
-        // A bounded, blocking send is intentional: protocol producers apply
-        // backpressure instead of letting a stalled UI grow memory unbounded.
-        // The sequence lock remains held through send so concurrent PTY,
-        // stderr, and protocol producers cannot enqueue out of sequence.
-        let _ = self.sender.send(RuntimeEventEnvelope::new(sequence, event));
+        let (envelope, retained_bytes) = bounded_event_envelope(sequence, event);
+        // Count and retained-byte blocking are both intentional. The sequence
+        // lock remains held so concurrent PTY, stderr, and protocol producers
+        // cannot enqueue out of order while one producer waits for budget.
+        if !self.budget.reserve(retained_bytes) {
+            return;
+        }
+        let _ = self.sender.send(QueuedRuntimeEvent {
+            envelope: Some(envelope),
+            retained_bytes,
+            budget: Arc::clone(&self.budget),
+        });
     }
 
     fn error(
@@ -410,11 +536,162 @@ impl EventSink {
     ) {
         self.emit(RuntimeEvent::RuntimeError {
             request_id,
-            code: code.into(),
-            message: message.into(),
+            code: truncate_utf8(code.into(), EVENT_ERROR_CODE_MAX_BYTES),
+            message: truncate_utf8(message.into(), EVENT_ERROR_MESSAGE_MAX_BYTES),
             recoverable,
         });
     }
+}
+
+struct EventQueueBudget {
+    max_bytes: usize,
+    state: Mutex<EventQueueBudgetState>,
+    available: Condvar,
+}
+
+#[derive(Default)]
+struct EventQueueBudgetState {
+    retained_bytes: usize,
+    closed: bool,
+}
+
+impl EventQueueBudget {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            state: Mutex::new(EventQueueBudgetState::default()),
+            available: Condvar::new(),
+        }
+    }
+
+    fn reserve(&self, bytes: usize) -> bool {
+        let mut state = self.state.lock().expect("event budget mutex poisoned");
+        while !state.closed && bytes > self.max_bytes.saturating_sub(state.retained_bytes) {
+            state = self
+                .available
+                .wait(state)
+                .expect("event budget mutex poisoned");
+        }
+        if state.closed {
+            return false;
+        }
+        state.retained_bytes = state.retained_bytes.saturating_add(bytes);
+        true
+    }
+
+    fn release(&self, bytes: usize) {
+        let mut state = self.state.lock().expect("event budget mutex poisoned");
+        state.retained_bytes = state.retained_bytes.saturating_sub(bytes);
+        self.available.notify_all();
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().expect("event budget mutex poisoned");
+        state.closed = true;
+        self.available.notify_all();
+    }
+}
+
+struct QueuedRuntimeEvent {
+    envelope: Option<RuntimeEventEnvelope>,
+    retained_bytes: usize,
+    budget: Arc<EventQueueBudget>,
+}
+
+impl QueuedRuntimeEvent {
+    fn into_envelope(mut self) -> RuntimeEventEnvelope {
+        self.envelope
+            .take()
+            .expect("queued event must have an envelope")
+    }
+}
+
+impl Drop for QueuedRuntimeEvent {
+    fn drop(&mut self) {
+        self.budget.release(self.retained_bytes);
+    }
+}
+
+struct EventReceiver {
+    receiver: Receiver<QueuedRuntimeEvent>,
+    budget: Arc<EventQueueBudget>,
+}
+
+impl EventReceiver {
+    fn try_recv(&self) -> Result<RuntimeEventEnvelope, TryRecvError> {
+        self.receiver
+            .try_recv()
+            .map(QueuedRuntimeEvent::into_envelope)
+    }
+
+    fn recv_timeout(&self, timeout: Duration) -> Result<RuntimeEventEnvelope, RecvTimeoutError> {
+        self.receiver
+            .recv_timeout(timeout)
+            .map(QueuedRuntimeEvent::into_envelope)
+    }
+
+    #[cfg(test)]
+    fn try_iter(&self) -> impl Iterator<Item = RuntimeEventEnvelope> + '_ {
+        std::iter::from_fn(|| self.try_recv().ok())
+    }
+}
+
+impl Drop for EventReceiver {
+    fn drop(&mut self) {
+        self.budget.close();
+    }
+}
+
+fn bounded_event_envelope(sequence: u64, event: RuntimeEvent) -> (RuntimeEventEnvelope, usize) {
+    let request_id = runtime_event_request_id(&event);
+    let mut envelope = RuntimeEventEnvelope::new(sequence, event);
+    let encoded = serde_json::to_vec(&envelope);
+    let should_replace = match encoded.as_ref() {
+        Ok(encoded) => encoded.len() > EVENT_SINGLE_BYTES_MAX,
+        Err(_) => true,
+    };
+    if should_replace {
+        let observed_bytes = encoded.as_ref().map_or(0, Vec::len);
+        envelope = RuntimeEventEnvelope::new(
+            sequence,
+            RuntimeEvent::RuntimeError {
+                request_id,
+                code: "event_projection_too_large".to_string(),
+                message: format!(
+                    "runtime event exceeded the {EVENT_SINGLE_BYTES_MAX}-byte queue policy (observed {observed_bytes} bytes)"
+                ),
+                recoverable: false,
+            },
+        );
+    }
+    let retained_bytes = serde_json::to_vec(&envelope)
+        .map_or(EVENT_SINGLE_BYTES_MAX, |encoded| encoded.len())
+        .max(1);
+    (envelope, retained_bytes)
+}
+
+fn runtime_event_request_id(event: &RuntimeEvent) -> Option<String> {
+    match event {
+        RuntimeEvent::SessionUpdate { update } => update.request_id.clone(),
+        RuntimeEvent::RenderSnapshotChunk { request_id, .. }
+        | RuntimeEvent::SessionCatalog { request_id, .. }
+        | RuntimeEvent::AuthenticationChanged { request_id, .. } => Some(request_id.clone()),
+        RuntimeEvent::PermissionRequest { request } => Some(request.request_id.clone()),
+        RuntimeEvent::RuntimeError { request_id, .. } => request_id.clone(),
+        _ => None,
+    }
+}
+
+fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary = boundary.saturating_sub(1);
+    }
+    value.truncate(boundary);
+    value
 }
 
 #[derive(Default)]
@@ -468,6 +745,13 @@ impl ReplayRenderProjection {
             RENDER_COALESCED_TEXT_TARGET_BYTES
         };
         if previous.text.len().saturating_add(update.text.len()) > text_target {
+            return false;
+        }
+        if update.kind == RenderUpdateKind::UserMessage
+            && render_metadata_bytes(previous.metadata.as_ref())
+                .saturating_add(render_metadata_bytes(update.metadata.as_ref()))
+                > RENDER_METADATA_MAX_BYTES
+        {
             return false;
         }
         previous.text.push_str(&update.text);
@@ -760,8 +1044,8 @@ fn merge_content_block_metadata(
 /// The worker owns a current-thread Tokio runtime and the ACP subprocess. No
 /// Flutter lifecycle object owns protocol or session state.
 pub struct RuntimeHandle {
-    command_sender: tokio_mpsc::Sender<RuntimeCommand>,
-    events: Receiver<RuntimeEventEnvelope>,
+    command_sender: Option<tokio_mpsc::Sender<RuntimeCommand>>,
+    events: Option<EventReceiver>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -783,10 +1067,16 @@ impl RuntimeHandle {
     #[must_use]
     pub fn new() -> Self {
         let (command_sender, command_receiver) = tokio_mpsc::channel(COMMAND_CAPACITY);
-        let (event_sender, events) = mpsc::sync_channel(EVENT_CAPACITY);
+        let (event_sender, event_receiver) = mpsc::sync_channel(EVENT_CAPACITY);
+        let event_budget = Arc::new(EventQueueBudget::new(EVENT_RETAINED_BYTES_MAX));
         let sink = EventSink {
             sender: event_sender,
+            budget: Arc::clone(&event_budget),
             next_sequence: Arc::new(Mutex::new(1)),
+        };
+        let events = EventReceiver {
+            receiver: event_receiver,
+            budget: event_budget,
         };
         let worker = thread::Builder::new()
             .name("ianvs-acp-runtime".to_string())
@@ -805,8 +1095,8 @@ impl RuntimeHandle {
             })
             .expect("failed to spawn ianvs ACP runtime worker");
         Self {
-            command_sender,
-            events,
+            command_sender: Some(command_sender),
+            events: Some(events),
             worker: Some(worker),
         }
     }
@@ -978,7 +1268,10 @@ impl RuntimeHandle {
 
     /// Non-blocking event receive for UI frame polling.
     pub fn try_recv_event(&self) -> Result<Option<RuntimeEventEnvelope>, RuntimeError> {
-        match self.events.try_recv() {
+        let Some(events) = self.events.as_ref() else {
+            return Err(RuntimeError::Closed);
+        };
+        match events.try_recv() {
             Ok(event) => Ok(Some(event)),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => Err(RuntimeError::Closed),
@@ -990,7 +1283,10 @@ impl RuntimeHandle {
         &self,
         timeout: Duration,
     ) -> Result<Option<RuntimeEventEnvelope>, RuntimeError> {
-        match self.events.recv_timeout(timeout) {
+        let Some(events) = self.events.as_ref() else {
+            return Err(RuntimeError::Closed);
+        };
+        match events.recv_timeout(timeout) {
             Ok(event) => Ok(Some(event)),
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err(RuntimeError::Closed),
@@ -999,6 +1295,13 @@ impl RuntimeHandle {
 
     pub fn join(mut self) -> Result<(), RuntimeError> {
         let _ = self.dispose();
+        // Event producers intentionally use a blocking bounded queue for
+        // backpressure. Disconnect the consumer before waiting for the worker
+        // so a producer blocked on a full queue can observe shutdown and exit.
+        self.events.take();
+        // Closing the command channel is the fallback when the bounded queue
+        // was too full to accept the explicit Dispose command.
+        self.command_sender.take();
         if let Some(worker) = self.worker.take() {
             worker.join().map_err(|_| RuntimeError::WorkerPanicked)?;
         }
@@ -1007,6 +1310,8 @@ impl RuntimeHandle {
 
     fn send(&self, command: RuntimeCommand) -> Result<(), RuntimeError> {
         self.command_sender
+            .as_ref()
+            .ok_or(RuntimeError::Closed)?
             .try_send(command)
             .map_err(|error| match error {
                 tokio_mpsc::error::TrySendError::Full(_) => RuntimeError::Backpressure,
@@ -1017,13 +1322,18 @@ impl RuntimeHandle {
 
 impl Drop for RuntimeHandle {
     fn drop(&mut self) {
-        let _ = self.command_sender.try_send(RuntimeCommand::Dispose);
+        if let Some(command_sender) = self.command_sender.as_ref() {
+            let _ = command_sender.try_send(RuntimeCommand::Dispose);
+        }
     }
 }
 
 fn checked_request_id(value: String) -> Result<String, RuntimeError> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty()
+        || trimmed.len() > HOST_REQUEST_ID_MAX_BYTES
+        || trimmed.as_bytes().contains(&0)
+    {
         Err(RuntimeError::InvalidRequestId)
     } else if trimmed.len() == value.len() {
         Ok(value)
@@ -1034,7 +1344,8 @@ fn checked_request_id(value: String) -> Result<String, RuntimeError> {
 
 fn checked_session_id(value: String) -> Result<String, RuntimeError> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.len() > SESSION_ID_MAX_BYTES || trimmed.as_bytes().contains(&0)
+    {
         Err(RuntimeError::InvalidSessionId)
     } else if trimmed.len() == value.len() {
         Ok(value)
@@ -1309,8 +1620,10 @@ async fn run_agent(
         .on_receive_notification(
             async move |notification: SessionNotification, _connection| {
                 match project_session_notification(notification) {
-                    Ok(Some(ProjectedSessionNotification::Render(update))) => {
-                        notification_render_router.route(update);
+                    Ok(Some(ProjectedSessionNotification::Render(updates))) => {
+                        for update in updates {
+                            notification_render_router.route(update);
+                        }
                     }
                     Ok(Some(ProjectedSessionNotification::Control(update))) => {
                         notification_sink.emit(RuntimeEvent::SessionUpdate { update });
@@ -1341,18 +1654,24 @@ async fn run_agent(
                         responder: Responder<RequestPermissionResponse>,
                         _connection| {
                 let request_id = Uuid::new_v4().to_string();
-                let projection = project_permission_request(&request_id, &request);
+                let projection = match project_permission_request(&request_id, &request) {
+                    Ok(projection) => projection,
+                    Err(message) => {
+                        return responder
+                            .respond_with_error(AcpError::invalid_params().data(message));
+                    }
+                };
                 let session_id = request.session_id.to_string();
-                permission_pending
-                    .lock()
-                    .expect("permission mutex poisoned")
-                    .insert(
-                        request_id.clone(),
-                        PendingPermission::Acp {
-                            session_id: session_id.clone(),
-                            responder,
-                        },
-                    );
+                if let Err(error) = admit_pending_permission(
+                    &permission_pending,
+                    request_id.clone(),
+                    PendingPermission::Acp {
+                        session_id: session_id.clone(),
+                        responder,
+                    },
+                ) {
+                    return reject_unadmitted_permission(*error);
+                }
                 permission_sink.emit(RuntimeEvent::PermissionRequest {
                     request: projection,
                 });
@@ -1387,22 +1706,31 @@ async fn run_agent(
                         return responder.respond_with_error(filesystem_operation_error(&error));
                     }
                 };
+                let permission_projection = match project_filesystem_permission(&approval) {
+                    Ok(projection) => projection,
+                    Err(message) => {
+                        let _ = manager.deny(&approval.approval_id);
+                        return responder.respond_with_error(
+                            AcpError::invalid_params().data(message),
+                        );
+                    }
+                };
                 let request_id = approval.approval_id.clone();
                 let session_id = approval.session_id.clone();
-                filesystem_pending
-                    .lock()
-                    .expect("permission mutex poisoned")
-                    .insert(
-                        request_id.clone(),
-                        PendingPermission::FilesystemRead {
-                            session_id: session_id.clone(),
-                            approval_id: approval.approval_id.clone(),
-                            manager,
-                            responder,
-                        },
-                    );
+                if let Err(error) = admit_pending_permission(
+                    &filesystem_pending,
+                    request_id.clone(),
+                    PendingPermission::FilesystemRead {
+                        session_id: session_id.clone(),
+                        approval_id: approval.approval_id.clone(),
+                        manager,
+                        responder,
+                    },
+                ) {
+                    return reject_unadmitted_permission(*error);
+                }
                 filesystem_permission_sink.emit(RuntimeEvent::PermissionRequest {
-                    request: project_filesystem_permission(&approval),
+                    request: permission_projection,
                 });
                 let _ = filesystem_internal.send(InternalEvent::PermissionWaiting {
                     request_id: request_id.clone(),
@@ -1434,22 +1762,31 @@ async fn run_agent(
                         return responder.respond_with_error(filesystem_operation_error(&error));
                     }
                 };
+                let permission_projection = match project_filesystem_permission(&approval) {
+                    Ok(projection) => projection,
+                    Err(message) => {
+                        let _ = manager.deny(&approval.approval_id);
+                        return responder.respond_with_error(
+                            AcpError::invalid_params().data(message),
+                        );
+                    }
+                };
                 let request_id = approval.approval_id.clone();
                 let session_id = approval.session_id.clone();
-                filesystem_write_pending
-                    .lock()
-                    .expect("permission mutex poisoned")
-                    .insert(
-                        request_id.clone(),
-                        PendingPermission::FilesystemWrite {
-                            session_id: session_id.clone(),
-                            approval_id: approval.approval_id.clone(),
-                            manager,
-                            responder,
-                        },
-                    );
+                if let Err(error) = admit_pending_permission(
+                    &filesystem_write_pending,
+                    request_id.clone(),
+                    PendingPermission::FilesystemWrite {
+                        session_id: session_id.clone(),
+                        approval_id: approval.approval_id.clone(),
+                        manager,
+                        responder,
+                    },
+                ) {
+                    return reject_unadmitted_permission(*error);
+                }
                 filesystem_write_permission_sink.emit(RuntimeEvent::PermissionRequest {
-                    request: project_filesystem_permission(&approval),
+                    request: permission_projection,
                 });
                 let _ = filesystem_write_internal.send(InternalEvent::PermissionWaiting {
                     request_id: request_id.clone(),
@@ -1492,22 +1829,31 @@ async fn run_agent(
                         return responder.respond_with_error(terminal_operation_error(&error));
                     }
                 };
+                let permission_projection = match project_terminal_permission(&approval) {
+                    Ok(projection) => projection,
+                    Err(message) => {
+                        let _ = manager.deny_create(&approval.approval_id);
+                        return responder.respond_with_error(
+                            AcpError::invalid_params().data(message),
+                        );
+                    }
+                };
                 let request_id = approval.approval_id.clone();
                 let session_id = approval.session_id.clone();
-                terminal_pending
-                    .lock()
-                    .expect("permission mutex poisoned")
-                    .insert(
-                        request_id.clone(),
-                        PendingPermission::Terminal {
-                            session_id: session_id.clone(),
-                            approval_id: approval.approval_id.clone(),
-                            manager,
-                            responder,
-                        },
-                    );
+                if let Err(error) = admit_pending_permission(
+                    &terminal_pending,
+                    request_id.clone(),
+                    PendingPermission::Terminal {
+                        session_id: session_id.clone(),
+                        approval_id: approval.approval_id.clone(),
+                        manager,
+                        responder,
+                    },
+                ) {
+                    return reject_unadmitted_permission(*error);
+                }
                 terminal_permission_sink.emit(RuntimeEvent::PermissionRequest {
-                    request: project_terminal_permission(&approval),
+                    request: permission_projection,
                 });
                 let _ = terminal_internal.send(InternalEvent::PermissionWaiting {
                     request_id: request_id.clone(),
@@ -1623,14 +1969,6 @@ async fn run_agent(
                         ),
                     ));
                 }
-                if recover_sessions {
-                    state
-                        .reset_sessions_for_recovery()
-                        .map_err(|error| AcpError::new(-32603, error.to_string()))?;
-                }
-                state
-                    .agent_ready()
-                    .map_err(|error| AcpError::new(-32603, error.to_string()))?;
                 let session_support = session_support(&response.agent_capabilities);
                 let prompt_support = PromptSupport::from_agent(&response.agent_capabilities);
                 let mcp_servers = project_mcp_servers(
@@ -1638,7 +1976,8 @@ async fn run_agent(
                     &response.agent_capabilities.mcp_capabilities,
                 )
                 .map_err(|message| AcpError::new(-32603, message))?;
-                let auth_methods = project_auth_methods(&response.auth_methods);
+                let auth_methods = project_auth_methods(&response.auth_methods)
+                    .map_err(|message| AcpError::new(-32603, message))?;
                 let auth_method_ids = auth_methods
                     .iter()
                     .map(|method| method.id.clone())
@@ -1652,10 +1991,41 @@ async fn run_agent(
                     config.enable_filesystem_write_text_file,
                     config.enable_terminal_provider,
                 );
-                let detail = response.agent_info.as_ref().map_or_else(
+                let mut detail = response.agent_info.as_ref().map_or_else(
                     || format!("{} ready", config.agent_name),
                     |info| format!("{} {} ready", info.name, info.version),
                 );
+                detail = bounded_protocol_text(
+                    &detail,
+                    "agent ready detail",
+                    INITIALIZE_DETAIL_MAX_BYTES,
+                    false,
+                )
+                .map_err(|message| AcpError::new(-32603, message))?;
+                let ready_projection = RuntimeEvent::StatusChanged {
+                    status: RuntimeStatus::Ready,
+                    detail: Some(detail.clone()),
+                    capabilities: Some(capabilities.clone()),
+                };
+                let ready_projection_bytes = serde_json::to_vec(&ready_projection)
+                    .map_err(|error| AcpError::new(-32603, error.to_string()))?
+                    .len();
+                if ready_projection_bytes > INITIALIZE_MAX_PROJECTION_BYTES {
+                    return Err(AcpError::new(
+                        -32603,
+                        format!(
+                            "agent initialize projection exceeds {INITIALIZE_MAX_PROJECTION_BYTES} bytes"
+                        ),
+                    ));
+                }
+                if recover_sessions {
+                    state
+                        .reset_sessions_for_recovery()
+                        .map_err(|error| AcpError::new(-32603, error.to_string()))?;
+                }
+                state
+                    .agent_ready()
+                    .map_err(|error| AcpError::new(-32603, error.to_string()))?;
                 let recovered = if recover_sessions {
                     let recovered = recover_registered_sessions(
                         &connection,
@@ -1668,8 +2038,7 @@ async fn run_agent(
                         &mcp_servers,
                         &render_router,
                     )
-                    .await
-                    .map_err(|message| AcpError::new(-32603, message))?;
+                    .await;
                     if !recovered.scopes.is_empty() {
                         command_activity.store(true, Ordering::Release);
                     }
@@ -1677,11 +2046,26 @@ async fn run_agent(
                 } else {
                     RecoveredRuntimeSessions::default()
                 };
+                if !recovered.failures.is_empty() {
+                    let _ = write!(
+                        detail,
+                        "; {} persisted session(s) could not be recovered",
+                        recovered.failures.len()
+                    );
+                }
                 sink.emit(RuntimeEvent::StatusChanged {
                     status: RuntimeStatus::Ready,
                     detail: Some(detail),
                     capabilities: Some(capabilities),
                 });
+                for (session_id, message) in &recovered.failures {
+                    sink.error(
+                        Some(format!("recovery:{session_id}")),
+                        "session_recovery_failed",
+                        message.clone(),
+                        true,
+                    );
+                }
 
                 command_loop(
                     connection,
@@ -1740,7 +2124,11 @@ async fn restore_wire_session(
             .and_then(|response| {
                 Ok(RestoredSession {
                     session_id: session.session_id.clone(),
-                    modes: response.modes.as_ref().map(project_session_modes),
+                    modes: response
+                        .modes
+                        .as_ref()
+                        .map(project_session_modes)
+                        .transpose()?,
                     replayed_history: true,
                     config_options: project_session_config_options(
                         response.config_options.as_deref(),
@@ -1760,7 +2148,11 @@ async fn restore_wire_session(
             .and_then(|response| {
                 Ok(RestoredSession {
                     session_id: session.session_id.clone(),
-                    modes: response.modes.as_ref().map(project_session_modes),
+                    modes: response
+                        .modes
+                        .as_ref()
+                        .map(project_session_modes)
+                        .transpose()?,
                     replayed_history: false,
                     config_options: project_session_config_options(
                         response.config_options.as_deref(),
@@ -1783,17 +2175,19 @@ async fn recover_registered_sessions(
     state: &mut RuntimeStateMachine,
     mcp_servers: &[AcpMcpServer],
     render_router: &RenderRouter,
-) -> Result<RecoveredRuntimeSessions, String> {
+) -> RecoveredRuntimeSessions {
     let sessions = registry.sessions();
-    if !sessions.is_empty() && !support.load && !support.resume {
-        return Err(
-            "agent cannot recover durable sessions because it supports neither session/load nor session/resume"
-                .to_string(),
-        );
-    }
     let mut recovered = RecoveredRuntimeSessions::default();
     for session in sessions {
-        let scope = session.scope().map_err(|error| error.to_string())?;
+        let scope = match session.scope() {
+            Ok(scope) => scope,
+            Err(error) => {
+                recovered
+                    .failures
+                    .push((session.session_id.clone(), error.to_string()));
+                continue;
+            }
+        };
         let recovery_request_id = format!("recovery:{}", session.session_id);
         if support.load {
             render_router
@@ -1804,26 +2198,30 @@ async fn recover_registered_sessions(
                 Ok(restored) => restored,
                 Err(error) => {
                     render_router.abort_replay(&recovery_request_id);
-                    return Err(error);
+                    recovered.failures.push((session.session_id.clone(), error));
+                    continue;
                 }
             };
         // Recovery re-establishes protocol state; the existing UI transcript
         // remains authoritative. Never transfer a replay with no foreground
         // restore consumer.
         render_router.abort_replay(&recovery_request_id);
-        if let Some(manager) = terminal_manager {
-            manager
-                .register_session(&restored.session_id, scope.clone())
-                .map_err(|error| error.to_string())?;
+        if let Err(error) = state.session_created(restored.session_id.clone()) {
+            recovered
+                .failures
+                .push((session.session_id.clone(), error.to_string()));
+            continue;
         }
-        if let Some(manager) = filesystem_manager {
-            manager
-                .register_session(&restored.session_id, scope.clone())
-                .map_err(|error| error.to_string())?;
+        if let Err(error) = register_session_managers(
+            terminal_manager,
+            filesystem_manager,
+            &restored.session_id,
+            &scope,
+        ) {
+            state.forget_session(&restored.session_id);
+            recovered.failures.push((session.session_id.clone(), error));
+            continue;
         }
-        state
-            .session_created(restored.session_id.clone())
-            .map_err(|error| error.to_string())?;
         recovered
             .scopes
             .insert(restored.session_id.clone(), scope.clone());
@@ -1850,7 +2248,29 @@ async fn recover_registered_sessions(
             },
         });
     }
-    Ok(recovered)
+    recovered
+}
+
+fn register_session_managers(
+    terminal_manager: Option<&Arc<TerminalManager>>,
+    filesystem_manager: Option<&Arc<FilesystemManager>>,
+    session_id: &str,
+    scope: &WorkspaceScope,
+) -> Result<(), String> {
+    if let Some(manager) = terminal_manager {
+        manager
+            .register_session(session_id, scope.clone())
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some(manager) = filesystem_manager
+        && let Err(error) = manager.register_session(session_id, scope.clone())
+    {
+        if let Some(terminal) = terminal_manager {
+            let _ = terminal.close_session(session_id);
+        }
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1877,8 +2297,11 @@ async fn command_loop(
     let mut scopes = recovered.scopes;
     let mut config_options_by_session = recovered.config_options;
     let mut config_mutations = HashSet::<String>::new();
-    let mut pending_config_notifications =
-        HashMap::<String, Vec<SessionConfigOptionProjection>>::new();
+    let mut pending_session_creates = 0_usize;
+    let mut pending_session_restores = HashMap::<String, usize>::new();
+    let mut staged_config_notifications =
+        HashMap::<String, (Vec<SessionConfigOptionProjection>, usize)>::new();
+    let mut staged_config_bytes = 0_usize;
     loop {
         tokio::select! {
             command = commands.recv() => {
@@ -1914,32 +2337,13 @@ async fn command_loop(
                         let request = NewSessionRequest::new(scope.cwd().to_path_buf())
                             .additional_directories(scope.roots()[1..].to_vec())
                             .mcp_servers(mcp_servers.clone());
+                        pending_session_creates = pending_session_creates.saturating_add(1);
                         let sent = connection.send_request(request);
                         let tx = internal_sender.clone();
-                        let terminal_manager = terminal_manager.clone();
-                        let terminal_scope = scope.clone();
-                        let filesystem_manager = filesystem_manager.clone();
-                        let filesystem_scope = scope.clone();
                         connection.spawn(async move {
                             let result = sent.block_task().await
                                 .map_err(|error| error.to_string())
-                                .and_then(|response| project_created_session(&response))
-                                .and_then(|created| {
-                                    if let Some(manager) = terminal_manager {
-                                        manager
-                                            .register_session(&created.session_id, terminal_scope)
-                                            .map_err(|error| error.to_string())?;
-                                    }
-                                    if let Some(manager) = filesystem_manager {
-                                        manager
-                                            .register_session(
-                                                &created.session_id,
-                                                filesystem_scope,
-                                            )
-                                            .map_err(|error| error.to_string())?;
-                                    }
-                                    Ok(created)
-                                });
+                                .and_then(|response| project_created_session(&response));
                             let _ = tx.send(InternalEvent::SessionCreated {
                                 request_id,
                                 cwd,
@@ -1990,14 +2394,13 @@ async fn command_loop(
                         let agent = connection.clone();
                         let requested_session_id = session_id.clone();
                         let request_scope = scope.clone();
-                        let terminal_manager = terminal_manager.clone();
-                        let filesystem_manager = filesystem_manager.clone();
                         let restore_mcp_servers = mcp_servers.clone();
                         let will_replay_history =
                             (replay_history && session_support.load) || !session_support.resume;
                         if will_replay_history {
                             render_router.begin_replay(session_id.clone(), request_id.clone());
                         }
+                        *pending_session_restores.entry(session_id.clone()).or_default() += 1;
                         connection.spawn(async move {
                             let result = if replay_history && session_support.load {
                                 agent
@@ -2014,7 +2417,11 @@ async fn command_loop(
                                     .map_err(|error| error.to_string())
                                     .and_then(|response| Ok(RestoredSession {
                                         session_id: requested_session_id.clone(),
-                                        modes: response.modes.as_ref().map(project_session_modes),
+                                        modes: response
+                                            .modes
+                                            .as_ref()
+                                            .map(project_session_modes)
+                                            .transpose()?,
                                         replayed_history: true,
                                         config_options: project_session_config_options(
                                             response.config_options.as_deref(),
@@ -2035,7 +2442,11 @@ async fn command_loop(
                                     .map_err(|error| error.to_string())
                                     .and_then(|response| Ok(RestoredSession {
                                         session_id: requested_session_id.clone(),
-                                        modes: response.modes.as_ref().map(project_session_modes),
+                                        modes: response
+                                            .modes
+                                            .as_ref()
+                                            .map(project_session_modes)
+                                            .transpose()?,
                                         replayed_history: false,
                                         config_options: project_session_config_options(
                                             response.config_options.as_deref(),
@@ -2056,31 +2467,20 @@ async fn command_loop(
                                     .map_err(|error| error.to_string())
                                     .and_then(|response| Ok(RestoredSession {
                                         session_id: requested_session_id.clone(),
-                                        modes: response.modes.as_ref().map(project_session_modes),
+                                        modes: response
+                                            .modes
+                                            .as_ref()
+                                            .map(project_session_modes)
+                                            .transpose()?,
                                         replayed_history: true,
                                         config_options: project_session_config_options(
                                             response.config_options.as_deref(),
                                         )?,
                                     }))
-                            }
-                            .and_then(|restored| {
-                                if let Some(manager) = terminal_manager {
-                                    manager
-                                        .register_session(
-                                            &restored.session_id,
-                                            request_scope.clone(),
-                                        )
-                                        .map_err(|error| error.to_string())?;
-                                }
-                                if let Some(manager) = filesystem_manager {
-                                    manager
-                                        .register_session(&restored.session_id, request_scope)
-                                        .map_err(|error| error.to_string())?;
-                                }
-                                Ok(restored)
-                            });
+                            };
                             let _ = tx.send(InternalEvent::SessionRestored {
                                 request_id,
+                                requested_session_id,
                                 cwd,
                                 scope,
                                 result,
@@ -2531,26 +2931,74 @@ async fn command_loop(
                     return Err("runtime internal event queue closed".to_string());
                 };
                 match internal {
-                    InternalEvent::SessionCreated { request_id, cwd, scope, result } => match result {
+                    InternalEvent::SessionCreated { request_id, cwd, scope, result } => {
+                        pending_session_creates = pending_session_creates.saturating_sub(1);
+                        match result {
                         Ok(created) => {
                             let session_id = created.session_id;
+                            if let Err(error) = state.session_created(session_id.clone()) {
+                                sink.error(Some(request_id), "invalid_session_state", error.to_string(), false);
+                                drop_staged_config_notification(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    &session_id,
+                                );
+                                purge_orphaned_config_notifications(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    pending_session_creates,
+                                    &pending_session_restores,
+                                );
+                                continue;
+                            }
                             if let Err(message) = session_registry.activate(&session_id, &scope) {
-                                if let Some(manager) = terminal_manager.as_ref() {
-                                    let _ = manager.close_session(&session_id);
-                                }
-                                if let Some(manager) = filesystem_manager.as_ref() {
-                                    let _ = manager.close_session(&session_id);
-                                }
+                                state.forget_session(&session_id);
+                                drop_staged_config_notification(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    &session_id,
+                                );
                                 sink.error(
                                     Some(request_id),
                                     "session_store_failed",
                                     message,
                                     false,
                                 );
+                                purge_orphaned_config_notifications(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    pending_session_creates,
+                                    &pending_session_restores,
+                                );
                                 continue;
                             }
-                            if let Err(error) = state.session_created(session_id.clone()) {
-                                sink.error(Some(request_id), "invalid_session_state", error.to_string(), false);
+                            if let Err(message) = register_session_managers(
+                                terminal_manager.as_ref(),
+                                filesystem_manager.as_ref(),
+                                &session_id,
+                                &scope,
+                            ) {
+                                state.forget_session(&session_id);
+                                drop_staged_config_notification(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    &session_id,
+                                );
+                                if let Err(cleanup) = session_registry.remove(&session_id) {
+                                    sink.error(None, "session_store_failed", cleanup, false);
+                                }
+                                sink.error(
+                                    Some(request_id),
+                                    "session_registration_failed",
+                                    message,
+                                    false,
+                                );
+                                purge_orphaned_config_notifications(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    pending_session_creates,
+                                    &pending_session_restores,
+                                );
                                 continue;
                             }
                             scopes.insert(session_id.clone(), scope);
@@ -2571,33 +3019,104 @@ async fn command_loop(
                                     })),
                                 },
                             });
-                            if let Some(options) = pending_config_notifications.remove(&session_id) {
-                                config_options_by_session.insert(session_id.clone(), options.clone());
+                            if let Some((options, bytes)) =
+                                staged_config_notifications.remove(&session_id)
+                            {
+                                staged_config_bytes = staged_config_bytes.saturating_sub(bytes);
+                                config_options_by_session
+                                    .insert(session_id.clone(), options.clone());
                                 emit_config_changed(&sink, session_id, None, &options);
                             }
                         }
                         Err(message) => sink.error(Some(request_id), "create_session_failed", message, true),
-                    },
-                    InternalEvent::SessionRestored { request_id, cwd, scope, result } => match result {
+                        }
+                        purge_orphaned_config_notifications(
+                            &mut staged_config_notifications,
+                            &mut staged_config_bytes,
+                            pending_session_creates,
+                            &pending_session_restores,
+                        );
+                    }
+                    InternalEvent::SessionRestored {
+                        request_id,
+                        requested_session_id,
+                        cwd,
+                        scope,
+                        result,
+                    } => {
+                        decrement_pending_session_restore(
+                            &mut pending_session_restores,
+                            &requested_session_id,
+                        );
+                        match result {
                         Ok(restored) => {
                             let session_id = restored.session_id;
+                            if let Err(error) = state.session_created(session_id.clone()) {
+                                render_router.abort_replay(&request_id);
+                                sink.error(Some(request_id), "invalid_session_state", error.to_string(), false);
+                                drop_staged_config_notification(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    &session_id,
+                                );
+                                purge_orphaned_config_notifications(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    pending_session_creates,
+                                    &pending_session_restores,
+                                );
+                                continue;
+                            }
                             if let Err(message) = session_registry.activate(&session_id, &scope) {
-                                if let Some(manager) = terminal_manager.as_ref() {
-                                    let _ = manager.close_session(&session_id);
-                                }
-                                if let Some(manager) = filesystem_manager.as_ref() {
-                                    let _ = manager.close_session(&session_id);
-                                }
+                                state.forget_session(&session_id);
+                                render_router.abort_replay(&request_id);
+                                drop_staged_config_notification(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    &session_id,
+                                );
                                 sink.error(
                                     Some(request_id),
                                     "session_store_failed",
                                     message,
                                     false,
                                 );
+                                purge_orphaned_config_notifications(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    pending_session_creates,
+                                    &pending_session_restores,
+                                );
                                 continue;
                             }
-                            if let Err(error) = state.session_created(session_id.clone()) {
-                                sink.error(Some(request_id), "invalid_session_state", error.to_string(), false);
+                            if let Err(message) = register_session_managers(
+                                terminal_manager.as_ref(),
+                                filesystem_manager.as_ref(),
+                                &session_id,
+                                &scope,
+                            ) {
+                                state.forget_session(&session_id);
+                                render_router.abort_replay(&request_id);
+                                drop_staged_config_notification(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    &session_id,
+                                );
+                                if let Err(cleanup) = session_registry.remove(&session_id) {
+                                    sink.error(None, "session_store_failed", cleanup, false);
+                                }
+                                sink.error(
+                                    Some(request_id),
+                                    "session_registration_failed",
+                                    message,
+                                    false,
+                                );
+                                purge_orphaned_config_notifications(
+                                    &mut staged_config_notifications,
+                                    &mut staged_config_bytes,
+                                    pending_session_creates,
+                                    &pending_session_restores,
+                                );
                                 continue;
                             }
                             scopes.insert(session_id.clone(), scope);
@@ -2624,16 +3143,32 @@ async fn command_loop(
                                     })),
                                 },
                             });
-                            if let Some(options) = pending_config_notifications.remove(&session_id) {
-                                config_options_by_session.insert(session_id.clone(), options.clone());
+                            if let Some((options, bytes)) =
+                                staged_config_notifications.remove(&session_id)
+                            {
+                                staged_config_bytes = staged_config_bytes.saturating_sub(bytes);
+                                config_options_by_session
+                                    .insert(session_id.clone(), options.clone());
                                 emit_config_changed(&sink, session_id, None, &options);
                             }
                         }
                         Err(message) => {
                             render_router.abort_replay(&request_id);
+                            drop_staged_config_notification(
+                                &mut staged_config_notifications,
+                                &mut staged_config_bytes,
+                                &requested_session_id,
+                            );
                             sink.error(Some(request_id), "restore_session_failed", message, true);
                         }
-                    },
+                        }
+                        purge_orphaned_config_notifications(
+                            &mut staged_config_notifications,
+                            &mut staged_config_bytes,
+                            pending_session_creates,
+                            &pending_session_restores,
+                        );
+                    }
                     InternalEvent::SessionCataloged { request_id, result } => match result {
                         Ok(sessions) => sink.emit(RuntimeEvent::SessionCatalog {
                             request_id,
@@ -2643,15 +3178,7 @@ async fn command_loop(
                     },
                     InternalEvent::SessionClosed { request_id, session_id, result } => match result {
                         Ok(()) => {
-                            if let Err(message) = session_registry.remove(&session_id) {
-                                sink.error(
-                                    Some(request_id),
-                                    "session_store_failed",
-                                    message,
-                                    false,
-                                );
-                                continue;
-                            }
+                            let persistence_error = session_registry.remove(&session_id).err();
                             cancel_session_permissions(
                                 &pending_permissions,
                                 &sink,
@@ -2671,7 +3198,6 @@ async fn command_loop(
                             scopes.remove(&session_id);
                             config_options_by_session.remove(&session_id);
                             config_mutations.remove(&session_id);
-                            pending_config_notifications.remove(&session_id);
                             if let Err(error) = state.close_session(&session_id) {
                                 sink.error(Some(request_id), "invalid_session_state", error.to_string(), false);
                                 continue;
@@ -2685,20 +3211,15 @@ async fn command_loop(
                                     payload: None,
                                 },
                             });
+                            if let Some(message) = persistence_error {
+                                sink.error(None, "session_store_failed", message, false);
+                            }
                         }
                         Err(message) => sink.error(Some(request_id), "close_session_failed", message, true),
                     },
                     InternalEvent::SessionDeleted { request_id, session_id, result } => match result {
                         Ok(()) => {
-                            if let Err(message) = session_registry.remove(&session_id) {
-                                sink.error(
-                                    Some(request_id),
-                                    "session_store_failed",
-                                    message,
-                                    false,
-                                );
-                                continue;
-                            }
+                            let persistence_error = session_registry.remove(&session_id).err();
                             cancel_session_permissions(
                                 &pending_permissions,
                                 &sink,
@@ -2718,7 +3239,6 @@ async fn command_loop(
                             scopes.remove(&session_id);
                             config_options_by_session.remove(&session_id);
                             config_mutations.remove(&session_id);
-                            pending_config_notifications.remove(&session_id);
                             state.forget_session(&session_id);
                             sink.emit(RuntimeEvent::SessionUpdate {
                                 update: SessionUpdate {
@@ -2729,6 +3249,9 @@ async fn command_loop(
                                     payload: None,
                                 },
                             });
+                            if let Some(message) = persistence_error {
+                                sink.error(None, "session_store_failed", message, false);
+                            }
                         }
                         Err(message) => sink.error(Some(request_id), "delete_session_failed", message, true),
                     },
@@ -2842,15 +3365,43 @@ async fn command_loop(
                         if state.session_status(&session_id).is_some() {
                             config_options_by_session.insert(session_id.clone(), options.clone());
                             emit_config_changed(&sink, session_id, None, &options);
-                        } else if pending_config_notifications.len() < SESSION_CONFIG_MAX_OPTIONS
-                            || pending_config_notifications.contains_key(&session_id)
+                        } else if pending_session_creates > 0
+                            || pending_session_restores.contains_key(&session_id)
                         {
-                            pending_config_notifications.insert(session_id, options);
+                            let notification_bytes = serde_json::to_vec(&options)
+                                .map_or(STAGED_CONFIG_MAX_BYTES.saturating_add(1), |value| value.len());
+                            let previous_bytes = staged_config_notifications
+                                .get(&session_id)
+                                .map_or(0, |(_, bytes)| *bytes);
+                            let projected_bytes = staged_config_bytes
+                                .saturating_sub(previous_bytes)
+                                .saturating_add(notification_bytes);
+                            let projected_entries = staged_config_notifications.len()
+                                + usize::from(!staged_config_notifications.contains_key(&session_id));
+                            if notification_bytes > SESSION_CONFIG_MAX_PROJECTION_BYTES
+                                || projected_entries > STAGED_CONFIG_MAX_ENTRIES
+                                || projected_bytes > STAGED_CONFIG_MAX_BYTES
+                            {
+                                sink.error(
+                                    None,
+                                    "invalid_session_notification",
+                                    format!(
+                                        "config notification staging exceeds its bounded policy for session {session_id}"
+                                    ),
+                                    false,
+                                );
+                                continue;
+                            }
+                            staged_config_bytes = projected_bytes;
+                            staged_config_notifications
+                                .insert(session_id, (options, notification_bytes));
                         } else {
                             sink.error(
                                 None,
                                 "invalid_session_notification",
-                                "too many config notifications for unknown sessions",
+                                format!(
+                                    "config notification references unknown session {session_id}"
+                                ),
                                 false,
                             );
                         }
@@ -2859,6 +3410,44 @@ async fn command_loop(
             }
         }
     }
+}
+
+fn decrement_pending_session_restore(pending: &mut HashMap<String, usize>, session_id: &str) {
+    let Some(count) = pending.get_mut(session_id) else {
+        return;
+    };
+    *count = count.saturating_sub(1);
+    if *count == 0 {
+        pending.remove(session_id);
+    }
+}
+
+fn drop_staged_config_notification(
+    staged: &mut HashMap<String, (Vec<SessionConfigOptionProjection>, usize)>,
+    staged_bytes: &mut usize,
+    session_id: &str,
+) {
+    if let Some((_, bytes)) = staged.remove(session_id) {
+        *staged_bytes = staged_bytes.saturating_sub(bytes);
+    }
+}
+
+fn purge_orphaned_config_notifications(
+    staged: &mut HashMap<String, (Vec<SessionConfigOptionProjection>, usize)>,
+    staged_bytes: &mut usize,
+    pending_creates: usize,
+    pending_restores: &HashMap<String, usize>,
+) {
+    if pending_creates > 0 {
+        return;
+    }
+    staged.retain(|session_id, (_, bytes)| {
+        let retain = pending_restores.contains_key(session_id);
+        if !retain {
+            *staged_bytes = staged_bytes.saturating_sub(*bytes);
+        }
+        retain
+    });
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3031,18 +3620,33 @@ fn filesystem_denied_error() -> AcpError {
     AcpError::request_cancelled().data("filesystem operation denied by user")
 }
 
-fn project_filesystem_permission(approval: &FilesystemApproval) -> PermissionRequestProjection {
+fn project_filesystem_permission(
+    approval: &FilesystemApproval,
+) -> Result<PermissionRequestProjection, String> {
     let (title, tool_kind) = match approval.kind {
         FilesystemOperationKind::Read => ("Read file", "read"),
         FilesystemOperationKind::Write => ("Write file", "edit"),
     };
-    PermissionRequestProjection {
+    let raw_input = match approval.kind {
+        FilesystemOperationKind::Read => serde_json::json!({
+            "path": approval.path,
+            "line": approval.line,
+            "limit": approval.limit,
+        }),
+        FilesystemOperationKind::Write => serde_json::json!({
+            "path": approval.path,
+            "writeBytes": approval.write_bytes,
+            "contentPreview": approval.content_preview,
+            "contentTruncated": approval.content_truncated,
+        }),
+    };
+    let projection = PermissionRequestProjection {
         request_id: approval.approval_id.clone(),
         session_id: approval.session_id.clone(),
         tool_call_id: format!("filesystem:{}", approval.approval_id),
         title: title.to_string(),
         tool_kind: tool_kind.to_string(),
-        raw_input: Some(serde_json::json!({ "path": approval.path })),
+        raw_input: Some(raw_input),
         options: vec![
             PermissionOptionProjection {
                 option_id: FILESYSTEM_ALLOW_ONCE_OPTION_ID.to_string(),
@@ -3055,7 +3659,9 @@ fn project_filesystem_permission(approval: &FilesystemApproval) -> PermissionReq
                 kind: "reject_once".to_string(),
             },
         ],
-    }
+    };
+    validate_permission_projection(&projection)?;
+    Ok(projection)
 }
 
 fn terminal_exit_status(exit: TerminalExit) -> TerminalExitStatus {
@@ -3105,10 +3711,12 @@ fn project_terminal_runtime_event(event: TerminalRuntimeEvent) -> RuntimeEvent {
     }
 }
 
-fn project_terminal_permission(approval: &crate::TerminalApproval) -> PermissionRequestProjection {
+fn project_terminal_permission(
+    approval: &crate::TerminalApproval,
+) -> Result<PermissionRequestProjection, String> {
     let command = approval.command.first().cloned().unwrap_or_default();
     let args = approval.command.iter().skip(1).cloned().collect::<Vec<_>>();
-    PermissionRequestProjection {
+    let projection = PermissionRequestProjection {
         request_id: approval.approval_id.clone(),
         session_id: approval.session_id.clone(),
         tool_call_id: format!("terminal:{}", approval.approval_id),
@@ -3118,6 +3726,7 @@ fn project_terminal_permission(approval: &crate::TerminalApproval) -> Permission
             "command": command,
             "args": args,
             "cwd": approval.cwd,
+            "environment": approval.environment,
         })),
         options: vec![
             PermissionOptionProjection {
@@ -3131,7 +3740,9 @@ fn project_terminal_permission(approval: &crate::TerminalApproval) -> Permission
                 kind: "reject_once".to_string(),
             },
         ],
-    }
+    };
+    validate_permission_projection(&projection)?;
+    Ok(projection)
 }
 
 async fn list_all_sessions(
@@ -3141,6 +3752,7 @@ async fn list_all_sessions(
     let mut cursor: Option<String> = None;
     let mut seen_cursors = HashSet::new();
     let mut seen_sessions = HashSet::new();
+    let mut projected_bytes = 2_usize;
     for _ in 0..SESSION_LIST_MAX_PAGES {
         let response = connection
             .send_request(ListSessionsRequest::new().cursor(cursor.clone()))
@@ -3158,6 +3770,17 @@ async fn list_all_sessions(
                 return Err(format!(
                     "session catalog repeats id {}",
                     projected.session_id
+                ));
+            }
+            let entry_bytes = serde_json::to_vec(&projected)
+                .map_err(|error| format!("failed to encode session catalog entry: {error}"))?
+                .len();
+            projected_bytes = projected_bytes
+                .saturating_add(entry_bytes)
+                .saturating_add(usize::from(!sessions.is_empty()));
+            if projected_bytes > SESSION_CATALOG_MAX_PROJECTION_BYTES {
+                return Err(format!(
+                    "session catalog projection exceeds {SESSION_CATALOG_MAX_PROJECTION_BYTES} bytes"
                 ));
             }
             sessions.push(projected);
@@ -3184,18 +3807,31 @@ async fn list_all_sessions(
 }
 
 fn project_session_info(session: SessionInfo) -> Result<SessionCatalogEntryProjection, String> {
-    let session_id = session.session_id.to_string();
-    if session_id.is_empty() || session_id.trim() != session_id {
-        return Err("session catalog contains a non-canonical session id".to_string());
+    let session_id = bounded_protocol_text(
+        &session.session_id.to_string(),
+        "session catalog id",
+        SESSION_ID_MAX_BYTES,
+        false,
+    )?;
+    if session.cwd.as_os_str().as_bytes().len() > SESSION_CATALOG_PATH_MAX_BYTES {
+        return Err("session catalog cwd exceeds the bounded path policy".to_string());
     }
     let cwd = normalize_workspace_identity(&session.cwd)
         .map_err(|error| error.to_string())?
         .display()
         .to_string();
+    if session.additional_directories.len() > SESSION_CATALOG_MAX_ADDITIONAL_DIRECTORIES {
+        return Err(format!(
+            "session catalog entry exceeds {SESSION_CATALOG_MAX_ADDITIONAL_DIRECTORIES} additional directories"
+        ));
+    }
     let additional_directories = session
         .additional_directories
         .iter()
         .map(|path| {
+            if path.as_os_str().as_bytes().len() > SESSION_CATALOG_PATH_MAX_BYTES {
+                return Err("session catalog directory exceeds the bounded path policy".to_string());
+            }
             normalize_workspace_identity(Path::new(path))
                 .map(|normalized| normalized.display().to_string())
                 .map_err(|error| error.to_string())
@@ -3207,14 +3843,44 @@ fn project_session_info(session: SessionInfo) -> Result<SessionCatalogEntryProje
         .map(serde_json::to_value)
         .transpose()
         .map_err(|error| format!("invalid session catalog metadata: {error}"))?;
-    Ok(SessionCatalogEntryProjection {
+    if let Some(meta) = meta.as_ref()
+        && serde_json::to_vec(meta)
+            .map_err(|error| format!("invalid session catalog metadata: {error}"))?
+            .len()
+            > SESSION_CATALOG_METADATA_MAX_BYTES
+    {
+        return Err(format!(
+            "session catalog metadata exceeds {SESSION_CATALOG_METADATA_MAX_BYTES} bytes"
+        ));
+    }
+    let updated_at = session
+        .updated_at
+        .map(|value| {
+            bounded_protocol_text(
+                &value,
+                "session catalog updated_at",
+                SESSION_LIST_MAX_CURSOR_BYTES,
+                true,
+            )
+        })
+        .transpose()?;
+    let projection = SessionCatalogEntryProjection {
         session_id,
         cwd,
         additional_directories,
         title,
-        updated_at: session.updated_at,
+        updated_at,
         meta,
-    })
+    };
+    let encoded_bytes = serde_json::to_vec(&projection)
+        .map_err(|error| format!("failed to encode session catalog entry: {error}"))?
+        .len();
+    if encoded_bytes > SESSION_CATALOG_ENTRY_MAX_BYTES {
+        return Err(format!(
+            "session catalog entry exceeds {SESSION_CATALOG_ENTRY_MAX_BYTES} bytes"
+        ));
+    }
+    Ok(projection)
 }
 
 fn normalize_session_title(value: &str) -> Option<String> {
@@ -3349,26 +4015,63 @@ fn project_mcp_servers(
         .collect()
 }
 
-fn project_auth_methods(methods: &[AuthMethod]) -> Vec<AuthMethodProjection> {
-    methods
-        .iter()
-        .filter_map(|method| {
-            let id = method.id().to_string();
-            let name = method.name().trim();
-            if id.is_empty() || id.trim() != id || name.is_empty() {
-                return None;
-            }
-            Some(AuthMethodProjection {
-                id,
-                name: name.to_string(),
-                description: method
-                    .description()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string),
+fn project_auth_methods(methods: &[AuthMethod]) -> Result<Vec<AuthMethodProjection>, String> {
+    if methods.len() > AUTH_METHODS_MAX_ENTRIES {
+        return Err(format!(
+            "agent initialize exceeds {AUTH_METHODS_MAX_ENTRIES} authentication methods"
+        ));
+    }
+    let mut projected = Vec::with_capacity(methods.len());
+    let mut ids = HashSet::with_capacity(methods.len());
+    for method in methods {
+        let id = bounded_protocol_text(
+            &method.id().to_string(),
+            "authentication method id",
+            AUTH_METHOD_ID_MAX_BYTES,
+            false,
+        )?;
+        if id.trim() != id {
+            return Err(
+                "authentication method id must not have surrounding whitespace".to_string(),
+            );
+        }
+        if !ids.insert(id.clone()) {
+            return Err(format!("duplicate authentication method id: {id}"));
+        }
+        let name = bounded_protocol_text(
+            method.name().trim(),
+            "authentication method name",
+            AUTH_METHOD_NAME_MAX_BYTES,
+            false,
+        )?;
+        let description = method
+            .description()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                bounded_protocol_text(
+                    value,
+                    "authentication method description",
+                    AUTH_METHOD_DESCRIPTION_MAX_BYTES,
+                    false,
+                )
             })
-        })
-        .collect()
+            .transpose()?;
+        projected.push(AuthMethodProjection {
+            id,
+            name,
+            description,
+        });
+        let projection_bytes = serde_json::to_vec(&projected)
+            .map_err(|error| format!("authentication methods could not be serialized: {error}"))?
+            .len();
+        if projection_bytes > AUTH_METHODS_MAX_PROJECTION_BYTES {
+            return Err(format!(
+                "authentication methods exceed {AUTH_METHODS_MAX_PROJECTION_BYTES} projected bytes"
+            ));
+        }
+    }
+    Ok(projected)
 }
 
 fn session_support(
@@ -3385,8 +4088,17 @@ fn session_support(
 
 fn project_created_session(response: &NewSessionResponse) -> Result<CreatedSession, String> {
     Ok(CreatedSession {
-        session_id: response.session_id.to_string(),
-        modes: response.modes.as_ref().map(project_session_modes),
+        session_id: bounded_protocol_text(
+            &response.session_id.to_string(),
+            "session id",
+            SESSION_ID_MAX_BYTES,
+            false,
+        )?,
+        modes: response
+            .modes
+            .as_ref()
+            .map(project_session_modes)
+            .transpose()?,
         config_options: project_session_config_options(response.config_options.as_deref())?,
     })
 }
@@ -3408,8 +4120,9 @@ fn project_session_config_options(
         if !option_ids.insert(id.clone()) {
             return Err(format!("duplicate session config id: {id}"));
         }
-        let name = display_protocol_text(&option.name, &id);
-        let description = optional_protocol_text(option.description.as_deref());
+        let name = display_protocol_text(&option.name, &id, "session config name")?;
+        let description =
+            optional_protocol_text(option.description.as_deref(), "session config description")?;
         let category = option
             .category
             .as_ref()
@@ -3431,6 +4144,14 @@ fn project_session_config_options(
             description,
             category,
         });
+    }
+    let encoded_bytes = serde_json::to_vec(&projected)
+        .map_err(|error| format!("failed to encode session config projection: {error}"))?
+        .len();
+    if encoded_bytes > SESSION_CONFIG_MAX_PROJECTION_BYTES {
+        return Err(format!(
+            "session config projection exceeds {SESSION_CONFIG_MAX_PROJECTION_BYTES} bytes"
+        ));
     }
     Ok(projected)
 }
@@ -3469,7 +4190,11 @@ fn project_session_config_kind(
                             &group.group.to_string(),
                             "session config group id",
                         )?;
-                        let group_name = display_protocol_text(&group.name, &group_id);
+                        let group_name = display_protocol_text(
+                            &group.name,
+                            &group_id,
+                            "session config group name",
+                        )?;
                         for choice in &group.options {
                             choices.push(project_config_choice(
                                 choice,
@@ -3516,54 +4241,103 @@ fn project_config_choice(
 ) -> Result<SessionConfigChoiceProjection, String> {
     let value = canonical_protocol_text(&choice.value.to_string(), "session config choice")?;
     Ok(SessionConfigChoiceProjection {
-        name: display_protocol_text(&choice.name, &value),
+        name: display_protocol_text(&choice.name, &value, "session config choice name")?,
         value,
-        description: optional_protocol_text(choice.description.as_deref()),
+        description: optional_protocol_text(
+            choice.description.as_deref(),
+            "session config choice description",
+        )?,
         group_id,
         group_name,
     })
 }
 
 fn canonical_protocol_text(value: &str, label: &str) -> Result<String, String> {
-    if value.is_empty() || value.trim() != value {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > SESSION_CONFIG_MAX_TEXT_BYTES
+        || value.as_bytes().contains(&0)
+    {
         Err(format!("{label} must be canonical non-empty text"))
     } else {
         Ok(value.to_string())
     }
 }
 
-fn display_protocol_text(value: &str, fallback: &str) -> String {
+fn display_protocol_text(value: &str, fallback: &str, label: &str) -> Result<String, String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        fallback.to_string()
+    if trimmed.len() > SESSION_CONFIG_MAX_TEXT_BYTES || trimmed.as_bytes().contains(&0) {
+        Err(format!("{label} exceeds the bounded session config policy"))
+    } else if trimmed.is_empty() {
+        Ok(fallback.to_string())
     } else {
-        trimmed.to_string()
+        Ok(trimmed.to_string())
     }
 }
 
-fn optional_protocol_text(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+fn optional_protocol_text(value: Option<&str>, label: &str) -> Result<Option<String>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.len() > SESSION_CONFIG_MAX_TEXT_BYTES || value.as_bytes().contains(&0) {
+        return Err(format!("{label} exceeds the bounded session config policy"));
+    }
+    Ok(Some(value.to_string()))
 }
 
-fn project_session_modes(modes: &SessionModeState) -> SessionModesProjection {
-    SessionModesProjection {
-        current_mode_id: modes.current_mode_id.to_string(),
-        available_modes: modes
-            .available_modes
-            .iter()
-            .map(|mode| SessionModeProjection {
-                id: mode.id.to_string(),
-                label: if mode.name.trim().is_empty() {
-                    mode.id.to_string()
-                } else {
-                    mode.name.clone()
-                },
-            })
-            .collect(),
+fn project_session_modes(modes: &SessionModeState) -> Result<SessionModesProjection, String> {
+    if modes.available_modes.len() > SESSION_MODES_MAX_ENTRIES {
+        return Err(format!(
+            "session modes exceed {SESSION_MODES_MAX_ENTRIES} entries"
+        ));
     }
+    let current_mode_id = bounded_protocol_text(
+        &modes.current_mode_id.to_string(),
+        "current session mode id",
+        SESSION_MODE_TEXT_MAX_BYTES,
+        false,
+    )?;
+    let mut mode_ids = HashSet::new();
+    let available_modes = modes
+        .available_modes
+        .iter()
+        .map(|mode| {
+            let id = bounded_protocol_text(
+                &mode.id.to_string(),
+                "session mode id",
+                SESSION_MODE_TEXT_MAX_BYTES,
+                false,
+            )?;
+            if !mode_ids.insert(id.clone()) {
+                return Err(format!("duplicate session mode id: {id}"));
+            }
+            let name = mode.name.trim();
+            let label = if name.is_empty() { &id } else { name };
+            let label = bounded_protocol_text(
+                label,
+                "session mode label",
+                SESSION_MODE_TEXT_MAX_BYTES,
+                true,
+            )?;
+            Ok(SessionModeProjection { id, label })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if !mode_ids.contains(&current_mode_id) {
+        return Err("current session mode is not advertised".to_string());
+    }
+    let projection = SessionModesProjection {
+        current_mode_id,
+        available_modes,
+    };
+    let encoded_bytes = serde_json::to_vec(&projection)
+        .map_err(|error| format!("failed to encode session modes projection: {error}"))?
+        .len();
+    if encoded_bytes > SESSION_MODES_MAX_PROJECTION_BYTES {
+        return Err(format!(
+            "session modes projection exceeds {SESSION_MODES_MAX_PROJECTION_BYTES} bytes"
+        ));
+    }
+    Ok(projection)
 }
 
 fn stop_reason_name(reason: StopReason) -> &'static str {
@@ -3580,31 +4354,93 @@ fn stop_reason_name(reason: StopReason) -> &'static str {
 fn project_permission_request(
     request_id: &str,
     request: &RequestPermissionRequest,
-) -> PermissionRequestProjection {
-    PermissionRequestProjection {
-        request_id: request_id.to_string(),
-        session_id: request.session_id.to_string(),
-        tool_call_id: request.tool_call.tool_call_id.to_string(),
-        title: request
+) -> Result<PermissionRequestProjection, String> {
+    if request.options.len() > PERMISSION_MAX_OPTIONS {
+        return Err(format!(
+            "permission request exceeds {PERMISSION_MAX_OPTIONS} options"
+        ));
+    }
+    let session_id = permission_projection_text(&request.session_id.to_string(), "session id")?;
+    let tool_call_id =
+        permission_projection_text(&request.tool_call.tool_call_id.to_string(), "tool call id")?;
+    let title = permission_projection_text(
+        request
             .tool_call
             .fields
             .title
-            .clone()
-            .unwrap_or_else(|| "Agent action".to_string()),
+            .as_deref()
+            .unwrap_or("Agent action"),
+        "permission title",
+    )?;
+    let raw_input = request.tool_call.fields.raw_input.as_ref();
+    if let Some(raw_input) = raw_input {
+        let encoded = serde_json::to_vec(raw_input)
+            .map_err(|error| format!("invalid permission raw input: {error}"))?;
+        if encoded.len() > PERMISSION_MAX_RAW_INPUT_BYTES {
+            return Err(format!(
+                "permission raw input exceeds {PERMISSION_MAX_RAW_INPUT_BYTES} bytes"
+            ));
+        }
+    }
+    let options = request
+        .options
+        .iter()
+        .map(|option| {
+            Ok(PermissionOptionProjection {
+                option_id: permission_projection_text(
+                    &option.option_id.to_string(),
+                    "permission option id",
+                )?,
+                label: permission_projection_text(&option.name, "permission option label")?,
+                kind: permission_option_kind(option.kind).to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let projection = PermissionRequestProjection {
+        request_id: permission_projection_text(request_id, "permission request id")?,
+        session_id,
+        tool_call_id,
+        title,
         tool_kind: request.tool_call.fields.kind.map_or_else(
             || "other".to_string(),
             |kind| format!("{kind:?}").to_lowercase(),
         ),
-        raw_input: request.tool_call.fields.raw_input.clone(),
-        options: request
-            .options
-            .iter()
-            .map(|option| PermissionOptionProjection {
-                option_id: option.option_id.to_string(),
-                label: option.name.clone(),
-                kind: permission_option_kind(option.kind).to_string(),
-            })
-            .collect(),
+        raw_input: raw_input.cloned(),
+        options,
+    };
+    validate_permission_projection(&projection)?;
+    Ok(projection)
+}
+
+fn validate_permission_projection(projection: &PermissionRequestProjection) -> Result<(), String> {
+    if let Some(raw_input) = projection.raw_input.as_ref() {
+        let raw_input_bytes = serde_json::to_vec(raw_input)
+            .map_err(|error| format!("failed to encode permission raw input: {error}"))?
+            .len();
+        if raw_input_bytes > PERMISSION_MAX_RAW_INPUT_BYTES {
+            return Err(format!(
+                "permission raw input exceeds {PERMISSION_MAX_RAW_INPUT_BYTES} bytes"
+            ));
+        }
+    }
+    let encoded_bytes = serde_json::to_vec(projection)
+        .map_err(|error| format!("failed to encode permission projection: {error}"))?
+        .len();
+    if encoded_bytes > PERMISSION_MAX_PROJECTION_BYTES {
+        return Err(format!(
+            "permission projection exceeds {PERMISSION_MAX_PROJECTION_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn permission_projection_text(value: &str, label: &str) -> Result<String, String> {
+    if value.len() > PERMISSION_MAX_TEXT_BYTES || value.as_bytes().contains(&0) {
+        Err(format!(
+            "{label} exceeds the bounded permission projection policy"
+        ))
+    } else {
+        Ok(value.to_string())
     }
 }
 
@@ -3619,7 +4455,7 @@ fn permission_option_kind(kind: PermissionOptionKind) -> &'static str {
 }
 
 enum ProjectedSessionNotification {
-    Render(RenderUpdate),
+    Render(Vec<RenderUpdate>),
     Control(SessionUpdate),
     Config {
         session_id: String,
@@ -3627,74 +4463,96 @@ enum ProjectedSessionNotification {
     },
 }
 
+#[allow(clippy::too_many_lines)]
 fn project_session_notification(
     notification: SessionNotification,
 ) -> Result<Option<ProjectedSessionNotification>, String> {
-    let session_id = notification.session_id.to_string();
+    let session_id = bounded_protocol_text(
+        &notification.session_id.to_string(),
+        "session notification id",
+        SESSION_ID_MAX_BYTES,
+        false,
+    )?;
     let projection = match notification.update {
         AcpSessionUpdate::UserMessageChunk(chunk) => {
             let (text, metadata) = render_content(&chunk.content);
-            ProjectedSessionNotification::Render(RenderUpdate {
+            ProjectedSessionNotification::Render(project_render_updates(
                 session_id,
-                kind: RenderUpdateKind::UserMessage,
+                RenderUpdateKind::UserMessage,
                 text,
                 metadata,
-            })
+            ))
         }
         AcpSessionUpdate::AgentMessageChunk(chunk) => {
             let (text, metadata) = render_content(&chunk.content);
-            ProjectedSessionNotification::Render(RenderUpdate {
+            ProjectedSessionNotification::Render(project_render_updates(
                 session_id,
-                kind: RenderUpdateKind::AssistantText,
+                RenderUpdateKind::AssistantText,
                 text,
                 metadata,
-            })
+            ))
         }
         AcpSessionUpdate::AgentThoughtChunk(chunk) => {
             let (text, _) = render_content(&chunk.content);
-            ProjectedSessionNotification::Render(RenderUpdate {
+            ProjectedSessionNotification::Render(project_render_updates(
                 session_id,
-                kind: RenderUpdateKind::Thought,
+                RenderUpdateKind::Thought,
                 text,
-                metadata: None,
-            })
+                None,
+            ))
         }
         AcpSessionUpdate::ToolCall(value) => {
-            let title = value.title.clone();
-            ProjectedSessionNotification::Render(RenderUpdate {
+            let title = bounded_protocol_text(
+                &value.title,
+                "tool call title",
+                RENDER_TITLE_MAX_BYTES,
+                true,
+            )?;
+            ProjectedSessionNotification::Render(vec![RenderUpdate {
                 session_id,
                 kind: RenderUpdateKind::ToolCall,
                 text: title,
-                metadata: project_tool_render_metadata(value),
-            })
+                metadata: project_tool_render_metadata(value)?,
+            }])
         }
         AcpSessionUpdate::ToolCallUpdate(value) => {
-            let title = value.fields.title.clone().unwrap_or_default();
-            ProjectedSessionNotification::Render(RenderUpdate {
+            let title = bounded_protocol_text(
+                value.fields.title.as_deref().unwrap_or_default(),
+                "tool call update title",
+                RENDER_TITLE_MAX_BYTES,
+                true,
+            )?;
+            ProjectedSessionNotification::Render(vec![RenderUpdate {
                 session_id,
                 kind: RenderUpdateKind::ToolCall,
                 text: title,
-                metadata: project_tool_render_metadata(value),
-            })
+                metadata: project_tool_render_metadata(value)?,
+            }])
         }
         AcpSessionUpdate::Plan(value) => {
             let mut metadata = serde_json::json!({ "entries": value.entries });
             strip_non_render_fields(&mut metadata);
-            ProjectedSessionNotification::Render(RenderUpdate {
+            ProjectedSessionNotification::Render(vec![RenderUpdate {
                 session_id,
                 kind: RenderUpdateKind::Plan,
                 text: String::new(),
-                metadata: Some(metadata),
-            })
+                metadata: Some(bound_render_metadata(metadata, "plan")),
+            }])
         }
         AcpSessionUpdate::CurrentModeUpdate(value) => {
+            let mode_id = bounded_protocol_text(
+                &value.current_mode_id.to_string(),
+                "current session mode id",
+                SESSION_MODE_TEXT_MAX_BYTES,
+                false,
+            )?;
             ProjectedSessionNotification::Control(SessionUpdate {
                 session_id,
                 kind: SessionUpdateKind::ModeChanged,
                 text: None,
                 request_id: None,
                 payload: Some(serde_json::json!({
-                    "modeId": value.current_mode_id,
+                    "modeId": mode_id,
                 })),
             })
         }
@@ -3705,10 +4563,99 @@ fn project_session_notification(
                 options,
             }));
         }
+        AcpSessionUpdate::AvailableCommandsUpdate(value) => {
+            let commands = project_available_commands(&value.available_commands)?;
+            ProjectedSessionNotification::Control(SessionUpdate {
+                session_id,
+                kind: SessionUpdateKind::CommandsChanged,
+                text: None,
+                request_id: None,
+                payload: Some(serde_json::json!({
+                    "availableCommands": commands,
+                })),
+            })
+        }
         // Protocol notifications without a UI consumer never cross FFI.
         _ => return Ok(None),
     };
     Ok(Some(projection))
+}
+
+fn project_available_commands(
+    commands: &[AvailableCommand],
+) -> Result<Vec<serde_json::Value>, String> {
+    if commands.len() > AVAILABLE_COMMANDS_MAX_ENTRIES {
+        return Err(format!(
+            "available commands exceed {AVAILABLE_COMMANDS_MAX_ENTRIES} entries"
+        ));
+    }
+    let mut names = HashSet::with_capacity(commands.len());
+    let mut projected = Vec::with_capacity(commands.len());
+    let mut projected_bytes = 2_usize;
+    for command in commands {
+        let name = bounded_protocol_text(
+            &command.name,
+            "available command name",
+            AVAILABLE_COMMAND_NAME_MAX_BYTES,
+            false,
+        )?;
+        if !names.insert(name.clone()) {
+            return Err(format!("duplicate available command name: {name}"));
+        }
+        let description = bounded_protocol_text(
+            &command.description,
+            "available command description",
+            AVAILABLE_COMMAND_DESCRIPTION_MAX_BYTES,
+            true,
+        )?;
+        let input = match command.input.as_ref() {
+            Some(AvailableCommandInput::Unstructured(input)) => Some(serde_json::json!({
+                "hint": bounded_protocol_text(
+                    &input.hint,
+                    "available command input hint",
+                    AVAILABLE_COMMAND_HINT_MAX_BYTES,
+                    true,
+                )?,
+            })),
+            // Future ACP input variants are intentionally omitted until the UI
+            // has a bounded, typed projection for them.
+            Some(_) | None => None,
+        };
+        let projection = serde_json::json!({
+            "name": name,
+            "description": description,
+            "input": input,
+        });
+        let entry_bytes = serde_json::to_vec(&projection)
+            .map_err(|error| format!("failed to encode available commands: {error}"))?
+            .len();
+        projected_bytes = projected_bytes
+            .saturating_add(entry_bytes)
+            .saturating_add(usize::from(!projected.is_empty()));
+        if projected_bytes > AVAILABLE_COMMANDS_MAX_PROJECTION_BYTES {
+            return Err(format!(
+                "available commands projection exceeds {AVAILABLE_COMMANDS_MAX_PROJECTION_BYTES} bytes"
+            ));
+        }
+        projected.push(projection);
+    }
+    Ok(projected)
+}
+
+fn bounded_protocol_text(
+    value: &str,
+    label: &str,
+    max_bytes: usize,
+    allow_empty: bool,
+) -> Result<String, String> {
+    let trimmed = value.trim();
+    if !allow_empty && (trimmed.is_empty() || trimmed != value) {
+        return Err(format!("{label} must be canonical text"));
+    }
+    if trimmed.len() > max_bytes || trimmed.as_bytes().contains(&0) {
+        return Err(format!("{label} exceeds {max_bytes} UTF-8 bytes"));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn emit_config_changed(
@@ -3738,12 +4685,74 @@ fn render_content(content: &ContentBlock) -> (String, Option<serde_json::Value>)
         }
         (
             String::new(),
-            block.map(|block| serde_json::json!({ "contentBlocks": [block] })),
+            block.map(|block| {
+                bound_render_metadata(
+                    serde_json::json!({ "contentBlocks": [block] }),
+                    "content_block",
+                )
+            }),
         )
     }
 }
 
-fn project_tool_render_metadata<T: serde::Serialize>(value: T) -> Option<serde_json::Value> {
+fn project_render_updates(
+    session_id: String,
+    kind: RenderUpdateKind,
+    text: String,
+    metadata: Option<serde_json::Value>,
+) -> Vec<RenderUpdate> {
+    if text.len() <= RENDER_TEXT_CHUNK_MAX_BYTES {
+        return vec![RenderUpdate {
+            session_id,
+            kind,
+            text,
+            metadata,
+        }];
+    }
+    let mut updates = Vec::new();
+    let mut offset = 0_usize;
+    while offset < text.len() {
+        let mut end = offset
+            .saturating_add(RENDER_TEXT_CHUNK_MAX_BYTES)
+            .min(text.len());
+        while !text.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        updates.push(RenderUpdate {
+            session_id: session_id.clone(),
+            kind,
+            text: text[offset..end].to_string(),
+            metadata: if offset == 0 { metadata.clone() } else { None },
+        });
+        offset = end;
+    }
+    updates
+}
+
+fn render_metadata_bytes(metadata: Option<&serde_json::Value>) -> usize {
+    metadata
+        .and_then(|value| serde_json::to_vec(value).ok())
+        .map_or(0, |value| value.len())
+}
+
+fn bound_render_metadata(value: serde_json::Value, resource: &str) -> serde_json::Value {
+    let encoded_bytes = serde_json::to_vec(&value).map_or(usize::MAX, |encoded| encoded.len());
+    if encoded_bytes <= RENDER_METADATA_MAX_BYTES {
+        value
+    } else {
+        serde_json::json!({
+            "type": "omitted",
+            "reason": "input_limit",
+            "resource": resource,
+            "limit": RENDER_METADATA_MAX_BYTES,
+            "observedAtLeast": encoded_bytes,
+        })
+    }
+}
+
+fn project_tool_render_metadata<T: serde::Serialize>(
+    value: T,
+) -> Result<Option<serde_json::Value>, String> {
     const TOOL_RENDER_FIELDS: [&str; 8] = [
         "toolCallId",
         "title",
@@ -3754,15 +4763,55 @@ fn project_tool_render_metadata<T: serde::Serialize>(value: T) -> Option<serde_j
         "rawInput",
         "rawOutput",
     ];
-    let mut value = serde_json::to_value(value).ok()?;
+    let mut value = serde_json::to_value(value)
+        .map_err(|error| format!("tool call metadata could not be serialized: {error}"))?;
     strip_non_render_fields(&mut value);
-    let fields = value.as_object_mut()?;
+    let Some(fields) = value.as_object_mut() else {
+        return Ok(None);
+    };
     fields.retain(|key, _| TOOL_RENDER_FIELDS.contains(&key.as_str()));
+    if let Some(tool_call_id) = fields.get("toolCallId").and_then(serde_json::Value::as_str) {
+        let tool_call_id =
+            bounded_protocol_text(tool_call_id, "tool call id", SESSION_ID_MAX_BYTES, false)?;
+        fields.insert(
+            "toolCallId".to_string(),
+            serde_json::Value::String(tool_call_id),
+        );
+    }
+    bound_render_field(fields, "title", RENDER_TITLE_MAX_BYTES);
     bound_render_field(fields, "rawInput", RENDER_TOOL_DETAIL_MAX_BYTES);
     bound_render_field(fields, "rawOutput", RENDER_TOOL_DETAIL_MAX_BYTES);
     bound_render_field(fields, "locations", RENDER_TOOL_DETAIL_MAX_BYTES);
     bound_render_field(fields, "content", RENDER_TOOL_CONTENT_MAX_BYTES);
-    Some(value)
+    for field in ["rawOutput", "content", "rawInput", "locations"] {
+        if serde_json::to_vec(&value).map_or(usize::MAX, |encoded| encoded.len())
+            <= RENDER_METADATA_MAX_BYTES
+        {
+            break;
+        }
+        let Some(fields) = value.as_object_mut() else {
+            break;
+        };
+        if fields.contains_key(field) {
+            fields.insert(
+                field.to_string(),
+                serde_json::json!({
+                    "type": "omitted",
+                    "reason": "aggregate_input_limit",
+                    "resource": format!("tool_{field}"),
+                    "limit": RENDER_METADATA_MAX_BYTES,
+                }),
+            );
+        }
+    }
+    if serde_json::to_vec(&value).map_or(usize::MAX, |encoded| encoded.len())
+        > RENDER_METADATA_MAX_BYTES
+    {
+        return Err(format!(
+            "tool call identity metadata exceeds {RENDER_METADATA_MAX_BYTES} bytes"
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn bound_render_field(
@@ -3807,6 +4856,45 @@ fn strip_non_render_fields(value: &mut serde_json::Value) {
     }
 }
 
+async fn read_bounded_utf8_line<R>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut bytes = Vec::with_capacity(max_bytes.min(8 * 1024));
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let content_bytes = newline.unwrap_or(available.len());
+        if content_bytes > max_bytes.saturating_sub(bytes.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("line exceeds {max_bytes} UTF-8 bytes"),
+            ));
+        }
+        bytes.extend_from_slice(&available[..content_bytes]);
+        let consumed = newline.map_or(content_bytes, |index| index + 1);
+        reader.consume_unpin(consumed);
+        if newline.is_some() {
+            break;
+        }
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "line is not UTF-8"))
+}
+
 struct LocalAgentTransport {
     config: AgentLaunchConfig,
     sink: EventSink,
@@ -3844,19 +4932,32 @@ impl ConnectTo<agent_client_protocol::Client> for LocalAgentTransport {
 
         let stderr_sink = self.sink.clone();
         let stderr_future = async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Some(result) = lines.next().await {
-                match result {
-                    Ok(line) => stderr_sink.emit(RuntimeEvent::StderrLog { line }),
+            let mut reader = BufReader::new(stderr);
+            loop {
+                match read_bounded_utf8_line(&mut reader, AGENT_STDERR_LINE_MAX_BYTES).await {
+                    Ok(Some(line)) => stderr_sink.emit(RuntimeEvent::StderrLog { line }),
+                    Ok(None) => return Ok::<(), AcpError>(()),
                     Err(error) => {
-                        stderr_sink.error(None, "stderr_read_failed", error.to_string(), true);
-                        break;
+                        stderr_sink.error(None, "stderr_read_failed", error.to_string(), false);
+                        return Err(AcpError::into_internal_error(error));
                     }
                 }
             }
         };
 
-        let incoming = Box::pin(BufReader::new(stdout).lines());
+        let incoming = Box::pin(futures::stream::unfold(
+            (BufReader::new(stdout), false),
+            async move |(mut reader, finished)| {
+                if finished {
+                    return None;
+                }
+                match read_bounded_utf8_line(&mut reader, ACP_PROTOCOL_LINE_MAX_BYTES).await {
+                    Ok(Some(line)) => Some((Ok(line), (reader, false))),
+                    Ok(None) => None,
+                    Err(error) => Some((Err(error), (reader, true))),
+                }
+            },
+        ));
         let outgoing = Box::pin(futures::sink::unfold(
             stdin,
             async move |mut writer, line: String| {
@@ -3893,7 +4994,8 @@ impl ConnectTo<agent_client_protocol::Client> for LocalAgentTransport {
         let stderr_future = pin!(stderr_future);
         match futures::future::select(main, stderr_future).await {
             futures::future::Either::Left((result, _)) => result,
-            futures::future::Either::Right(((), main)) => main.await,
+            futures::future::Either::Right((Ok(()), main)) => main.await,
+            futures::future::Either::Right((Err(error), _)) => Err(error),
         }
     }
 }
@@ -3901,13 +5003,385 @@ impl ConnectTo<agent_client_protocol::Client> for LocalAgentTransport {
 #[cfg(test)]
 mod tests {
     use super::{
-        EventSink, RENDER_SNAPSHOT_CHUNK_MAX_UPDATES, RENDER_SNAPSHOT_CHUNK_TARGET_BYTES,
-        RenderRouter, RenderUpdate, RenderUpdateKind, ReplayRenderProjection, RuntimeEvent,
-        RuntimeEventEnvelope, SESSION_TITLE_MAX_CHARACTERS, normalize_session_title,
-        strip_non_render_fields,
+        EVENT_RETAINED_BYTES_MAX, EVENT_SINGLE_BYTES_MAX, EventQueueBudget, EventReceiver,
+        EventSink, ProjectedSessionNotification, RENDER_SNAPSHOT_CHUNK_MAX_UPDATES,
+        RENDER_SNAPSHOT_CHUNK_TARGET_BYTES, RenderRouter, RenderUpdate, RenderUpdateKind,
+        ReplayRenderProjection, RuntimeEvent, RuntimeEventEnvelope, RuntimeHandle,
+        SESSION_TITLE_MAX_CHARACTERS, bounded_event_envelope, drop_staged_config_notification,
+        normalize_session_title, project_available_commands, project_filesystem_permission,
+        project_permission_request, project_render_updates, project_session_config_options,
+        project_session_modes, project_session_notification, project_terminal_permission,
+        project_tool_render_metadata, read_bounded_utf8_line, strip_non_render_fields,
+    };
+    use crate::SessionUpdateKind;
+    use agent_client_protocol::schema::v1::{
+        AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate, PermissionOption,
+        PermissionOptionKind, RequestPermissionRequest, SessionConfigOption, SessionMode,
+        SessionModeState, SessionNotification, SessionUpdate as AcpSessionUpdate, ToolCallUpdate,
+        ToolCallUpdateFields, UnstructuredCommandInput,
     };
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    fn test_event_queue(count_capacity: usize, byte_capacity: usize) -> (EventSink, EventReceiver) {
+        let (sender, receiver) = mpsc::sync_channel(count_capacity);
+        let budget = Arc::new(EventQueueBudget::new(byte_capacity));
+        (
+            EventSink {
+                sender,
+                budget: Arc::clone(&budget),
+                next_sequence: Arc::new(Mutex::new(1)),
+            },
+            EventReceiver { receiver, budget },
+        )
+    }
+
+    #[test]
+    fn runtime_join_disconnects_a_full_event_queue_before_waiting() {
+        let (command_sender, command_receiver) = tokio::sync::mpsc::channel(1);
+        let (sink, event_receiver) = test_event_queue(1, EVENT_RETAINED_BYTES_MAX);
+        let (blocked_sender, blocked_receiver) = mpsc::sync_channel(0);
+        let worker = std::thread::spawn(move || {
+            let _command_receiver = command_receiver;
+            sink.emit(RuntimeEvent::StderrLog {
+                line: "first".to_string(),
+            });
+            blocked_sender.send(()).unwrap();
+            sink.emit(RuntimeEvent::StderrLog {
+                line: "second".to_string(),
+            });
+        });
+        blocked_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let runtime = RuntimeHandle {
+            command_sender: Some(command_sender),
+            events: Some(event_receiver),
+            worker: Some(worker),
+        };
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(0);
+        std::thread::spawn(move || {
+            let result = runtime.join();
+            finished_sender.send(result).unwrap();
+        });
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("runtime join must release blocked event producers")
+            .unwrap();
+    }
+
+    #[test]
+    fn event_byte_budget_blocks_until_the_receiver_releases_retained_bytes() {
+        let event = RuntimeEvent::StderrLog {
+            line: "x".repeat(512),
+        };
+        let retained_bytes = bounded_event_envelope(1, event.clone()).1;
+        let (sink, receiver) = test_event_queue(8, retained_bytes + retained_bytes / 2);
+        let (first_sent, first_received) = mpsc::sync_channel(0);
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(0);
+        std::thread::spawn(move || {
+            sink.emit(event.clone());
+            first_sent.send(()).unwrap();
+            sink.emit(event);
+            finished_sender.send(()).unwrap();
+        });
+        first_received.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            finished_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "the second event must wait for retained-byte budget"
+        );
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap().event,
+            RuntimeEvent::StderrLog { .. }
+        ));
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("dequeue must release retained-byte budget");
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap().event,
+            RuntimeEvent::StderrLog { .. }
+        ));
+    }
+
+    #[test]
+    fn runtime_join_wakes_a_producer_waiting_for_event_byte_budget() {
+        let event = RuntimeEvent::StderrLog {
+            line: "x".repeat(512),
+        };
+        let retained_bytes = bounded_event_envelope(1, event.clone()).1;
+        let (sink, event_receiver) = test_event_queue(8, retained_bytes + retained_bytes / 2);
+        let (command_sender, command_receiver) = tokio::sync::mpsc::channel(1);
+        let (first_sent, first_received) = mpsc::sync_channel(0);
+        let worker = std::thread::spawn(move || {
+            let _command_receiver = command_receiver;
+            sink.emit(event.clone());
+            first_sent.send(()).unwrap();
+            sink.emit(event);
+        });
+        first_received.recv_timeout(Duration::from_secs(1)).unwrap();
+        let runtime = RuntimeHandle {
+            command_sender: Some(command_sender),
+            events: Some(event_receiver),
+            worker: Some(worker),
+        };
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(0);
+        std::thread::spawn(move || {
+            finished_sender.send(runtime.join()).unwrap();
+        });
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("runtime join must wake byte-budget producers")
+            .unwrap();
+    }
+
+    #[test]
+    fn oversized_single_event_is_replaced_before_queueing() {
+        let (envelope, retained_bytes) = bounded_event_envelope(
+            1,
+            RuntimeEvent::StderrLog {
+                line: "x".repeat(EVENT_SINGLE_BYTES_MAX + 1),
+            },
+        );
+        assert!(retained_bytes < EVENT_SINGLE_BYTES_MAX);
+        assert!(matches!(
+            envelope.event,
+            RuntimeEvent::RuntimeError { ref code, .. }
+                if code == "event_projection_too_large"
+        ));
+    }
+
+    #[test]
+    fn oversized_success_replacement_preserves_request_id() {
+        let (envelope, retained_bytes) = bounded_event_envelope(
+            1,
+            RuntimeEvent::SessionUpdate {
+                update: crate::SessionUpdate {
+                    session_id: "fixture-session".to_string(),
+                    kind: SessionUpdateKind::SessionCreated,
+                    text: None,
+                    request_id: Some("create-oversized".to_string()),
+                    payload: Some(serde_json::json!({
+                        "value": "x".repeat(EVENT_SINGLE_BYTES_MAX + 1),
+                    })),
+                },
+            },
+        );
+        assert!(retained_bytes < EVENT_SINGLE_BYTES_MAX);
+        assert!(matches!(
+            envelope.event,
+            RuntimeEvent::RuntimeError {
+                request_id: Some(ref request_id),
+                ref code,
+                ..
+            } if request_id == "create-oversized" && code == "event_projection_too_large"
+        ));
+    }
+
+    #[test]
+    fn oversized_runtime_error_is_truncated_without_losing_request_id() {
+        let (sink, receiver) = test_event_queue(1, EVENT_RETAINED_BYTES_MAX);
+        sink.error(
+            Some("list-oversized".to_string()),
+            "c".repeat(EVENT_SINGLE_BYTES_MAX),
+            "界".repeat(EVENT_SINGLE_BYTES_MAX),
+            true,
+        );
+        let envelope = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(serde_json::to_vec(&envelope).unwrap().len() < EVENT_SINGLE_BYTES_MAX);
+        assert!(matches!(
+            envelope.event,
+            RuntimeEvent::RuntimeError {
+                request_id: Some(ref request_id),
+                ref code,
+                ref message,
+                ..
+            } if request_id == "list-oversized"
+                && code.len() <= super::EVENT_ERROR_CODE_MAX_BYTES
+                && message.len() <= super::EVENT_ERROR_MESSAGE_MAX_BYTES
+                && message.is_char_boundary(message.len())
+        ));
+    }
+
+    #[test]
+    fn bounded_line_reader_rejects_before_growing_past_the_limit() {
+        futures::executor::block_on(async {
+            let mut reader =
+                futures::io::BufReader::new(futures::io::Cursor::new(b"12345\nnext\r\n".to_vec()));
+            let error = read_bounded_utf8_line(&mut reader, 4)
+                .await
+                .expect_err("oversized line");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+            let mut reader =
+                futures::io::BufReader::new(futures::io::Cursor::new(b"1234\r\nnext\n".to_vec()));
+            assert_eq!(
+                read_bounded_utf8_line(&mut reader, 5).await.unwrap(),
+                Some("1234".to_string())
+            );
+            assert_eq!(
+                read_bounded_utf8_line(&mut reader, 5).await.unwrap(),
+                Some("next".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn permission_projection_rejects_oversized_raw_input_and_option_floods() {
+        let oversized_raw_input = RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().raw_input(serde_json::json!({
+                    "payload": "x".repeat(super::PERMISSION_MAX_RAW_INPUT_BYTES),
+                })),
+            ),
+            vec![PermissionOption::new(
+                "allow",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        );
+        assert!(project_permission_request("request-1", &oversized_raw_input).is_err());
+
+        let option_flood = RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new()),
+            (0..=super::PERMISSION_MAX_OPTIONS)
+                .map(|index| {
+                    PermissionOption::new(
+                        format!("option-{index}"),
+                        format!("Option {index}"),
+                        PermissionOptionKind::AllowOnce,
+                    )
+                })
+                .collect(),
+        );
+        assert!(project_permission_request("request-2", &option_flood).is_err());
+    }
+
+    #[test]
+    fn terminal_permission_projection_discloses_bounded_environment() {
+        let approval = crate::TerminalApproval {
+            approval_id: "approval-1".to_string(),
+            session_id: "session-1".to_string(),
+            command: vec!["git".to_string(), "status".to_string()],
+            environment: vec![crate::TerminalEnvironmentVariable {
+                name: "LD_PRELOAD".to_string(),
+                value: "/workspace/injected.so".to_string(),
+            }],
+            cwd: "/workspace".to_string(),
+        };
+        let projection = project_terminal_permission(&approval).unwrap();
+        assert_eq!(
+            projection.raw_input.as_ref().unwrap()["environment"][0]["name"],
+            "LD_PRELOAD"
+        );
+        assert_eq!(
+            projection.raw_input.as_ref().unwrap()["environment"][0]["value"],
+            "/workspace/injected.so"
+        );
+    }
+
+    #[test]
+    fn filesystem_permission_projection_discloses_write_preview_and_read_range() {
+        let write = crate::FilesystemApproval {
+            approval_id: "write-1".to_string(),
+            session_id: "session-1".to_string(),
+            kind: crate::FilesystemOperationKind::Write,
+            path: "/workspace/main.rs".to_string(),
+            line: None,
+            limit: None,
+            write_bytes: Some(12),
+            content_preview: Some("fn main() {}".to_string()),
+            content_truncated: Some(false),
+        };
+        let projection = project_filesystem_permission(&write).unwrap();
+        let input = projection.raw_input.unwrap();
+        assert_eq!(input["writeBytes"], 12);
+        assert_eq!(input["contentPreview"], "fn main() {}");
+        assert_eq!(input["contentTruncated"], false);
+
+        let read = crate::FilesystemApproval {
+            approval_id: "read-1".to_string(),
+            session_id: "session-1".to_string(),
+            kind: crate::FilesystemOperationKind::Read,
+            path: "/workspace/main.rs".to_string(),
+            line: Some(20),
+            limit: Some(5),
+            write_bytes: None,
+            content_preview: None,
+            content_truncated: None,
+        };
+        let input = project_filesystem_permission(&read)
+            .unwrap()
+            .raw_input
+            .unwrap();
+        assert_eq!(input["line"], 20);
+        assert_eq!(input["limit"], 5);
+    }
+
+    #[test]
+    fn session_config_projection_rejects_oversized_strings_and_total_bytes() {
+        let oversized_name = SessionConfigOption::boolean(
+            "bounded",
+            "x".repeat(super::SESSION_CONFIG_MAX_TEXT_BYTES + 1),
+            false,
+        );
+        assert!(project_session_config_options(Some(&[oversized_name])).is_err());
+
+        let options = (0..40)
+            .map(|index| {
+                SessionConfigOption::boolean(format!("option-{index}"), "Option", false)
+                    .description("x".repeat(super::SESSION_CONFIG_MAX_TEXT_BYTES))
+            })
+            .collect::<Vec<_>>();
+        assert!(project_session_config_options(Some(&options)).is_err());
+    }
+
+    #[test]
+    fn failed_session_completion_drops_its_staged_config_before_retry() {
+        let mut staged = std::collections::HashMap::from([(
+            "retry-session".to_string(),
+            (Vec::new(), 42_usize),
+        )]);
+        let mut bytes = 42_usize;
+        drop_staged_config_notification(&mut staged, &mut bytes, "retry-session");
+        assert!(staged.is_empty());
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn modes_and_commands_reject_aggregate_projection_over_budget() {
+        let modes = SessionModeState::new(
+            "mode-0",
+            (0..40)
+                .map(|index| {
+                    SessionMode::new(
+                        format!("mode-{index}"),
+                        format!(
+                            "{index}-{}",
+                            "x".repeat(super::SESSION_MODE_TEXT_MAX_BYTES - 8)
+                        ),
+                    )
+                })
+                .collect(),
+        );
+        assert!(project_session_modes(&modes).is_err());
+
+        let commands = (0..80)
+            .map(|index| {
+                AvailableCommand::new(
+                    format!("command-{index}"),
+                    "x".repeat(super::AVAILABLE_COMMAND_DESCRIPTION_MAX_BYTES),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(project_available_commands(&commands).is_err());
+    }
 
     #[test]
     fn session_titles_are_normalized_and_bounded() {
@@ -3951,6 +5425,104 @@ mod tests {
         assert!(!encoded.contains("annotations"));
         assert_eq!(value["toolCallId"], "tool-1");
         assert_eq!(value["content"][0]["content"]["data"], "AA==");
+    }
+
+    #[test]
+    fn aggregate_tool_metadata_omission_preserves_identity_and_status() {
+        let metadata = project_tool_render_metadata(serde_json::json!({
+            "toolCallId": "tool-1",
+            "status": "completed",
+            "kind": "edit",
+            "title": "x".repeat(super::RENDER_TITLE_MAX_BYTES - 2),
+            "rawInput": "x".repeat(super::RENDER_TOOL_DETAIL_MAX_BYTES - 2),
+            "rawOutput": "x".repeat(super::RENDER_TOOL_DETAIL_MAX_BYTES - 2),
+            "locations": "x".repeat(super::RENDER_TOOL_DETAIL_MAX_BYTES - 2),
+            "content": "x".repeat(super::RENDER_TOOL_CONTENT_MAX_BYTES - 2),
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(metadata["toolCallId"], "tool-1");
+        assert_eq!(metadata["status"], "completed");
+        assert!(serde_json::to_vec(&metadata).unwrap().len() <= super::RENDER_METADATA_MAX_BYTES);
+        assert!(
+            ["rawOutput", "content", "rawInput", "locations"]
+                .iter()
+                .any(|field| metadata[*field]["type"] == "omitted")
+        );
+    }
+
+    #[test]
+    fn oversized_live_text_is_utf8_safely_split_before_event_queueing() {
+        let text = "界".repeat(super::RENDER_TEXT_CHUNK_MAX_BYTES);
+        let updates = project_render_updates(
+            "session-1".to_string(),
+            RenderUpdateKind::AssistantText,
+            text.clone(),
+            None,
+        );
+        assert!(updates.len() > 1);
+        assert_eq!(
+            updates
+                .iter()
+                .map(|update| update.text.as_str())
+                .collect::<String>(),
+            text
+        );
+        for update in updates {
+            let (envelope, retained_bytes) =
+                bounded_event_envelope(1, RuntimeEvent::RenderUpdate { update });
+            assert!(retained_bytes < EVENT_SINGLE_BYTES_MAX);
+            assert!(matches!(envelope.event, RuntimeEvent::RenderUpdate { .. }));
+        }
+    }
+
+    #[test]
+    fn replay_does_not_coalesce_content_metadata_past_its_budget() {
+        let mut projection = ReplayRenderProjection::default();
+        for suffix in ["a", "b"] {
+            let _ = projection.push(RenderUpdate {
+                session_id: "session-1".to_string(),
+                kind: RenderUpdateKind::UserMessage,
+                text: suffix.to_string(),
+                metadata: Some(serde_json::json!({
+                    "contentBlocks": [{"data": "x".repeat(600 * 1024)}],
+                })),
+            });
+        }
+        assert_eq!(projection.updates.len(), 2);
+        for update in projection.updates {
+            assert!(serde_json::to_vec(&update).unwrap().len() < EVENT_SINGLE_BYTES_MAX);
+        }
+    }
+
+    #[test]
+    fn available_commands_project_to_bounded_session_state() {
+        let notification = SessionNotification::new(
+            "session-1",
+            AcpSessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                AvailableCommand::new("review", "Review the current change.").input(
+                    AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("[focus]")),
+                ),
+            ])),
+        );
+
+        let projected = project_session_notification(notification)
+            .expect("valid command update")
+            .expect("projected command update");
+        let ProjectedSessionNotification::Control(update) = projected else {
+            panic!("expected control update");
+        };
+
+        assert_eq!(update.kind, SessionUpdateKind::CommandsChanged);
+        let commands = update.payload.unwrap()["availableCommands"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0]["name"], "review");
+        assert_eq!(commands[0]["description"], "Review the current change.");
+        assert_eq!(commands[0]["input"]["hint"], "[focus]");
+        assert!(!commands[0].to_string().contains("_meta"));
     }
 
     #[test]
@@ -4003,11 +5575,7 @@ mod tests {
 
     #[test]
     fn foreground_replay_transfers_completed_turn_before_finish() {
-        let (sender, receiver) = mpsc::sync_channel(16);
-        let sink = EventSink {
-            sender,
-            next_sequence: Arc::new(Mutex::new(1)),
-        };
+        let (sink, receiver) = test_event_queue(16, EVENT_RETAINED_BYTES_MAX);
         let router = RenderRouter::new(sink);
         router.begin_replay("session-1".to_string(), "restore-1".to_string());
 
@@ -4076,11 +5644,7 @@ mod tests {
 
     #[test]
     fn background_recovery_replay_never_crosses_the_event_queue() {
-        let (sender, receiver) = mpsc::sync_channel(16);
-        let sink = EventSink {
-            sender,
-            next_sequence: Arc::new(Mutex::new(1)),
-        };
+        let (sink, receiver) = test_event_queue(16, EVENT_RETAINED_BYTES_MAX);
         let router = RenderRouter::new(sink);
         router.begin_recovery_replay("session-1".to_string(), "recovery:1".to_string());
 
@@ -4104,11 +5668,7 @@ mod tests {
 
     #[test]
     fn replay_snapshot_is_split_before_the_ffi_queue() {
-        let (sender, receiver) = mpsc::sync_channel(16);
-        let sink = EventSink {
-            sender,
-            next_sequence: Arc::new(Mutex::new(1)),
-        };
+        let (sink, receiver) = test_event_queue(16, EVENT_RETAINED_BYTES_MAX);
         let router = RenderRouter::new(sink);
         let updates = (0..=(RENDER_SNAPSHOT_CHUNK_MAX_UPDATES * 2))
             .map(|index| RenderUpdate {
@@ -4143,11 +5703,7 @@ mod tests {
 
     #[test]
     fn replay_snapshot_is_split_by_render_byte_budget() {
-        let (sender, receiver) = mpsc::sync_channel(16);
-        let sink = EventSink {
-            sender,
-            next_sequence: Arc::new(Mutex::new(1)),
-        };
+        let (sink, receiver) = test_event_queue(16, EVENT_RETAINED_BYTES_MAX);
         let router = RenderRouter::new(sink);
         let updates = (0..4)
             .map(|_| RenderUpdate {

@@ -1,3 +1,4 @@
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
@@ -7,6 +8,8 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
+import 'package:ianvs_acp/ui/components/file_preview_workspace.dart';
+import 'package:ianvs_acp/ui/components/prompt_input.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
@@ -439,6 +442,57 @@ void main() {
     expect(promptRect.right, lessThan(inspectorRect.left));
   });
 
+  testWidgets('AppShell shows live ACP slash command suggestions', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.newSession);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pump();
+
+    client.emitAvailableCommands(
+      controller.currentSession!.id,
+      const <Map<String, Object?>>[
+        <String, Object?>{
+          'name': 'review',
+          'description': 'Review the current change.',
+          'input': <String, Object?>{'hint': '[focus]'},
+        },
+      ],
+    );
+    await tester.pump();
+
+    final promptField = find.descendant(
+      of: find.byKey(const Key('prompt-input-surface')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(promptField, '/rev');
+    await tester.pump();
+
+    expect(find.text('/review'), findsOneWidget);
+    expect(find.text('Review the current change.'), findsOneWidget);
+    expect(find.textContaining('[focus]'), findsOneWidget);
+
+    await tester.tap(find.text('/review'));
+    await tester.pump();
+    expect(tester.widget<TextField>(promptField).controller?.text, '/review ');
+  });
+
   testWidgets('AppShell terminal follows the active ACP session lifecycle', (
     tester,
   ) async {
@@ -488,6 +542,36 @@ void main() {
       findsOneWidget,
     );
     expect(backend.createdSessionIds, ['terminal-session-1']);
+    var panelStyle = tester.widget<TerminalBottomPanel>(panel).style;
+    expect(
+      panelStyle.viewportColors,
+      TerminalViewportColors.light.copyWith(
+        minimumContrastRatio: 4.5,
+        smartCursorColor: true,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: AppShell(
+          controller: controller,
+          agentName: 'Codex',
+          terminalRuntimeFactory: createRuntime,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    panelStyle = tester.widget<TerminalBottomPanel>(panel).style;
+    expect(
+      panelStyle.viewportColors,
+      TerminalViewportColors.dark.copyWith(
+        minimumContrastRatio: 4.5,
+        smartCursorColor: true,
+      ),
+    );
+
     final panelRect = tester.getRect(panel);
     final sidebarRect = tester.getRect(find.byType(WorkspaceSidebar));
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
@@ -902,6 +986,152 @@ void main() {
       expect(client.lastResumeCwd, '/workspace/active-b');
     },
   );
+
+  testWidgets('AppShell resets the composer and uses active session roots', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/default',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    await tester.runAsync(
+      () => controller.resumeSession(
+        'session-a',
+        cwd: '/workspace/a',
+        additionalDirectories: const <String>['/workspace/a-extra'],
+      ),
+    );
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          agentName: 'Codex',
+          additionalDirectories: const <String>['/workspace/global-extra'],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final promptField = find.descendant(
+      of: find.byKey(const Key('prompt-input-surface')),
+      matching: find.byType(TextField),
+    );
+    final firstPrompt = tester.widget<PromptInput>(find.byType(PromptInput));
+    final firstPromptKey = firstPrompt.key;
+    await tester.enterText(promptField, 'Session A draft');
+    await tester.pump();
+    final attachmentIngress = firstPrompt.attachmentController!
+        .addDroppedItems(<DropItem>[
+          DropItemFile(
+            '/outside/session-a-secret.txt',
+            name: 'session-a-secret.txt',
+            mimeType: 'text/plain',
+            length: 18,
+          ),
+        ]);
+    await _pumpUntil(
+      tester,
+      () => find.text('Allow once').evaluate().isNotEmpty,
+    );
+    await tester.tap(find.text('Allow once'));
+    await tester.pumpAndSettle();
+    await attachmentIngress;
+    expect(find.text('session-a-secret.txt'), findsOneWidget);
+    var preview = tester.widget<FilePreviewWorkspace>(
+      find.byType(FilePreviewWorkspace),
+    );
+    expect(preview.workspacePath, '/workspace/a');
+    expect(preview.additionalDirectories, <String>['/workspace/a-extra']);
+
+    await tester.runAsync(
+      () => controller.resumeSession(
+        'session-b',
+        cwd: '/workspace/b',
+        additionalDirectories: const <String>['/workspace/b-extra'],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final secondPrompt = tester.widget<PromptInput>(find.byType(PromptInput));
+    expect(secondPrompt.key, isNot(firstPromptKey));
+    expect(tester.widget<TextField>(promptField).controller?.text, isEmpty);
+    expect(find.text('session-a-secret.txt'), findsNothing);
+    preview = tester.widget<FilePreviewWorkspace>(
+      find.byType(FilePreviewWorkspace),
+    );
+    expect(preview.workspacePath, '/workspace/b');
+    expect(preview.additionalDirectories, <String>['/workspace/b-extra']);
+  });
+
+  testWidgets('AppShell composer key cannot collide across session tuples', (
+    tester,
+  ) async {
+    final client = FakeAgentClient();
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/shared',
+      agentName: 'a-b',
+    );
+    addTearDown(controller.dispose);
+    await tester.runAsync(
+      () => controller.resumeSession('c', cwd: '/workspace/shared'),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'a-b'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final field = find.descendant(
+      of: find.byKey(const Key('prompt-input-surface')),
+      matching: find.byType(TextField),
+    );
+    final firstPrompt = tester.widget<PromptInput>(find.byType(PromptInput));
+    await tester.enterText(field, 'Tuple A draft');
+    final attachmentIngress = firstPrompt.attachmentController!
+        .addDroppedItems(<DropItem>[
+          DropItemFile(
+            '/outside/tuple-a.txt',
+            name: 'tuple-a.txt',
+            mimeType: 'text/plain',
+            length: 7,
+          ),
+        ]);
+    await _pumpUntil(
+      tester,
+      () => find.text('Allow once').evaluate().isNotEmpty,
+    );
+    await tester.tap(find.text('Allow once'));
+    await tester.pumpAndSettle();
+    await attachmentIngress;
+    expect(find.text('tuple-a.txt'), findsOneWidget);
+
+    // These tuples collapse to the same delimiter-joined string:
+    // (agent: a-b, session: c) and (agent: a, session: b-c).
+    await tester.runAsync(
+      () => controller.resumeSession('b-c', cwd: '/workspace/shared'),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'a'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final secondPrompt = tester.widget<PromptInput>(find.byType(PromptInput));
+    expect(secondPrompt.key, isNot(firstPrompt.key));
+    expect(tester.widget<TextField>(field).controller?.text, isEmpty);
+    expect(find.text('tuple-a.txt'), findsNothing);
+  });
 }
 
 Future<void> _pumpUntil(

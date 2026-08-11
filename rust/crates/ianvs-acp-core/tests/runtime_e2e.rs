@@ -94,7 +94,7 @@ fn subprocess_handshake_prompt_permission_and_projection_are_rust_owned() {
             vec![],
         )
         .unwrap();
-    wait_for(&runtime, |event| {
+    let created = wait_for(&runtime, |event| {
         matches!(
             event,
             RuntimeEvent::SessionUpdate { update }
@@ -103,7 +103,17 @@ fn subprocess_handshake_prompt_permission_and_projection_are_rust_owned() {
                     && update.request_id.as_deref() == Some("create-1")
         )
     });
-    let config_update = wait_for(&runtime, |event| {
+    match created.event {
+        RuntimeEvent::SessionUpdate { update } => assert_eq!(
+            update
+                .payload
+                .as_ref()
+                .and_then(|value| value["configOptions"][0]["currentValue"].as_str()),
+            Some("quality")
+        ),
+        other => panic!("unexpected created session: {other:?}"),
+    }
+    let config_changed = wait_for(&runtime, |event| {
         matches!(
             event,
             RuntimeEvent::SessionUpdate { update }
@@ -112,7 +122,7 @@ fn subprocess_handshake_prompt_permission_and_projection_are_rust_owned() {
                     && update.request_id.is_none()
         )
     });
-    match config_update.event {
+    match config_changed.event {
         RuntimeEvent::SessionUpdate { update } => assert_eq!(
             update
                 .payload
@@ -120,7 +130,7 @@ fn subprocess_handshake_prompt_permission_and_projection_are_rust_owned() {
                 .and_then(|value| value["configOptions"][0]["currentValue"].as_str()),
             Some("quality")
         ),
-        other => panic!("unexpected config notification: {other:?}"),
+        other => panic!("unexpected config update: {other:?}"),
     }
 
     runtime
@@ -623,6 +633,105 @@ fn permission_timeout_is_resolved_and_projected_by_rust() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn permission_flood_is_rejected_at_the_per_session_admission_limit() {
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(AgentLaunchConfig {
+            agent_name: "permission-flood-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
+            command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
+            args: vec![],
+            environment: BTreeMap::from([(
+                "IANVS_FIXTURE_PERMISSION_FLOOD".to_string(),
+                "9".to_string(),
+            )]),
+            process_cwd: None,
+            permission_timeout_ms: Some(5_000),
+            max_restart_attempts: None,
+            restart_base_delay_ms: None,
+            session_store_path: None,
+            session_store_max_bytes: None,
+            session_store_retention_days: None,
+            additional_directories: vec![],
+            mcp_servers: vec![],
+            enable_terminal_provider: false,
+            enable_filesystem_read_text_file: false,
+            enable_filesystem_write_text_file: false,
+            max_terminal_handles: None,
+            max_terminal_handles_per_session: None,
+            terminal_default_output_byte_limit: None,
+            terminal_max_output_byte_limit: None,
+        })
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    runtime
+        .create_session(
+            "permission-flood-create",
+            std::env::temp_dir().display().to_string(),
+            vec![],
+        )
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionCreated
+        )
+    });
+    runtime
+        .prompt("permission-flood-prompt", "fixture-session", "flood")
+        .unwrap();
+
+    let mut permission_ids = Vec::new();
+    for _ in 0..8 {
+        let permission = wait_for(&runtime, |event| {
+            matches!(event, RuntimeEvent::PermissionRequest { request }
+                if request.session_id == "fixture-session")
+        });
+        let RuntimeEvent::PermissionRequest { request } = permission.event else {
+            unreachable!();
+        };
+        permission_ids.push(request.request_id);
+    }
+    for request_id in permission_ids {
+        runtime
+            .respond_permission(
+                request_id,
+                PermissionDecision::Selected {
+                    option_id: "allow-once".to_string(),
+                },
+            )
+            .unwrap();
+    }
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText
+                    && update.text == "permission-flood:8:1"
+        )
+    });
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
+        )
+    });
+    runtime.join().unwrap();
+}
+
+#[test]
 fn idle_agent_process_is_restarted_before_session_activity() {
     let directory = unique_temp_dir("restart");
     let marker = directory.join("failed-once");
@@ -787,6 +896,148 @@ fn process_loss_after_session_activity_restores_durable_session() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn one_bad_persisted_session_does_not_block_other_recovery_or_ready() {
+    let directory = unique_temp_dir("partial-session-recovery");
+    let database = directory.join("sessions.sqlite3");
+    let marker = directory.join("fail-before-first-initialize");
+    let workspace = std::env::temp_dir().canonicalize().unwrap();
+    let mut store = ianvs_acp_core::SqliteSessionStore::open(&database).unwrap();
+    for session_id in ["bad-session", "good-session"] {
+        store
+            .upsert(&ianvs_acp_core::PersistedSession {
+                agent_name: "partial-recovery-fixture".to_string(),
+                session_id: session_id.to_string(),
+                cwd: workspace.display().to_string(),
+                additional_directories: vec![],
+            })
+            .unwrap();
+    }
+    drop(store);
+
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(AgentLaunchConfig {
+            agent_name: "partial-recovery-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
+            command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
+            args: vec![],
+            environment: BTreeMap::from([
+                (
+                    "IANVS_FIXTURE_FAIL_ONCE_FILE".to_string(),
+                    marker.display().to_string(),
+                ),
+                (
+                    "IANVS_FIXTURE_FAIL_LOAD_SESSION".to_string(),
+                    "bad-session".to_string(),
+                ),
+            ]),
+            process_cwd: None,
+            permission_timeout_ms: None,
+            max_restart_attempts: Some(1),
+            restart_base_delay_ms: Some(1),
+            session_store_path: Some(database.display().to_string()),
+            session_store_max_bytes: None,
+            session_store_retention_days: None,
+            additional_directories: vec![],
+            mcp_servers: vec![],
+            enable_terminal_provider: false,
+            enable_filesystem_read_text_file: false,
+            enable_filesystem_write_text_file: false,
+            max_terminal_handles: None,
+            max_terminal_handles_per_session: None,
+            terminal_default_output_byte_limit: None,
+            terminal_max_output_byte_limit: None,
+        })
+        .unwrap();
+
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Recovering,
+                ..
+            }
+        )
+    });
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionRestored
+                    && update.session_id == "good-session"
+                    && update.request_id.is_none()
+        )
+    });
+    let ready = wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    match ready.event {
+        RuntimeEvent::StatusChanged {
+            detail: Some(detail),
+            ..
+        } => assert!(detail.contains("1 persisted session(s) could not be recovered")),
+        other => panic!("unexpected partial recovery ready event: {other:?}"),
+    }
+    let failure = wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RuntimeError {
+                request_id: Some(request_id),
+                code,
+                recoverable: true,
+                ..
+            } if request_id == "recovery:bad-session" && code == "session_recovery_failed"
+        )
+    });
+    match failure.event {
+        RuntimeEvent::RuntimeError { message, .. } => {
+            assert!(message.contains("fixture rejected persisted session"));
+        }
+        other => panic!("unexpected recovery failure: {other:?}"),
+    }
+
+    runtime
+        .prompt("prompt-after-partial-recovery", "good-session", "hello")
+        .unwrap();
+    let permission = wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::PermissionRequest { request }
+                if request.session_id == "good-session"
+        )
+    });
+    let RuntimeEvent::PermissionRequest { request } = permission.event else {
+        unreachable!();
+    };
+    runtime
+        .respond_permission(
+            request.request_id,
+            PermissionDecision::Selected {
+                option_id: "allow-once".to_string(),
+            },
+        )
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
+                    && update.session_id == "good-session"
+        )
+    });
+    runtime.join().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn startup_migrates_prior_display_key_and_recovers_the_session() {
     let directory = unique_temp_dir("session-identity-migration");
     let database = directory.join("sessions.sqlite3");
@@ -866,6 +1117,235 @@ fn startup_migrates_prior_display_key_and_recovers_the_session() {
             .is_empty()
     );
     assert_eq!(store.load_active("stable-agent-identity").unwrap().len(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn duplicate_created_session_id_cannot_overwrite_the_registered_workspace() {
+    let directory = unique_temp_dir("duplicate-created-session");
+    let database = directory.join("sessions.sqlite3");
+    let first_workspace = directory.join("first");
+    let second_workspace = directory.join("second");
+    std::fs::create_dir_all(&first_workspace).unwrap();
+    std::fs::create_dir_all(&second_workspace).unwrap();
+    let first_workspace = first_workspace.canonicalize().unwrap();
+
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(AgentLaunchConfig {
+            agent_name: "duplicate-session-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
+            command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
+            args: vec![],
+            environment: BTreeMap::from([(
+                "IANVS_FIXTURE_DUPLICATE_SESSION_ID".to_string(),
+                "1".to_string(),
+            )]),
+            process_cwd: None,
+            permission_timeout_ms: None,
+            max_restart_attempts: None,
+            restart_base_delay_ms: None,
+            session_store_path: Some(database.display().to_string()),
+            session_store_max_bytes: None,
+            session_store_retention_days: None,
+            additional_directories: vec![],
+            mcp_servers: vec![],
+            enable_terminal_provider: false,
+            enable_filesystem_read_text_file: false,
+            enable_filesystem_write_text_file: false,
+            max_terminal_handles: None,
+            max_terminal_handles_per_session: None,
+            terminal_default_output_byte_limit: None,
+            terminal_max_output_byte_limit: None,
+        })
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    runtime
+        .create_session(
+            "create-first",
+            first_workspace.display().to_string(),
+            vec![],
+        )
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionCreated
+                    && update.request_id.as_deref() == Some("create-first")
+        )
+    });
+    runtime
+        .create_session(
+            "create-duplicate",
+            second_workspace.display().to_string(),
+            vec![],
+        )
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RuntimeError {
+                request_id: Some(request_id),
+                code,
+                ..
+            } if request_id == "create-duplicate" && code == "invalid_session_state"
+        )
+    });
+    runtime.join().unwrap();
+
+    let store = ianvs_acp_core::SqliteSessionStore::open(&database).unwrap();
+    let sessions = store.load_active("duplicate-session-fixture").unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].cwd, first_workspace.display().to_string());
+    drop(store);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn duplicate_restored_session_id_keeps_the_first_workspace_and_registry_entry() {
+    let directory = unique_temp_dir("duplicate-restored-session");
+    let database = directory.join("sessions.sqlite3");
+    let first_workspace = directory.join("first");
+    let second_workspace = directory.join("second");
+    std::fs::create_dir_all(&first_workspace).unwrap();
+    std::fs::create_dir_all(&second_workspace).unwrap();
+    std::fs::write(first_workspace.join("input.txt"), "first-one\nfirst-two\n").unwrap();
+    std::fs::write(
+        second_workspace.join("input.txt"),
+        "second-one\nsecond-two\n",
+    )
+    .unwrap();
+    let first_workspace = first_workspace.canonicalize().unwrap();
+    let second_workspace = second_workspace.canonicalize().unwrap();
+
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(AgentLaunchConfig {
+            agent_name: "duplicate-restore-fixture".to_string(),
+            persistence_identity: None,
+            persistence_aliases: vec![],
+            command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
+            args: vec![],
+            environment: BTreeMap::from([(
+                "IANVS_FIXTURE_USE_FILESYSTEM".to_string(),
+                "1".to_string(),
+            )]),
+            process_cwd: None,
+            permission_timeout_ms: None,
+            max_restart_attempts: None,
+            restart_base_delay_ms: None,
+            session_store_path: Some(database.display().to_string()),
+            session_store_max_bytes: None,
+            session_store_retention_days: None,
+            additional_directories: vec![],
+            mcp_servers: vec![],
+            enable_terminal_provider: false,
+            enable_filesystem_read_text_file: true,
+            enable_filesystem_write_text_file: true,
+            max_terminal_handles: None,
+            max_terminal_handles_per_session: None,
+            terminal_default_output_byte_limit: None,
+            terminal_max_output_byte_limit: None,
+        })
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+
+    runtime
+        .restore_session(
+            "restore-first",
+            "shared-session",
+            first_workspace.display().to_string(),
+            vec![],
+            true,
+        )
+        .unwrap();
+    runtime
+        .restore_session(
+            "restore-duplicate",
+            "shared-session",
+            second_workspace.display().to_string(),
+            vec![],
+            true,
+        )
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionRestored
+                    && update.request_id.as_deref() == Some("restore-first")
+        )
+    });
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RuntimeError {
+                request_id: Some(request_id),
+                code,
+                ..
+            } if request_id == "restore-duplicate" && code == "invalid_session_state"
+        )
+    });
+
+    runtime
+        .prompt("prompt-first-scope", "shared-session", "use filesystem")
+        .unwrap();
+    for tool_kind in ["read", "edit"] {
+        let permission = wait_for(&runtime, |event| {
+            matches!(event, RuntimeEvent::PermissionRequest { request }
+                if request.tool_kind == tool_kind)
+        });
+        let RuntimeEvent::PermissionRequest { request } = permission.event else {
+            unreachable!();
+        };
+        runtime
+            .respond_permission(
+                request.request_id,
+                PermissionDecision::Selected {
+                    option_id: "ianvs_filesystem_allow_once".to_string(),
+                },
+            )
+            .unwrap();
+    }
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::TurnCompleted
+                    && update.session_id == "shared-session"
+        )
+    });
+    assert_eq!(
+        std::fs::read_to_string(first_workspace.join("output.txt")).unwrap(),
+        "copy:first-two\n"
+    );
+    assert!(!second_workspace.join("output.txt").exists());
+    runtime.join().unwrap();
+
+    let store = ianvs_acp_core::SqliteSessionStore::open(&database).unwrap();
+    let sessions = store.load_active("duplicate-restore-fixture").unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].cwd, first_workspace.display().to_string());
+    drop(store);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1406,6 +1886,7 @@ fn terminal_reverse_requests_use_real_pty_and_generic_permissions() {
                     "command": "/bin/echo",
                     "args": ["fixture-terminal"],
                     "cwd": cwd.display().to_string(),
+                    "environment": [],
                 }))
             );
             request.request_id
@@ -1477,6 +1958,155 @@ fn terminal_reverse_requests_use_real_pty_and_generic_permissions() {
         "missing terminal lifecycle event; observed: {observed:#?}"
     );
     runtime.dispose().unwrap();
+}
+
+#[test]
+fn initialize_projection_limits_fail_before_the_runtime_becomes_ready() {
+    for variable in [
+        "IANVS_FIXTURE_OVERSIZED_AUTH_METHODS",
+        "IANVS_FIXTURE_OVERSIZED_AGENT_INFO",
+    ] {
+        let runtime = RuntimeHandle::new();
+        runtime
+            .start_agent(fixture_config(BTreeMap::from([(
+                variable.to_string(),
+                "1".to_string(),
+            )])))
+            .unwrap();
+        wait_for(&runtime, |event| {
+            matches!(
+                event,
+                RuntimeEvent::StatusChanged {
+                    status: RuntimeStatus::Failed,
+                    ..
+                }
+            )
+        });
+        runtime.join().unwrap();
+    }
+}
+
+#[test]
+fn config_notification_without_pending_or_active_session_is_rejected() {
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(fixture_config(BTreeMap::from([(
+            "IANVS_FIXTURE_BOGUS_CONFIG_NOTIFICATION".to_string(),
+            "1".to_string(),
+        )])))
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RuntimeError { code, message, .. }
+                if code == "invalid_session_notification"
+                    && message.contains("bogus-session")
+        )
+    });
+    runtime.dispose().unwrap();
+}
+
+#[test]
+fn oversized_modes_and_catalog_complete_requests_with_correlated_errors() {
+    let modes_runtime = RuntimeHandle::new();
+    modes_runtime
+        .start_agent(fixture_config(BTreeMap::from([(
+            "IANVS_FIXTURE_OVERSIZED_MODES".to_string(),
+            "1".to_string(),
+        )])))
+        .unwrap();
+    wait_for(&modes_runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    modes_runtime
+        .create_session(
+            "create-oversized-modes",
+            std::env::temp_dir().display().to_string(),
+            vec![],
+        )
+        .unwrap();
+    wait_for(&modes_runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RuntimeError {
+                request_id: Some(request_id),
+                code,
+                ..
+            } if request_id == "create-oversized-modes" && code == "create_session_failed"
+        )
+    });
+    modes_runtime.dispose().unwrap();
+
+    let catalog_runtime = RuntimeHandle::new();
+    catalog_runtime
+        .start_agent(fixture_config(BTreeMap::from([(
+            "IANVS_FIXTURE_OVERSIZED_CATALOG".to_string(),
+            "1".to_string(),
+        )])))
+        .unwrap();
+    wait_for(&catalog_runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    catalog_runtime.list_sessions("catalog-oversized").unwrap();
+    wait_for(&catalog_runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RuntimeError {
+                request_id: Some(request_id),
+                code,
+                ..
+            } if request_id == "catalog-oversized" && code == "list_sessions_failed"
+        )
+    });
+    catalog_runtime.dispose().unwrap();
+}
+
+fn fixture_config(environment: BTreeMap<String, String>) -> AgentLaunchConfig {
+    AgentLaunchConfig {
+        agent_name: "fixture".to_string(),
+        persistence_identity: None,
+        persistence_aliases: vec![],
+        command: env!("CARGO_BIN_EXE_ianvs-acp-fixture-agent").to_string(),
+        args: vec![],
+        environment,
+        process_cwd: None,
+        permission_timeout_ms: None,
+        max_restart_attempts: Some(0),
+        restart_base_delay_ms: Some(1),
+        session_store_path: None,
+        session_store_max_bytes: None,
+        session_store_retention_days: None,
+        additional_directories: vec![],
+        mcp_servers: vec![],
+        enable_terminal_provider: false,
+        enable_filesystem_read_text_file: false,
+        enable_filesystem_write_text_file: false,
+        max_terminal_handles: None,
+        max_terminal_handles_per_session: None,
+        terminal_default_output_byte_limit: None,
+        terminal_max_output_byte_limit: None,
+    }
 }
 
 fn wait_for(

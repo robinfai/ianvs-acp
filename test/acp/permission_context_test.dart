@@ -72,6 +72,81 @@ void main() {
       );
     });
 
+    test('shows bounded Rust operation details as canonical safe JSON', () {
+      final bidi = String.fromCharCode(0x202e);
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: <String, Object?>{
+            'rawInput': <String, Object?>{
+              'command': 'printenv',
+              'cwd': '/workspace',
+              'environment': <Object?>[
+                <String, Object?>{'name': 'TOKEN', 'value': ' secret$bidi'},
+              ],
+              'line': null,
+              'limit': 12,
+            },
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(context.entries.map((entry) => entry.label), <String>[
+        'Command',
+        'Working directory',
+        'Additional details',
+      ]);
+      expect(
+        context.entries.last.value,
+        r'{"environment":[{"name":"TOKEN","value":"\u0020secret\u202E"}],"limit":12,"line":null}',
+      );
+      expect(
+        _containsUnsafePermissionDisplayCodeUnit(context.entries.last.value),
+        isFalse,
+      );
+    });
+
+    test('shows Rust write metadata without dropping approval fields', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{
+            'rawInput': <String, Object?>{
+              'path': '/workspace/report.txt',
+              'writeBytes': 42,
+              'contentPreview': 'hello\nworld',
+              'contentTruncated': true,
+            },
+          },
+        ),
+      );
+
+      expect(context.isComplete, isTrue);
+      expect(context.entries.last.label, 'Additional details');
+      expect(
+        context.entries.last.value,
+        r'{"contentPreview":"hello\u000Aworld","contentTruncated":true,"writeBytes":42}',
+      );
+    });
+
+    test('fails closed for unknown operation input fields', () {
+      final context = permissionDisplayContextForRequest(
+        _permissionRequest(
+          metadata: const <String, Object?>{
+            'toolCall': <String, Object?>{
+              'input': <String, Object?>{
+                'path': '/workspace/report.txt',
+                'query': 'secret search',
+              },
+            },
+          },
+        ),
+      );
+
+      expect(context.isComplete, isFalse);
+      expect(context.entries, isEmpty);
+      expect(context.warning, PermissionDisplayContext.incompleteWarning);
+    });
+
     test('deduplicates equal fields across structured containers', () {
       final context = permissionDisplayContextForRequest(
         _permissionRequest(

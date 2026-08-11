@@ -637,6 +637,7 @@ dependencies = [
  "async-process",
  "base64",
  "futures",
+ "libc",
  "nix",
  "portable-pty",
  "rusqlite",

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
+import 'acp_available_commands.dart';
 import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
@@ -120,6 +121,11 @@ class FakeAgentClient implements AcpAgentClient {
   final StreamController<AcpPermissionInvalidation> _permissionInvalidations =
       StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
   bool _permissionInvalidationsClosed = false;
+  final StreamController<AcpAvailableCommandsUpdate> _availableCommandsUpdates =
+      StreamController<AcpAvailableCommandsUpdate>.broadcast(sync: true);
+  bool _availableCommandsUpdatesClosed = false;
+  final Map<String, AcpAvailableCommandsUpdate> _availableCommandsBySession =
+      <String, AcpAvailableCommandsUpdate>{};
 
   @override
   AcpAgentCapabilities? get capabilities => connected
@@ -174,6 +180,58 @@ class FakeAgentClient implements AcpAgentClient {
   Stream<AcpPermissionInvalidation> get permissionInvalidations =>
       _permissionInvalidations.stream;
 
+  @override
+  Stream<AcpAvailableCommandsUpdate> get availableCommandsUpdates =>
+      _availableCommandsUpdates.stream;
+
+  @override
+  Future<AcpAvailableCommandsUpdate?> sessionAvailableCommands(
+    String sessionId,
+  ) async => _availableCommandsBySession[sessionId];
+
+  void emitAvailableCommands(
+    String sessionId,
+    List<Map<String, Object?>> commands,
+  ) {
+    if (_availableCommandsUpdatesClosed) return;
+    final update = AcpAvailableCommandsUpdate(
+      sessionId: sessionId,
+      commands: commands,
+    );
+    _availableCommandsBySession[sessionId] = update;
+    _availableCommandsUpdates.add(update);
+  }
+
+  void _cacheAvailableCommandsFromEvents(
+    String sessionId,
+    List<AgentEvent> events,
+  ) {
+    for (final event in events) {
+      final metadata = event.metadata;
+      if (metadata['kind'] != 'commands') continue;
+      final rawCommands = metadata['commands'];
+      if (rawCommands is! List) continue;
+      final commands = <Map<String, Object?>>[];
+      var valid = true;
+      for (final rawCommand in rawCommands) {
+        if (rawCommand is! Map) {
+          valid = false;
+          break;
+        }
+        commands.add(
+          rawCommand.map(
+            (key, value) => MapEntry<String, Object?>(key.toString(), value),
+          ),
+        );
+      }
+      if (!valid) continue;
+      _availableCommandsBySession[sessionId] = AcpAvailableCommandsUpdate(
+        sessionId: sessionId,
+        commands: commands,
+      );
+    }
+  }
+
   static const AcpSessionSettings _defaultSessionSettings = AcpSessionSettings(
     modes: AcpSessionModeInfo(
       currentModeId: 'ask',
@@ -224,8 +282,10 @@ class FakeAgentClient implements AcpAgentClient {
       throw createSessionError!;
     }
     sessionCount += 1;
+    final sessionId = 'fake-session-$sessionCount';
+    _cacheAvailableCommandsFromEvents(sessionId, createSessionEvents);
     return AgentSession(
-      id: 'fake-session-$sessionCount',
+      id: sessionId,
       cwd: cwd,
       createdAt: DateTime(2026, 5, 28, 12),
       additionalDirectories: additionalDirectories,
@@ -249,6 +309,7 @@ class FakeAgentClient implements AcpAgentClient {
     }
     lastResumeCwd = cwd;
     _lastRestoreReplayedHistory = restoreReplayedHistory;
+    _cacheAvailableCommandsFromEvents(sessionId, resumeEvents);
     return resumeEvents;
   }
 
@@ -364,8 +425,10 @@ class FakeAgentClient implements AcpAgentClient {
     }
     lastForkedSessionId = sessionId;
     sessionCount += 1;
+    final forkedSessionId = 'fake-fork-$sessionCount';
+    _cacheAvailableCommandsFromEvents(forkedSessionId, forkSessionEvents);
     return AgentSession(
-      id: 'fake-fork-$sessionCount',
+      id: forkedSessionId,
       cwd: cwd,
       createdAt: DateTime(2026, 5, 28, 12),
       additionalDirectories: additionalDirectories,
@@ -512,9 +575,16 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Future<void> dispose() async {
     connected = false;
+    final closeAvailableCommands = _availableCommandsUpdatesClosed
+        ? Future<void>.value()
+        : () {
+            _availableCommandsUpdatesClosed = true;
+            return _availableCommandsUpdates.close();
+          }();
     await Future.wait<void>(<Future<void>>[
       closePermissionRequests(),
       closePermissionInvalidations(),
+      closeAvailableCommands,
     ]);
   }
 }

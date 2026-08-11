@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'dart:ui' show PointerDeviceKind, SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
@@ -1110,6 +1111,7 @@ Review the screenshot''',
     'ChatTimeline diff card matches accepted default and hover visuals',
     (tester) async {
       await tester.runAsync(_loadDiffGoldenFonts);
+      _installStrictRasterDriftComparator();
       debugPaintBaselinesEnabled = false;
       debugPaintPointersEnabled = false;
       debugPaintSizeEnabled = false;
@@ -1270,6 +1272,7 @@ Review the screenshot''',
     'ChatTimeline markdown links and code block match accepted visuals',
     (tester) async {
       await tester.runAsync(_loadDiffGoldenFonts);
+      _installStrictRasterDriftComparator();
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(1000, 600);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -1311,6 +1314,47 @@ foregroundDecoration: BoxDecoration(
     },
     skip: !Platform.isMacOS,
   );
+
+  testWidgets('strict golden drift rejects a 2px outline icon change', (
+    tester,
+  ) async {
+    final result = await tester.runAsync(() async {
+      final comparator = _StrictRasterDriftComparator(
+        LocalFileComparator(Uri.directory(Directory.current.path)),
+      );
+      final golden = await _rasterFixturePng(includeIcon: false);
+      final changed = await _rasterFixturePng(includeIcon: true);
+      final profile = _rasterDriftProfiles['file-diff-redesign-default']!;
+      final wouldPassGlobalOnlyLimits = await comparator
+          ._matchesWithinRasterDrift(
+            changed,
+            golden,
+            _RasterDriftProfile(
+              maximumChangedPixels: profile.maximumChangedPixels,
+              maximumOutlierPixels: profile.maximumOutlierPixels,
+              maximumFlatMinorOutliers: profile.maximumFlatMinorOutliers,
+              maximumStrongOutlierComponentPixels: 600000,
+              maximumStrongOutlierComponentBoundingBoxArea: 600000,
+              maximumOneSidedEdgeOutlierPixels: 600000,
+              maximumChannelDelta: profile.maximumChannelDelta,
+              maximumMeanPixelDelta: profile.maximumMeanPixelDelta,
+            ),
+          );
+      final accepted = await comparator._matchesWithinRasterDrift(
+        changed,
+        golden,
+        profile,
+      );
+      return (
+        wouldPassGlobalOnlyLimits: wouldPassGlobalOnlyLimits,
+        accepted: accepted,
+      );
+    });
+
+    expect(result, isNotNull);
+    expect(result!.wouldPassGlobalOnlyLimits, isTrue);
+    expect(result.accepted, isFalse);
+  });
 
   testWidgets('ChatTimeline displays one typed notice per omission kind', (
     tester,
@@ -3654,6 +3698,339 @@ foregroundDecoration: BoxDecoration(
 }
 
 var _diffGoldenFontsLoaded = false;
+
+void _installStrictRasterDriftComparator() {
+  final previous = goldenFileComparator;
+  if (previous is! LocalFileComparator) return;
+  goldenFileComparator = _StrictRasterDriftComparator(previous);
+  addTearDown(() => goldenFileComparator = previous);
+}
+
+/// Allows only the measured Skia/CoreText rasterization signature for the
+/// three reviewed goldens. Unknown goldens still use exact comparison.
+final class _StrictRasterDriftComparator extends GoldenFileComparator {
+  _StrictRasterDriftComparator(this.delegate);
+
+  final LocalFileComparator delegate;
+
+  @override
+  Future<bool> compare(Uint8List imageBytes, Uri golden) async {
+    final profile = _rasterDriftProfiles[_goldenName(golden)];
+    if (profile == null) return delegate.compare(imageBytes, golden);
+    final goldenUri = golden.isAbsolute
+        ? golden
+        : delegate.basedir.resolveUri(golden);
+    final goldenBytes = await File.fromUri(goldenUri).readAsBytes();
+    if (await _matchesWithinRasterDrift(imageBytes, goldenBytes, profile)) {
+      return true;
+    }
+    return delegate.compare(imageBytes, golden);
+  }
+
+  Future<bool> _matchesWithinRasterDrift(
+    Uint8List testBytes,
+    Uint8List goldenBytes,
+    _RasterDriftProfile profile,
+  ) async {
+    if (_sameBytes(testBytes, goldenBytes)) return true;
+    final testCodec = await ui.instantiateImageCodec(testBytes);
+    final goldenCodec = await ui.instantiateImageCodec(goldenBytes);
+    final testImage = (await testCodec.getNextFrame()).image;
+    final goldenImage = (await goldenCodec.getNextFrame()).image;
+    testCodec.dispose();
+    goldenCodec.dispose();
+    try {
+      if (testImage.width != goldenImage.width ||
+          testImage.height != goldenImage.height) {
+        return false;
+      }
+      final testData = await testImage.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
+      final goldenData = await goldenImage.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      );
+      if (testData == null || goldenData == null) return false;
+      final test = testData.buffer.asUint8List(
+        testData.offsetInBytes,
+        testData.lengthInBytes,
+      );
+      final master = goldenData.buffer.asUint8List(
+        goldenData.offsetInBytes,
+        goldenData.lengthInBytes,
+      );
+      var outliers = 0;
+      var changedPixels = 0;
+      var flatMinorOutliers = 0;
+      var maximumDelta = 0;
+      var totalDelta = 0;
+      final strongOutlierMask = Uint8List(testImage.width * testImage.height);
+      final oneSidedEdgeMask = Uint8List(testImage.width * testImage.height);
+      for (var offset = 0; offset < test.length; offset += 4) {
+        var pixelDelta = 0;
+        for (var channel = 0; channel < 4; channel += 1) {
+          final delta = (test[offset + channel] - master[offset + channel])
+              .abs();
+          if (delta > pixelDelta) pixelDelta = delta;
+        }
+        if (pixelDelta > 0) changedPixels += 1;
+        if (pixelDelta > maximumDelta) maximumDelta = pixelDelta;
+        totalDelta += pixelDelta;
+        if (pixelDelta > 8) {
+          outliers += 1;
+          strongOutlierMask[offset ~/ 4] = 1;
+        }
+        if (pixelDelta < 5) continue;
+        final edgeDeltas = _localEdgeDeltas(
+          test,
+          master,
+          width: testImage.width,
+          height: testImage.height,
+          offset: offset,
+        );
+        if (edgeDeltas.test < 8 && edgeDeltas.master < 8) {
+          flatMinorOutliers += 1;
+        }
+        if (pixelDelta > 8 &&
+            ((edgeDeltas.test >= 8 && edgeDeltas.master < 4) ||
+                (edgeDeltas.master >= 8 && edgeDeltas.test < 4))) {
+          oneSidedEdgeMask[offset ~/ 4] = 1;
+        }
+      }
+      final totalPixels = test.length ~/ 4;
+      final components = _measureStrongOutlierComponents(
+        strongOutlierMask,
+        width: testImage.width,
+        height: testImage.height,
+      );
+      final oneSidedEdgeComponents = _measureStrongOutlierComponents(
+        oneSidedEdgeMask,
+        width: testImage.width,
+        height: testImage.height,
+      );
+      return maximumDelta <= profile.maximumChannelDelta &&
+          changedPixels <= profile.maximumChangedPixels &&
+          outliers <= profile.maximumOutlierPixels &&
+          flatMinorOutliers <= profile.maximumFlatMinorOutliers &&
+          components.largestPixels <=
+              profile.maximumStrongOutlierComponentPixels &&
+          components.largestBoundingBoxArea <=
+              profile.maximumStrongOutlierComponentBoundingBoxArea &&
+          oneSidedEdgeComponents.totalPixels <=
+              profile.maximumOneSidedEdgeOutlierPixels &&
+          totalDelta / totalPixels <= profile.maximumMeanPixelDelta;
+    } finally {
+      testImage.dispose();
+      goldenImage.dispose();
+    }
+  }
+
+  _OutlierComponentMetrics _measureStrongOutlierComponents(
+    Uint8List mask, {
+    required int width,
+    required int height,
+  }) {
+    final pending = <int>[];
+    var largestPixels = 0;
+    var largestBoundingBoxArea = 0;
+    var totalPixels = 0;
+    for (var seed = 0; seed < mask.length; seed += 1) {
+      if (mask[seed] == 0) continue;
+      mask[seed] = 0;
+      pending.add(seed);
+      var pixels = 0;
+      var minX = width;
+      var maxX = 0;
+      var minY = height;
+      var maxY = 0;
+      while (pending.isNotEmpty) {
+        final pixel = pending.removeLast();
+        final y = pixel ~/ width;
+        final x = pixel - y * width;
+        pixels += 1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        for (var neighborY = y - 1; neighborY <= y + 1; neighborY += 1) {
+          if (neighborY < 0 || neighborY >= height) continue;
+          for (var neighborX = x - 1; neighborX <= x + 1; neighborX += 1) {
+            if (neighborX < 0 || neighborX >= width) continue;
+            final neighbor = neighborY * width + neighborX;
+            if (mask[neighbor] == 0) continue;
+            mask[neighbor] = 0;
+            pending.add(neighbor);
+          }
+        }
+      }
+      final componentWidth = maxX - minX + 1;
+      final componentHeight = maxY - minY + 1;
+      final boundingBoxArea = componentWidth * componentHeight;
+      if (pixels > largestPixels) largestPixels = pixels;
+      if (boundingBoxArea > largestBoundingBoxArea) {
+        largestBoundingBoxArea = boundingBoxArea;
+      }
+      totalPixels += pixels;
+    }
+    return _OutlierComponentMetrics(
+      largestPixels: largestPixels,
+      largestBoundingBoxArea: largestBoundingBoxArea,
+      totalPixels: totalPixels,
+    );
+  }
+
+  ({int test, int master}) _localEdgeDeltas(
+    Uint8List test,
+    Uint8List master, {
+    required int width,
+    required int height,
+    required int offset,
+  }) {
+    final pixel = offset ~/ 4;
+    final y = pixel ~/ width;
+    final x = pixel - y * width;
+    var maximumTest = 0;
+    var maximumMaster = 0;
+    for (var neighborY = y - 1; neighborY <= y + 1; neighborY += 1) {
+      if (neighborY < 0 || neighborY >= height) continue;
+      for (var neighborX = x - 1; neighborX <= x + 1; neighborX += 1) {
+        if (neighborX < 0 || neighborX >= width) continue;
+        if (neighborX == x && neighborY == y) continue;
+        final neighborOffset = (neighborY * width + neighborX) * 4;
+        for (var channel = 0; channel < 4; channel += 1) {
+          final testDelta =
+              (test[offset + channel] - test[neighborOffset + channel]).abs();
+          final masterDelta =
+              (master[offset + channel] - master[neighborOffset + channel])
+                  .abs();
+          if (testDelta > maximumTest) maximumTest = testDelta;
+          if (masterDelta > maximumMaster) maximumMaster = masterDelta;
+        }
+      }
+    }
+    return (test: maximumTest, master: maximumMaster);
+  }
+
+  bool _sameBytes(Uint8List left, Uint8List right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index += 1) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+
+  @override
+  Future<void> update(Uri golden, Uint8List imageBytes) =>
+      delegate.update(golden, imageBytes);
+
+  @override
+  Uri getTestUri(Uri key, int? version) => delegate.getTestUri(key, version);
+}
+
+final class _OutlierComponentMetrics {
+  const _OutlierComponentMetrics({
+    required this.largestPixels,
+    required this.largestBoundingBoxArea,
+    required this.totalPixels,
+  });
+
+  final int largestPixels;
+  final int largestBoundingBoxArea;
+  final int totalPixels;
+}
+
+final class _RasterDriftProfile {
+  const _RasterDriftProfile({
+    required this.maximumChangedPixels,
+    required this.maximumOutlierPixels,
+    required this.maximumFlatMinorOutliers,
+    required this.maximumStrongOutlierComponentPixels,
+    required this.maximumStrongOutlierComponentBoundingBoxArea,
+    required this.maximumOneSidedEdgeOutlierPixels,
+    required this.maximumChannelDelta,
+    required this.maximumMeanPixelDelta,
+  });
+
+  final int maximumChangedPixels;
+  final int maximumOutlierPixels;
+  final int maximumFlatMinorOutliers;
+  final int maximumStrongOutlierComponentPixels;
+  final int maximumStrongOutlierComponentBoundingBoxArea;
+  final int maximumOneSidedEdgeOutlierPixels;
+  final int maximumChannelDelta;
+  final double maximumMeanPixelDelta;
+}
+
+const _rasterDriftProfiles = <String, _RasterDriftProfile>{
+  'file-diff-redesign-default': _RasterDriftProfile(
+    maximumChangedPixels: 18000,
+    maximumOutlierPixels: 1100,
+    maximumFlatMinorOutliers: 5,
+    maximumStrongOutlierComponentPixels: 140,
+    maximumStrongOutlierComponentBoundingBoxArea: 320,
+    maximumOneSidedEdgeOutlierPixels: 0,
+    maximumChannelDelta: 32,
+    maximumMeanPixelDelta: 0.15,
+  ),
+  'file-diff-redesign-hover': _RasterDriftProfile(
+    maximumChangedPixels: 143400,
+    maximumOutlierPixels: 2050,
+    maximumFlatMinorOutliers: 140,
+    maximumStrongOutlierComponentPixels: 420,
+    maximumStrongOutlierComponentBoundingBoxArea: 430,
+    maximumOneSidedEdgeOutlierPixels: 0,
+    maximumChannelDelta: 48,
+    maximumMeanPixelDelta: 0.67,
+  ),
+  'markdown-rendering-polish': _RasterDriftProfile(
+    maximumChangedPixels: 13400,
+    maximumOutlierPixels: 525,
+    maximumFlatMinorOutliers: 7,
+    maximumStrongOutlierComponentPixels: 100,
+    maximumStrongOutlierComponentBoundingBoxArea: 130,
+    maximumOneSidedEdgeOutlierPixels: 0,
+    maximumChannelDelta: 48,
+    maximumMeanPixelDelta: 0.09,
+  ),
+};
+
+String _goldenName(Uri golden) {
+  final filename = golden.pathSegments.last;
+  return filename.endsWith('.png')
+      ? filename.substring(0, filename.length - 4)
+      : filename;
+}
+
+Future<Uint8List> _rasterFixturePng({required bool includeIcon}) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  canvas.drawColor(const Color(0xffffffff), BlendMode.src);
+  if (includeIcon) {
+    final iconPaint = Paint()
+      ..color = const Color(0xffebebeb)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(24, 24, 18, 18),
+        const Radius.circular(2),
+      ),
+      iconPaint,
+    );
+    canvas.drawLine(const Offset(28, 30), const Offset(38, 30), iconPaint);
+    canvas.drawLine(const Offset(28, 35), const Offset(36, 35), iconPaint);
+  }
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(1000, 600);
+  picture.dispose();
+  try {
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) throw StateError('Could not encode raster fixture.');
+    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+  } finally {
+    image.dispose();
+  }
+}
 
 Future<void> _loadDiffGoldenFonts() async {
   if (_diffGoldenFontsLoaded) return;

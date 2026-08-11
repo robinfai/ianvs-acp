@@ -51,6 +51,8 @@ typedef AcpConfigWriter =
     Future<AcpClientConfig> Function(AcpClientConfig config);
 typedef SessionWindowOpener = Future<void> Function(List<String> args);
 typedef AcpAgentClientFactory = AcpAgentClient Function(AcpClientConfig config);
+typedef DeepLinkWorkspaceValidator =
+    Future<DeepLinkWorkspaceValidation> Function(String? path);
 
 const String _noAgentConfiguredMessage =
     'Add an ACP agent before starting a session.';
@@ -89,10 +91,15 @@ Map<String, Object?> _rustMcpServerProjection(McpServerConfig server) {
 }
 
 class _PendingDeepLinkRequest {
-  const _PendingDeepLinkRequest({required this.key, required this.request});
+  const _PendingDeepLinkRequest({
+    required this.key,
+    required this.request,
+    required this.handlerEpoch,
+  });
 
   final String key;
   final DeepLinkRequest request;
+  final int handlerEpoch;
 }
 
 class AcpClientApp extends StatefulWidget {
@@ -120,6 +127,7 @@ class AcpClientApp extends StatefulWidget {
     this.boundedImageDecoder,
     this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
     this.processRunner,
+    this.deepLinkWorkspaceValidator = validateDeepLinkWorkspace,
   });
 
   final ChatController? controller;
@@ -148,6 +156,7 @@ class AcpClientApp extends StatefulWidget {
   final BoundedImageDecoder? boundedImageDecoder;
   final bool Function(String path) gitWorkspaceDetector;
   final AppShellProcessRunner? processRunner;
+  final DeepLinkWorkspaceValidator deepLinkWorkspaceValidator;
 
   @override
   State<AcpClientApp> createState() => _AcpClientAppState();
@@ -161,6 +170,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     'ianvs_acp/deep_links',
   );
   static const int _maxDeepLinkConfirmations = 8;
+  static Object? _deepLinkHandlerOwner;
 
   late AcpClientConfig _config;
   late String _widgetConfigSignature;
@@ -178,6 +188,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   final Queue<_PendingDeepLinkRequest> _pendingDeepLinkRequests =
       Queue<_PendingDeepLinkRequest>();
   bool _deepLinkConfirmationActive = false;
+  bool _deepLinkHandlerInstalled = false;
+  bool _initialDeepLinksLoaded = false;
+  final Object _deepLinkHandlerToken = Object();
+  int _deepLinkHandlerEpoch = 0;
+  Object? _activeDeepLinkDialogToken;
+  Route<dynamic>? _activeDeepLinkDialogRoute;
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
@@ -254,6 +270,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
             (widget.createAgentClient == null);
     if (controllerChanged) {
       if (oldWidget.controller == null) {
+        _teardownDeepLinkHandling();
         _disposeControllerList(_takeCachedControllers());
       }
       _config = nextWidgetConfig;
@@ -265,6 +282,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       } else {
         _controller = widget.controller!;
       }
+      if (widget.controller == null) _setupDeepLinkHandling();
       return;
     }
 
@@ -320,39 +338,88 @@ class _AcpClientAppState extends State<AcpClientApp> {
       snapshot.discard();
     }
     _pendingUndoSnapshots.clear();
+    _teardownDeepLinkHandling();
     if (widget.controller == null) {
-      _deepLinkChannel.setMethodCallHandler(null);
       _disposeControllerList(_takeCachedControllers());
     }
     super.dispose();
   }
 
   void _setupDeepLinkHandling() {
-    if (widget.controller != null) return;
+    if (widget.controller != null || _deepLinkHandlerInstalled) return;
+    final handlerEpoch = ++_deepLinkHandlerEpoch;
+    _deepLinkHandlerInstalled = true;
+    _deepLinkHandlerOwner = _deepLinkHandlerToken;
     _deepLinkChannel.setMethodCallHandler((call) async {
+      if (!_ownsDeepLinkHandler(handlerEpoch)) return null;
       if (call.method != 'openDeepLink') return null;
       final rawLink = call.arguments;
-      if (rawLink is String) unawaited(_handleDeepLink(rawLink));
+      if (rawLink is String) {
+        unawaited(_handleDeepLink(rawLink, handlerEpoch));
+      }
       return null;
     });
-    unawaited(_loadInitialDeepLinks());
+    if (!_initialDeepLinksLoaded) {
+      _initialDeepLinksLoaded = true;
+      unawaited(_loadInitialDeepLinks(handlerEpoch));
+    }
   }
 
-  Future<void> _loadInitialDeepLinks() async {
+  void _teardownDeepLinkHandling() {
+    if (!_deepLinkHandlerInstalled) return;
+    _deepLinkHandlerInstalled = false;
+    _deepLinkHandlerEpoch += 1;
+    while (_pendingDeepLinkRequests.isNotEmpty) {
+      _handledDeepLinks.remove(_pendingDeepLinkRequests.removeFirst().key);
+    }
+    final activeDialogRoute = _activeDeepLinkDialogRoute;
+    _activeDeepLinkDialogToken = null;
+    _activeDeepLinkDialogRoute = null;
+    if (activeDialogRoute != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final navigator = activeDialogRoute.navigator;
+        if (navigator != null && activeDialogRoute.isActive) {
+          navigator.removeRoute(activeDialogRoute, false);
+        }
+      });
+    }
+    if (identical(_deepLinkHandlerOwner, _deepLinkHandlerToken)) {
+      _deepLinkHandlerOwner = null;
+      _deepLinkChannel.setMethodCallHandler(null);
+    }
+  }
+
+  bool _ownsDeepLinkHandler(int handlerEpoch) {
+    return mounted &&
+        _deepLinkHandlerInstalled &&
+        widget.controller == null &&
+        _deepLinkHandlerEpoch == handlerEpoch &&
+        identical(_deepLinkHandlerOwner, _deepLinkHandlerToken);
+  }
+
+  Future<void> _loadInitialDeepLinks(int handlerEpoch) async {
     try {
       final rawLinks = await _deepLinkChannel.invokeMethod<List<Object?>>(
         'getInitialDeepLinks',
       );
+      if (!_ownsDeepLinkHandler(handlerEpoch)) return;
       if (rawLinks == null) return;
       for (final rawLink in rawLinks) {
-        if (rawLink is String) await _handleDeepLink(rawLink);
+        if (!_ownsDeepLinkHandler(handlerEpoch)) return;
+        if (rawLink is String) {
+          await _handleDeepLink(rawLink, handlerEpoch);
+          if (!_ownsDeepLinkHandler(handlerEpoch)) return;
+        }
       }
-    } on MissingPluginException {
+    } on MissingPluginException catch (_) {
+      return;
+    } on PlatformException catch (_) {
       return;
     }
   }
 
-  Future<void> _handleDeepLink(String rawLink) async {
+  Future<void> _handleDeepLink(String rawLink, int handlerEpoch) async {
+    if (!_ownsDeepLinkHandler(handlerEpoch)) return;
     final normalizedLink = rawLink.trim();
     if (normalizedLink.isEmpty) return;
     final request = StartupOptions.fromDeepLink(normalizedLink);
@@ -369,7 +436,11 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
     _pendingDeepLinkRequests.add(
-      _PendingDeepLinkRequest(key: key, request: request),
+      _PendingDeepLinkRequest(
+        key: key,
+        request: request,
+        handlerEpoch: handlerEpoch,
+      ),
     );
     unawaited(_drainDeepLinkConfirmationQueue());
   }
@@ -384,7 +455,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   Future<void> _drainDeepLinkConfirmationQueue() async {
-    if (_deepLinkConfirmationActive || !mounted) return;
+    if (_deepLinkConfirmationActive ||
+        !_ownsDeepLinkHandler(_deepLinkHandlerEpoch)) {
+      return;
+    }
     if (_navigatorKey.currentContext == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_drainDeepLinkConfirmationQueue());
@@ -394,23 +468,51 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     _deepLinkConfirmationActive = true;
     try {
-      while (mounted && _pendingDeepLinkRequests.isNotEmpty) {
+      while (_pendingDeepLinkRequests.isNotEmpty) {
+        final pending = _pendingDeepLinkRequests.removeFirst();
+        if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
+          _handledDeepLinks.remove(pending.key);
+          continue;
+        }
         final dialogContext = _navigatorKey.currentContext;
         if (dialogContext == null) return;
         if (!dialogContext.mounted) return;
-        final pending = _pendingDeepLinkRequests.removeFirst();
+        final confirmationToken = Object();
         final confirmed = await showDialog<bool>(
           context: dialogContext,
           barrierDismissible: false,
-          builder: (_) => DeepLinkConfirmationDialog(request: pending.request),
+          builder: (context) {
+            _activeDeepLinkDialogToken = confirmationToken;
+            _activeDeepLinkDialogRoute = ModalRoute.of(context);
+            return DeepLinkConfirmationDialog(request: pending.request);
+          },
         );
-        if (!mounted) return;
+        if (identical(_activeDeepLinkDialogToken, confirmationToken)) {
+          _activeDeepLinkDialogToken = null;
+          _activeDeepLinkDialogRoute = null;
+        }
+        if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
+          _handledDeepLinks.remove(pending.key);
+          return;
+        }
         if (confirmed != true) {
           _handledDeepLinks.remove(pending.key);
           continue;
         }
         final request = pending.request;
-        final workspace = validateDeepLinkWorkspace(request.cwd);
+        DeepLinkWorkspaceValidation workspace;
+        try {
+          workspace = await widget.deepLinkWorkspaceValidator(request.cwd);
+        } on Object catch (error) {
+          _handledDeepLinks.remove(pending.key);
+          if (!_ownsDeepLinkHandler(pending.handlerEpoch)) return;
+          _showSnackBar('Could not open external session: $error');
+          continue;
+        }
+        if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
+          _handledDeepLinks.remove(pending.key);
+          return;
+        }
         if (workspace.errors.isNotEmpty) {
           _handledDeepLinks.remove(pending.key);
           _showSnackBar(
@@ -426,12 +528,23 @@ class _AcpClientAppState extends State<AcpClientApp> {
               resumeAgentName: request.agentName,
             ),
           );
+          if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
+            _handledDeepLinks.remove(pending.key);
+            return;
+          }
         } on Object catch (error) {
-          if (mounted) _showSnackBar('Could not open external session: $error');
+          _handledDeepLinks.remove(pending.key);
+          if (_ownsDeepLinkHandler(pending.handlerEpoch)) {
+            _showSnackBar('Could not open external session: $error');
+          }
         }
       }
     } finally {
       _deepLinkConfirmationActive = false;
+      if (_pendingDeepLinkRequests.isNotEmpty &&
+          _ownsDeepLinkHandler(_deepLinkHandlerEpoch)) {
+        unawaited(_drainDeepLinkConfirmationQueue());
+      }
     }
   }
 
@@ -600,11 +713,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   SessionTranscriptCache? _sessionTranscriptCache(AcpClientConfig config) {
-    final configPath = config.configPath?.trim();
-    if (configPath == null || configPath.isEmpty) return null;
+    final directoryPath = resolveSessionTranscriptCacheDirectoryPath(
+      config.configPath,
+    );
+    if (directoryPath == null) return null;
     return FileSessionTranscriptCache(
-      directoryPath:
-          '${File(configPath).parent.path}${Platform.pathSeparator}session_transcripts',
+      directoryPath: directoryPath,
       maxDirectoryBytes: config.storage.maxBytes,
       retention: config.storage.retention,
     );
@@ -1904,7 +2018,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
         }
       }
 
-      await Process.start(Platform.resolvedExecutable, args);
+      // The new window is intentionally independent. A normal-mode child
+      // exposes stdout/stderr pipes that this parent never consumes, so a
+      // chatty child could eventually block on a full pipe.
+      await Process.start(
+        Platform.resolvedExecutable,
+        args,
+        mode: ProcessStartMode.detached,
+      );
     } catch (error) {
       _showSnackBar('Could not open session in a new window: $error');
     }

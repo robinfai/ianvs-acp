@@ -15,6 +15,7 @@ import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/startup/deep_link_request.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
@@ -46,6 +47,31 @@ void main() {
       ),
       null,
     );
+  }
+
+  Future<DeepLinkWorkspaceValidation> validateDeepLinkWorkspaceSync(
+    String? value,
+  ) async {
+    final syntax = validateDeepLinkWorkspaceSyntax(value);
+    if (syntax.errors.isNotEmpty || syntax.path == null) return syntax;
+    final directory = Directory(syntax.path!);
+    if (!directory.existsSync()) {
+      return DeepLinkWorkspaceValidation(
+        path: syntax.path,
+        errors: const <String>['Workspace does not exist.'],
+      );
+    }
+    try {
+      return DeepLinkWorkspaceValidation(
+        path: directory.resolveSymbolicLinksSync(),
+        errors: const <String>[],
+      );
+    } on FileSystemException {
+      return DeepLinkWorkspaceValidation(
+        path: syntax.path,
+        errors: const <String>['Workspace could not be resolved.'],
+      );
+    }
   }
 
   testWidgets('AcpClientApp validates and forwards the same input budget', (
@@ -833,6 +859,7 @@ void main() {
         config: config,
         autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
     );
     await tester.pumpAndSettle();
@@ -851,7 +878,7 @@ void main() {
     expect(find.text('Open external session?'), findsOneWidget);
     expect(find.text('session-runtime'), findsOneWidget);
     expect(find.text('Codex'), findsWidgets);
-    expect(find.text(workspace.resolveSymbolicLinksSync()), findsOneWidget);
+    expect(find.text(workspace.path), findsOneWidget);
     expect(fake.lastResumeCwd, isNull);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
@@ -891,6 +918,7 @@ void main() {
         config: config,
         autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
     );
     await tester.pumpAndSettle();
@@ -933,6 +961,7 @@ void main() {
         config: config,
         autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
     );
     await tester.pumpAndSettle();
@@ -951,6 +980,60 @@ void main() {
     await sendDeepLink(tester, link);
     await tester.pumpAndSettle();
     expect(find.text('Open external session?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('AcpClientApp recovers from a workspace validator failure', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/validator')..createSync();
+    final fake = FakeAgentClient();
+    var validationCalls = 0;
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    final link =
+        'ianvs-acp://session?id=session-validator&cwd='
+        '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => fake,
+        deepLinkWorkspaceValidator: (path) {
+          validationCalls += 1;
+          if (validationCalls == 1) {
+            return Future<DeepLinkWorkspaceValidation>.error(
+              StateError('injected validator failure'),
+            );
+          }
+          return validateDeepLinkWorkspaceSync(path);
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastResumeCwd, isNull);
+    expect(find.textContaining('injected validator failure'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('AcpClientApp allows a cancelled link to be requested again', (
@@ -974,6 +1057,7 @@ void main() {
         config: config,
         autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
     );
     await tester.pumpAndSettle();
@@ -1012,6 +1096,7 @@ void main() {
         config: config,
         autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
     );
     await tester.pumpAndSettle();
@@ -1079,6 +1164,63 @@ void main() {
     expect(fake.lastResumeCwd, isNull);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'AcpClientApp invalidates queued links when handler ownership changes',
+    (tester) async {
+      final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final workspace = Directory('${temp.path}/ownership')..createSync();
+      final owned = _CountingResumeAgentClient();
+      final injected = ChatController(
+        client: FakeAgentClient(),
+        cwd: workspace.path,
+      );
+      addTearDown(injected.dispose);
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+      final firstLink =
+          'ianvs-acp://session?id=session-owned-1&cwd='
+          '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+      final secondLink =
+          'ianvs-acp://session?id=session-owned-2&cwd='
+          '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          createAgentClient: (_) => owned,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await sendDeepLink(tester, firstLink);
+      await sendDeepLink(tester, secondLink);
+      await tester.pumpAndSettle();
+      expect(find.text('session-owned-1'), findsOneWidget);
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          controller: injected,
+          config: config,
+          autoLoadWorkspaceSessions: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(owned.resumeCalls, 0);
+      expect(injected.currentSession, isNull);
+      expect(find.text('Open external session?'), findsNothing);
+      expect(find.text('session-owned-2'), findsNothing);
+      await sendDeepLink(tester, firstLink);
+      await tester.pumpAndSettle();
+      expect(find.text('Open external session?'), findsNothing);
+    },
+  );
 
   testWidgets('AcpClientApp bounds the external session confirmation queue', (
     tester,

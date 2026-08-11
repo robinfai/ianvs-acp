@@ -4,7 +4,9 @@ import 'dart:io';
 
 import '../acp/agent_session.dart';
 import '../acp/session_title.dart';
+import '../platform/bounded_file_snapshot.dart';
 import '../platform/secure_atomic_file.dart';
+import '../storage/app_state_path.dart';
 
 class WorkspaceSidebarWorkspaceState {
   const WorkspaceSidebarWorkspaceState({
@@ -34,6 +36,7 @@ class WorkspaceSidebarStateStore {
   WorkspaceSidebarStateStore({required this.path});
 
   static const String fileName = 'workspace_ui_state.json';
+  static const int maxStateFileBytes = 16 * 1024 * 1024;
   static final Map<String, _WorkspaceStateCoordinator> _coordinators =
       <String, _WorkspaceStateCoordinator>{};
 
@@ -46,22 +49,10 @@ class WorkspaceSidebarStateStore {
     String? configPath,
     Map<String, String>? environment,
   }) {
-    final config = configPath?.trim();
-    if (config != null && config.isNotEmpty) {
-      return _joinPath(File(config).parent.path, fileName);
-    }
-
-    final env = environment ?? Platform.environment;
-    final xdgConfigHome = env['XDG_CONFIG_HOME']?.trim();
-    if (xdgConfigHome != null && xdgConfigHome.isNotEmpty) {
-      return _joinPath(_joinPath(xdgConfigHome, 'ianvs-acp'), fileName);
-    }
-
-    final home = env['HOME']?.trim();
-    if (home == null || home.isEmpty) return null;
-    return _joinPath(
-      _joinPath(_joinPath(home, '.config'), 'ianvs-acp'),
-      fileName,
+    return resolveAppStateFilePath(
+      fileName: fileName,
+      configPath: configPath,
+      environment: environment,
     );
   }
 
@@ -72,9 +63,7 @@ class WorkspaceSidebarStateStore {
       return <String>{};
     }
     return _withCoordinator(file, (_) async {
-      return SecureAtomicFile.synchronizedAcrossProcesses(file, (
-        resolvedFile,
-      ) async {
+      return _synchronizedStateFile(file, (resolvedFile) async {
         final state = await _readStateFile(resolvedFile);
         final paths = _expandedPathsFromState(state);
         _expandedWorkspacePathsBase = Set<String>.of(paths);
@@ -100,9 +89,7 @@ class WorkspaceSidebarStateStore {
       return;
     }
     await _withCoordinator(file, (_) async {
-      await SecureAtomicFile.synchronizedAcrossProcesses(file, (
-        resolvedFile,
-      ) async {
+      await _synchronizedStateFile(file, (resolvedFile) async {
         final state = await _readStateFile(resolvedFile);
         final latest = _expandedPathsFromState(state);
         final base = _expandedWorkspacePathsBase ?? latest;
@@ -125,9 +112,7 @@ class WorkspaceSidebarStateStore {
       return const <WorkspaceSidebarWorkspaceState>[];
     }
     return _withCoordinator(file, (_) async {
-      return SecureAtomicFile.synchronizedAcrossProcesses(file, (
-        resolvedFile,
-      ) async {
+      return _synchronizedStateFile(file, (resolvedFile) async {
         final state = await _readStateFile(resolvedFile);
         final records = _workspaceIndexRecords(state);
         _workspaceIndexBase = _canonicalWorkspaceIndex(records);
@@ -167,9 +152,7 @@ class WorkspaceSidebarStateStore {
       return;
     }
     await _withCoordinator(file, (_) async {
-      await SecureAtomicFile.synchronizedAcrossProcesses(file, (
-        resolvedFile,
-      ) async {
+      await _synchronizedStateFile(file, (resolvedFile) async {
         final state = await _readStateFile(resolvedFile);
         final latestRecords = _workspaceIndexRecords(state);
         final base =
@@ -201,9 +184,7 @@ class WorkspaceSidebarStateStore {
       return const <AgentSession>[];
     }
     return _withCoordinator(file, (_) async {
-      return SecureAtomicFile.synchronizedAcrossProcesses(file, (
-        resolvedFile,
-      ) async {
+      return _synchronizedStateFile(file, (resolvedFile) async {
         final state = await _readStateFile(resolvedFile);
         final records = _sessionIndexRecords(state);
         _sessionIndexBase = _canonicalSessionIndex(records);
@@ -233,9 +214,7 @@ class WorkspaceSidebarStateStore {
       return;
     }
     await _withCoordinator(file, (_) async {
-      await SecureAtomicFile.synchronizedAcrossProcesses(file, (
-        resolvedFile,
-      ) async {
+      await _synchronizedStateFile(file, (resolvedFile) async {
         final state = await _readStateFile(resolvedFile);
         final latestRecords = _sessionIndexRecords(state);
         final base = _sessionIndexBase ?? _canonicalSessionIndex(latestRecords);
@@ -264,7 +243,18 @@ class WorkspaceSidebarStateStore {
     if (file == null) return <String, Object?>{};
     return _withCoordinator(
       file,
-      (_) => SecureAtomicFile.synchronizedAcrossProcesses(file, _readStateFile),
+      (_) => _synchronizedStateFile(file, _readStateFile),
+    );
+  }
+
+  Future<T> _synchronizedStateFile<T>(
+    File file,
+    Future<T> Function(File resolvedFile) operation,
+  ) {
+    return SecureAtomicFile.synchronizedAcrossProcesses(
+      file,
+      operation,
+      strictPrivateParent: true,
     );
   }
 
@@ -281,12 +271,16 @@ class WorkspaceSidebarStateStore {
     if (!await file.exists()) return <String, Object?>{};
 
     try {
-      final decoded = jsonDecode(await file.readAsString());
+      final decoded = jsonDecode(
+        await readBoundedFileStringSnapshot(file, maxBytes: maxStateFileBytes),
+      );
       if (decoded is! Map) return <String, Object?>{};
       return <String, Object?>{
         for (final entry in decoded.entries)
           if (entry.key is String) entry.key as String: entry.value,
       };
+    } on BoundedFileSnapshotOverflowException {
+      rethrow;
     } catch (_) {
       return <String, Object?>{};
     }
@@ -618,13 +612,6 @@ class WorkspaceSidebarStateStore {
 
   bool _boolFromJson(Object? raw) {
     return raw == true;
-  }
-
-  static String _joinPath(String directory, String basename) {
-    if (directory.endsWith(Platform.pathSeparator)) {
-      return '$directory$basename';
-    }
-    return '$directory${Platform.pathSeparator}$basename';
   }
 }
 

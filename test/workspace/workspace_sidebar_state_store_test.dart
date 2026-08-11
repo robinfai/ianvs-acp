@@ -4,9 +4,35 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
+import 'package:ianvs_acp/platform/bounded_file_snapshot.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
 void main() {
+  test('WorkspaceSidebarStateStore rejects an oversized snapshot', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-sidebar-oversized-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final file = File('${tempDir.path}/workspace_ui_state.json');
+    await file.writeAsBytes(
+      List<int>.filled(WorkspaceSidebarStateStore.maxStateFileBytes + 1, 0x20),
+    );
+    final store = WorkspaceSidebarStateStore(path: file.path);
+
+    await expectLater(
+      store.loadExpandedWorkspacePaths(),
+      throwsA(isA<BoundedFileSnapshotOverflowException>()),
+    );
+    await expectLater(
+      store.saveExpandedWorkspacePaths(<String>{'/workspace'}),
+      throwsA(isA<BoundedFileSnapshotOverflowException>()),
+    );
+    expect(
+      await file.length(),
+      WorkspaceSidebarStateStore.maxStateFileBytes + 1,
+    );
+  });
+
   test('WorkspaceSidebarStateStore saves and loads expanded paths', () async {
     final tempDir = await Directory.systemTemp.createTemp(
       'ianvs-acp-sidebar-store-',
@@ -47,6 +73,107 @@ void main() {
     );
 
     expect(path, '/tmp/ianvs-acp/workspace_ui_state.json');
+  });
+
+  test('custom config state does not overwrite a project sibling', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-sidebar-store-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final project = Directory('${tempDir.path}/project')..createSync();
+    final sibling = File('${project.path}/workspace_ui_state.json');
+    await sibling.writeAsString('user-owned\n');
+    final chmod = await Process.run('/bin/chmod', <String>[
+      '0644',
+      sibling.path,
+    ]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+    final originalMode = (await sibling.stat()).mode & 0x1ff;
+    final path = WorkspaceSidebarStateStore.defaultPath(
+      configPath: '${project.path}/settings.json',
+    );
+
+    expect(
+      path,
+      '${project.path}${Platform.pathSeparator}.ianvs-acp'
+      '${Platform.pathSeparator}workspace_ui_state.json',
+    );
+    final store = WorkspaceSidebarStateStore(path: path);
+    await store.saveExpandedWorkspacePaths({'/workspace/project'});
+
+    expect(await sibling.readAsString(), 'user-owned\n');
+    expect((await sibling.stat()).mode & 0x1ff, originalMode);
+    expect(await File(path!).exists(), isTrue);
+    expect(await store.loadExpandedWorkspacePaths(), {'/workspace/project'});
+  });
+
+  test('default state rejects a symlinked app-owned parent', () async {
+    if (!Platform.isMacOS && !Platform.isLinux) return;
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-sidebar-store-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final project = Directory('${tempDir.path}/project')..createSync();
+    final external = Directory('${tempDir.path}/external')..createSync();
+    final sentinel = File('${external.path}/user-data.txt');
+    await sentinel.writeAsString('keep\n');
+    final chmod = await Process.run('/bin/chmod', <String>[
+      '0755',
+      external.path,
+    ]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+    final originalMode = (await external.stat()).mode & 0x1ff;
+    await Link('${project.path}/.ianvs-acp').create(external.path);
+    final store = WorkspaceSidebarStateStore(
+      path: WorkspaceSidebarStateStore.defaultPath(
+        configPath: '${project.path}/settings.json',
+      ),
+    );
+
+    await expectLater(
+      store.saveExpandedWorkspacePaths({'/workspace/project'}),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    expect(await sentinel.readAsString(), 'keep\n');
+    expect((await external.stat()).mode & 0x1ff, originalMode);
+    final entries = await external.list(followLinks: false).toList();
+    expect(entries, hasLength(1));
+    expect(entries.single.path, sentinel.path);
+  });
+
+  test('default state rejects a symlinked data file', () async {
+    if (!Platform.isMacOS && !Platform.isLinux) return;
+    final tempDir = await Directory.systemTemp.createTemp(
+      'ianvs-acp-sidebar-store-',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final project = Directory('${tempDir.path}/project')..createSync();
+    final stateDirectory = Directory('${project.path}/.ianvs-acp')
+      ..createSync();
+    final external = File('${tempDir.path}/external-state.json');
+    await external.writeAsString('user-owned\n');
+    final chmod = await Process.run('/bin/chmod', <String>[
+      '0644',
+      external.path,
+    ]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+    final originalMode = (await external.stat()).mode & 0x1ff;
+    final path = '${stateDirectory.path}/workspace_ui_state.json';
+    await Link(path).create(external.path);
+    final store = WorkspaceSidebarStateStore(path: path);
+
+    await expectLater(
+      store.saveExpandedWorkspacePaths({'/workspace/project'}),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    expect(await external.readAsString(), 'user-owned\n');
+    expect((await external.stat()).mode & 0x1ff, originalMode);
+    expect(
+      await FileSystemEntity.type(path, followLinks: false),
+      FileSystemEntityType.link,
+    );
   });
 
   test('WorkspaceSidebarStateStore resolves default path from XDG config', () {

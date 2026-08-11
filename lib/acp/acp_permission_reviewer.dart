@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
+import 'package:path/path.dart' as p;
 
 import '../config/acp_client_config.dart';
 import 'acp_agent_client.dart';
@@ -11,6 +11,8 @@ import 'acp_input_budget.dart' as acp;
 import 'acp_permission_request.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
+import 'bounded_utf8_accumulator.dart';
+import 'bounded_mcp_stdio_transport.dart';
 import 'no_redirect_mcp_http_transport.dart';
 
 abstract class AcpPermissionReviewer {
@@ -348,15 +350,18 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     String sessionId,
     Map<String, dynamic> payload,
   ) async {
-    final buffer = StringBuffer();
+    final buffer = BoundedUtf8Accumulator(
+      maxBytes: defaultPermissionReviewResultEncodedByteLimit,
+    );
     await for (final event in client.sendPrompt(
       sessionId: sessionId,
       prompt: _agentReviewPrompt(payload),
     )) {
       switch (event.type) {
         case AgentEventType.agentTextDelta:
-          buffer.write(event.text);
+          buffer.add(event.text);
         case AgentEventType.agentTextDone:
+          if (buffer.isEmpty) buffer.add(event.text);
           return buffer.toString();
         case AgentEventType.error:
           throw StateError(event.text);
@@ -602,7 +607,11 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
         final result = await client.callTool(
           mcp.CallToolRequest(name: config.toolName, arguments: payload),
         );
-        return _resultFromToolCall(result, model: effectiveModel);
+        return _resultFromToolCall(
+          result,
+          model: effectiveModel,
+          localAnalysis: payload['analysis']! as Map<String, Object?>,
+        );
       }()).timeout(config.timeout);
     } catch (error) {
       await _resetClient();
@@ -703,14 +712,13 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
         'ACP transport MCP servers cannot be used as sidecar review agents.',
       );
     }
-    return mcp.StdioClientTransport(
-      mcp.StdioServerParameters(
+    return BoundedMcpStdioTransport(
+      parameters: BoundedMcpStdioServerParameters(
         command: server.command,
         args: runtime['args'] is List
             ? (runtime['args'] as List).whereType<String>().toList()
             : const <String>[],
         environment: _envMap(runtime['env']),
-        stderrMode: ProcessStartMode.normal,
       ),
     );
   }
@@ -746,6 +754,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   AcpPermissionReviewResult _resultFromToolCall(
     mcp.CallToolResult result, {
     String? model,
+    required Map<String, Object?> localAnalysis,
   }) {
     if (result.isError) {
       return sanitizeAcpPermissionReviewResult(
@@ -780,7 +789,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
         ),
       );
     }
-    return sanitizeAcpPermissionReviewResult(
+    final remoteResult = sanitizeAcpPermissionReviewResult(
       AcpPermissionReviewResult(
         decision: _decisionFromReview(data),
         risk:
@@ -792,6 +801,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
         model: model,
       ),
     );
+    return _applyLocalRiskFloor(remoteResult, localAnalysis);
   }
 
   Map<String, Object?> _structuredResult(mcp.CallToolResult result) {
@@ -948,24 +958,50 @@ String? _reviewStringField(Map<String, Object?> data, List<String> keys) {
   return null;
 }
 
+AcpPermissionReviewResult _applyLocalRiskFloor(
+  AcpPermissionReviewResult remote,
+  Map<String, Object?> localAnalysis,
+) {
+  final localRisk = localAnalysis['risk'];
+  final localRank = localRisk is String ? _knownRiskRank(localRisk) : null;
+  final remoteRank = _knownRiskRank(remote.risk);
+  final effectiveRisk =
+      localRank != null && remoteRank != null && localRank > remoteRank
+      ? (localRisk as String).trim().toLowerCase()
+      : remote.risk;
+  return sanitizeAcpPermissionReviewResult(
+    AcpPermissionReviewResult(
+      decision: remote.decision,
+      risk: effectiveRisk,
+      rationale: remote.rationale,
+      reviewer: remote.reviewer,
+      model: remote.model,
+      details: <String, Object?>{
+        ...remote.details,
+        if (localRisk is String) 'localRiskFloor': localRisk,
+        'localAnalysis': localAnalysis,
+      },
+    ),
+  );
+}
+
+int? _knownRiskRank(String value) => switch (value.trim().toLowerCase()) {
+  'low' => 0,
+  'medium' => 1,
+  'high' => 2,
+  _ => null,
+};
+
 Map<String, dynamic> acpPermissionReviewPayload(
   AcpPermissionRequest request, {
   required String workspaceRoot,
   List<String> additionalDirectories = const <String>[],
   String? model,
 }) {
-  final metadataWorkspace = _metadataString(request.metadata, 'workspaceRoot');
-  final effectiveWorkspace =
-      metadataWorkspace == null || metadataWorkspace.isEmpty
-      ? workspaceRoot
-      : metadataWorkspace;
-  final effectiveAdditionalDirectories = _normalizedDirectories([
-    ...additionalDirectories,
-    ..._metadataStringList(request.metadata, const [
-      'additionalDirectories',
-      'additional_directories',
-    ]),
-  ]);
+  final effectiveWorkspace = workspaceRoot;
+  final effectiveAdditionalDirectories = _normalizedDirectories(
+    additionalDirectories,
+  );
   final commandContext = _commandContextFromPermission(request);
   final command = commandContext.command;
   final args = commandContext.args;
@@ -977,26 +1013,146 @@ Map<String, dynamic> acpPermissionReviewPayload(
     additionalDirectories: effectiveAdditionalDirectories,
     commandLine: commandLine,
     cwd: cwd,
+    rawInput: commandContext.rawInput,
   );
   return <String, dynamic>{
     'schema': 'ianvs-acp.permission-review.v1',
     if (model?.trim().isNotEmpty == true) 'model': model!.trim(),
-    'request': _jsonMap(request.toJson()),
+    'request': _permissionReviewRequestProjection(request, commandContext),
     'workspace': <String, Object?>{
       'root': effectiveWorkspace,
       if (effectiveAdditionalDirectories.isNotEmpty)
         'additionalDirectories': effectiveAdditionalDirectories,
     },
-    if (commandLine.isNotEmpty)
+    if (commandLine.isNotEmpty && commandContext.hasStructuredCommand)
       'command': <String, Object?>{
         'line': commandLine,
         if (command?.trim().isNotEmpty == true) 'command': command!.trim(),
         if (args.isNotEmpty) 'args': args,
         'cwd': cwd,
+        if (commandContext.rawInput.environment.names.isNotEmpty)
+          'environment': <String, Object?>{
+            'names': commandContext.rawInput.environment.names,
+            'count': commandContext.rawInput.environment.names.length,
+          },
       },
     'analysis': analysis,
   };
 }
+
+Map<String, Object?> _permissionReviewRequestProjection(
+  AcpPermissionRequest request,
+  _PermissionCommandContext commandContext,
+) {
+  final choices = request.choices.take(64).toList(growable: false);
+  return <String, Object?>{
+    'id': _boundedPermissionProjectionString(request.id),
+    'sessionId': _boundedPermissionProjectionString(request.sessionId),
+    'toolName': _boundedPermissionProjectionString(request.toolName),
+    if (request.toolKind?.trim().isNotEmpty == true)
+      'toolKind': _boundedPermissionProjectionString(request.toolKind!.trim()),
+    if (choices.isNotEmpty)
+      'choices': choices
+          .map(
+            (choice) => <String, Object?>{
+              'optionId': _boundedPermissionProjectionString(choice.optionId),
+              if (choice.kind?.trim().isNotEmpty == true)
+                'kind': _boundedPermissionProjectionString(choice.kind!.trim()),
+            },
+          )
+          .toList(growable: false),
+    if (request.choices.length > choices.length)
+      'choiceCount': request.choices.length,
+    'input': _permissionInputProjection(commandContext.rawInput),
+  };
+}
+
+String _boundedPermissionProjectionString(String value) {
+  return value.length <= 4096 && utf8.encode(value).length <= 4096
+      ? value
+      : '[omitted:size_limit]';
+}
+
+Map<String, Object?> _permissionInputProjection(
+  _PermissionRawInputContext rawInput,
+) {
+  final value = rawInput.value;
+  final result = <String, Object?>{
+    'status': rawInput.status.name,
+    'environment': <String, Object?>{
+      'status': rawInput.environment.status.name,
+      if (rawInput.environment.names.isNotEmpty) ...<String, Object?>{
+        'names': rawInput.environment.names,
+        'count': rawInput.environment.names.length,
+      },
+    },
+    if (rawInput.unknownFields.isNotEmpty)
+      'unknownFields': rawInput.unknownFields,
+  };
+  if (value == null) return result;
+
+  result['fieldCount'] = value.length;
+  result['fields'] = <Map<String, String>>[
+    for (final entry in value.entries)
+      <String, String>{
+        'name': entry.key,
+        'type': _permissionInputValueType(entry.value),
+      },
+  ];
+  for (final key in const <String>['path', 'target']) {
+    final item = value[key];
+    if (item is String &&
+        item.length <= 4096 &&
+        utf8.encode(item).length <= 4096) {
+      result[key] = item;
+    }
+  }
+  for (final key in const <String>[
+    'line',
+    'limit',
+    'writeBytes',
+    'write_bytes',
+    'contentBytes',
+    'content_bytes',
+  ]) {
+    final item = value[key];
+    if (item is int && item >= 0) result[key] = item;
+  }
+  final truncated = value['truncated'];
+  if (truncated is bool) result['truncated'] = truncated;
+  final contentTruncated = value['contentTruncated'];
+  if (contentTruncated is bool) {
+    result['contentTruncated'] = contentTruncated;
+  }
+  for (final key in const <String>[
+    'hash',
+    'sha256',
+    'contentHash',
+    'content_hash',
+  ]) {
+    final item = value[key];
+    if (item is String &&
+        item.length <= 140 &&
+        _permissionContentHashPattern.hasMatch(item)) {
+      result[key] = item;
+    }
+  }
+  return result;
+}
+
+String _permissionInputValueType(Object? value) => switch (value) {
+  null => 'null',
+  String() => 'string',
+  bool() => 'boolean',
+  num() => 'number',
+  List() => 'array',
+  Map() => 'object',
+  _ => 'unsupported',
+};
+
+final RegExp _permissionContentHashPattern = RegExp(
+  r'^(?:sha(?:256|384|512):)?[a-fA-F0-9]{16,128}$',
+);
 
 Map<String, Object?> _localPermissionAnalysis(
   AcpPermissionRequest request, {
@@ -1004,11 +1160,21 @@ Map<String, Object?> _localPermissionAnalysis(
   required List<String> additionalDirectories,
   required String commandLine,
   required String cwd,
+  required _PermissionRawInputContext rawInput,
 }) {
   final signals = <String>[];
   final workspaceRoots = _workspaceRoots(workspaceRoot, additionalDirectories);
   final cwdWithinWorkspace = _isWithinAnyWorkspace(cwd, workspaceRoots);
   if (!cwdWithinWorkspace) signals.add('cwd_outside_workspace');
+  final reviewedPaths = <String>[
+    if (rawInput.status == _PermissionRawInputStatus.complete)
+      for (final key in const <String>['path', 'target'])
+        if (rawInput.value?[key] case final String path) path,
+  ];
+  final pathsWithinWorkspace = reviewedPaths.every(
+    (path) => _isWithinAnyWorkspace(path, workspaceRoots),
+  );
+  if (!pathsWithinWorkspace) signals.add('path_outside_workspace');
 
   final lowerCommand = commandLine.toLowerCase();
   if (lowerCommand.isNotEmpty) {
@@ -1021,17 +1187,55 @@ Map<String, Object?> _localPermissionAnalysis(
     }
   }
 
-  final toolKind = request.toolKind?.toLowerCase();
-  if (toolKind == 'execute' && commandLine.isEmpty) {
+  final isExecution = _isExecutionPermission(request);
+  if (isExecution && commandLine.isEmpty) {
     signals.add('missing_command_context');
+  }
+  if (_isContentMutatingPermission(request)) {
+    // File contents are intentionally excluded from the remote review payload.
+    // Without seeing the bytes, a sidecar cannot safely classify a mutation as
+    // low risk even when the destination itself is inside the workspace.
+    signals.add('unreviewed_write_content');
+  }
+  switch (rawInput.status) {
+    case _PermissionRawInputStatus.missing:
+      signals.add('missing_raw_input_context');
+    case _PermissionRawInputStatus.malformed:
+      signals.add('malformed_raw_input_context');
+    case _PermissionRawInputStatus.complete:
+      if (rawInput.unknownFields.isNotEmpty) {
+        signals.add('unknown_raw_input_fields');
+      }
+  }
+  switch (rawInput.environment.status) {
+    case _PermissionEnvironmentStatus.missing:
+      if (isExecution) signals.add('missing_environment_context');
+    case _PermissionEnvironmentStatus.malformed:
+      signals.add('malformed_environment_context');
+    case _PermissionEnvironmentStatus.complete:
+      if (rawInput.environment.names.isNotEmpty) {
+        signals.add('environment_override');
+      }
+      if (rawInput.environment.hasDangerousOverride) {
+        signals.add('dangerous_environment_override');
+      }
   }
 
   final risk =
       signals.contains('cwd_outside_workspace') ||
-          signals.contains('high_risk_command_pattern')
+          signals.contains('path_outside_workspace') ||
+          signals.contains('high_risk_command_pattern') ||
+          signals.contains('dangerous_environment_override')
       ? 'high'
       : signals.contains('medium_risk_command_pattern') ||
-            signals.contains('missing_command_context')
+            signals.contains('missing_command_context') ||
+            signals.contains('missing_raw_input_context') ||
+            signals.contains('malformed_raw_input_context') ||
+            signals.contains('missing_environment_context') ||
+            signals.contains('malformed_environment_context') ||
+            signals.contains('unknown_raw_input_fields') ||
+            signals.contains('environment_override') ||
+            signals.contains('unreviewed_write_content')
       ? 'medium'
       : 'low';
   final suggestedDecision = switch (risk) {
@@ -1045,9 +1249,36 @@ Map<String, Object?> _localPermissionAnalysis(
     'risk': risk,
     'suggestedDecision': suggestedDecision,
     'cwdWithinWorkspace': cwdWithinWorkspace,
+    if (reviewedPaths.isNotEmpty) 'pathsWithinWorkspace': pathsWithinWorkspace,
     if (workspaceRoots.length > 1) 'workspaceRoots': workspaceRoots,
     if (signals.isNotEmpty) 'signals': signals,
   };
+}
+
+bool _isExecutionPermission(AcpPermissionRequest request) {
+  final kind = request.toolKind?.trim().toLowerCase();
+  final tool = request.toolName.trim().toLowerCase();
+  return const <String>{
+        'execute',
+        'command',
+        'terminal',
+        'shell',
+      }.contains(kind) ||
+      const <String>{
+        'execute',
+        'command',
+        'terminal',
+        'shell',
+        'bash',
+        'exec_command',
+      }.contains(tool);
+}
+
+bool _isContentMutatingPermission(AcpPermissionRequest request) {
+  final kind = request.toolKind?.trim().toLowerCase();
+  final tool = request.toolName.trim().toLowerCase();
+  return const <String>{'write', 'edit'}.contains(kind) ||
+      const <String>{'write', 'edit'}.contains(tool);
 }
 
 String? _metadataString(Map<String, Object?> metadata, String key) {
@@ -1060,18 +1291,86 @@ class _PermissionCommandContext {
     required this.command,
     required this.args,
     required this.cwd,
+    required this.rawInput,
+    required this.hasStructuredCommand,
   });
 
   final String? command;
   final List<String> args;
   final String? cwd;
+  final _PermissionRawInputContext rawInput;
+  final bool hasStructuredCommand;
 }
+
+enum _PermissionRawInputStatus { missing, malformed, complete }
+
+enum _PermissionEnvironmentStatus { missing, malformed, complete }
+
+class _PermissionEnvironmentContext {
+  const _PermissionEnvironmentContext({
+    required this.status,
+    this.names = const <String>[],
+    this.hasDangerousOverride = false,
+  });
+
+  final _PermissionEnvironmentStatus status;
+  final List<String> names;
+  final bool hasDangerousOverride;
+}
+
+class _PermissionRawInputContext {
+  const _PermissionRawInputContext({
+    required this.status,
+    required this.environment,
+    this.value,
+    this.unknownFields = const <String>[],
+  });
+
+  final _PermissionRawInputStatus status;
+  final _PermissionEnvironmentContext environment;
+  final Map<String, Object?>? value;
+  final List<String> unknownFields;
+}
+
+class _PresentPermissionValue {
+  const _PresentPermissionValue.absent() : present = false, value = null;
+
+  const _PresentPermissionValue.present(this.value) : present = true;
+
+  final bool present;
+  final Object? value;
+}
+
+const int _maxPermissionRawInputBytes = 64 * 1024;
+const int _maxPermissionRawInputFields = 64;
+const int _maxPermissionRawInputFieldNameBytes = 256;
+const int _maxPermissionEnvironmentEntries = 128;
+const int _maxPermissionEnvironmentNameBytes = 256;
+const int _maxPermissionEnvironmentValueBytes = 16 * 1024;
+const int _maxPermissionCommandBytes = 16 * 1024;
+const int _maxPermissionCwdBytes = 4096;
+const int _maxPermissionArguments = 256;
+const int _maxPermissionArgumentBytes = 4096;
+
+const Set<String> _dangerousPermissionEnvironmentNames = <String>{
+  'PATH',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'PYTHONPATH',
+  'PYTHONHOME',
+  'RUBYLIB',
+  'PERL5LIB',
+  'NODE_OPTIONS',
+  'JAVA_TOOL_OPTIONS',
+  'BASH_ENV',
+  'ENV',
+};
 
 _PermissionCommandContext _commandContextFromPermission(
   AcpPermissionRequest request,
 ) {
   final metadata = request.metadata;
-  final rawInput = _firstValue(metadata, const [
+  final rawInput = _firstPresentValue(metadata, const [
     'rawInput',
     'raw_input',
     'input',
@@ -1080,18 +1379,21 @@ _PermissionCommandContext _commandContextFromPermission(
   ]);
   final nestedToolCall = metadata['toolCall'];
   final nestedRawInput = nestedToolCall is Map
-      ? _firstValue(nestedToolCall, const [
+      ? _firstPresentValue(nestedToolCall, const [
           'rawInput',
           'raw_input',
           'input',
           'args',
           'arguments',
         ])
-      : null;
+      : const _PresentPermissionValue.absent();
+  final decodedRawInput = _permissionRawInputContext(
+    rawInput.present ? rawInput : nestedRawInput,
+  );
   final commandSource =
-      _decodedJsonObject(rawInput) ??
-      _decodedJsonObject(nestedRawInput) ??
-      metadata;
+      decodedRawInput.status == _PermissionRawInputStatus.complete
+      ? decodedRawInput.value
+      : metadata;
   final toolCallSource = nestedToolCall is Map ? nestedToolCall : null;
 
   final command =
@@ -1133,7 +1435,313 @@ _PermissionCommandContext _commandContextFromPermission(
         'working_directory',
       ]) ??
       _metadataString(metadata, 'cwd');
-  return _PermissionCommandContext(command: command, args: args, cwd: cwd);
+  return _PermissionCommandContext(
+    command: command,
+    args: args,
+    cwd: cwd,
+    rawInput: decodedRawInput,
+    hasStructuredCommand:
+        decodedRawInput.status == _PermissionRawInputStatus.complete &&
+        _firstString(decodedRawInput.value, const [
+              'command',
+              'cmd',
+              'commandLine',
+              'command_line',
+              'shellCommand',
+              'shell_command',
+              'script',
+            ]) !=
+            null,
+  );
+}
+
+_PermissionRawInputContext _permissionRawInputContext(
+  _PresentPermissionValue candidate,
+) {
+  if (!candidate.present) {
+    return const _PermissionRawInputContext(
+      status: _PermissionRawInputStatus.missing,
+      environment: _PermissionEnvironmentContext(
+        status: _PermissionEnvironmentStatus.missing,
+      ),
+    );
+  }
+  final decoded = _boundedPermissionJsonObject(candidate.value);
+  if (decoded == null) {
+    return const _PermissionRawInputContext(
+      status: _PermissionRawInputStatus.malformed,
+      environment: _PermissionEnvironmentContext(
+        status: _PermissionEnvironmentStatus.malformed,
+      ),
+    );
+  }
+  final malformedKnownFields = _hasMalformedPermissionInputFields(decoded);
+  final unknownFields =
+      decoded.keys
+          .where((key) => !_knownPermissionInputFields.contains(key))
+          .toList(growable: false)
+        ..sort();
+  return _PermissionRawInputContext(
+    status: malformedKnownFields
+        ? _PermissionRawInputStatus.malformed
+        : _PermissionRawInputStatus.complete,
+    environment: _permissionEnvironmentContext(decoded),
+    value: decoded,
+    unknownFields: List<String>.unmodifiable(unknownFields),
+  );
+}
+
+bool _hasMalformedPermissionInputFields(Map<String, Object?> input) {
+  for (final key in const <String>[
+    'command',
+    'cmd',
+    'commandLine',
+    'command_line',
+    'shellCommand',
+    'shell_command',
+    'script',
+  ]) {
+    if (!input.containsKey(key)) continue;
+    final value = input[key];
+    if (value is! String ||
+        value.length > _maxPermissionCommandBytes ||
+        utf8.encode(value).length > _maxPermissionCommandBytes) {
+      return true;
+    }
+  }
+  for (final key in const <String>[
+    'cwd',
+    'workdir',
+    'workingDirectory',
+    'working_directory',
+  ]) {
+    if (!input.containsKey(key)) continue;
+    final value = input[key];
+    if (value is! String ||
+        value.length > _maxPermissionCwdBytes ||
+        utf8.encode(value).length > _maxPermissionCwdBytes) {
+      return true;
+    }
+  }
+  for (final key in const <String>['path', 'target']) {
+    if (!input.containsKey(key)) continue;
+    final value = input[key];
+    if (value is! String ||
+        value.length > _maxPermissionCwdBytes ||
+        utf8.encode(value).length > _maxPermissionCwdBytes) {
+      return true;
+    }
+  }
+  for (final key in const <String>['args', 'argv', 'arguments']) {
+    if (!input.containsKey(key)) continue;
+    final value = input[key];
+    if (value is! List || value.length > _maxPermissionArguments) return true;
+    for (final item in value) {
+      if (item is! String ||
+          item.length > _maxPermissionArgumentBytes ||
+          utf8.encode(item).length > _maxPermissionArgumentBytes) {
+        return true;
+      }
+    }
+  }
+  for (final key in const <String>[
+    'line',
+    'limit',
+    'writeBytes',
+    'write_bytes',
+    'contentBytes',
+    'content_bytes',
+  ]) {
+    if (!input.containsKey(key) || input[key] == null) continue;
+    if (input[key] is! int || (input[key]! as int) < 0) {
+      return true;
+    }
+  }
+  for (final key in const <String>['truncated', 'contentTruncated']) {
+    if (input.containsKey(key) && input[key] != null && input[key] is! bool) {
+      return true;
+    }
+  }
+  for (final key in const <String>[
+    'preview',
+    'contentPreview',
+    'content_preview',
+  ]) {
+    if (!input.containsKey(key)) continue;
+    final value = input[key];
+    if (value == null) continue;
+    if (value is! String ||
+        value.length > _maxPermissionEnvironmentValueBytes ||
+        utf8.encode(value).length > _maxPermissionEnvironmentValueBytes) {
+      return true;
+    }
+  }
+  for (final key in const <String>[
+    'hash',
+    'sha256',
+    'contentHash',
+    'content_hash',
+  ]) {
+    if (!input.containsKey(key)) continue;
+    final value = input[key];
+    if (value == null) continue;
+    if (value is! String ||
+        value.length > 140 ||
+        !_permissionContentHashPattern.hasMatch(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const Set<String> _knownPermissionInputFields = <String>{
+  'command',
+  'cmd',
+  'commandLine',
+  'command_line',
+  'shellCommand',
+  'shell_command',
+  'script',
+  'args',
+  'argv',
+  'arguments',
+  'cwd',
+  'workdir',
+  'workingDirectory',
+  'working_directory',
+  'environment',
+  'env',
+  'path',
+  'target',
+  'line',
+  'limit',
+  'writeBytes',
+  'write_bytes',
+  'contentBytes',
+  'content_bytes',
+  'contentPreview',
+  'content_preview',
+  'preview',
+  'truncated',
+  'contentTruncated',
+  'hash',
+  'sha256',
+  'contentHash',
+  'content_hash',
+};
+
+Map<String, Object?>? _boundedPermissionJsonObject(Object? value) {
+  Object? decoded = value;
+  if (value is String) {
+    if (value.trim().isEmpty || value.length > _maxPermissionRawInputBytes) {
+      return null;
+    }
+    if (utf8.encode(value).length > _maxPermissionRawInputBytes) return null;
+    try {
+      decoded = jsonDecode(value);
+    } on FormatException {
+      return null;
+    }
+  }
+  if (decoded is! Map || decoded.length > _maxPermissionRawInputFields) {
+    return null;
+  }
+  final result = <String, Object?>{};
+  for (final entry in decoded.entries) {
+    final key = entry.key;
+    if (key is! String ||
+        key.isEmpty ||
+        key.length > _maxPermissionRawInputFieldNameBytes ||
+        utf8.encode(key).length > _maxPermissionRawInputFieldNameBytes) {
+      return null;
+    }
+    result[key] = entry.value;
+  }
+  return result;
+}
+
+_PermissionEnvironmentContext _permissionEnvironmentContext(
+  Map<String, Object?> rawInput,
+) {
+  final environment = _firstPresentValue(rawInput, const [
+    'environment',
+    'env',
+  ]);
+  if (!environment.present) {
+    return const _PermissionEnvironmentContext(
+      status: _PermissionEnvironmentStatus.missing,
+    );
+  }
+  final value = environment.value;
+  final entries = <(Object?, Object?)>[];
+  if (value is Map && value.length <= _maxPermissionEnvironmentEntries) {
+    for (final entry in value.entries) {
+      entries.add((entry.key, entry.value));
+    }
+  } else if (value is List &&
+      value.length <= _maxPermissionEnvironmentEntries) {
+    for (final item in value) {
+      if (item is! Map ||
+          item.length != 2 ||
+          !item.containsKey('name') ||
+          !item.containsKey('value')) {
+        return const _PermissionEnvironmentContext(
+          status: _PermissionEnvironmentStatus.malformed,
+        );
+      }
+      entries.add((item['name'], item['value']));
+    }
+  } else {
+    return const _PermissionEnvironmentContext(
+      status: _PermissionEnvironmentStatus.malformed,
+    );
+  }
+  final names = <String>[];
+  final seenNames = <String>{};
+  var dangerous = false;
+  for (final entry in entries) {
+    final name = entry.$1;
+    final item = entry.$2;
+    if (name is! String ||
+        item is! String ||
+        name.length > _maxPermissionEnvironmentNameBytes ||
+        !_permissionEnvironmentNamePattern.hasMatch(name) ||
+        utf8.encode(name).length > _maxPermissionEnvironmentNameBytes ||
+        item.length > _maxPermissionEnvironmentValueBytes ||
+        utf8.encode(item).length > _maxPermissionEnvironmentValueBytes ||
+        !seenNames.add(name.toUpperCase())) {
+      return const _PermissionEnvironmentContext(
+        status: _PermissionEnvironmentStatus.malformed,
+      );
+    }
+    final normalized = name.toUpperCase();
+    names.add(name);
+    dangerous =
+        dangerous ||
+        _dangerousPermissionEnvironmentNames.contains(normalized) ||
+        normalized.startsWith('LD_') ||
+        normalized.startsWith('DYLD_');
+  }
+  names.sort();
+  return _PermissionEnvironmentContext(
+    status: _PermissionEnvironmentStatus.complete,
+    names: List<String>.unmodifiable(names),
+    hasDangerousOverride: dangerous,
+  );
+}
+
+final RegExp _permissionEnvironmentNamePattern = RegExp(
+  r'^[A-Za-z_][A-Za-z0-9_]*$',
+);
+
+_PresentPermissionValue _firstPresentValue(Map? map, List<String> keys) {
+  if (map == null) return const _PresentPermissionValue.absent();
+  for (final key in keys) {
+    if (map.containsKey(key)) {
+      return _PresentPermissionValue.present(map[key]);
+    }
+  }
+  return const _PresentPermissionValue.absent();
 }
 
 String? _commandLineFromPermissionText(String text) {
@@ -1161,31 +1769,6 @@ String _stripInlineCode(String value) {
   return result;
 }
 
-Object? _firstValue(Map? map, List<String> keys) {
-  if (map == null) return null;
-  for (final key in keys) {
-    if (map.containsKey(key)) return map[key];
-  }
-  return null;
-}
-
-Map<String, Object?>? _decodedJsonObject(Object? value) {
-  if (value is Map<String, Object?>) return value;
-  if (value is Map) {
-    return value.map((key, item) => MapEntry(key.toString(), item));
-  }
-  if (value is! String || value.trim().isEmpty) return null;
-  try {
-    final decoded = jsonDecode(value);
-    if (decoded is Map) {
-      return decoded.map((key, item) => MapEntry(key.toString(), item));
-    }
-  } on FormatException {
-    return null;
-  }
-  return null;
-}
-
 String? _firstString(Map? map, List<String> keys) {
   if (map == null) return null;
   for (final key in keys) {
@@ -1207,17 +1790,6 @@ List<String> _firstStringList(Map? map, List<String> keys) {
 List<String> _stringList(Object? value) {
   if (value is! List) return const <String>[];
   return value.whereType<String>().toList(growable: false);
-}
-
-List<String> _metadataStringList(
-  Map<String, Object?> metadata,
-  List<String> keys,
-) {
-  for (final key in keys) {
-    final values = _stringList(metadata[key]);
-    if (values.isNotEmpty) return values;
-  }
-  return const <String>[];
 }
 
 List<String> _normalizedDirectories(Iterable<String> directories) {
@@ -1252,9 +1824,20 @@ String _shellDisplayArg(String arg) {
 }
 
 bool _isWithinWorkspace(String path, String workspaceRoot) {
+  final context = _pathContext(path, workspaceRoot);
+  if (context.style == p.Style.windows && _isAmbiguousWindowsPath(path)) {
+    return false;
+  }
   final root = _normalizedAbsolutePath(workspaceRoot, workspaceRoot);
   final target = _normalizedAbsolutePath(path, root);
-  return target == root || target.startsWith('$root/');
+  final comparableRoot = context.style == p.Style.windows
+      ? root.toLowerCase()
+      : root;
+  final comparableTarget = context.style == p.Style.windows
+      ? target.toLowerCase()
+      : target;
+  return comparableTarget == comparableRoot ||
+      context.isWithin(comparableRoot, comparableTarget);
 }
 
 bool _isWithinAnyWorkspace(String path, List<String> workspaceRoots) {
@@ -1278,41 +1861,41 @@ List<String> _workspaceRoots(
 }
 
 String _normalizedAbsolutePath(String path, String base) {
-  final trimmed = path.trim().replaceAll('\\', '/');
-  final raw = trimmed.startsWith('/') ? trimmed : '${base.trim()}/$trimmed';
-  final parts = <String>[];
-  for (final part in raw.split('/')) {
-    if (part.isEmpty || part == '.') continue;
-    if (part == '..') {
-      if (parts.isNotEmpty) parts.removeLast();
-      continue;
-    }
-    parts.add(part);
+  final context = _pathContext(path, base);
+  final trimmedPath = path.trim();
+  var normalizedBase = context.normalize(base.trim());
+  if (!context.isAbsolute(normalizedBase)) {
+    normalizedBase = context.normalize(
+      context.join(context.separator, normalizedBase),
+    );
   }
-  return '/${parts.join('/')}';
+  return context.normalize(
+    context.isAbsolute(trimmedPath)
+        ? trimmedPath
+        : context.join(normalizedBase, trimmedPath),
+  );
+}
+
+p.Context _pathContext(String path, String base) {
+  return _looksLikeWindowsPath(path) || _looksLikeWindowsPath(base)
+      ? p.windows
+      : p.posix;
+}
+
+bool _looksLikeWindowsPath(String value) {
+  final trimmed = value.trim();
+  return RegExp(r'^[A-Za-z]:[\\/]').hasMatch(trimmed) ||
+      trimmed.startsWith(r'\\');
+}
+
+bool _isAmbiguousWindowsPath(String value) {
+  final normalized = value.trim().replaceAll('/', r'\');
+  return RegExp(r'^[A-Za-z]:(?:$|[^\\])').hasMatch(normalized) ||
+      (normalized.startsWith(r'\') && !normalized.startsWith(r'\\'));
 }
 
 bool _matchesAny(String value, List<RegExp> patterns) {
   return patterns.any((pattern) => pattern.hasMatch(value));
-}
-
-Map<String, dynamic> _jsonMap(Map<String, Object?> raw) {
-  return raw.map((key, value) => MapEntry(key, _jsonValue(value)));
-}
-
-Object? _jsonValue(Object? value) {
-  if (value == null || value is String || value is num || value is bool) {
-    return value;
-  }
-  if (value is DateTime) return value.toUtc().toIso8601String();
-  if (value is Map<String, Object?>) return _jsonMap(value);
-  if (value is Map) {
-    return value.map<String, dynamic>(
-      (key, item) => MapEntry(key.toString(), _jsonValue(item)),
-    );
-  }
-  if (value is List) return value.map(_jsonValue).toList(growable: false);
-  return value.toString();
 }
 
 final List<RegExp> _highRiskCommandPatterns = <RegExp>[

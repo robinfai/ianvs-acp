@@ -5,8 +5,8 @@ import 'app_design_tokens.dart';
 /// The single assembly point for ACP's Conversation Canvas design language.
 ///
 /// Widgets should prefer [ThemeData.colorScheme] and [ThemeData.textTheme].
-/// Product-specific values that Material does not model, such as the terminal
-/// viewport palette, live in a [ThemeExtension].
+/// The embedded terminal resolves its paired defaults from this theme's
+/// brightness through `ianvs-terminal-core`.
 abstract final class AppTheme {
   static ThemeData get light {
     const colorScheme = ColorScheme.light(
@@ -51,9 +51,6 @@ abstract final class AppTheme {
       splashFactory: NoSplash.splashFactory,
       fontFamily: AppTypography.family,
       fontFamilyFallback: AppTypography.familyFallback,
-      extensions: const <ThemeExtension<dynamic>>[
-        AppTerminalTheme.conversationCanvas,
-      ],
       textTheme: const TextTheme(
         titleLarge: AppTypography.pageTitle,
         titleMedium: AppTypography.sectionTitle,

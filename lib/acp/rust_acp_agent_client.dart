@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:collection';
+import 'dart:convert';
 
 import '../platform/agent_process_environment.dart';
 import '../rust/ianvs_acp_native.dart';
 import '../rust/ianvs_runtime_event.dart';
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
+import 'acp_available_commands.dart';
 import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
@@ -47,6 +50,13 @@ final class RustAcpAgentClient implements AcpAgentClient {
     this.terminalDefaultOutputByteLimit,
     this.terminalMaxOutputByteLimit,
   }) : _runtime = runtime {
+    if (connectTimeout.inMilliseconds < 1) {
+      throw ArgumentError.value(
+        connectTimeout,
+        'connectTimeout',
+        'must be positive',
+      );
+    }
     if (permissionTimeout.inMilliseconds < 1) {
       throw ArgumentError.value(
         permissionTimeout,
@@ -86,6 +96,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
       StreamController<AcpPermissionRequest>.broadcast(sync: true);
   final StreamController<AcpPermissionInvalidation> _permissionInvalidations =
       StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
+  final StreamController<AcpAvailableCommandsUpdate> _availableCommandsUpdates =
+      StreamController<AcpAvailableCommandsUpdate>.broadcast(sync: true);
   final Map<String, Completer<AgentSession>> _pendingCreates =
       <String, Completer<AgentSession>>{};
   final Map<String, ({String cwd, List<String> additionalDirectories})>
@@ -128,6 +140,11 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final Map<String, AgentSession> _sessions = <String, AgentSession>{};
   final Map<String, AcpSessionSettings> _settings =
       <String, AcpSessionSettings>{};
+  final LinkedHashMap<String, AcpAvailableCommandsUpdate>
+  _availableCommandsBySession =
+      LinkedHashMap<String, AcpAvailableCommandsUpdate>();
+  final Map<String, int> _availableCommandsBytesBySession = <String, int>{};
+  int _availableCommandsCacheBytes = 0;
   StreamSubscription<IanvsRuntimeEvent>? _eventSubscription;
   Completer<void>? _connecting;
   AcpAgentCapabilities? _capabilities;
@@ -165,16 +182,44 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _permissionInvalidations.stream;
 
   @override
-  Future<void> connect() async {
+  Stream<AcpAvailableCommandsUpdate> get availableCommandsUpdates =>
+      _availableCommandsUpdates.stream;
+
+  @override
+  Future<AcpAvailableCommandsUpdate?> sessionAvailableCommands(
+    String sessionId,
+  ) async {
     _ensureOpen();
-    if (_connected) return;
+    final update = _availableCommandsBySession.remove(sessionId);
+    if (update != null) _availableCommandsBySession[sessionId] = update;
+    return update;
+  }
+
+  @override
+  Future<void> connect() {
+    try {
+      _ensureOpen();
+    } on Object catch (error, stackTrace) {
+      return Future<void>.error(error, stackTrace);
+    }
+    if (_connected) return Future<void>.value();
     final existing = _connecting;
-    if (existing != null) return existing.future;
+    if (existing != null) return _waitForConnection(existing);
     final completer = Completer<void>();
     _connecting = completer;
+    unawaited(_startConnectionAttempt(completer));
+    return _waitForConnection(completer);
+  }
+
+  Future<void> _startConnectionAttempt(Completer<void> completer) async {
     try {
       final providedMcpServers =
           await mcpServersProvider?.call() ?? const <Map<String, Object?>>[];
+      if (_disposed ||
+          completer.isCompleted ||
+          !identical(_connecting, completer)) {
+        return;
+      }
       _runtimeInstance.startAgent(
         agentName: agentName,
         persistenceIdentity: agentPersistenceId,
@@ -203,10 +248,33 @@ final class RustAcpAgentClient implements AcpAgentClient {
         terminalDefaultOutputByteLimit: terminalDefaultOutputByteLimit,
         terminalMaxOutputByteLimit: terminalMaxOutputByteLimit,
       );
+    } on Object catch (error, stackTrace) {
+      _completeConnectionError(completer, error, stackTrace);
+    }
+  }
+
+  Future<void> _waitForConnection(Completer<void> completer) async {
+    try {
       await completer.future.timeout(connectTimeout);
     } finally {
-      _connecting = null;
+      if (completer.isCompleted && identical(_connecting, completer)) {
+        _connecting = null;
+      }
     }
+  }
+
+  void _completeConnection(Completer<void> completer) {
+    if (!completer.isCompleted) completer.complete();
+    if (identical(_connecting, completer)) _connecting = null;
+  }
+
+  void _completeConnectionError(
+    Completer<void> completer,
+    Object error, [
+    StackTrace? stackTrace,
+  ]) {
+    if (!completer.isCompleted) completer.completeError(error, stackTrace);
+    if (identical(_connecting, completer)) _connecting = null;
   }
 
   @override
@@ -372,7 +440,11 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _invalidateAllPermissions(AcpPermissionInvalidationReason.disposed);
     _disposed = true;
     final error = StateError('Rust ACP client disposed.');
-    _connecting?.completeError(error);
+    final connecting = _connecting;
+    _connecting = null;
+    if (connecting != null && !connecting.isCompleted) {
+      connecting.completeError(error);
+    }
     for (final completer in _pendingCreates.values) {
       if (!completer.isCompleted) completer.completeError(error);
     }
@@ -413,11 +485,15 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _pendingConfigs.clear();
     _configRequestBySession.clear();
     _promptStreams.clear();
+    _availableCommandsBySession.clear();
+    _availableCommandsBytesBySession.clear();
+    _availableCommandsCacheBytes = 0;
     await _eventSubscription?.cancel();
     final runtime = _runtime;
     if (runtime != null) await runtime.dispose();
     await _permissionRequests.close();
     await _permissionInvalidations.close();
+    await _availableCommandsUpdates.close();
   }
 
   Future<List<AgentEvent>> _resumeSessionWithHistoryPreference({
@@ -654,6 +730,9 @@ final class RustAcpAgentClient implements AcpAgentClient {
       case IanvsRuntimeEventType.sessionCatalog:
         _handleSessionCatalog(event);
       case IanvsRuntimeEventType.authenticationChanged:
+        if (event.data['authenticated'] == false) {
+          _clearAvailableCommandsCache(notify: true);
+        }
         final requestId = event.requestId;
         if (requestId != null) {
           _pendingAuthentication.remove(requestId)?.complete();
@@ -737,9 +816,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
         _connected = true;
         _capabilities = _capabilitiesFromProjection(event.data['capabilities']);
         final completer = _connecting;
-        if (completer != null && !completer.isCompleted) completer.complete();
+        if (completer != null) _completeConnection(completer);
       case 'failed':
         _connected = false;
+        _clearAvailableCommandsCache(notify: true);
         _invalidateAllPermissions(
           AcpPermissionInvalidationReason.connectionClosed,
         );
@@ -747,15 +827,15 @@ final class RustAcpAgentClient implements AcpAgentClient {
           event.data['detail'] as String? ?? 'Rust ACP runtime failed.',
         );
         final completer = _connecting;
-        if (completer != null && !completer.isCompleted) {
-          completer.completeError(error);
-        }
+        if (completer != null) _completeConnectionError(completer, error);
         _failPendingOperations(error);
       case 'disposed':
         _connected = false;
+        _clearAvailableCommandsCache(notify: true);
         _invalidateAllPermissions(AcpPermissionInvalidationReason.disposed);
       case 'recovering':
         _connected = false;
+        _clearAvailableCommandsCache(notify: true);
         _invalidateAllPermissions(
           AcpPermissionInvalidationReason.connectionClosed,
         );
@@ -791,6 +871,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _settings[sessionId] = _settingsFromSessionCreated(
         _objectMap(update['payload']),
       );
+      _pruneOrphanedAvailableCommands();
       completer.complete(session);
       return;
     }
@@ -826,6 +907,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _settings[sessionId] = _settingsFromSessionCreated(
         _objectMap(update['payload']),
       );
+      _pruneOrphanedAvailableCommands();
       final payload = _objectMap(update['payload']);
       _lastRestoreReplayedHistory = payload?['replayedHistory'] as bool?;
       completer.complete(List<AgentEvent>.unmodifiable(events));
@@ -861,6 +943,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _pendingSessionLifecycle.remove(requestId)?.complete();
       _sessions.remove(sessionId);
       _settings.remove(sessionId);
+      _removeAvailableCommands(sessionId);
       _finishPrompt(sessionId);
       _invalidatePermissionsForSession(
         sessionId,
@@ -892,6 +975,55 @@ final class RustAcpAgentClient implements AcpAgentClient {
           _configRequestBySession.remove(sessionId);
         }
       }
+      return;
+    }
+    if (kind == 'commands_changed') {
+      final mayBelongToPendingCreate = _pendingCreates.isNotEmpty;
+      final mayBelongToPendingRestore = _restoreContexts.values.any(
+        (context) => context.sessionId == sessionId,
+      );
+      if (!_sessions.containsKey(sessionId) &&
+          !mayBelongToPendingCreate &&
+          !mayBelongToPendingRestore) {
+        return;
+      }
+      final payload = _objectMap(update['payload']);
+      final rawCommands = payload?['availableCommands'];
+      if (rawCommands is! List) {
+        throw const FormatException(
+          'Rust available commands payload must be a list.',
+        );
+      }
+      final commands = <Map<String, Object?>>[];
+      for (final rawCommand in rawCommands) {
+        final command = _objectMap(rawCommand);
+        final name = command?['name'];
+        final description = command?['description'];
+        final input = command?['input'];
+        if (name is! String ||
+            name.isEmpty ||
+            description is! String ||
+            (input != null && input is! Map)) {
+          throw const FormatException('Invalid Rust available command.');
+        }
+        commands.add(<String, Object?>{
+          'name': name,
+          'description': description,
+          if (input != null) 'input': _objectMap(input),
+        });
+      }
+      var commandsUpdate = AcpAvailableCommandsUpdate(
+        sessionId: sessionId,
+        commands: commands,
+      );
+      if (!_cacheAvailableCommands(commandsUpdate)) {
+        commandsUpdate = AcpAvailableCommandsUpdate(
+          sessionId: sessionId,
+          commands: const <Map<String, Object?>>[],
+        );
+        _removeAvailableCommands(sessionId);
+      }
+      _availableCommandsUpdates.add(commandsUpdate);
       return;
     }
     if (kind == 'permission_invalidated' && requestId != null) {
@@ -1121,6 +1253,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     if (requestId != null) {
       _pendingCreates.remove(requestId)?.completeError(error);
       _createContexts.remove(requestId);
+      _pruneOrphanedAvailableCommands();
       final restore = _pendingRestores.remove(requestId);
       if (restore != null) {
         _clearPendingRestore(requestId, removeCompleter: false);
@@ -1146,18 +1279,17 @@ final class RustAcpAgentClient implements AcpAgentClient {
     }
     if (!_connected) {
       final completer = _connecting;
-      if (completer != null && !completer.isCompleted) {
-        completer.completeError(error);
-      }
+      if (completer != null) _completeConnectionError(completer, error);
     }
   }
 
   void _handleRuntimeStreamError(Object error, StackTrace stackTrace) {
     _connected = false;
+    _clearAvailableCommandsCache(notify: true);
     _invalidateAllPermissions(AcpPermissionInvalidationReason.connectionClosed);
     final completer = _connecting;
-    if (completer != null && !completer.isCompleted) {
-      completer.completeError(error, stackTrace);
+    if (completer != null) {
+      _completeConnectionError(completer, error, stackTrace);
     }
     _failPendingOperations(error, stackTrace);
   }
@@ -1205,6 +1337,81 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _promptStreams.clear();
     _promptRequestIds.clear();
     _activePromptSessionId = null;
+    _pruneOrphanedAvailableCommands();
+  }
+
+  static const int _availableCommandsMaxCachedSessions = 64;
+  static const int _availableCommandsMaxCachedBytes = 16 * 1024 * 1024;
+
+  bool _cacheAvailableCommands(AcpAvailableCommandsUpdate update) {
+    final retainedBytes = _availableCommandsRetainedBytes(update);
+    if (retainedBytes > _availableCommandsMaxCachedBytes) return false;
+    _removeAvailableCommands(update.sessionId);
+    _availableCommandsBySession[update.sessionId] = update;
+    _availableCommandsBytesBySession[update.sessionId] = retainedBytes;
+    _availableCommandsCacheBytes += retainedBytes;
+    while (_availableCommandsBySession.length >
+            _availableCommandsMaxCachedSessions ||
+        _availableCommandsCacheBytes > _availableCommandsMaxCachedBytes) {
+      _removeAvailableCommands(_availableCommandsBySession.keys.first);
+    }
+    return _availableCommandsBySession.containsKey(update.sessionId);
+  }
+
+  int _availableCommandsRetainedBytes(AcpAvailableCommandsUpdate update) {
+    var bytes = utf8.encode(update.sessionId).length;
+    for (final command in update.commands) {
+      for (final value in command.values) {
+        if (value is String) {
+          bytes += utf8.encode(value).length;
+        } else if (value is Map) {
+          for (final nestedValue in value.values) {
+            if (nestedValue is String) {
+              bytes += utf8.encode(nestedValue).length;
+            }
+          }
+        }
+      }
+      bytes += 64;
+    }
+    return bytes;
+  }
+
+  void _removeAvailableCommands(String sessionId) {
+    _availableCommandsBySession.remove(sessionId);
+    _availableCommandsCacheBytes -=
+        _availableCommandsBytesBySession.remove(sessionId) ?? 0;
+  }
+
+  void _clearAvailableCommandsCache({required bool notify}) {
+    final sessionIds = notify
+        ? _availableCommandsBySession.keys.toList(growable: false)
+        : const <String>[];
+    _availableCommandsBySession.clear();
+    _availableCommandsBytesBySession.clear();
+    _availableCommandsCacheBytes = 0;
+    if (!notify || _disposed || _availableCommandsUpdates.isClosed) return;
+    for (final sessionId in sessionIds) {
+      _availableCommandsUpdates.add(
+        AcpAvailableCommandsUpdate(
+          sessionId: sessionId,
+          commands: const <Map<String, Object?>>[],
+        ),
+      );
+    }
+  }
+
+  void _pruneOrphanedAvailableCommands() {
+    if (_pendingCreates.isNotEmpty) return;
+    final pendingRestores = _restoreContexts.values
+        .map((context) => context.sessionId)
+        .toSet();
+    for (final sessionId in _availableCommandsBySession.keys.toList()) {
+      if (!_sessions.containsKey(sessionId) &&
+          !pendingRestores.contains(sessionId)) {
+        _removeAvailableCommands(sessionId);
+      }
+    }
   }
 
   void _finishPrompt(String sessionId) {

@@ -1,11 +1,12 @@
 use agent_client_protocol::schema::v1::{
     AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateRequest,
-    AuthenticateResponse, CancelNotification, CloseSessionRequest, CloseSessionResponse,
-    ConfigOptionUpdate, ContentBlock, ContentChunk, CreateTerminalRequest, DeleteSessionRequest,
-    DeleteSessionResponse, Implementation, InitializeRequest, InitializeResponse,
-    KillTerminalRequest, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-    LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, McpCapabilities,
-    McpServer, NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    AuthenticateResponse, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+    CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
+    ContentBlock, ContentChunk, CreateTerminalRequest, DeleteSessionRequest, DeleteSessionResponse,
+    Implementation, InitializeRequest, InitializeResponse, KillTerminalRequest,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    LogoutCapabilities, LogoutRequest, LogoutResponse, McpCapabilities, McpServer,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
     PromptCapabilities, PromptRequest, PromptResponse, ReadTextFileRequest, ReleaseTerminalRequest,
     RequestPermissionOutcome, RequestPermissionRequest, ResumeSessionRequest,
     ResumeSessionResponse, SessionAdditionalDirectoriesCapabilities, SessionCapabilities,
@@ -14,7 +15,8 @@ use agent_client_protocol::schema::v1::{
     SessionMode, SessionModeState, SessionNotification, SessionResumeCapabilities, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
     SetSessionModeResponse, StopReason, TerminalOutputRequest, TextContent, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest, WriteTextFileRequest,
+    ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, WaitForTerminalExitRequest,
+    WriteTextFileRequest,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,6 +43,30 @@ static FIXTURE_SESSION_CONFIG: OnceLock<Mutex<FixtureSessionConfig>> = OnceLock:
 static FIXTURE_PROMPT_CANCELLED: AtomicBool = AtomicBool::new(false);
 static FIXTURE_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+fn fixture_modes() -> SessionModeState {
+    if std::env::var("IANVS_FIXTURE_OVERSIZED_MODES").as_deref() == Ok("1") {
+        SessionModeState::new(
+            "mode-0",
+            (0..40)
+                .map(|index| {
+                    SessionMode::new(
+                        format!("mode-{index}"),
+                        format!("{index}-{}", "x".repeat(8 * 1024 - 8)),
+                    )
+                })
+                .collect(),
+        )
+    } else {
+        SessionModeState::new(
+            "default",
+            vec![
+                SessionMode::new("default", "Default"),
+                SessionMode::new("plan", "Plan"),
+            ],
+        )
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     fail_once_if_requested();
@@ -59,7 +85,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 agent_client_protocol::on_receive_notification!(),
             )
             .on_receive_request(
-                async move |request: InitializeRequest, responder, _connection| {
+                async move |request: InitializeRequest,
+                            responder,
+                            connection: ConnectionTo<Client>| {
                     let prompt_attachments =
                         std::env::var("IANVS_FIXTURE_PROMPT_ATTACHMENTS").as_deref() == Ok("1");
                     if std::env::var("IANVS_FIXTURE_USE_TERMINAL").as_deref() == Ok("1")
@@ -77,7 +105,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "fixture requires both client filesystem capabilities",
                         );
                     }
-                    responder.respond(
+                    let auth_methods = if std::env::var("IANVS_FIXTURE_OVERSIZED_AUTH_METHODS")
+                        .as_deref()
+                        == Ok("1")
+                    {
+                        (0..33)
+                            .map(|index| {
+                                AuthMethod::Agent(AuthMethodAgent::new(
+                                    format!("fixture-auth-{index}"),
+                                    "Fixture authentication",
+                                ))
+                            })
+                            .collect()
+                    } else {
+                        vec![AuthMethod::Agent(
+                            AuthMethodAgent::new("fixture-auth", "Fixture authentication")
+                                .description("Authenticate through the fixture agent"),
+                        )]
+                    };
+                    let agent_name = if std::env::var("IANVS_FIXTURE_OVERSIZED_AGENT_INFO")
+                        .as_deref()
+                        == Ok("1")
+                    {
+                        "x".repeat(20 * 1024)
+                    } else {
+                        "ianvs-fixture-agent".to_string()
+                    };
+                    let result = responder.respond(
                         InitializeResponse::new(request.protocol_version)
                             .agent_capabilities(
                                 AgentCapabilities::new()
@@ -111,12 +165,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .logout(LogoutCapabilities::new()),
                                     ),
                             )
-                            .auth_methods(vec![AuthMethod::Agent(
-                                AuthMethodAgent::new("fixture-auth", "Fixture authentication")
-                                    .description("Authenticate through the fixture agent"),
-                            )])
-                            .agent_info(Implementation::new("ianvs-fixture-agent", "1.0.0")),
-                    )
+                            .auth_methods(auth_methods)
+                            .agent_info(Implementation::new(agent_name, "1.0.0")),
+                    );
+                    if result.is_ok()
+                        && std::env::var("IANVS_FIXTURE_BOGUS_CONFIG_NOTIFICATION").as_deref()
+                            == Ok("1")
+                    {
+                        connection.send_notification(SessionNotification::new(
+                            "bogus-session",
+                            SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
+                                fixture_config_options(),
+                            )),
+                        ))?;
+                    }
+                    result
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -165,20 +228,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     let fixture_session_index =
                         FIXTURE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-                    let fixture_session_id = if fixture_session_index == 1 {
+                    let fixture_session_id = if std::env::var("IANVS_FIXTURE_DUPLICATE_SESSION_ID")
+                        .as_deref()
+                        == Ok("1")
+                        || fixture_session_index == 1
+                    {
                         "fixture-session".to_string()
                     } else {
                         format!("fixture-session-{fixture_session_index}")
                     };
+                    if std::env::var("IANVS_FIXTURE_COMMANDS_AFTER_NEW").as_deref() == Ok("1") {
+                        connection.send_notification(SessionNotification::new(
+                            fixture_session_id.clone(),
+                            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+                                vec![
+                                    AvailableCommand::new("review", "Review the current change.")
+                                        .input(AvailableCommandInput::Unstructured(
+                                            UnstructuredCommandInput::new("[focus]"),
+                                        )),
+                                ],
+                            )),
+                        ))?;
+                    }
                     let result = responder.respond(
                         NewSessionResponse::new(fixture_session_id)
-                            .modes(SessionModeState::new(
-                                "default",
-                                vec![
-                                    SessionMode::new("default", "Default"),
-                                    SessionMode::new("plan", "Plan"),
-                                ],
-                            ))
+                            .modes(fixture_modes())
                             .config_options(fixture_config_options()),
                     );
                     if std::env::var("IANVS_FIXTURE_EXIT_AFTER_NEW_SESSION").as_deref() == Ok("1") {
@@ -195,6 +269,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 async move |request: LoadSessionRequest,
                             responder,
                             connection: ConnectionTo<Client>| {
+                    if std::env::var("IANVS_FIXTURE_FAIL_LOAD_SESSION").as_deref()
+                        == Ok(request.session_id.to_string().as_str())
+                    {
+                        return responder
+                            .respond_with_internal_error("fixture rejected persisted session");
+                    }
                     connection.send_notification(SessionNotification::new(
                         request.session_id,
                         SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
@@ -203,10 +283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ))?;
                     responder.respond(
                         LoadSessionResponse::new()
-                            .modes(SessionModeState::new(
-                                "default",
-                                vec![SessionMode::new("default", "Default")],
-                            ))
+                            .modes(fixture_modes())
                             .config_options(fixture_config_options()),
                     )
                 },
@@ -216,10 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 async move |_request: ResumeSessionRequest, responder, _connection| {
                     responder.respond(
                         ResumeSessionResponse::new()
-                            .modes(SessionModeState::new(
-                                "default",
-                                vec![SessionMode::new("default", "Default")],
-                            ))
+                            .modes(fixture_modes())
                             .config_options(fixture_config_options()),
                     )
                 },
@@ -227,6 +301,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .on_receive_request(
                 async move |_request: ListSessionsRequest, responder, _connection| {
+                    if std::env::var("IANVS_FIXTURE_OVERSIZED_CATALOG").as_deref() == Ok("1") {
+                        return responder.respond(ListSessionsResponse::new(vec![
+                            SessionInfo::new(
+                                "fixture-session",
+                                std::path::PathBuf::from("x".repeat(40 * 1024)),
+                            ),
+                        ]));
+                    }
                     responder.respond(ListSessionsResponse::new(vec![
                         SessionInfo::new("fixture-session", std::env::temp_dir())
                             .title("Fixture session")
@@ -376,6 +458,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             output.output.trim(),
                                             exit.exit_status.exit_code.unwrap_or(u32::MAX),
                                             output.truncated,
+                                        ))),
+                                    )),
+                                ))?;
+                                responder.respond(PromptResponse::new(StopReason::EndTurn))
+                            }
+                        })?;
+                        return Ok(());
+                    }
+                    if let Some(permission_count) = std::env::var("IANVS_FIXTURE_PERMISSION_FLOOD")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                    {
+                        connection.spawn({
+                            let connection = connection.clone();
+                            async move {
+                                let mut requests = Vec::with_capacity(permission_count);
+                                for index in 0..permission_count {
+                                    requests.push(
+                                        connection
+                                            .send_request(RequestPermissionRequest::new(
+                                                session_id.clone(),
+                                                ToolCallUpdate::new(
+                                                    format!("fixture-flood-{index}"),
+                                                    ToolCallUpdateFields::new()
+                                                        .title(format!("Flood permission {index}"))
+                                                        .kind(ToolKind::Other),
+                                                ),
+                                                vec![PermissionOption::new(
+                                                    "allow-once",
+                                                    "Allow once",
+                                                    PermissionOptionKind::AllowOnce,
+                                                )],
+                                            ))
+                                            .block_task(),
+                                    );
+                                }
+                                let results = futures::future::join_all(requests).await;
+                                let accepted =
+                                    results.iter().filter(|result| result.is_ok()).count();
+                                let rejected = results.len().saturating_sub(accepted);
+                                connection.send_notification(SessionNotification::new(
+                                    session_id,
+                                    SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                        ContentBlock::Text(TextContent::new(format!(
+                                            "permission-flood:{accepted}:{rejected}"
                                         ))),
                                     )),
                                 ))?;

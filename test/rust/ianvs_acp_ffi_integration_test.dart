@@ -13,6 +13,34 @@ void main() {
       File(libraryPath).existsSync() && File(agentPath).existsSync();
 
   test(
+    'Dart FFI rejects interior NUL without rejecting JSON unicode escapes',
+    () {
+      final native = FfiIanvsAcpNativeApi.open(libraryPath: libraryPath);
+      final runtime = native.createRuntime();
+      addTearDown(() => native.freeRuntime(runtime));
+
+      expect(
+        () => native.listSessions(runtime, requestId: 'before\u0000after'),
+        throwsArgumentError,
+      );
+      expect(
+        native.respondPermission(
+          runtime,
+          requestId: 'json-escape',
+          decision: const <String, Object?>{
+            'decision': 'selected',
+            'optionId': 'contains\u0000unicode',
+          },
+        ),
+        isTrue,
+      );
+    },
+    skip: artifactsAvailable
+        ? false
+        : 'Run tool/verify_rust_runtime.sh to build native test artifacts.',
+  );
+
+  test(
     'Dart FFI drives the Rust ACP subprocess and permission runtime',
     () async {
       final runtime = IanvsRustRuntime(
@@ -91,6 +119,67 @@ void main() {
         (completed.renderUpdate?['metadata'] as Map?)?['requestId'],
         'prompt-from-dart',
       );
+    },
+    skip: artifactsAvailable
+        ? false
+        : 'Run tool/verify_rust_runtime.sh to build native test artifacts.',
+    timeout: const Timeout(Duration(seconds: 20)),
+  );
+
+  test(
+    'Dart FFI projects ACP available commands before session creation',
+    () async {
+      final runtime = IanvsRustRuntime(
+        native: FfiIanvsAcpNativeApi.open(libraryPath: libraryPath),
+        pollInterval: const Duration(milliseconds: 1),
+      );
+      final iterator = StreamIterator<IanvsRuntimeEvent>(runtime.events);
+      addTearDown(() async {
+        await iterator.cancel();
+        await runtime.dispose();
+      });
+
+      final ready = _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.statusChanged &&
+            event.status == 'ready',
+      );
+      runtime.startAgent(
+        agentName: 'commands-fixture',
+        command: agentPath,
+        processCwd: root,
+        environment: const <String, String>{
+          'IANVS_FIXTURE_COMMANDS_AFTER_NEW': '1',
+        },
+      );
+      await ready;
+
+      runtime.createSession(
+        requestId: 'create-with-commands',
+        cwd: Directory.systemTemp.path,
+      );
+      final commandsEvent = await _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'commands_changed',
+      );
+      final payload = commandsEvent.update?['payload'] as Map;
+      final command = (payload['availableCommands'] as List).single as Map;
+      expect(commandsEvent.update?['sessionId'], 'fixture-session');
+      expect(command['name'], 'review');
+      expect(command['description'], 'Review the current change.');
+      expect((command['input'] as Map)['hint'], '[focus]');
+      expect(command.containsKey('_meta'), isFalse);
+
+      final created = await _nextWhere(
+        iterator,
+        (event) =>
+            event.type == IanvsRuntimeEventType.sessionUpdate &&
+            event.update?['kind'] == 'session_created',
+      );
+      expect(created.update?['sessionId'], 'fixture-session');
     },
     skip: artifactsAvailable
         ? false

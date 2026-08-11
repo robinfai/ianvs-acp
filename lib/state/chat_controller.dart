@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
+import '../acp/acp_available_commands.dart';
 import '../acp/assistant_agent_enhancer.dart';
 import '../acp/acp_input_budget.dart' as acp;
 import '../acp/acp_permission_request.dart';
@@ -2594,6 +2595,10 @@ class ChatController extends ChangeNotifier {
       _handlePermissionInvalidation,
       onError: (Object error, StackTrace stackTrace) => _setActionError(error),
     );
+    _availableCommandsSubscription = client.availableCommandsUpdates.listen(
+      _handleAvailableCommandsUpdate,
+      onError: (Object error, StackTrace stackTrace) => _setActionError(error),
+    );
   }
 
   static const int defaultPermissionHistoryLimit = 500;
@@ -2872,6 +2877,8 @@ class ChatController extends ChangeNotifier {
   late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
   late final StreamSubscription<AcpPermissionInvalidation>
   _permissionInvalidationSubscription;
+  late final StreamSubscription<AcpAvailableCommandsUpdate>
+  _availableCommandsSubscription;
   DateTime? _lastPromptStartedAt;
   Duration? _lastLatency;
   Duration? get lastLatency => _lastLatency;
@@ -2881,6 +2888,7 @@ class ChatController extends ChangeNotifier {
   }
 
   int _sessionSettingsLoadSerial = 0;
+  int _availableCommandsLoadSerial = 0;
   int _sessionOperationGeneration = 0;
   int? __activeSessionSettingsLoadId;
   int? get _activeSessionSettingsLoadId => __activeSessionSettingsLoadId;
@@ -2963,6 +2971,8 @@ class ChatController extends ChangeNotifier {
           }
           _finishTurnBudget();
         });
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        await _loadAvailableCommands(session.id, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (messages.isEmpty) {
           _addLocalUnstartedSessionId(session.id);
@@ -3143,6 +3153,13 @@ class ChatController extends ChangeNotifier {
         });
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (activatedLocal) {
+          await _loadAvailableCommands(
+            trimmedSessionId,
+            notify: !loadLocalSettings,
+          );
+          if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+            return;
+          }
           if (loadLocalSettings) {
             await _loadSessionSettings(trimmedSessionId, notify: false);
             if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
@@ -3221,6 +3238,8 @@ class ChatController extends ChangeNotifier {
           projectionTimer.stop();
         }
         final replayedHistory = restore.replayedHistory;
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        await _loadAvailableCommands(trimmedSessionId, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         await _loadSessionSettings(trimmedSessionId, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
@@ -4521,6 +4540,8 @@ class ChatController extends ChangeNotifier {
           _handleAgentEvent(event, notify: false);
         }
         _finishTurnBudget();
+        await _loadAvailableCommands(updatedSession.id, notify: false);
+        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         await _loadSessionSettings(updatedSession.id, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (status != ConnectionStatus.error) {
@@ -7857,6 +7878,33 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  Future<void> _loadAvailableCommands(
+    String sessionId, {
+    bool notify = true,
+  }) async {
+    if (_isDisposed) return;
+    final loadId = ++_availableCommandsLoadSerial;
+    try {
+      final update = await client.sessionAvailableCommands(sessionId);
+      if (loadId != _availableCommandsLoadSerial ||
+          !_isActiveSession(sessionId)) {
+        return;
+      }
+      availableCommands = update?.commands ?? const <Map<String, Object?>>[];
+      if (notify) _notifyListeners();
+    } on Object {
+      // Command discovery is optional session state. Keep the most recent
+      // valid snapshot if the agent cannot provide one.
+    }
+  }
+
+  void _handleAvailableCommandsUpdate(AcpAvailableCommandsUpdate update) {
+    if (!_isActiveSession(update.sessionId)) return;
+    _availableCommandsLoadSerial += 1;
+    availableCommands = update.commands;
+    _notifyListeners();
+  }
+
   bool _isCurrentSessionSettingsLoad(int loadId, String sessionId) {
     return !_isDisposed &&
         _sessionSettingsLoadSerial == loadId &&
@@ -7913,6 +7961,7 @@ class ChatController extends ChangeNotifier {
     await _ignoreCleanup(() => promptSubscription?.cancel());
     await _ignoreCleanup(_permissionSubscription.cancel);
     await _ignoreCleanup(_permissionInvalidationSubscription.cancel);
+    await _ignoreCleanup(_availableCommandsSubscription.cancel);
     await _ignoreCleanup(client.dispose);
     await _ignoreCleanup(() => assistantAgentEnhancer?.dispose());
     await _ignoreCleanup(() => permissionReviewer?.dispose());

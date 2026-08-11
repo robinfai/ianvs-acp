@@ -8,9 +8,48 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/acp_config_store.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
+import 'package:ianvs_acp/platform/bounded_file_snapshot.dart';
 import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
 
 void main() {
+  test('rejects an oversized existing config snapshot', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-config-store-oversized-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsBytes(
+      List<int>.filled(AcpClientConfig.maxConfigFileBytes + 1, 0x20),
+    );
+
+    await expectLater(
+      AcpConfigStore.loadConfig(
+        configPath: file.path,
+        secretStore: _MemorySecretStore(),
+      ),
+      throwsA(isA<BoundedFileSnapshotOverflowException>()),
+    );
+  });
+
+  test('rejects an oversized secret cleanup queue snapshot', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-cleanup-queue-oversized-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString('{}');
+    final queue = File('${temp.path}/.settings.json.secret-cleanup.json');
+    await queue.writeAsBytes(List<int>.filled(4 * 1024 * 1024 + 1, 0x20));
+
+    await expectLater(
+      AcpConfigStore.loadConfig(
+        configPath: file.path,
+        secretStore: _MemorySecretStore(),
+      ),
+      throwsA(isA<BoundedFileSnapshotOverflowException>()),
+    );
+  });
+
   test('migrates existing agent settings to a stable persistence id', () async {
     final temp = await Directory.systemTemp.createTemp(
       'ianvs_acp_agent_identity_migration',

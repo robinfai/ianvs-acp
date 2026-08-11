@@ -15,6 +15,7 @@ import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../acp/prompt_attachment.dart';
+import '../../platform/bounded_file_snapshot.dart';
 import '../../platform/prompt_image_clipboard.dart';
 import '../../state/chat_controller.dart';
 import '../../acp/permission_context.dart';
@@ -106,7 +107,7 @@ class PromptInput extends StatefulWidget {
     this.pickAttachmentsForKind,
     this.attachmentController,
     this.readClipboardImage = readPromptImageFromClipboard,
-    this.readDroppedImage = _readDroppedImageAttachment,
+    this.readDroppedImage = readDroppedImageAttachment,
     this.workspaceRoots = const <String>[],
     this.imageAttachmentLimitation,
     this.queuedPrompts = const <ChatQueuedPrompt>[],
@@ -303,7 +304,8 @@ class _PromptInputState extends State<PromptInput> {
       } else {
         BoundedMetadataPreview? built;
         try {
-          final parameters = entry.command['parameters'];
+          final parameters =
+              entry.command['input'] ?? entry.command['parameters'];
           if (parameters != null) {
             built = writeBoundedMetadataPreview(
               parameters,
@@ -340,57 +342,54 @@ class _PromptInputState extends State<PromptInput> {
     final commandSuggestions = _commandSuggestions;
     final commandParameterPreviews = _parameterPreviewsFor(commandSuggestions);
     final pendingPermissionRequest = widget.pendingPermissionRequest;
+    final viewportHeight = MediaQuery.sizeOf(context).height;
+    final maximumContentHeight = (viewportHeight * 0.552)
+        .clamp(220.0, 520.0)
+        .toDouble();
     return Container(
       color: AppColors.surface,
       padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (widget.promptAppearsStalled) ...[
-                _PromptIdleWarning(onStop: widget.onStop),
-                const SizedBox(height: 8),
-              ],
-              if (widget.queuedPrompts.isNotEmpty) ...[
-                _PromptQueueTray(
-                  prompts: widget.queuedPrompts,
-                  onGuide: widget.onGuideQueuedPrompt,
-                  onRemove: widget.onRemoveQueuedPrompt,
-                  onClear: widget.onClearQueuedPrompts,
-                  onReorder: widget.onReorderQueuedPrompt,
-                ),
-                const SizedBox(height: 8),
-              ],
-              CallbackShortcuts(
-                bindings:
-                    widget.promptCapabilities?.image == true && widget.enabled
-                    ? <ShortcutActivator, VoidCallback>{
-                        const SingleActivator(
-                          LogicalKeyboardKey.keyV,
-                          meta: true,
-                        ): () =>
-                            unawaited(_pasteClipboardImageOrText()),
-                        const SingleActivator(
-                          LogicalKeyboardKey.keyV,
-                          control: true,
-                        ): () =>
-                            unawaited(_pasteClipboardImageOrText()),
-                      }
-                    : const <ShortcutActivator, VoidCallback>{},
-                child: Focus(
-                  onKeyEvent: (node, event) {
-                    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-                    if (event.logicalKey != LogicalKeyboardKey.enter) {
-                      return KeyEventResult.ignored;
-                    }
-                    if (HardwareKeyboard.instance.isShiftPressed) {
-                      return KeyEventResult.ignored;
-                    }
-                    _submit();
-                    return KeyEventResult.handled;
-                  },
+          constraints: BoxConstraints(
+            maxWidth: 760,
+            maxHeight: maximumContentHeight,
+          ),
+          child: SingleChildScrollView(
+            key: const Key('prompt-input-overflow-scroll'),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.promptAppearsStalled) ...[
+                  _PromptIdleWarning(onStop: widget.onStop),
+                  const SizedBox(height: 8),
+                ],
+                if (widget.queuedPrompts.isNotEmpty) ...[
+                  _PromptQueueTray(
+                    prompts: widget.queuedPrompts,
+                    onGuide: widget.onGuideQueuedPrompt,
+                    onRemove: widget.onRemoveQueuedPrompt,
+                    onClear: widget.onClearQueuedPrompts,
+                    onReorder: widget.onReorderQueuedPrompt,
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                CallbackShortcuts(
+                  bindings:
+                      widget.promptCapabilities?.image == true && widget.enabled
+                      ? <ShortcutActivator, VoidCallback>{
+                          const SingleActivator(
+                            LogicalKeyboardKey.keyV,
+                            meta: true,
+                          ): () =>
+                              unawaited(_pasteClipboardImageOrText()),
+                          const SingleActivator(
+                            LogicalKeyboardKey.keyV,
+                            control: true,
+                          ): () =>
+                              unawaited(_pasteClipboardImageOrText()),
+                        }
+                      : const <ShortcutActivator, VoidCallback>{},
                   child: DropTarget(
                     key: const Key('prompt-input-drop-target'),
                     enable:
@@ -477,42 +476,47 @@ class _PromptInputState extends State<PromptInput> {
                             enabled: widget.enabled,
                             multiline: true,
                             onChanged: _handlePromptChanged,
-                            builder: (focusNode) => TextField(
-                              controller: _controller,
-                              focusNode: focusNode,
-                              minLines: 1,
-                              maxLines: 6,
-                              keyboardType: TextInputType.multiline,
-                              enabled: widget.enabled,
-                              onChanged: _handlePromptChanged,
-                              style: const TextStyle(
-                                color: AppColors.textPrimary,
-                                fontSize: 15,
-                                height: 1.48,
-                              ),
-                              decoration: InputDecoration(
-                                hint: ExcludeSemantics(
-                                  child: Text(
-                                    'Message ${widget.agentName}',
-                                    style: const TextStyle(
-                                      color: AppColors.textTertiary,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w400,
+                            builder: (focusNode) => Focus(
+                              canRequestFocus: false,
+                              skipTraversal: true,
+                              onKeyEvent: _handlePromptKeyEvent,
+                              child: TextField(
+                                controller: _controller,
+                                focusNode: focusNode,
+                                minLines: 1,
+                                maxLines: 6,
+                                keyboardType: TextInputType.multiline,
+                                enabled: widget.enabled,
+                                onChanged: _handlePromptChanged,
+                                style: const TextStyle(
+                                  color: AppColors.textPrimary,
+                                  fontSize: 15,
+                                  height: 1.48,
+                                ),
+                                decoration: InputDecoration(
+                                  hint: ExcludeSemantics(
+                                    child: Text(
+                                      'Message ${widget.agentName}',
+                                      style: const TextStyle(
+                                        color: AppColors.textTertiary,
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w400,
+                                      ),
                                     ),
                                   ),
+                                  filled: false,
+                                  isCollapsed: true,
+                                  contentPadding: const EdgeInsets.fromLTRB(
+                                    15,
+                                    16,
+                                    15,
+                                    32,
+                                  ),
+                                  border: InputBorder.none,
+                                  enabledBorder: InputBorder.none,
+                                  focusedBorder: InputBorder.none,
+                                  disabledBorder: InputBorder.none,
                                 ),
-                                filled: false,
-                                isCollapsed: true,
-                                contentPadding: const EdgeInsets.fromLTRB(
-                                  15,
-                                  16,
-                                  15,
-                                  32,
-                                ),
-                                border: InputBorder.none,
-                                enabledBorder: InputBorder.none,
-                                focusedBorder: InputBorder.none,
-                                disabledBorder: InputBorder.none,
                               ),
                             ),
                           ),
@@ -550,12 +554,24 @@ class _PromptInputState extends State<PromptInput> {
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  KeyEventResult _handlePromptKeyEvent(FocusNode node, KeyEvent event) {
+    final composing = _controller.value.composing;
+    if (event is! KeyDownEvent ||
+        event.logicalKey != LogicalKeyboardKey.enter ||
+        HardwareKeyboard.instance.isShiftPressed ||
+        (composing.isValid && !composing.isCollapsed)) {
+      return KeyEventResult.ignored;
+    }
+    _submit();
+    return KeyEventResult.handled;
   }
 
   void _submit() {
@@ -884,14 +900,18 @@ class _PromptInputState extends State<PromptInput> {
     } on MissingPluginException {
       // Fall through to plain text paste on platforms without image support.
     } on PlatformException catch (error) {
-      if (mounted && error.code != 'clipboard_image_unavailable') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(error.message ?? 'Could not paste clipboard image.'),
-          ),
-        );
+      if (error.code != 'clipboard_image_unavailable') {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                error.message ?? 'Could not paste clipboard image.',
+              ),
+            ),
+          );
+        }
+        return;
       }
-      return;
     } on Object catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1514,6 +1534,7 @@ String _permissionContextEntryKey(String label) {
     'Working directory' => 'cwd',
     'Path' => 'path',
     'Target' => 'target',
+    'Additional details' => 'additional-details',
     _ => throw StateError('Unsupported permission context label: $label'),
   };
 }
@@ -3762,19 +3783,21 @@ String _commandString(Map<String, Object?> command, String key) {
   return value is String ? value.trim() : '';
 }
 
-Future<PromptAttachment?> _readDroppedImageAttachment(
+Future<PromptAttachment?> readDroppedImageAttachment(
   PromptAttachment attachment,
 ) async {
   final file = File(attachment.path);
-  final size = await file.length();
-  if (size <= 0 || size > _maximumInlineImageBytes) {
+  final Uint8List bytes;
+  try {
+    bytes = await readBoundedFileSnapshot(
+      file,
+      maxBytes: _maximumInlineImageBytes,
+    );
+  } on BoundedFileSnapshotOverflowException {
     throw const FileSystemException('Images must be 4 MB or smaller.');
   }
-  final bytes = await file.readAsBytes();
-  if (bytes.length != size) {
-    throw const FileSystemException(
-      'Image changed while it was being attached.',
-    );
+  if (bytes.isEmpty) {
+    throw const FileSystemException('Images must be 4 MB or smaller.');
   }
   return PromptAttachment.fromBytes(
     bytes: bytes,

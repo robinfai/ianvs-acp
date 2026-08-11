@@ -4,6 +4,10 @@ import '../config/assistant_agent_config.dart';
 import 'acp_agent_client.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
+import 'bounded_utf8_accumulator.dart';
+
+const int _maxAssistantTitleResponseBytes = 1024;
+const int _maxAssistantSummaryResponseBytes = 16 * 1024;
 
 class AssistantTurnSummaryRequest {
   const AssistantTurnSummaryRequest({
@@ -59,6 +63,7 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
       'Return only the title: one line, no quotes, no markdown, at most '
       '48 characters. Preserve the language of the request.\n\n'
       'User request:\n$boundedPrompt',
+      maxResponseBytes: _maxAssistantTitleResponseBytes,
     );
   }
 
@@ -76,10 +81,11 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
       'with no heading, no preamble, and at most 6 bullets or 900 '
       'characters. Never claim an action that is absent from the transcript.'
       '\n\nUser request:\n$prompt\n\nCompleted turn:\n$turn',
+      maxResponseBytes: _maxAssistantSummaryResponseBytes,
     );
   }
 
-  Future<String?> _enqueue(String prompt) {
+  Future<String?> _enqueue(String prompt, {required int maxResponseBytes}) {
     final completer = Completer<String?>();
     _tail = _tail.catchError((_) {}).then((_) async {
       if (_disposed) {
@@ -87,7 +93,10 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
         return;
       }
       try {
-        final result = await _run(prompt).timeout(config.timeout);
+        final result = await _run(
+          prompt,
+          maxResponseBytes: maxResponseBytes,
+        ).timeout(config.timeout);
         if (!completer.isCompleted) completer.complete(result);
       } on Object {
         if (!completer.isCompleted) completer.complete();
@@ -96,7 +105,7 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
     return completer.future;
   }
 
-  Future<String?> _run(String prompt) async {
+  Future<String?> _run(String prompt, {required int maxResponseBytes}) async {
     if (!_connected) {
       await _client.connect();
       _connected = true;
@@ -104,21 +113,20 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
     final session = await _client.createSession(cwd: _cwd);
     try {
       await _selectConfiguredModel(session.id);
-      final buffer = StringBuffer();
+      final buffer = BoundedUtf8Accumulator(maxBytes: maxResponseBytes);
       await for (final event in _client.sendPrompt(
         sessionId: session.id,
         prompt: prompt,
       )) {
         if (event.type == AgentEventType.error) return null;
         if (event.type == AgentEventType.agentTextDelta) {
-          buffer.write(event.text);
-        } else if (event.type == AgentEventType.agentTextDone &&
-            buffer.isEmpty) {
-          buffer.write(event.text);
+          buffer.add(event.text);
+        } else if (event.type == AgentEventType.agentTextDone) {
+          if (buffer.isEmpty) buffer.add(event.text);
+          return _assistantResponseValue(buffer);
         }
       }
-      final value = buffer.toString().trim();
-      return value.isEmpty ? null : value;
+      return _assistantResponseValue(buffer);
     } finally {
       try {
         await _client.closeSession(sessionId: session.id);
@@ -126,6 +134,11 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
         // A failed helper cleanup must not affect the active session.
       }
     }
+  }
+
+  String? _assistantResponseValue(BoundedUtf8Accumulator buffer) {
+    final value = buffer.toString().trim();
+    return value.isEmpty ? null : value;
   }
 
   Future<void> validate() async {

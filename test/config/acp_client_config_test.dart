@@ -4,9 +4,26 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
+import 'package:ianvs_acp/platform/bounded_file_snapshot.dart';
 import 'package:path/path.dart' as path_utils;
 
 void main() {
+  test('rejects an oversized config before JSON decoding', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-oversized-config-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsBytes(
+      List<int>.filled(AcpClientConfig.maxConfigFileBytes + 1, 0x20),
+    );
+
+    await expectLater(
+      AcpClientConfig.load(path: file.path),
+      throwsA(isA<BoundedFileSnapshotOverflowException>()),
+    );
+  });
+
   test(
     'loads assistant agent config and preserves it when switching agents',
     () {

@@ -4,7 +4,20 @@ import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 
+import '../platform/bounded_file_snapshot.dart';
 import '../platform/secure_atomic_file.dart';
+import 'app_state_path.dart';
+
+/// Resolves the cache below the app-owned state directory for a concrete
+/// settings file. A missing settings path keeps transcript persistence off.
+String? resolveSessionTranscriptCacheDirectoryPath(String? configPath) {
+  final config = configPath?.trim();
+  if (config == null || config.isEmpty) return null;
+  return resolveAppStateFilePath(
+    fileName: 'session_transcripts',
+    configPath: config,
+  );
+}
 
 final class SessionTranscriptIdentity {
   const SessionTranscriptIdentity({
@@ -118,6 +131,7 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
   Future<SessionTranscriptSnapshot?> load(
     SessionTranscriptIdentity identity,
   ) async {
+    await _ensurePrivateStateDirectory();
     final target = _file(identity);
     return _synchronizedTranscript(target, (resolvedTarget) async {
       final type = await FileSystemEntity.type(
@@ -137,8 +151,16 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
         await resolvedTarget.delete();
         return null;
       }
-      if (stat.size <= 0 || stat.size > maxFileBytes) return null;
-      final source = await resolvedTarget.readAsString();
+      final String source;
+      try {
+        source = await readBoundedFileStringSnapshot(
+          resolvedTarget,
+          maxBytes: maxFileBytes,
+        );
+      } on BoundedFileSnapshotOverflowException {
+        return null;
+      }
+      if (source.isEmpty) return null;
       final decoded = await Isolate.run(() => jsonDecode(source));
       if (decoded is! Map || decoded['schemaVersion'] != schemaVersion) {
         return null;
@@ -190,6 +212,7 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
         encodedResult.bytes > maxDirectoryBytes) {
       return;
     }
+    await _ensurePrivateStateDirectory();
     final target = _file(snapshot.identity);
     await SecureAtomicFile.synchronizedAcrossProcesses(_maintenanceTarget, (
       _,
@@ -202,19 +225,20 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
         );
       });
       await _maintainUnlocked(protectedPath: target.absolute.path);
-    });
+    }, strictPrivateParent: true);
   }
 
   /// Removes expired transcripts and evicts the oldest remaining files until
   /// the cache directory is within [maxDirectoryBytes].
   Future<void> maintain() async {
+    if (!await _ensurePrivateStateDirectory(create: false)) return;
     final directory = Directory(directoryPath);
     if (!await directory.exists()) return;
     await SecureAtomicFile.synchronizedAcrossProcesses(_maintenanceTarget, (
       _,
     ) async {
       await _maintainUnlocked();
-    });
+    }, strictPrivateParent: true);
   }
 
   Future<void> _maintainUnlocked({String? protectedPath}) async {
@@ -311,7 +335,39 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
         '${resolvedLockTarget.parent.path}${Platform.pathSeparator}$basename',
       );
       return operation(resolvedTarget);
-    });
+    }, strictPrivateParent: true);
+  }
+
+  Future<bool> _ensurePrivateStateDirectory({bool create = true}) async {
+    final cacheDirectory = Directory(directoryPath).absolute;
+    final segments = cacheDirectory.uri.pathSegments
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    final stateDirectory =
+        segments.isNotEmpty &&
+            segments.last.toLowerCase() == 'session_transcripts'
+        ? cacheDirectory.parent
+        : cacheDirectory;
+    var type = await FileSystemEntity.type(
+      stateDirectory.path,
+      followLinks: false,
+    );
+    if (type == FileSystemEntityType.notFound) {
+      if (!create) return false;
+      await stateDirectory.create(recursive: false);
+      type = await FileSystemEntity.type(
+        stateDirectory.path,
+        followLinks: false,
+      );
+    }
+    if (type != FileSystemEntityType.directory) {
+      throw FileSystemException(
+        'Transcript state parent must be a real directory.',
+        stateDirectory.path,
+      );
+    }
+    await SecureAtomicFile.protectPrivateDirectory(stateDirectory);
+    return true;
   }
 
   File _file(SessionTranscriptIdentity identity) {

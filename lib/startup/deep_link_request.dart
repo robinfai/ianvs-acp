@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 enum DeepLinkSource { external }
@@ -36,7 +37,7 @@ class DeepLinkWorkspaceValidation {
   final List<String> errors;
 }
 
-DeepLinkWorkspaceValidation validateDeepLinkWorkspace(String? value) {
+DeepLinkWorkspaceValidation validateDeepLinkWorkspaceSyntax(String? value) {
   final rawPath = value?.trim();
   if (rawPath == null || rawPath.isEmpty) {
     return const DeepLinkWorkspaceValidation(
@@ -51,8 +52,35 @@ DeepLinkWorkspaceValidation validateDeepLinkWorkspace(String? value) {
     );
   }
 
+  if (_isLexicallyBroadPath(rawPath)) {
+    return DeepLinkWorkspaceValidation(
+      path: rawPath,
+      errors: const <String>['Workspace is too broad.'],
+    );
+  }
+
+  return DeepLinkWorkspaceValidation(path: rawPath, errors: const <String>[]);
+}
+
+Future<DeepLinkWorkspaceValidation> validateDeepLinkWorkspace(
+  String? value, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final syntax = validateDeepLinkWorkspaceSyntax(value);
+  if (syntax.errors.isNotEmpty || syntax.path == null) return syntax;
+  final rawPath = syntax.path!;
+
   final directory = Directory(rawPath);
-  if (!directory.existsSync()) {
+  bool exists;
+  try {
+    exists = await directory.exists().timeout(timeout);
+  } on TimeoutException {
+    return DeepLinkWorkspaceValidation(
+      path: rawPath,
+      errors: const <String>['Workspace validation timed out.'],
+    );
+  }
+  if (!exists) {
     return DeepLinkWorkspaceValidation(
       path: rawPath,
       errors: const <String>['Workspace does not exist.'],
@@ -61,22 +89,37 @@ DeepLinkWorkspaceValidation validateDeepLinkWorkspace(String? value) {
 
   String canonicalPath;
   try {
-    canonicalPath = directory.resolveSymbolicLinksSync();
-  } on FileSystemException {
+    canonicalPath = await directory.resolveSymbolicLinks().timeout(timeout);
+  } on Object {
     return DeepLinkWorkspaceValidation(
       path: rawPath,
       errors: const <String>['Workspace could not be resolved.'],
     );
   }
 
-  final broadPaths = <String>{Directory('/').resolveSymbolicLinksSync()};
-  final home = Platform.environment['HOME']?.trim();
-  if (home != null && home.isNotEmpty) {
+  if (_isLexicallyBroadPath(canonicalPath)) {
+    return DeepLinkWorkspaceValidation(
+      path: canonicalPath,
+      errors: const <String>['Workspace is too broad.'],
+    );
+  }
+
+  final broadPaths = <String>{};
+  try {
+    broadPaths.add(
+      await Directory('/').resolveSymbolicLinks().timeout(timeout),
+    );
+  } on Object {
+    broadPaths.add(Directory('/').absolute.path);
+  }
+  for (final home in _platformHomePaths()) {
     final homeDirectory = Directory(home);
-    if (homeDirectory.existsSync()) {
+    if (await homeDirectory.exists().timeout(timeout, onTimeout: () => false)) {
       try {
-        broadPaths.add(homeDirectory.resolveSymbolicLinksSync());
-      } on FileSystemException {
+        broadPaths.add(
+          await homeDirectory.resolveSymbolicLinks().timeout(timeout),
+        );
+      } on Object {
         // An unreadable HOME cannot be selected through its raw path either.
         broadPaths.add(homeDirectory.absolute.path);
       }
@@ -93,6 +136,38 @@ DeepLinkWorkspaceValidation validateDeepLinkWorkspace(String? value) {
     path: canonicalPath,
     errors: const <String>[],
   );
+}
+
+bool _isLexicallyBroadPath(String path) {
+  if (Platform.isWindows) {
+    final normalized = path.replaceAll('/', r'\').toLowerCase();
+    return RegExp(r'^[a-z]:\\?$').hasMatch(normalized) ||
+        RegExp(r'^\\\\[^\\]+\\[^\\]+\\?$').hasMatch(normalized) ||
+        _platformHomePaths().any(
+          (home) => normalized == home.replaceAll('/', r'\').toLowerCase(),
+        );
+  }
+  return path == '/' || _platformHomePaths().contains(path);
+}
+
+Set<String> _platformHomePaths() {
+  final environment = Platform.environment;
+  final homes = <String>{};
+  void add(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed != null && trimmed.isNotEmpty) homes.add(trimmed);
+  }
+
+  add(environment['HOME']);
+  if (Platform.isWindows) {
+    add(environment['USERPROFILE']);
+    final drive = environment['HOMEDRIVE']?.trim();
+    final path = environment['HOMEPATH']?.trim();
+    if (drive != null && drive.isNotEmpty && path != null && path.isNotEmpty) {
+      add('$drive$path');
+    }
+  }
+  return homes;
 }
 
 bool _isAbsolutePath(String path) {

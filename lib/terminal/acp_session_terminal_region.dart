@@ -135,9 +135,9 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
       builder: (context, constraints) {
         final theme = Theme.of(context);
         final colorScheme = theme.colorScheme;
-        final terminalTheme =
-            theme.extension<AppTerminalTheme>() ??
-            AppTerminalTheme.conversationCanvas;
+        final terminalColors = TerminalViewportColors.fromBrightness(
+          theme.brightness,
+        ).copyWith(minimumContrastRatio: 4.5, smartCursorColor: true);
         final desiredHeight = constraints.maxHeight * 0.36;
         final availableHeight = math.max<double>(
           140.0,
@@ -155,22 +155,13 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
                 style: TerminalBottomPanelStyle(
                   height: panelHeight,
                   headerHeight: 38,
-                  backgroundColor: terminalTheme.background,
+                  backgroundColor: terminalColors.canvasBackground,
                   headerColor: colorScheme.surfaceContainerLow,
                   borderColor: colorScheme.outlineVariant,
                   activeTabColor: colorScheme.surfaceContainerLowest,
                   activeTabForegroundColor: colorScheme.onSurface,
                   inactiveTabForegroundColor: colorScheme.onSurfaceVariant,
-                  viewportColors: TerminalViewportColors(
-                    canvasBackground: terminalTheme.background,
-                    foreground: terminalTheme.foreground,
-                    cursor: terminalTheme.cursor,
-                    selection: terminalTheme.selection,
-                    scrollbarTrack: terminalTheme.scrollbarTrack,
-                    scrollbarThumb: terminalTheme.scrollbarThumb,
-                    minimumContrastRatio: 4.5,
-                    smartCursorColor: true,
-                  ),
+                  viewportColors: terminalColors,
                   viewportPadding: const EdgeInsets.only(
                     left: 12,
                     top: 8,

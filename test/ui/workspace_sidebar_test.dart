@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:ui' show SemanticsAction;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
@@ -133,6 +135,7 @@ void main() {
   ) async {
     final semantics = tester.ensureSemantics();
     AgentSession? selected;
+    WorkspaceSessionMenuAction? menuAction;
     final session = AgentSession(
       id: 'accessible-session',
       cwd: '/workspace/current',
@@ -159,6 +162,7 @@ void main() {
               onNewSession: () {},
               onResumeSession: () {},
               onSelectSession: (value) => selected = value,
+              onSessionMenuAction: (_, action) => menuAction = action,
             ),
           ),
         ),
@@ -166,7 +170,36 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    tester.semantics.tap(find.semantics.byLabel(RegExp('Accessible session')));
+    final sessionSemanticsNodes = find.semantics
+        .byLabel(RegExp('Accessible session'))
+        .evaluate()
+        .toList(growable: false);
+    final sessionSemantics = sessionSemanticsNodes
+        .where(
+          (node) =>
+              node.getSemanticsData().customSemanticsActionIds?.isNotEmpty ==
+              true,
+        )
+        .single;
+    final customActionIds = sessionSemantics
+        .getSemanticsData()
+        .customSemanticsActionIds!;
+    expect(customActionIds, hasLength(2));
+    sessionSemantics.owner!.performAction(
+      sessionSemantics.id,
+      SemanticsAction.customAction,
+      customActionIds.first,
+    );
+    await tester.pump();
+    expect(menuAction, WorkspaceSessionMenuAction.togglePinned);
+
+    final tappableSessionSemantics = sessionSemanticsNodes
+        .where((node) => node.getSemanticsData().hasAction(SemanticsAction.tap))
+        .last;
+    tappableSessionSemantics.owner!.performAction(
+      tappableSessionSemantics.id,
+      SemanticsAction.tap,
+    );
     await tester.pump();
 
     expect(selected, same(session));
@@ -1781,6 +1814,62 @@ void main() {
 
     expect(find.byTooltip('Pin Conversation'), findsNothing);
     expect(find.byTooltip('Archive Conversation'), findsNothing);
+  });
+
+  testWidgets('WorkspaceSidebar exposes session actions on keyboard focus', (
+    tester,
+  ) async {
+    WorkspaceSessionMenuAction? action;
+    final session = AgentSession(
+      id: 'keyboard-session',
+      cwd: '/workspace/current',
+      createdAt: DateTime(2026, 5, 1, 10),
+      title: 'Keyboard session',
+      agentName: 'Codex',
+    );
+    final workspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: [session],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 520,
+            child: WorkspaceSidebar(
+              workspaces: [workspace],
+              currentWorkspace: workspace,
+              currentSession: null,
+              onNewSession: () {},
+              onResumeSession: () {},
+              onSelectSession: (_) {},
+              onSessionMenuAction: (_, selectedAction) {
+                action = selectedAction;
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (
+      var index = 0;
+      index < 12 && find.byTooltip('Pin Conversation').evaluate().isEmpty;
+      index += 1
+    ) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+    }
+    expect(find.byTooltip('Pin Conversation'), findsOneWidget);
+    expect(find.byTooltip('Archive Conversation'), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(action, WorkspaceSessionMenuAction.togglePinned);
   });
 
   testWidgets('WorkspaceSidebar shows Codex-style session preview on hover', (

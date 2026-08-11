@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 
 import '../../acp/agent_event.dart';
 import '../../acp/agent_session.dart';
@@ -1512,6 +1513,7 @@ class _SessionTileState extends State<_SessionTile> {
 
   final GlobalKey _previewAnchorKey = GlobalKey();
   bool _hovered = false;
+  bool _focused = false;
   bool _previewHovered = false;
   Timer? _previewShowTimer;
   Timer? _previewHideTimer;
@@ -1550,11 +1552,23 @@ class _SessionTileState extends State<_SessionTile> {
     final session = widget.session;
     final onPressed = widget.onPressed;
     final onMenuAction = widget.onMenuAction;
-    final showActions = _hovered && onMenuAction != null;
+    final showActions = (_hovered || _focused) && onMenuAction != null;
     return Semantics(
       button: onPressed != null,
       selected: selected,
       label: session.displayTitle,
+      customSemanticsActions: onMenuAction == null
+          ? null
+          : <CustomSemanticsAction, VoidCallback>{
+              CustomSemanticsAction(
+                label: session.pinned
+                    ? 'Unpin Conversation'
+                    : 'Pin Conversation',
+              ): () =>
+                  _runMenuAction(WorkspaceSessionMenuAction.togglePinned),
+              const CustomSemanticsAction(label: 'Archive Conversation'): () =>
+                  _runMenuAction(WorkspaceSessionMenuAction.archive),
+            },
       child: Material(
         color: Colors.transparent,
         child: MouseRegion(
@@ -1569,6 +1583,7 @@ class _SessionTileState extends State<_SessionTile> {
             child: InkWell(
               borderRadius: radius,
               onTap: onPressed,
+              onFocusChange: _setFocused,
               child: Container(
                 key: Key(
                   selected
@@ -1668,6 +1683,13 @@ class _SessionTileState extends State<_SessionTile> {
     if (_hovered == hovered) return;
     setState(() {
       _hovered = hovered;
+    });
+  }
+
+  void _setFocused(bool focused) {
+    if (_focused == focused) return;
+    setState(() {
+      _focused = focused;
     });
   }
 

@@ -54,6 +54,125 @@ void main() {
     },
   );
 
+  test('flushes the parent directory after the atomic rename', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-secure-atomic-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    final events = <String>[];
+
+    await SecureAtomicFile.writeString(
+      file,
+      'new-value\n',
+      rename: (source, destination) async {
+        events.add('rename');
+        return source.rename(destination);
+      },
+      directorySync: (directory) {
+        events.add('directory-sync');
+        expect(directory.path, file.parent.path);
+        expect(file.readAsStringSync(), 'new-value\n');
+      },
+    );
+
+    expect(events, <String>['rename', 'directory-sync']);
+  });
+
+  test('flushes newly created directory entries from inner to outer', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-secure-atomic-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final first = Directory('${temp.path}/first');
+    final second = Directory('${first.path}/second');
+    final file = File('${second.path}/settings.json');
+    final events = <String>[];
+
+    await SecureAtomicFile.writeString(
+      file,
+      'new-value\n',
+      rename: (source, destination) async {
+        events.add('rename');
+        return source.rename(destination);
+      },
+      directorySync: (directory) => events.add(directory.path),
+    );
+
+    expect(events, <String>['rename', second.path, first.path, temp.path]);
+  });
+
+  test('every newly created ancestor sync failure is reported', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-secure-atomic-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+
+    for (final failureLevel in <String>['first', 'root']) {
+      final root = Directory('${temp.path}/case-$failureLevel');
+      await root.create();
+      final first = Directory('${root.path}/first');
+      final second = Directory('${first.path}/second');
+      final file = File('${second.path}/settings.json');
+      final failurePath = failureLevel == 'first' ? first.path : root.path;
+      final synced = <String>[];
+
+      await expectLater(
+        SecureAtomicFile.writeString(
+          file,
+          'new-value\n',
+          directorySync: (directory) {
+            synced.add(directory.path);
+            if (directory.path == failurePath) {
+              throw FileSystemException(
+                'injected ancestor sync failure',
+                directory.path,
+              );
+            }
+          },
+        ),
+        throwsA(isA<FileSystemException>()),
+        reason: failureLevel,
+      );
+
+      expect(synced.take(2).toList(), <String>[second.path, first.path]);
+      if (failureLevel == 'root') expect(synced.last, root.path);
+      expect(await file.readAsString(), 'new-value\n');
+    }
+  });
+
+  test('parent directory sync failure is reported after rename', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-secure-atomic-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString('old-value\n');
+
+    await expectLater(
+      SecureAtomicFile.writeString(
+        file,
+        'new-value\n',
+        directorySync: (directory) {
+          throw FileSystemException(
+            'injected directory sync failure',
+            directory.path,
+          );
+        },
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    expect(await file.readAsString(), 'new-value\n');
+    expect(
+      await file.parent
+          .list()
+          .where((entry) => entry.path.contains('settings.json.tmp-'))
+          .toList(),
+      isEmpty,
+    );
+  });
+
   test('chmod failure is reported and removes the temporary file', () async {
     final temp = await Directory.systemTemp.createTemp(
       'ianvs-acp-secure-atomic-',

@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
+import '../platform/bounded_file_snapshot.dart';
 import '../storage/sqlite_storage_config.dart';
 import 'assistant_agent_config.dart';
 import 'secret_field_policy.dart';
@@ -26,6 +27,7 @@ class AcpClientConfig {
 
   static const String appConfigDirectoryName = 'ianvs-acp';
   static const String settingsFileName = 'settings.json';
+  static const int maxConfigFileBytes = 4 * 1024 * 1024;
 
   final AgentServerConfig? activeAgentServer;
   final List<AgentServerConfig> agentServers;
@@ -182,7 +184,9 @@ class AcpClientConfig {
       return AcpClientConfig(configPath: configPath);
     }
 
-    final raw = jsonDecode(await file.readAsString());
+    final raw = jsonDecode(
+      await readBoundedFileStringSnapshot(file, maxBytes: maxConfigFileBytes),
+    );
     if (raw is! Map<String, dynamic>) {
       throw const FormatException('ACP config root must be a JSON object.');
     }

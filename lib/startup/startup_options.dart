@@ -36,7 +36,7 @@ class StartupOptions {
     final query = uri.queryParameters;
     if (uri.host != 'session') return null;
     final sessionId = _trimmedOrNull(query['id'] ?? query['session_id']);
-    final workspace = validateDeepLinkWorkspace(query['cwd']);
+    final workspace = validateDeepLinkWorkspaceSyntax(query['cwd']);
     final errors = <String>[
       if (sessionId == null) 'Session is required.',
       ...workspace.errors,

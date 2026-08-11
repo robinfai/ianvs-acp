@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/acp_agent_discovery.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
+import 'package:ianvs_acp/platform/bounded_file_snapshot.dart';
 
 void main() {
   test('uses reviewed package invocations for npx-backed agents', () {
@@ -259,6 +260,31 @@ void main() {
     expect(
       await File(configPath).readAsString(),
       contains('default_agent_server'),
+    );
+  });
+
+  test('agent discovery rejects an oversized config merge snapshot', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-discovery-oversized-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsBytes(
+      List<int>.filled(AcpClientConfig.maxConfigFileBytes + 1, 0x20),
+    );
+
+    await expectLater(
+      AcpAgentDiscovery.writeSelectedAgentServers(
+        AcpClientConfig(configPath: file.path),
+        const <AgentServerConfig>[
+          AgentServerConfig(
+            name: 'Codex',
+            type: 'custom',
+            command: '/usr/local/bin/codex',
+          ),
+        ],
+      ),
+      throwsA(isA<BoundedFileSnapshotOverflowException>()),
     );
   });
 

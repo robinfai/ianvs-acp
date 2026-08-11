@@ -1,4 +1,5 @@
 import 'acp_agent_capabilities.dart';
+import 'acp_available_commands.dart';
 import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
@@ -24,6 +25,12 @@ abstract class AcpAgentClient {
   Stream<AcpPermissionRequest> get permissionRequests;
 
   Stream<AcpPermissionInvalidation> get permissionInvalidations;
+
+  Stream<AcpAvailableCommandsUpdate> get availableCommandsUpdates;
+
+  Future<AcpAvailableCommandsUpdate?> sessionAvailableCommands(
+    String sessionId,
+  );
 
   Future<void> connect();
 

@@ -15,6 +15,15 @@ use crate::{WorkspaceError, WorkspaceScope};
 
 const DEFAULT_OUTPUT_BYTE_LIMIT: usize = 1_048_576;
 const MAX_OUTPUT_BYTE_LIMIT: usize = 8_388_608;
+const TERMINAL_SESSION_ID_MAX_BYTES: usize = 8 * 1024;
+const TERMINAL_COMMAND_MAX_BYTES: usize = 8 * 1024;
+const TERMINAL_MAX_ARGUMENTS: usize = 128;
+const TERMINAL_ARGUMENT_MAX_BYTES: usize = 8 * 1024;
+const TERMINAL_MAX_ENVIRONMENT: usize = 128;
+const TERMINAL_ENVIRONMENT_NAME_MAX_BYTES: usize = 1024;
+const TERMINAL_ENVIRONMENT_VALUE_MAX_BYTES: usize = 8 * 1024;
+const TERMINAL_CWD_MAX_BYTES: usize = 32 * 1024;
+const TERMINAL_SPEC_MAX_BYTES: usize = 48 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +89,7 @@ pub struct TerminalApproval {
     pub approval_id: String,
     pub session_id: String,
     pub command: Vec<String>,
+    pub environment: Vec<TerminalEnvironmentVariable>,
     pub cwd: String,
 }
 
@@ -136,6 +146,8 @@ pub enum TerminalError {
     InvalidArgument,
     #[error("terminal environment contains an invalid variable")]
     InvalidEnvironment,
+    #[error("terminal create request exceeds the bounded policy")]
+    SpecLimit,
     #[error("terminal session is not registered: {0}")]
     UnknownSession(String),
     #[error("terminal approval is not pending: {0}")]
@@ -233,6 +245,7 @@ impl TerminalManager {
             .chain(spec.args.iter().cloned())
             .collect::<Vec<_>>();
         let session_id = spec.session_id.clone();
+        let environment = spec.environment.clone();
         let cwd_display = cwd.display().to_string();
         let approval_id = Uuid::new_v4().to_string();
         self.pending
@@ -243,6 +256,7 @@ impl TerminalManager {
             approval_id,
             session_id,
             command,
+            environment,
             cwd: cwd_display,
         })
     }
@@ -646,26 +660,59 @@ fn validate_spec(spec: &TerminalCreateSpec) -> Result<(), TerminalError> {
     {
         return Err(TerminalError::InvalidCommand);
     }
-    if spec
-        .args
-        .iter()
-        .any(|argument| argument.as_bytes().contains(&0))
+    if spec.session_id.len() > TERMINAL_SESSION_ID_MAX_BYTES
+        || spec.command.len() > TERMINAL_COMMAND_MAX_BYTES
+        || spec.args.len() > TERMINAL_MAX_ARGUMENTS
+        || spec.environment.len() > TERMINAL_MAX_ENVIRONMENT
+        || spec
+            .cwd
+            .as_ref()
+            .is_some_and(|cwd| cwd.as_os_str().as_encoded_bytes().len() > TERMINAL_CWD_MAX_BYTES)
     {
+        return Err(TerminalError::SpecLimit);
+    }
+    if spec.args.iter().any(|argument| {
+        argument.len() > TERMINAL_ARGUMENT_MAX_BYTES || argument.as_bytes().contains(&0)
+    }) {
         return Err(TerminalError::InvalidArgument);
     }
     if spec.environment.iter().any(|variable| {
         variable.name.is_empty()
             || variable.name.contains('=')
+            || variable.name.len() > TERMINAL_ENVIRONMENT_NAME_MAX_BYTES
+            || variable.value.len() > TERMINAL_ENVIRONMENT_VALUE_MAX_BYTES
             || variable.name.as_bytes().contains(&0)
             || variable.value.as_bytes().contains(&0)
     }) {
         return Err(TerminalError::InvalidEnvironment);
     }
+    let projected_bytes = spec
+        .session_id
+        .len()
+        .saturating_add(spec.command.len())
+        .saturating_add(spec.args.iter().map(String::len).sum::<usize>())
+        .saturating_add(
+            spec.environment
+                .iter()
+                .map(|variable| variable.name.len().saturating_add(variable.value.len()))
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            spec.cwd
+                .as_ref()
+                .map_or(0, |cwd| cwd.as_os_str().as_encoded_bytes().len()),
+        );
+    if projected_bytes > TERMINAL_SPEC_MAX_BYTES {
+        return Err(TerminalError::SpecLimit);
+    }
     Ok(())
 }
 
 fn canonical_session_id(session_id: &str) -> Result<String, TerminalError> {
-    if session_id.is_empty() || session_id.trim() != session_id {
+    if session_id.is_empty()
+        || session_id.trim() != session_id
+        || session_id.as_bytes().contains(&0)
+    {
         Err(TerminalError::InvalidSessionId)
     } else {
         Ok(session_id.to_string())

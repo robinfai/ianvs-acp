@@ -1,5 +1,6 @@
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
+import 'acp_available_commands.dart';
 import 'acp_permission_request.dart';
 import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
@@ -26,6 +27,15 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   @override
   Stream<AcpPermissionInvalidation> get permissionInvalidations =>
       const Stream<AcpPermissionInvalidation>.empty();
+
+  @override
+  Stream<AcpAvailableCommandsUpdate> get availableCommandsUpdates =>
+      const Stream<AcpAvailableCommandsUpdate>.empty();
+
+  @override
+  Future<AcpAvailableCommandsUpdate?> sessionAvailableCommands(
+    String sessionId,
+  ) => _failure<AcpAvailableCommandsUpdate?>();
 
   @override
   Future<void> authenticate({required String methodId}) => _failure<void>();

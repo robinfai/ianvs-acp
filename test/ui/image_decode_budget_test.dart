@@ -55,6 +55,54 @@ void main() {
     );
 
     testWidgets(
+      'raw byte snapshots use the same reservation and pixel bounds',
+      (tester) async {
+        const budget = AcpInputBudget(
+          maxEmbeddedMediaBytes: 1,
+          maxImageDimension: 4,
+          maxImagePixels: 8,
+          maxImagePreviewPixels: 4,
+          maxImagePreviewPixelsGlobal: 4,
+          maxImageDecodeBytesGlobal: 17,
+        );
+        final image = await _testImage(2, 1);
+        final decoder = _FakeBoundedImageDecoder(
+          width: 4,
+          height: 2,
+          frameImage: image,
+        );
+        final reservation = _CountingImageReservation();
+        var acquiredBytes = -1;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: BoundedImagePreview.bytes(
+              bytes: Uint8List.fromList(const <int>[1]),
+              inputBudget: budget,
+              decoder: decoder,
+              reservationAcquirer:
+                  ({
+                    required int decodedBytes,
+                    required AcpImageDecodeCancellation cancellation,
+                  }) async {
+                    acquiredBytes = decodedBytes;
+                    return reservation;
+                  },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(acquiredBytes, 1);
+        expect(decoder.targets, const [(width: 2, height: 1)]);
+        expect(reservation.shrinks, const [(pixels: 2, bytes: 9)]);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(reservation.releaseCalls, 1);
+      },
+    );
+
+    testWidgets(
       'downsamples proportionally, takes one frame, and releases exactly once',
       (tester) async {
         const budget = AcpInputBudget(

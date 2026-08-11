@@ -7,10 +7,13 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:path/path.dart' as p;
 
+import '../../acp/acp_input_budget.dart';
 import '../../platform/file_manager.dart';
 import '../file_preview/file_preview_document.dart';
 import '../file_preview/markdown_front_matter.dart';
+import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
+import 'bounded_image_preview.dart';
 import 'markdown_code_block.dart';
 import 'markdown_front_matter_card.dart';
 import 'markdown_inline_link.dart';
@@ -20,6 +23,13 @@ typedef FilePreviewLinkHandler =
     void Function(String text, String? href, String title);
 typedef FilePreviewConversationBuilder =
     Widget Function(BuildContext context, FilePreviewLinkHandler onTapLink);
+typedef FilePreviewTargetResolver =
+    Future<FilePreviewTarget> Function({
+      required String href,
+      required String workspacePath,
+      required List<String> additionalDirectories,
+      required String baseDirectory,
+    });
 
 class FilePreviewWorkspace extends StatefulWidget {
   const FilePreviewWorkspace({
@@ -30,6 +40,16 @@ class FilePreviewWorkspace extends StatefulWidget {
     required this.inspector,
     required this.showInspector,
     this.processRunner,
+    this.resolveTarget = resolveFilePreviewTarget,
+    this.imageDimensionInspector = inspectFilePreviewImageDimensions,
+    this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
+    this.markdownImageLoadBudgetLedger,
+    this.markdownLocalImageReader,
+    this.quickLookProcessStarter,
+    this.quickLookTimeout = filePreviewQuickLookTimeout,
+    this.quickLookCoordinator,
   });
 
   final String workspacePath;
@@ -38,6 +58,16 @@ class FilePreviewWorkspace extends StatefulWidget {
   final Widget inspector;
   final bool showInspector;
   final FilePreviewProcessRunner? processRunner;
+  final FilePreviewTargetResolver resolveTarget;
+  final FilePreviewImageDimensionInspector imageDimensionInspector;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger? imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
+  final MarkdownImageLoadBudgetLedger? markdownImageLoadBudgetLedger;
+  final MarkdownLocalImageReader? markdownLocalImageReader;
+  final FilePreviewProcessStarter? quickLookProcessStarter;
+  final Duration quickLookTimeout;
+  final FilePreviewQuickLookCoordinator? quickLookCoordinator;
 
   @override
   State<FilePreviewWorkspace> createState() => _FilePreviewWorkspaceState();
@@ -49,15 +79,54 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
   final List<_FilePreviewTab> _tabs = <_FilePreviewTab>[];
   int _activeTab = -1;
   double? _previewWidth;
+  int _workspaceGeneration = 0;
+  AcpImageDecodeBudgetLedger? _ownedImageDecodeLedger;
+  late final FilePreviewQuickLookCoordinator _ownedQuickLookCoordinator =
+      FilePreviewQuickLookCoordinator();
+
+  FilePreviewQuickLookCoordinator get _quickLookCoordinator =>
+      widget.quickLookCoordinator ?? _ownedQuickLookCoordinator;
+
+  AcpImageDecodeBudgetLedger get _imageDecodeLedger =>
+      widget.imageDecodeLedger ??
+      (_ownedImageDecodeLedger ??= AcpImageDecodeBudgetLedger(
+        budget: widget.inputBudget,
+      ));
+
+  @override
+  void initState() {
+    super.initState();
+    widget.inputBudget.validate();
+  }
 
   @override
   void didUpdateWidget(covariant FilePreviewWorkspace oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.workspacePath != widget.workspacePath) {
+    widget.inputBudget.validate();
+    if (!identical(oldWidget.inputBudget, widget.inputBudget) ||
+        !identical(oldWidget.imageDecodeLedger, widget.imageDecodeLedger)) {
+      _ownedImageDecodeLedger = null;
+    }
+    if (oldWidget.workspacePath != widget.workspacePath ||
+        !_samePaths(
+          oldWidget.additionalDirectories,
+          widget.additionalDirectories,
+        )) {
+      _workspaceGeneration += 1;
+      _cancelAllTabs();
       _tabs.clear();
       _activeTab = -1;
       _previewWidth = null;
     }
+  }
+
+  @override
+  void dispose() {
+    _cancelAllTabs();
+    if (widget.quickLookCoordinator == null) {
+      _ownedQuickLookCoordinator.dispose();
+    }
+    super.dispose();
   }
 
   @override
@@ -107,7 +176,7 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
     final active = _tabs[_activeTab];
     return LayoutBuilder(
       builder: (context, constraints) {
-        final compact = constraints.maxWidth < 820;
+        final compact = constraints.maxWidth < 840;
         final preview = FilePreviewPane(
           key: ValueKey(active.target.path),
           tabs: _tabs.map((tab) => tab.target).toList(growable: false),
@@ -115,6 +184,11 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
           document: active.document,
           additionalDirectories: widget.additionalDirectories,
           processRunner: widget.processRunner,
+          inputBudget: widget.inputBudget,
+          imageDecodeLedger: _imageDecodeLedger,
+          boundedImageDecoder: widget.boundedImageDecoder,
+          markdownImageLoadBudgetLedger: widget.markdownImageLoadBudgetLedger,
+          markdownLocalImageReader: widget.markdownLocalImageReader,
           onSelectTab: (index) => setState(() => _activeTab = index),
           onCloseTab: _closeTab,
           onClosePreview: () => _closeTab(_activeTab),
@@ -172,53 +246,47 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
       return;
     }
 
+    final generation = _workspaceGeneration;
+    final workspacePath = widget.workspacePath;
+    final additionalDirectories = List<String>.unmodifiable(
+      widget.additionalDirectories,
+    );
     try {
-      final target = await resolveFilePreviewTarget(
+      final target = await widget.resolveTarget(
         href: value,
-        workspacePath: widget.workspacePath,
-        additionalDirectories: widget.additionalDirectories,
+        workspacePath: workspacePath,
+        additionalDirectories: additionalDirectories,
         baseDirectory: baseDirectory,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _workspaceGeneration) return;
       final existingIndex = _tabs.indexWhere(
         (tab) => tab.target.path == target.path,
       );
       setState(() {
         if (existingIndex >= 0) {
-          _tabs[existingIndex] = _FilePreviewTab(
-            target: target,
-            document: loadFilePreviewDocument(
-              target,
-              processRunner: widget.processRunner,
-            ),
-          );
+          _tabs[existingIndex].cancellation.cancel();
+          _tabs[existingIndex] = _createTab(target);
           _activeTab = existingIndex;
           return;
         }
         if (_tabs.length == _maximumTabs) {
-          _tabs.removeAt(0);
+          _tabs.removeAt(0).cancellation.cancel();
           _activeTab -= 1;
         }
-        _tabs.add(
-          _FilePreviewTab(
-            target: target,
-            document: loadFilePreviewDocument(
-              target,
-              processRunner: widget.processRunner,
-            ),
-          ),
-        );
+        _tabs.add(_createTab(target));
         _activeTab = _tabs.length - 1;
       });
     } catch (error) {
-      if (mounted) _showError(_errorText(error));
+      if (mounted && generation == _workspaceGeneration) {
+        _showError(_errorText(error));
+      }
     }
   }
 
   void _closeTab(int index) {
     if (index < 0 || index >= _tabs.length) return;
     setState(() {
-      _tabs.removeAt(index);
+      _tabs.removeAt(index).cancellation.cancel();
       if (_tabs.isEmpty) {
         _activeTab = -1;
       } else if (_activeTab >= _tabs.length) {
@@ -227,6 +295,28 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
         _activeTab -= 1;
       }
     });
+  }
+
+  _FilePreviewTab _createTab(FilePreviewTarget target) {
+    final cancellation = FilePreviewLoadCancellationSource();
+    return _FilePreviewTab(
+      target: target,
+      cancellation: cancellation,
+      document: loadFilePreviewDocument(
+        target,
+        processStarter: widget.quickLookProcessStarter,
+        quickLookTimeout: widget.quickLookTimeout,
+        cancellation: cancellation,
+        quickLookCoordinator: _quickLookCoordinator,
+        imageDimensionInspector: widget.imageDimensionInspector,
+      ),
+    );
+  }
+
+  void _cancelAllTabs() {
+    for (final tab in _tabs) {
+      tab.cancellation.cancel();
+    }
   }
 
   void _showError(String message) {
@@ -238,11 +328,24 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
   }
 }
 
+bool _samePaths(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
 final class _FilePreviewTab {
-  const _FilePreviewTab({required this.target, required this.document});
+  const _FilePreviewTab({
+    required this.target,
+    required this.document,
+    required this.cancellation,
+  });
 
   final FilePreviewTarget target;
   final Future<FilePreviewDocument> document;
+  final FilePreviewLoadCancellationSource cancellation;
 }
 
 class FilePreviewPane extends StatefulWidget {
@@ -257,6 +360,11 @@ class FilePreviewPane extends StatefulWidget {
     required this.onClosePreview,
     required this.onOpenNestedLink,
     this.processRunner,
+    this.inputBudget = const AcpInputBudget(),
+    required this.imageDecodeLedger,
+    this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
+    this.markdownImageLoadBudgetLedger,
+    this.markdownLocalImageReader,
   });
 
   final List<FilePreviewTarget> tabs;
@@ -268,6 +376,11 @@ class FilePreviewPane extends StatefulWidget {
   final VoidCallback onClosePreview;
   final FilePreviewLinkHandler onOpenNestedLink;
   final FilePreviewProcessRunner? processRunner;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
+  final MarkdownImageLoadBudgetLedger? markdownImageLoadBudgetLedger;
+  final MarkdownLocalImageReader? markdownLocalImageReader;
 
   @override
   State<FilePreviewPane> createState() => _FilePreviewPaneState();
@@ -362,6 +475,13 @@ class _FilePreviewPaneState extends State<FilePreviewPane> {
                         additionalDirectories: widget.additionalDirectories,
                         onTapLink: widget.onOpenNestedLink,
                         onOpenExternal: _openExternal,
+                        inputBudget: widget.inputBudget,
+                        imageDecodeLedger: widget.imageDecodeLedger,
+                        boundedImageDecoder: widget.boundedImageDecoder,
+                        markdownImageLoadBudgetLedger:
+                            widget.markdownImageLoadBudgetLedger,
+                        markdownLocalImageReader:
+                            widget.markdownLocalImageReader,
                       ),
                     ),
                     _PreviewStatus(document: document),
@@ -388,9 +508,11 @@ class _FilePreviewPaneState extends State<FilePreviewPane> {
   }
 
   Future<void> _reveal() async {
-    await _runFileAction(
+    final target = _target;
+    await _runAuthorizedFileAction(
+      target,
       () => revealPathInFileManager(
-        _target.path,
+        target.path,
         processRunner: widget.processRunner,
       ),
       failure: '无法在文件管理器中显示文件',
@@ -398,11 +520,34 @@ class _FilePreviewPaneState extends State<FilePreviewPane> {
   }
 
   Future<void> _openExternal() async {
-    await _runFileAction(
+    final target = _target;
+    await _runAuthorizedFileAction(
+      target,
       () =>
-          openPathExternally(_target.path, processRunner: widget.processRunner),
+          openPathExternally(target.path, processRunner: widget.processRunner),
       failure: '无法用其他应用打开文件',
     );
+  }
+
+  Future<void> _runAuthorizedFileAction(
+    FilePreviewTarget target,
+    Future<void> Function() action, {
+    required String failure,
+  }) async {
+    final isCurrent = await revalidateFilePreviewTarget(target);
+    if (!mounted) return;
+    if (!isCurrent) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('文件自预览后已更改，请重新打开预览后再试。'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      return;
+    }
+    await _runFileAction(action, failure: failure);
   }
 
   Future<void> _runFileAction(
@@ -790,6 +935,11 @@ class _PreviewBody extends StatelessWidget {
     required this.additionalDirectories,
     required this.onTapLink,
     required this.onOpenExternal,
+    required this.inputBudget,
+    required this.imageDecodeLedger,
+    required this.boundedImageDecoder,
+    required this.markdownImageLoadBudgetLedger,
+    required this.markdownLocalImageReader,
   });
 
   final FilePreviewDocument document;
@@ -799,6 +949,11 @@ class _PreviewBody extends StatelessWidget {
   final List<String> additionalDirectories;
   final FilePreviewLinkHandler onTapLink;
   final VoidCallback onOpenExternal;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
+  final MarkdownImageLoadBudgetLedger? markdownImageLoadBudgetLedger;
+  final MarkdownLocalImageReader? markdownLocalImageReader;
 
   @override
   Widget build(BuildContext context) {
@@ -818,6 +973,11 @@ class _PreviewBody extends StatelessWidget {
           workspacePath: document.target.workspacePath,
           additionalDirectories: additionalDirectories,
           onTapLink: onTapLink,
+          inputBudget: inputBudget,
+          imageDecodeLedger: imageDecodeLedger,
+          boundedImageDecoder: boundedImageDecoder,
+          imageLoadBudgetLedger: markdownImageLoadBudgetLedger,
+          localImageReader: markdownLocalImageReader,
         );
       case FilePreviewKind.text:
         return _TextFilePreview(
@@ -827,7 +987,24 @@ class _PreviewBody extends StatelessWidget {
           wrapText: wrapText,
         );
       case FilePreviewKind.image:
-        return _ImageFilePreview(path: document.target.path);
+        final bytes = document.previewBytes;
+        if (bytes == null) {
+          final error = document.previewError;
+          return _PreviewFailure(
+            icon: Icons.image_not_supported_outlined,
+            title: error?.contains('尺寸') == true
+                ? '图片尺寸过大，未内嵌预览'
+                : '图片过大，未内嵌预览',
+            message: error ?? '图片文件超过 16 MB 限制，可用其他应用安全打开。',
+            onOpenExternal: onOpenExternal,
+          );
+        }
+        return _ImageFilePreview(
+          bytes: bytes,
+          inputBudget: inputBudget,
+          imageDecodeLedger: imageDecodeLedger,
+          boundedImageDecoder: boundedImageDecoder,
+        );
       case FilePreviewKind.quickLook:
         final bytes = document.previewBytes;
         if (bytes != null) {
@@ -838,7 +1015,13 @@ class _PreviewBody extends StatelessWidget {
             child: InteractiveViewer(
               minScale: .5,
               maxScale: 4,
-              child: Image.memory(bytes, fit: BoxFit.contain),
+              child: BoundedImagePreview.bytes(
+                bytes: bytes,
+                inputBudget: inputBudget,
+                imageDecodeLedger: imageDecodeLedger,
+                decoder: boundedImageDecoder,
+                height: null,
+              ),
             ),
           );
         }
@@ -866,6 +1049,11 @@ class _MarkdownFilePreview extends StatefulWidget {
     required this.workspacePath,
     required this.additionalDirectories,
     required this.onTapLink,
+    required this.inputBudget,
+    required this.imageDecodeLedger,
+    required this.boundedImageDecoder,
+    required this.imageLoadBudgetLedger,
+    required this.localImageReader,
   });
 
   final String text;
@@ -873,6 +1061,11 @@ class _MarkdownFilePreview extends StatefulWidget {
   final String workspacePath;
   final List<String> additionalDirectories;
   final FilePreviewLinkHandler onTapLink;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
+  final MarkdownImageLoadBudgetLedger? imageLoadBudgetLedger;
+  final MarkdownLocalImageReader? localImageReader;
 
   @override
   State<_MarkdownFilePreview> createState() => _MarkdownFilePreviewState();
@@ -886,14 +1079,29 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
   late List<_MarkdownHeading> _headings = _markdownHeadings(_document.body);
   var _outlineCollapsed = false;
   int? _activeHeadingIndex;
+  late MarkdownImageLoadBudgetLedger _imageLoadBudgetLedger =
+      widget.imageLoadBudgetLedger ??
+      MarkdownImageLoadBudgetLedger(
+        maxEncodedBytes: widget.inputBudget.maxEmbeddedMediaBytes,
+      );
 
   @override
   void didUpdateWidget(covariant _MarkdownFilePreview oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.text == widget.text &&
-        oldWidget.documentPath == widget.documentPath) {
+        oldWidget.documentPath == widget.documentPath &&
+        identical(
+          oldWidget.imageLoadBudgetLedger,
+          widget.imageLoadBudgetLedger,
+        ) &&
+        identical(oldWidget.inputBudget, widget.inputBudget)) {
       return;
     }
+    _imageLoadBudgetLedger =
+        widget.imageLoadBudgetLedger ??
+        MarkdownImageLoadBudgetLedger(
+          maxEncodedBytes: widget.inputBudget.maxEmbeddedMediaBytes,
+        );
     _document = parseMarkdownFrontMatter(widget.text);
     _headings = _markdownHeadings(_document.body);
     _activeHeadingIndex = null;
@@ -955,6 +1163,11 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                         workspacePath: widget.workspacePath,
                         baseDirectory: p.dirname(widget.documentPath),
                         additionalDirectories: widget.additionalDirectories,
+                        inputBudget: widget.inputBudget,
+                        imageDecodeLedger: widget.imageDecodeLedger,
+                        boundedImageDecoder: widget.boundedImageDecoder,
+                        loadBudgetLedger: _imageLoadBudgetLedger,
+                        readLocalImage: widget.localImageReader,
                       ),
                       builders: <String, MarkdownElementBuilder>{
                         'pre': MarkdownCodeBlockBuilder(user: false),
@@ -1298,9 +1511,17 @@ class _TextFilePreviewState extends State<_TextFilePreview> {
 }
 
 class _ImageFilePreview extends StatelessWidget {
-  const _ImageFilePreview({required this.path});
+  const _ImageFilePreview({
+    required this.bytes,
+    required this.inputBudget,
+    required this.imageDecodeLedger,
+    required this.boundedImageDecoder,
+  });
 
-  final String path;
+  final Uint8List bytes;
+  final AcpInputBudget inputBudget;
+  final AcpImageDecodeBudgetLedger imageDecodeLedger;
+  final BoundedImageDecoder boundedImageDecoder;
 
   @override
   Widget build(BuildContext context) {
@@ -1311,14 +1532,12 @@ class _ImageFilePreview extends StatelessWidget {
         maxScale: 6,
         boundaryMargin: const EdgeInsets.all(120),
         child: Center(
-          child: Image(
-            image: ResizeImage(FileImage(File(path)), width: 1800),
-            fit: BoxFit.contain,
-            errorBuilder: (context, error, stackTrace) => const _PreviewFailure(
-              icon: Icons.broken_image_outlined,
-              title: '无法显示图片',
-              message: '图片可能已损坏，或编码格式不受当前系统支持。',
-            ),
+          child: BoundedImagePreview.bytes(
+            bytes: bytes,
+            inputBudget: inputBudget,
+            imageDecodeLedger: imageDecodeLedger,
+            decoder: boundedImageDecoder,
+            height: null,
           ),
         ),
       ),

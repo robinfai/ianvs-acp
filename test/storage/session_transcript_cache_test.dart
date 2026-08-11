@@ -19,6 +19,80 @@ void main() {
   });
 
   test(
+    'custom config cache is isolated from a user-owned sibling directory',
+    () async {
+      final customDirectory = Directory('${directory.path}/custom');
+      final unrelatedDirectory = Directory(
+        '${customDirectory.path}/session_transcripts',
+      );
+      await unrelatedDirectory.create(recursive: true);
+      final chmod = await Process.run('/bin/chmod', <String>[
+        '0755',
+        unrelatedDirectory.path,
+      ]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+      final originalMode = (await unrelatedDirectory.stat()).mode & 0x1ff;
+      final sentinel = File('${unrelatedDirectory.path}/user-data.txt');
+      await sentinel.writeAsString('keep');
+      final resolvedPath = resolveSessionTranscriptCacheDirectoryPath(
+        '${customDirectory.path}/settings.json',
+      );
+
+      expect(
+        resolvedPath,
+        '${customDirectory.path}${Platform.pathSeparator}.ianvs-acp'
+        '${Platform.pathSeparator}session_transcripts',
+      );
+      final isolatedCache = FileSessionTranscriptCache(
+        directoryPath: resolvedPath!,
+      );
+      await isolatedCache.save(_snapshot(_identity(), 'isolated'));
+
+      expect(await sentinel.readAsString(), 'keep');
+      expect((await unrelatedDirectory.stat()).mode & 0x1ff, originalMode);
+      expect(await _transcriptFiles(unrelatedDirectory), isEmpty);
+      expect(await _transcriptFiles(Directory(resolvedPath)), hasLength(1));
+    },
+  );
+
+  test('rejects a symlinked app-owned state directory', () async {
+    if (!Platform.isMacOS && !Platform.isLinux) return;
+    final customDirectory = Directory('${directory.path}/custom')..createSync();
+    final externalDirectory = Directory('${directory.path}/external')
+      ..createSync();
+    final chmod = await Process.run('/bin/chmod', <String>[
+      '0755',
+      externalDirectory.path,
+    ]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+    final originalMode = (await externalDirectory.stat()).mode & 0x1ff;
+    final sentinel = File('${externalDirectory.path}/user-data.txt');
+    await sentinel.writeAsString('keep');
+    await Link(
+      '${customDirectory.path}/.ianvs-acp',
+    ).create(externalDirectory.path);
+    final resolvedPath = resolveSessionTranscriptCacheDirectoryPath(
+      '${customDirectory.path}/settings.json',
+    );
+    final isolatedCache = FileSessionTranscriptCache(
+      directoryPath: resolvedPath!,
+    );
+
+    await expectLater(
+      isolatedCache.save(_snapshot(_identity(), 'must not escape')),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    expect(await sentinel.readAsString(), 'keep');
+    expect((await externalDirectory.stat()).mode & 0x1ff, originalMode);
+    final externalEntries = await externalDirectory
+        .list(followLinks: false)
+        .toList();
+    expect(externalEntries, hasLength(1));
+    expect(externalEntries.single.path, sentinel.path);
+  });
+
+  test(
     'round trips a versioned transcript for the exact session revision',
     () async {
       final identity = _identity();
@@ -52,6 +126,19 @@ void main() {
       );
     },
   );
+
+  test('load rejects a snapshot beyond the instance byte limit', () async {
+    final identity = _identity(sessionId: 'session-oversized');
+    final limitedCache = FileSessionTranscriptCache(
+      directoryPath: directory.path,
+      maxFileBytes: 1024,
+    );
+    await limitedCache.save(_snapshot(identity, 'seed'));
+    final file = (await _transcriptFiles(directory)).single;
+    await file.writeAsBytes(List<int>.filled(1025, 0x20));
+
+    expect(await limitedCache.load(identity), isNull);
+  });
 
   test(
     'does not reuse a transcript after the catalog revision changes',

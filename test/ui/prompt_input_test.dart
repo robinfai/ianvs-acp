@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'package:ianvs_acp/acp/acp_input_budget.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
@@ -236,6 +237,137 @@ void main() {
     expect(sentText, 'Hello Codex');
   });
 
+  testWidgets(
+    'PromptInput keeps permission actions keyboard-accessible beside Enter submit',
+    (tester) async {
+      String? sentText;
+      String? permissionAction;
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (text, _) => sentText = text,
+          pendingPermissionRequest: AcpPermissionRequest(
+            id: 'keyboard-permission',
+            title: 'Run command',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            options: const ['Allow', 'Deny'],
+            requestedAt: DateTime(2026, 8, 11),
+          ),
+          onAllowPermission: () => permissionAction = 'allow',
+          onDenyPermission: () => permissionAction = 'deny',
+          onCancelPermission: () => permissionAction = 'cancel',
+        ),
+      );
+
+      await tester.enterText(find.byType(TextField), 'Keep this draft');
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(permissionAction, isNotNull);
+      expect(sentText, isNull);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        'Keep this draft',
+      );
+    },
+  );
+
+  testWidgets('PromptInput leaves Enter to an active IME composition', (
+    tester,
+  ) async {
+    String? sentText;
+    await tester.pumpWidget(
+      input(isSending: false, onSend: (text, _) => sentText = text),
+    );
+    final field = tester.widget<TextField>(find.byType(TextField));
+    field.controller!.value = const TextEditingValue(
+      text: '你好',
+      selection: TextSelection.collapsed(offset: 2),
+      composing: TextRange(start: 0, end: 2),
+    );
+    await tester.tap(find.byType(TextField));
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(sentText, isNull);
+    expect(field.controller!.text, '你好');
+  });
+
+  testWidgets('PromptInput scrolls combined trays in a 760x560 viewport', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(760, 560);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final queuedPrompts = List<ChatQueuedPrompt>.generate(
+      5,
+      (index) => ChatQueuedPrompt(
+        id: index,
+        text: 'Queued prompt $index with enough detail to occupy one row',
+        attachments: const <PromptAttachment>[],
+        createdAt: DateTime(2026, 8, 11, 10, index),
+      ),
+    );
+
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        promptAppearsStalled: true,
+        onSend: (_, _) {},
+        queuedPrompts: queuedPrompts,
+        onGuideQueuedPrompt: (_) {},
+        onRemoveQueuedPrompt: (_) {},
+        onClearQueuedPrompts: () {},
+        onReorderQueuedPrompt: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'small-window-permission',
+          title: 'Run a workspace command',
+          rationale: 'The agent needs permission before continuing.',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 8, 11),
+          metadata: const <String, Object?>{
+            'command': 'flutter',
+            'args': <String>['test', 'test/ui/prompt_input_test.dart'],
+            'cwd': '/workspace/app',
+          },
+        ),
+        availableCommands: const <Map<String, Object?>>[
+          {'name': 'review', 'description': 'Review the current changes.'},
+          {'name': 'resume', 'description': 'Resume the previous workflow.'},
+          {'name': 'report', 'description': 'Report the current status.'},
+        ],
+      ),
+    );
+    await tester.enterText(find.byType(TextField), '/r');
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    final overflowScroll = find.byKey(
+      const Key('prompt-input-overflow-scroll'),
+    );
+    expect(tester.getSize(overflowScroll).height, lessThanOrEqualTo(310));
+    final outerScrollable = find
+        .descendant(of: overflowScroll, matching: find.byType(Scrollable))
+        .first;
+    final position = tester.state<ScrollableState>(outerScrollable).position;
+    expect(position.maxScrollExtent, greaterThan(0));
+
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pump();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(primaryAction().hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('PromptInput keeps editing available and renders queue actions', (
     tester,
   ) async {
@@ -307,7 +439,11 @@ void main() {
         isSending: false,
         onSend: (_, _) {},
         availableCommands: const [
-          {'name': 'review', 'description': 'Review the current change.'},
+          {
+            'name': 'review',
+            'description': 'Review the current change.',
+            'input': {'hint': '[focus]'},
+          },
           {'name': 'summarize', 'description': 'Summarize the session.'},
         ],
       ),
@@ -318,6 +454,7 @@ void main() {
 
     expect(find.text('/review'), findsOneWidget);
     expect(find.text('Review the current change.'), findsOneWidget);
+    expect(find.textContaining('[focus]'), findsOneWidget);
     expect(find.text('/summarize'), findsNothing);
 
     await tester.tap(find.text('/review'));
@@ -1216,6 +1353,57 @@ void main() {
   );
 
   testWidgets(
+    'PromptInput falls back to text when clipboard image is unavailable',
+    (tester) async {
+      var imageReadCount = 0;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.getData') {
+            return <String, Object?>{'text': 'plain clipboard text'};
+          }
+          return null;
+        },
+      );
+      addTearDown(() {
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        );
+      });
+
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          promptCapabilities: const AcpPromptCapabilities(
+            image: true,
+            audio: false,
+            embeddedContext: false,
+          ),
+          readClipboardImage: () async {
+            imageReadCount += 1;
+            throw PlatformException(code: 'clipboard_image_unavailable');
+          },
+        ),
+      );
+
+      await tester.tap(find.byType(TextField));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pumpAndSettle();
+
+      expect(imageReadCount, 1);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        'plain clipboard text',
+      );
+    },
+  );
+
+  testWidgets(
     'conversation drop region attaches an external image into the composer',
     (tester) async {
       final controller = PromptAttachmentController();
@@ -1374,6 +1562,33 @@ void main() {
       '/workspace/screenshot.png',
       '/workspace/clip.wav',
     ]);
+  });
+
+  test('dropped image reader ignores undersized attachment metadata', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'ianvs-prompt-oversized-image-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final file = File('${directory.path}/oversized.png');
+    await file.writeAsBytes(List<int>.filled(4 * 1024 * 1024 + 1, 1));
+
+    await expectLater(
+      readDroppedImageAttachment(
+        PromptAttachment.fromPath(
+          path: file.path,
+          name: 'oversized.png',
+          mimeType: 'image/png',
+          size: 1,
+        ),
+      ),
+      throwsA(
+        isA<FileSystemException>().having(
+          (error) => error.message,
+          'message',
+          'Images must be 4 MB or smaller.',
+        ),
+      ),
+    );
   });
 
   testWidgets('PromptInput accepts a native macOS drop channel event', (
@@ -1673,9 +1888,12 @@ void main() {
     );
   });
 
-  testWidgets('PromptInput renders only projected nested operation context', (
+  testWidgets('PromptInput fails closed for unknown nested operation fields', (
     tester,
   ) async {
+    var allowed = false;
+    var denied = false;
+    var cancelled = false;
     await tester.pumpWidget(
       input(
         isSending: false,
@@ -1702,19 +1920,79 @@ void main() {
             },
           },
         ),
+        onAllowPermission: () => allowed = true,
+        onDenyPermission: () => denied = true,
+        onCancelPermission: () => cancelled = true,
       ),
     );
 
     expect(
-      find.text('["flutter","test","test/widget_test.dart"]'),
+      find.byKey(const Key('prompt-permission-context-warning')),
       findsOneWidget,
     );
-    expect(find.text('/workspace/app'), findsOneWidget);
-    expect(find.text('test/widget_test.dart'), findsOneWidget);
-    expect(find.text('local'), findsOneWidget);
+    expect(find.text('Command'), findsNothing);
     expect(find.textContaining('toolCall'), findsNothing);
     expect(find.textContaining('unknownField'), findsNothing);
     expect(find.textContaining('UNPROJECTED_CANARY'), findsNothing);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Allow Once'))
+          .onPressed,
+      isNull,
+    );
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Deny'));
+    await tester.tap(find.byTooltip('Cancel permission request'));
+    await tester.pump();
+
+    expect(allowed, isFalse);
+    expect(denied, isTrue);
+    expect(cancelled, isTrue);
+  });
+
+  testWidgets('PromptInput shows all fixed Rust permission details', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        onSend: (_, _) {},
+        pendingPermissionRequest: AcpPermissionRequest(
+          id: 'permission-rust-details',
+          title: 'Write file',
+          rationale: 'Requested by runtime',
+          sessionId: 'session-1',
+          toolName: 'filesystem',
+          toolKind: 'edit',
+          options: const ['Allow', 'Deny'],
+          requestedAt: DateTime(2026, 8, 11),
+          metadata: const <String, Object?>{
+            'rawInput': <String, Object?>{
+              'path': '/workspace/report.txt',
+              'writeBytes': 42,
+              'contentPreview': 'hello',
+              'contentTruncated': true,
+            },
+          },
+        ),
+        onAllowPermission: () {},
+      ),
+    );
+
+    expect(find.text('Path'), findsOneWidget);
+    expect(find.text('Additional details'), findsOneWidget);
+    expect(
+      find.text(
+        '{"contentPreview":"hello","contentTruncated":true,"writeBytes":42}',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Allow Once'))
+          .onPressed,
+      isNotNull,
+    );
   });
 
   testWidgets('PromptInput bounds and scrolls long permission context', (

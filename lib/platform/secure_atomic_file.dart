@@ -7,6 +7,8 @@ typedef SecureAtomicProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
 typedef SecureAtomicRename =
     Future<File> Function(File source, String destination);
+typedef SecureAtomicDirectorySync =
+    FutureOr<void> Function(Directory directory);
 
 class SecureAtomicFile {
   const SecureAtomicFile._();
@@ -38,11 +40,20 @@ class SecureAtomicFile {
   /// while another process is waiting on its inode would split the lock.
   static Future<T> synchronizedAcrossProcesses<T>(
     File target,
-    Future<T> Function(File resolvedTarget) operation,
-  ) {
+    Future<T> Function(File resolvedTarget) operation, {
+    SecureAtomicDirectorySync? directorySync,
+    bool strictPrivateParent = false,
+  }) {
     return synchronized(target, () async {
-      final parentExisted = await target.parent.exists();
+      final missingDirectories = await _missingDirectoryChain(target.parent);
+      final parentExisted = missingDirectories.isEmpty;
+      if (strictPrivateParent) {
+        await _requireRealDirectoryOrMissing(target.parent);
+      }
       await target.parent.create(recursive: true);
+      if (strictPrivateParent) {
+        await _requireRealDirectory(target.parent);
+      }
       if (!parentExisted) {
         await _chmod(null, mode: '0700', path: target.parent.path);
       }
@@ -60,10 +71,19 @@ class SecureAtomicFile {
           target.parent.path,
         );
       }
+      await _syncCreatedDirectoryEntries(missingDirectories, directorySync);
       final targetType = await FileSystemEntity.type(
         target.path,
         followLinks: false,
       );
+      if (strictPrivateParent &&
+          targetType != FileSystemEntityType.notFound &&
+          targetType != FileSystemEntityType.file) {
+        throw FileSystemException(
+          'Secure file target must be a regular file.',
+          target.path,
+        );
+      }
       final resolvedTarget = targetType == FileSystemEntityType.notFound
           ? '${await target.parent.resolveSymbolicLinks()}/${target.uri.pathSegments.last}'
           : await target.resolveSymbolicLinks();
@@ -92,13 +112,15 @@ class SecureAtomicFile {
     String value, {
     SecureAtomicProcessRunner? processRunner,
     SecureAtomicRename? rename,
+    SecureAtomicDirectorySync? directorySync,
     bool protectExistingParent = false,
   }) async {
     final moveFile =
         rename ??
         (File source, String destination) => source.rename(destination);
 
-    final parentExisted = await target.parent.exists();
+    final missingDirectories = await _missingDirectoryChain(target.parent);
+    final parentExisted = missingDirectories.isEmpty;
     await target.parent.create(recursive: true);
     if (!parentExisted || protectExistingParent) {
       await _chmod(processRunner, mode: '0700', path: target.parent.path);
@@ -138,6 +160,12 @@ class SecureAtomicFile {
       _NativeFilePermissions.flush(fileDescriptor, temporary.path);
       _ensureTemporaryIdentity(fileDescriptor, temporary);
       await moveFile(temporary, target.path);
+      if (directorySync == null) {
+        _NativeFilePermissions.syncDirectory(target.parent);
+      } else {
+        await directorySync(target.parent);
+      }
+      await _syncCreatedDirectoryEntries(missingDirectories, directorySync);
     } catch (_) {
       try {
         final type = await FileSystemEntity.type(
@@ -211,6 +239,63 @@ class SecureAtomicFile {
         temporary.path,
       );
     }
+  }
+
+  static Future<List<Directory>> _missingDirectoryChain(
+    Directory directory,
+  ) async {
+    final missing = <Directory>[];
+    var current = directory.absolute;
+    while (!await current.exists()) {
+      missing.add(current);
+      final parent = current.parent;
+      if (parent.path == current.path) break;
+      current = parent;
+    }
+    return missing;
+  }
+
+  static Future<void> _syncCreatedDirectoryEntries(
+    List<Directory> createdDirectories,
+    SecureAtomicDirectorySync? directorySync,
+  ) async {
+    for (final directory in createdDirectories) {
+      final parent = directory.parent;
+      if (directorySync == null) {
+        _NativeFilePermissions.syncDirectory(parent);
+      } else {
+        await directorySync(parent);
+      }
+    }
+  }
+
+  static Future<void> _requireRealDirectoryOrMissing(
+    Directory directory,
+  ) async {
+    final type = await FileSystemEntity.type(
+      directory.path,
+      followLinks: false,
+    );
+    if (type == FileSystemEntityType.notFound ||
+        type == FileSystemEntityType.directory) {
+      return;
+    }
+    throw FileSystemException(
+      'Secure file parent must be a real directory.',
+      directory.path,
+    );
+  }
+
+  static Future<void> _requireRealDirectory(Directory directory) async {
+    final type = await FileSystemEntity.type(
+      directory.path,
+      followLinks: false,
+    );
+    if (type == FileSystemEntityType.directory) return;
+    throw FileSystemException(
+      'Secure file parent must be a real directory.',
+      directory.path,
+    );
   }
 
   static Future<void> _chmod(
@@ -362,6 +447,35 @@ class _NativeFilePermissions {
         rethrow;
       }
     });
+  }
+
+  static void syncDirectory(Directory directory) {
+    _requireSupportedPlatform();
+    final path = directory.path;
+    final fileDescriptor = _withNativePath(path, (nativePath) {
+      final flags = Platform.isMacOS
+          ? 0x00100000 | 0x01000000
+          : 0x00010000 | 0x00080000;
+      final descriptor = _open(nativePath, flags, 0);
+      if (descriptor >= 0) return descriptor;
+      final error = _errno;
+      throw FileSystemException(
+        'Could not open secure file parent directory.',
+        path,
+        OSError('open failed', error),
+      );
+    });
+    try {
+      if (_fsync(fileDescriptor) == 0) return;
+      final error = _errno;
+      throw FileSystemException(
+        'Could not flush secure file parent directory.',
+        path,
+        OSError('fsync failed', error),
+      );
+    } finally {
+      close(fileDescriptor);
+    }
   }
 
   static Future<void> lockExclusive(int fileDescriptor, String path) async {

@@ -31,19 +31,17 @@ void main() {
     expect(AppTypography.sectionTitle.fontWeight, FontWeight.w600);
   });
 
-  test('Material color roles and terminal palette share one theme', () {
+  test('Material color roles share one application theme', () {
     final theme = AppTheme.light;
     final scheme = theme.colorScheme;
-    final terminal = theme.extension<AppTerminalTheme>();
 
     expect(scheme.primary, AppColors.accent);
     expect(scheme.primaryContainer, AppColors.accentSoft);
     expect(scheme.surfaceContainer, AppColors.surfaceMuted);
     expect(scheme.outlineVariant, AppColors.border);
-    expect(terminal, AppTerminalTheme.conversationCanvas);
   });
 
-  test('primary text, metadata, and terminal colors meet AA contrast', () {
+  test('primary text and metadata meet AA contrast', () {
     expect(_contrast(AppColors.textPrimary, AppColors.surface), greaterThan(7));
     expect(
       _contrast(AppColors.textSecondary, AppColors.surface),
@@ -54,20 +52,6 @@ void main() {
       greaterThan(4.5),
     );
     expect(_contrast(AppColors.accent, AppColors.surface), greaterThan(4.5));
-    expect(
-      _contrast(
-        AppTerminalTheme.conversationCanvas.foreground,
-        AppTerminalTheme.conversationCanvas.background,
-      ),
-      greaterThan(7),
-    );
-    expect(
-      _contrast(
-        AppTerminalTheme.conversationCanvas.cursor,
-        AppTerminalTheme.conversationCanvas.background,
-      ),
-      greaterThan(4.5),
-    );
   });
 }
 

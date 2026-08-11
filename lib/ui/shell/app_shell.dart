@@ -191,13 +191,20 @@ class AppShell extends StatelessWidget {
         );
         final promptCapabilities = promptCapabilityResolution.capabilities;
         final activeSession = controller.currentSession;
+        final activeAdditionalDirectories =
+            activeSession?.additionalDirectories ??
+            controller.additionalDirectories;
         final promptWorkspaceRoots = <String>{
           activeSession?.cwd ?? controller.cwd,
-          ...(activeSession?.additionalDirectories ??
-              controller.additionalDirectories),
+          ...activeAdditionalDirectories,
         }.where((path) => path.trim().isNotEmpty).toList(growable: false);
         final promptAttachmentController = PromptAttachmentController();
         Widget promptDock() => PromptInput(
+          key: ValueKey((
+            agentName: agentName,
+            sessionId: activeSession?.id,
+            cwd: activeSession?.cwd ?? controller.cwd,
+          )),
           inputBudget: inputBudget,
           agentName: agentName,
           enabled: !controller.isSessionOperationRunning,
@@ -498,7 +505,7 @@ class AppShell extends StatelessWidget {
                                     child: FilePreviewWorkspace(
                                       workspacePath: currentWorkspace.path,
                                       additionalDirectories:
-                                          additionalDirectories,
+                                          activeAdditionalDirectories,
                                       conversationBuilder:
                                           (context, onTapLink) =>
                                               conversationColumn(
@@ -508,6 +515,9 @@ class AppShell extends StatelessWidget {
                                               ),
                                       showInspector: !hideInspector,
                                       processRunner: processRunner,
+                                      inputBudget: inputBudget,
+                                      imageDecodeLedger: imageDecodeLedger,
+                                      boundedImageDecoder: boundedImageDecoder,
                                       inspector: buildInspector(),
                                     ),
                                   ),

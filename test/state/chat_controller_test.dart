@@ -4,6 +4,7 @@ import 'dart:convert';
 
 import 'package:ianvs_acp/acp/acp_input_budget.dart' as acp;
 import 'package:ianvs_acp/acp/acp_agent_client.dart';
+import 'package:ianvs_acp/acp/acp_available_commands.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
@@ -8621,8 +8622,9 @@ void main() {
   test(
     'inactive archive uses its own snapshot and undo restores it later',
     () async {
+      final fake = FakeAgentClient();
       final controller = ChatController(
-        client: FakeAgentClient(),
+        client: fake,
         cwd: '/workspace',
         agentName: 'Codex',
       );
@@ -8634,9 +8636,9 @@ void main() {
         ChatMessage(role: ChatMessageRole.assistant, text: 'first-only'),
         startsNewTurn: true,
       );
-      controller.availableCommands = <Map<String, Object?>>[
+      fake.emitAvailableCommands(firstSession.id, <Map<String, Object?>>[
         <String, Object?>{'name': 'first-command'},
-      ];
+      ]);
 
       await controller.resumeSession(
         'second-session',
@@ -9240,6 +9242,12 @@ void main() {
 
     await controller.newSession(cwd: '/workspace/active');
     final activeSession = controller.currentSession!;
+    fake.emitAvailableCommands(activeSession.id, const <Map<String, Object?>>[
+      <String, Object?>{
+        'name': 'review',
+        'description': 'Review current changes.',
+      },
+    ]);
     expect(
       controller.messages
           .where((message) => message.role == ChatMessageRole.assistant)
@@ -9649,6 +9657,89 @@ void main() {
       expect(controller.availableCommands, hasLength(1));
       expect(controller.availableCommands.single['name'], 'review');
       expect(controller.messages.single.metadata['kind'], 'commands');
+    },
+  );
+
+  test('live session command updates replace and clear suggestions', () async {
+    final client = FakeAgentClient();
+    final controller = ChatController(client: client, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    await controller.newSession();
+    final sessionId = controller.currentSession!.id;
+    client.emitAvailableCommands(sessionId, const <Map<String, Object?>>[
+      <String, Object?>{
+        'name': 'review',
+        'description': 'Review the current change.',
+        'input': <String, Object?>{'hint': '[focus]'},
+      },
+    ]);
+
+    expect(controller.availableCommands.single['name'], 'review');
+    expect(
+      (controller.availableCommands.single['input'] as Map)['hint'],
+      '[focus]',
+    );
+
+    client.emitAvailableCommands(sessionId, const <Map<String, Object?>>[]);
+    expect(controller.availableCommands, isEmpty);
+  });
+
+  test('live command update wins over an older async snapshot', () async {
+    final client = _DelayedAvailableCommandsAgentClient();
+    final controller = ChatController(client: client, cwd: '/workspace');
+    addTearDown(controller.dispose);
+
+    final newSession = controller.newSession();
+    await client.loadStarted.future;
+    final sessionId = controller.currentSession!.id;
+    client.emitAvailableCommands(sessionId, const <Map<String, Object?>>[
+      <String, Object?>{
+        'name': 'new-command',
+        'description': 'Newest live command.',
+      },
+    ]);
+    client.completeSnapshot(
+      AcpAvailableCommandsUpdate(
+        sessionId: sessionId,
+        commands: const <Map<String, Object?>>[
+          <String, Object?>{
+            'name': 'old-command',
+            'description': 'Older cached command.',
+          },
+        ],
+      ),
+    );
+
+    expect(await newSession, isTrue);
+    expect(controller.availableCommands.single['name'], 'new-command');
+  });
+
+  test(
+    'missing command snapshot clears restored inactive session commands',
+    () async {
+      final client = _InvalidatedAvailableCommandsAgentClient();
+      final controller = ChatController(client: client, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      final firstSession = controller.currentSession!;
+      client.emitAvailableCommands(
+        firstSession.id,
+        const <Map<String, Object?>>[
+          <String, Object?>{
+            'name': 'stale-command',
+            'description': 'Must not survive cache invalidation.',
+          },
+        ],
+      );
+      expect(controller.availableCommands, isNotEmpty);
+
+      await controller.newSession();
+      client.snapshotsValid = false;
+      await controller.resumeSession(firstSession.id);
+
+      expect(controller.availableCommands, isEmpty);
     },
   );
 
@@ -11103,6 +11194,57 @@ void main() {
     await pumpEventQueue(times: 2);
 
     expect(controller.pendingPermissionRequest?.id, 'permission-medium-risk');
+    expect(fake.lastPermissionDecision, isNull);
+    expect(controller.permissionHistory.single.reviewResult?.risk, 'medium');
+  });
+
+  test('redacted filesystem write review remains pending', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _FakePermissionReviewer(
+      const AcpPermissionReviewResult(
+        decision: AcpPermissionDecision.allow,
+        risk: 'medium',
+        rationale: 'The reviewer did not receive the proposed file content.',
+        reviewer: 'independent-reviewer',
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      permissionReviewer: reviewer,
+    );
+    addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-redacted-write',
+        title: 'Write file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'filesystem',
+        toolKind: 'write',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 8, 11, 12),
+        metadata: const <String, Object?>{
+          'rawInput': <String, Object?>{
+            'path': '/workspace/report.txt',
+            'writeBytes': 6,
+            'contentPreview': 'secret',
+            'contentTruncated': false,
+          },
+        },
+      ),
+    );
+    await pumpEventQueue(times: 2);
+
+    expect(
+      controller.pendingPermissionRequest?.id,
+      'permission-redacted-write',
+    );
+    expect(fake.lastPermissionRequestId, isNull);
     expect(fake.lastPermissionDecision, isNull);
     expect(controller.permissionHistory.single.reviewResult?.risk, 'medium');
   });
@@ -14527,6 +14669,36 @@ final class _ControlledRestoreAgentClient extends FakeAgentClient {
     await releaseRestore.future;
     onEvent(const AgentEvent(type: AgentEventType.agentTextDone, text: ''));
     return const AcpSessionRestoreSummary(eventCount: 2, replayedHistory: true);
+  }
+}
+
+final class _DelayedAvailableCommandsAgentClient extends FakeAgentClient {
+  final Completer<void> loadStarted = Completer<void>();
+  final Completer<AcpAvailableCommandsUpdate?> _snapshot =
+      Completer<AcpAvailableCommandsUpdate?>();
+
+  @override
+  Future<AcpAvailableCommandsUpdate?> sessionAvailableCommands(
+    String sessionId,
+  ) {
+    if (!loadStarted.isCompleted) loadStarted.complete();
+    return _snapshot.future;
+  }
+
+  void completeSnapshot(AcpAvailableCommandsUpdate update) {
+    _snapshot.complete(update);
+  }
+}
+
+final class _InvalidatedAvailableCommandsAgentClient extends FakeAgentClient {
+  bool snapshotsValid = true;
+
+  @override
+  Future<AcpAvailableCommandsUpdate?> sessionAvailableCommands(
+    String sessionId,
+  ) {
+    if (!snapshotsValid) return Future<AcpAvailableCommandsUpdate?>.value();
+    return super.sessionAvailableCommands(sessionId);
   }
 }
 

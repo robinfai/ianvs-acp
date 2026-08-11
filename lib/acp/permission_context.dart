@@ -136,6 +136,28 @@ PermissionDisplayContext permissionDisplayContextForRequest(
       entries.add(PermissionDisplayEntry(label: field.label, value: value));
     }
   }
+  final additionalDetails = <String, Object?>{};
+  for (final key in _permissionDisplayAdditionalKeys) {
+    final candidates = <Object?>[];
+    for (final container in projection.containers) {
+      if (!container.containsKey(key)) continue;
+      final value = container[key];
+      if (!candidates.any(
+        (candidate) => _samePermissionDetail(candidate, value),
+      )) {
+        candidates.add(value);
+      }
+    }
+    if (candidates.length > 1) return PermissionDisplayContext.incomplete();
+    if (candidates.isNotEmpty) additionalDetails[key] = candidates.single;
+  }
+  if (additionalDetails.isNotEmpty) {
+    final value = encoder.encodeDetails(additionalDetails);
+    if (value == null) return PermissionDisplayContext.incomplete();
+    entries.add(
+      PermissionDisplayEntry(label: 'Additional details', value: value),
+    );
+  }
   return PermissionDisplayContext.complete(entries);
 }
 
@@ -166,6 +188,106 @@ class _PermissionDisplayEncoder {
     return _writeString(output, value, escapeBoundarySpaces: true)
         ? output.toString()
         : null;
+  }
+
+  String? encodeDetails(Map<String, Object?> details) {
+    final output = StringBuffer();
+    return _writeJsonValue(output, details) ? output.toString() : null;
+  }
+
+  bool _writeJsonValue(StringBuffer output, Object? value) {
+    if (value == null) return _write(output, 'null');
+    if (value is bool || value is int) {
+      return _write(output, value.toString());
+    }
+    if (value is String) {
+      return _write(output, '"') &&
+          _writeJsonString(output, value) &&
+          _write(output, '"');
+    }
+    if (value is List<Object?>) {
+      if (!_write(output, '[')) return false;
+      for (var index = 0; index < value.length; index += 1) {
+        if (index > 0 && !_write(output, ',')) return false;
+        if (!_writeJsonValue(output, value[index])) return false;
+      }
+      return _write(output, ']');
+    }
+    if (value is Map<String, Object?>) {
+      if (!_write(output, '{')) return false;
+      final keys = value.keys.toList(growable: false)..sort();
+      for (var index = 0; index < keys.length; index += 1) {
+        if (index > 0 && !_write(output, ',')) return false;
+        final key = keys[index];
+        if (!_write(output, '"') ||
+            !_writeJsonString(output, key) ||
+            !_write(output, '":') ||
+            !_writeJsonValue(output, value[key])) {
+          return false;
+        }
+      }
+      return _write(output, '}');
+    }
+    return false;
+  }
+
+  bool _writeJsonString(StringBuffer output, String value) {
+    var firstNonSpace = 0;
+    var lastNonSpace = value.length - 1;
+    while (firstNonSpace < value.length &&
+        value.codeUnitAt(firstNonSpace) == 0x20) {
+      firstNonSpace += 1;
+    }
+    while (lastNonSpace >= firstNonSpace &&
+        value.codeUnitAt(lastNonSpace) == 0x20) {
+      lastNonSpace -= 1;
+    }
+    for (var index = 0; index < value.length; index += 1) {
+      final first = value.codeUnitAt(index);
+      if (first >= 0xd800 && first <= 0xdbff) {
+        if (index + 1 < value.length) {
+          final second = value.codeUnitAt(index + 1);
+          if (second >= 0xdc00 && second <= 0xdfff) {
+            final codePoint =
+                0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
+            if (!_write(output, String.fromCharCode(codePoint))) return false;
+            index += 1;
+            continue;
+          }
+        }
+        if (!_writeJsonEscape(output, first)) return false;
+        continue;
+      }
+      if (first >= 0xdc00 && first <= 0xdfff) {
+        if (!_writeJsonEscape(output, first)) return false;
+        continue;
+      }
+      final boundarySpace =
+          first == 0x20 && (index < firstNonSpace || index > lastNonSpace);
+      if (boundarySpace || _isUnsafePermissionDisplayCodePoint(first)) {
+        if (!_writeJsonEscape(output, first)) return false;
+      } else if (first == 0x22) {
+        if (!_write(output, r'\"')) return false;
+      } else if (first == 0x5c) {
+        if (!_write(output, r'\\')) return false;
+      } else if (!_write(output, String.fromCharCode(first))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _writeJsonEscape(StringBuffer output, int codePoint) {
+    if (codePoint <= 0xffff) {
+      return _write(
+        output,
+        '\\u${codePoint.toRadixString(16).toUpperCase().padLeft(4, '0')}',
+      );
+    }
+    final scalar = codePoint - 0x10000;
+    final high = 0xd800 + (scalar >> 10);
+    final low = 0xdc00 + (scalar & 0x3ff);
+    return _writeJsonEscape(output, high) && _writeJsonEscape(output, low);
   }
 
   bool _writeString(
@@ -277,6 +399,17 @@ const List<String> _permissionDisplayScalarKeys = <String>[
   'cwd',
   'path',
   'target',
+  ..._permissionDisplayAdditionalKeys,
+];
+
+const List<String> _permissionDisplayAdditionalKeys = <String>[
+  'environment',
+  'writeBytes',
+  'contentPreview',
+  'contentTruncated',
+  'truncated',
+  'line',
+  'limit',
 ];
 
 const List<String> _permissionDisplayContainerKeys = <String>[
@@ -309,7 +442,12 @@ class _PermissionDisplayProjectionBuilder {
 
   _PermissionDisplayProjection? build(Map<String, Object?> metadata) {
     try {
-      final root = _projectMap(metadata, depth: 0, countUtf8: true);
+      final root = _projectMap(
+        metadata,
+        depth: 0,
+        countUtf8: true,
+        rejectUnknownKeys: false,
+      );
       if (_failed || root == null) return null;
       return _PermissionDisplayProjection(
         root: root,
@@ -325,6 +463,7 @@ class _PermissionDisplayProjectionBuilder {
     required int depth,
     required bool countUtf8,
     bool takeSelfNode = true,
+    required bool rejectUnknownKeys,
   }) {
     if (depth > limits.maxDepth || (takeSelfNode && !_takeNode())) {
       return _fail();
@@ -344,6 +483,16 @@ class _PermissionDisplayProjectionBuilder {
       final read = _mapValue(source, key);
       if (!read.succeeded) return null;
       final raw = read.value;
+      if (_permissionDisplayAdditionalKeys.contains(key)) {
+        final value = _projectJsonValue(
+          raw,
+          depth: depth + 1,
+          countUtf8: countUtf8,
+        );
+        if (_failed) return null;
+        projected[key] = value;
+        continue;
+      }
       if (_permissionArgumentKeys.contains(key)) {
         final args = _projectStringList(
           raw,
@@ -379,9 +528,6 @@ class _PermissionDisplayProjectionBuilder {
         if (!_addUtf8(raw, countUtf8: countUtf8)) {
           return _fail();
         }
-        if (key == 'input' && !raw.trimLeft().startsWith('{')) {
-          continue;
-        }
         final decoded = decodeRawJson(raw);
         if (decoded is! Map) return _fail();
         nested = decoded;
@@ -394,14 +540,139 @@ class _PermissionDisplayProjectionBuilder {
         depth: depth + 1,
         countUtf8: nestedCountsUtf8,
         takeSelfNode: raw is String,
+        rejectUnknownKeys: key != 'toolCall',
       );
       if (nestedProjection == null) return _fail();
       projected[key] = nestedProjection;
     }
 
+    if (rejectUnknownKeys && !_containsOnlyRecognizedKeys(source)) {
+      return _fail();
+    }
+
     final immutable = Map<String, Object?>.unmodifiable(projected);
     _containers.add(immutable);
     return immutable;
+  }
+
+  Object? _projectJsonValue(
+    Object? raw, {
+    required int depth,
+    required bool countUtf8,
+  }) {
+    if (depth > limits.maxDepth || !_takeNode()) return _fail();
+    if (raw == null || raw is bool || raw is int) return raw;
+    if (raw is String) {
+      return _addUtf8(raw, countUtf8: countUtf8) ? raw : _fail();
+    }
+    if (raw is List) {
+      late final int length;
+      try {
+        length = raw.length;
+      } on Object {
+        return _fail();
+      }
+      if (length < 0 || length > limits.maxNodes - _nodes) return _fail();
+      final result = <Object?>[];
+      for (var index = 0; index < length; index += 1) {
+        late final Object? item;
+        try {
+          item = raw[index];
+        } on Object {
+          return _fail();
+        }
+        final value = _projectJsonValue(
+          item,
+          depth: depth + 1,
+          countUtf8: countUtf8,
+        );
+        if (_failed) return null;
+        result.add(value);
+      }
+      return List<Object?>.unmodifiable(result);
+    }
+    if (raw is Map) {
+      final entries = <String, Object?>{};
+      late final Iterator<Object?> iterator;
+      try {
+        iterator = raw.keys.cast<Object?>().iterator;
+      } on Object {
+        return _fail();
+      }
+      while (true) {
+        late final bool hasNext;
+        try {
+          hasNext = iterator.moveNext();
+        } on Object {
+          return _fail();
+        }
+        if (!hasNext) break;
+        late final Object? key;
+        try {
+          key = iterator.current;
+        } on Object {
+          return _fail();
+        }
+        if (key is! String ||
+            entries.containsKey(key) ||
+            !_addUtf8(key, countUtf8: countUtf8)) {
+          return _fail();
+        }
+        late final Object? item;
+        try {
+          item = raw[key];
+        } on Object {
+          return _fail();
+        }
+        final value = _projectJsonValue(
+          item,
+          depth: depth + 1,
+          countUtf8: countUtf8,
+        );
+        if (_failed) return null;
+        entries[key] = value;
+      }
+      final sorted = entries.keys.toList(growable: false)..sort();
+      return Map<String, Object?>.unmodifiable({
+        for (final key in sorted) key: entries[key],
+      });
+    }
+    return _fail();
+  }
+
+  bool _containsOnlyRecognizedKeys(Map source) {
+    late final Iterator<Object?> iterator;
+    try {
+      iterator = source.keys.cast<Object?>().iterator;
+    } on Object {
+      return false;
+    }
+    var seen = 0;
+    final maximum =
+        _permissionDisplayScalarKeys.length +
+        _permissionDisplayContainerKeys.length;
+    while (true) {
+      late final bool hasNext;
+      try {
+        hasNext = iterator.moveNext();
+      } on Object {
+        return false;
+      }
+      if (!hasNext) return true;
+      seen += 1;
+      if (seen > maximum) return false;
+      late final Object? key;
+      try {
+        key = iterator.current;
+      } on Object {
+        return false;
+      }
+      if (key is! String ||
+          (!_permissionDisplayScalarKeys.contains(key) &&
+              !_permissionDisplayContainerKeys.contains(key))) {
+        return false;
+      }
+    }
   }
 
   bool? _mapContainsKey(Map source, String key) {
@@ -493,6 +764,28 @@ class _PermissionDisplayProjectionBuilder {
     _failed = true;
     return null;
   }
+}
+
+bool _samePermissionDetail(Object? left, Object? right) {
+  if (identical(left, right)) return true;
+  if (left is List<Object?> && right is List<Object?>) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index += 1) {
+      if (!_samePermissionDetail(left[index], right[index])) return false;
+    }
+    return true;
+  }
+  if (left is Map<String, Object?> && right is Map<String, Object?>) {
+    if (left.length != right.length) return false;
+    for (final entry in left.entries) {
+      if (!right.containsKey(entry.key) ||
+          !_samePermissionDetail(entry.value, right[entry.key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return left == right;
 }
 
 bool _containersHavePermissionCommandEvidence(

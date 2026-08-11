@@ -485,6 +485,7 @@ pub enum SessionUpdateKind {
     SessionDeleted,
     ModeChanged,
     ConfigChanged,
+    CommandsChanged,
     PermissionInvalidated,
 }
 

@@ -33,6 +33,21 @@ void main() {
     );
   });
 
+  test('resolves the app-owned directory independently of a file name', () {
+    expect(
+      resolveAppStateDirectoryPath(
+        configPath: _path('tmp', 'custom', 'settings.json'),
+      ),
+      _path('tmp', 'custom', '.ianvs-acp'),
+    );
+    expect(
+      resolveAppStateDirectoryPath(
+        configPath: _path('tmp', 'profile', 'ianvs-acp', 'settings.json'),
+      ),
+      _path('tmp', 'profile', 'ianvs-acp'),
+    );
+  });
+
   test('resolves state beside an absolute form of a relative config', () {
     final relativeConfig = [
       'profile',

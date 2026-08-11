@@ -281,13 +281,16 @@ void main() {
         options: const ['Allow', 'Deny'],
         requestedAt: DateTime.utc(2026, 5, 31, 12),
         metadata: const <String, Object?>{
-          'command': 'git',
-          'args': ['status'],
-          'cwd': '/workspace',
-          'workspaceRoot': '/workspace',
+          'rawInput': <String, Object?>{
+            'command': 'git',
+            'args': <String>['status'],
+            'cwd': '/workspace',
+            'environment': <String, String>{},
+          },
+          'workspaceRoot': '/untrusted',
         },
       ),
-      workspaceRoot: '/fallback',
+      workspaceRoot: '/workspace',
       model: 'review-model',
     );
 
@@ -301,6 +304,49 @@ void main() {
     expect(analysis['risk'], 'low');
     expect(analysis['suggestedDecision'], 'allow');
     expect(analysis['cwdWithinWorkspace'], isTrue);
+  });
+
+  test('permission review ignores untrusted workspace metadata', () {
+    const untrustedDirectory = '/untrusted-permission-review-canary';
+    final payload = acpPermissionReviewPayload(
+      AcpPermissionRequest(
+        id: 'permission-workspace-boundary',
+        title: 'Run list command',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime.utc(2026, 8, 11),
+        metadata: <String, Object?>{
+          'workspaceRoot': '/',
+          'additionalDirectories': <String>[
+            untrustedDirectory,
+            untrustedDirectory,
+            '/${List<String>.filled(5000, 'x').join()}',
+          ],
+          'rawInput': const <String, Object?>{
+            'command': 'ls',
+            'cwd': '/outside',
+            'environment': <String, String>{},
+          },
+        },
+      ),
+      workspaceRoot: '/workspace',
+      additionalDirectories: const <String>['/shared', '/shared'],
+    );
+
+    expect(payload['workspace'], <String, Object?>{
+      'root': '/workspace',
+      'additionalDirectories': <String>['/shared'],
+    });
+    final encoded = jsonEncode(payload);
+    expect(encoded, isNot(contains(untrustedDirectory)));
+    expect(encoded, isNot(contains(List<String>.filled(100, 'x').join())));
+    final analysis = payload['analysis'] as Map<String, Object?>;
+    expect(analysis['risk'], 'high');
+    expect(analysis['cwdWithinWorkspace'], isFalse);
+    expect(analysis['signals'], contains('cwd_outside_workspace'));
   });
 
   test('permission review does not special-case external commands', () {
@@ -323,8 +369,11 @@ void main() {
           options: const ['Allow', 'Deny'],
           requestedAt: DateTime.utc(2026, 5, 31, 12),
           metadata: <String, Object?>{
-            'command': commandLine,
-            'cwd': '/workspace',
+            'rawInput': <String, Object?>{
+              'command': commandLine,
+              'cwd': '/workspace',
+              'environment': <String, String>{},
+            },
             'workspaceRoot': '/workspace',
           },
         ),
@@ -410,8 +459,11 @@ void main() {
           options: const ['Allow', 'Deny'],
           requestedAt: DateTime.utc(2026, 5, 31, 12),
           metadata: const <String, Object?>{
-            'command': 'ls',
-            'cwd': '/shared/project',
+            'rawInput': <String, Object?>{
+              'command': 'ls',
+              'cwd': '/shared/project',
+              'environment': <String, String>{},
+            },
             'workspaceRoot': '/workspace',
           },
         ),
@@ -449,7 +501,11 @@ void main() {
             'toolCall': {
               'title': 'Bash',
               'kind': 'execute',
-              'rawInput': {'cmd': 'ls', 'cwd': '/workspace'},
+              'rawInput': {
+                'cmd': 'ls',
+                'cwd': '/workspace',
+                'environment': <String, String>{},
+              },
             },
           },
         ),
@@ -482,7 +538,8 @@ void main() {
           'toolCall': {
             'title': 'exec_command',
             'kind': 'execute',
-            'raw_input': '{"command":"ls -la","cwd":"/workspace"}',
+            'raw_input':
+                '{"command":"ls -la","cwd":"/workspace","environment":[]}',
           },
         },
       ),
@@ -512,13 +569,345 @@ void main() {
       workspaceRoot: '/workspace',
     );
 
-    final command = payload['command'] as Map<String, Object?>;
-    expect(command['line'], 'ls -la');
-    expect(command['cwd'], '/workspace');
+    expect(payload['command'], isNull);
     final analysis = payload['analysis'] as Map<String, Object?>;
-    expect(analysis['risk'], 'low');
-    expect(analysis['suggestedDecision'], 'allow');
+    expect(analysis['risk'], 'medium');
+    expect(analysis['suggestedDecision'], 'manual');
     expect(analysis['signals'], contains('low_risk_command_pattern'));
+    expect(analysis['signals'], contains('missing_raw_input_context'));
+  });
+
+  test('permission review redacts environment and unknown raw values', () {
+    const secret = 'permission-review-secret-canary';
+    final payload = acpPermissionReviewPayload(
+      AcpPermissionRequest(
+        id: 'permission-redaction',
+        title: secret,
+        rationale: secret,
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const <String>[secret],
+        choices: const <AcpPermissionChoice>[
+          AcpPermissionChoice(
+            optionId: 'allow-once',
+            name: secret,
+            kind: 'allow_once',
+          ),
+        ],
+        requestedAt: DateTime.utc(2026, 8, 11),
+        metadata: const <String, Object?>{
+          'rawInput': <String, Object?>{
+            'command': 'ls',
+            'cwd': '/workspace',
+            'environment': <Map<String, String>>[
+              <String, String>{'name': 'TERM', 'value': secret},
+            ],
+            'path': '/workspace/report.txt',
+            'writeBytes': 42,
+            'truncated': true,
+            'hash': '0123456789abcdef0123456789abcdef',
+            'contentPreview': secret,
+            'credentialBlob': <String, Object?>{'token': secret},
+          },
+        },
+      ),
+      workspaceRoot: '/workspace',
+    );
+
+    final encoded = jsonEncode(payload);
+    expect(encoded, isNot(contains(secret)));
+    expect(encoded, isNot(contains('contentPreview":"')));
+    expect(payload['request'], isNot(contains('metadata')));
+    final command = payload['command'] as Map<String, Object?>;
+    expect(command['environment'], <String, Object?>{
+      'names': <String>['TERM'],
+      'count': 1,
+    });
+    final request = payload['request'] as Map<String, Object?>;
+    final input = request['input'] as Map<String, Object?>;
+    expect(input['path'], '/workspace/report.txt');
+    expect(input['writeBytes'], 42);
+    expect(input['truncated'], isTrue);
+    expect(input['hash'], '0123456789abcdef0123456789abcdef');
+    final fields = input['fields']! as List<Map<String, String>>;
+    expect(
+      fields.any(
+        (field) =>
+            field['name'] == 'contentPreview' && field['type'] == 'string',
+      ),
+      isTrue,
+    );
+    final analysis = payload['analysis'] as Map<String, Object?>;
+    expect(analysis['risk'], 'medium');
+    expect(analysis['suggestedDecision'], 'manual');
+    expect(analysis['signals'], contains('environment_override'));
+  });
+
+  test(
+    'permission review treats process injection environment as high risk',
+    () {
+      for (final name in <String>[
+        'PATH',
+        'LD_PRELOAD',
+        'LD_LIBRARY_PATH',
+        'DYLD_INSERT_LIBRARIES',
+        'PYTHONPATH',
+        'PYTHONHOME',
+        'NODE_OPTIONS',
+        'BASH_ENV',
+      ]) {
+        final payload = acpPermissionReviewPayload(
+          AcpPermissionRequest(
+            id: 'permission-env-$name',
+            title: 'Run list command',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            toolKind: 'execute',
+            options: const <String>['Allow', 'Deny'],
+            requestedAt: DateTime.utc(2026, 8, 11),
+            metadata: <String, Object?>{
+              'rawInput': <String, Object?>{
+                'command': 'ls',
+                'cwd': '/workspace',
+                'environment': <Map<String, String>>[
+                  <String, String>{'name': name, 'value': '/attacker'},
+                ],
+              },
+            },
+          ),
+          workspaceRoot: '/workspace',
+        );
+
+        final analysis = payload['analysis'] as Map<String, Object?>;
+        expect(analysis['risk'], 'high', reason: name);
+        expect(analysis['suggestedDecision'], 'deny', reason: name);
+        expect(
+          analysis['signals'],
+          contains('dangerous_environment_override'),
+          reason: name,
+        );
+      }
+    },
+  );
+
+  test(
+    'permission review fails closed for missing or malformed environment',
+    () {
+      for (final environment in <Object?>[
+        null,
+        'PATH=/attacker',
+        const <String, Object?>{'PATH': 42},
+        const <Map<String, String>>[
+          <String, String>{
+            'name': 'PATH',
+            'value': '/attacker',
+            'extra': 'unexpected',
+          },
+        ],
+        const <Map<String, String>>[
+          <String, String>{'name': 'TERM', 'value': 'one'},
+          <String, String>{'name': 'term', 'value': 'two'},
+        ],
+      ]) {
+        final rawInput = <String, Object?>{
+          'command': 'ls',
+          'cwd': '/workspace',
+          'environment': ?environment,
+        };
+        final payload = acpPermissionReviewPayload(
+          AcpPermissionRequest(
+            id: 'permission-malformed-env',
+            title: 'Run list command',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'terminal',
+            toolKind: 'execute',
+            options: const <String>['Allow', 'Deny'],
+            requestedAt: DateTime.utc(2026, 8, 11),
+            metadata: <String, Object?>{'rawInput': rawInput},
+          ),
+          workspaceRoot: '/workspace',
+        );
+
+        final analysis = payload['analysis'] as Map<String, Object?>;
+        expect(analysis['risk'], 'medium', reason: '$environment');
+        expect(analysis['suggestedDecision'], 'manual', reason: '$environment');
+        expect(
+          analysis['signals'],
+          contains(
+            environment == null
+                ? 'missing_environment_context'
+                : 'malformed_environment_context',
+          ),
+        );
+      }
+    },
+  );
+
+  test('permission review fails closed for malformed raw input', () {
+    final payload = acpPermissionReviewPayload(
+      AcpPermissionRequest(
+        id: 'permission-malformed-input',
+        title: 'Running: ls',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime.utc(2026, 8, 11),
+        metadata: const <String, Object?>{'rawInput': '{not-json'},
+      ),
+      workspaceRoot: '/workspace',
+    );
+
+    final analysis = payload['analysis'] as Map<String, Object?>;
+    expect(analysis['risk'], 'medium');
+    expect(analysis['suggestedDecision'], 'manual');
+    expect(analysis['signals'], contains('malformed_raw_input_context'));
+  });
+
+  test('permission review fails closed for unknown raw input fields', () {
+    final payload = acpPermissionReviewPayload(
+      AcpPermissionRequest(
+        id: 'permission-unknown-input',
+        title: 'Run list command',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime.utc(2026, 8, 11),
+        metadata: const <String, Object?>{
+          'rawInput': <String, Object?>{
+            'command': 'ls',
+            'cwd': '/workspace',
+            'environment': <String, String>{},
+            'futureExecutionMode': 'unreviewed-semantics',
+          },
+        },
+      ),
+      workspaceRoot: '/workspace',
+    );
+
+    final analysis = payload['analysis'] as Map<String, Object?>;
+    expect(analysis['risk'], 'medium');
+    expect(analysis['suggestedDecision'], 'manual');
+    expect(analysis['signals'], contains('unknown_raw_input_fields'));
+    final request = payload['request'] as Map<String, Object?>;
+    final input = request['input'] as Map<String, Object?>;
+    expect(input['unknownFields'], <String>['futureExecutionMode']);
+  });
+
+  test('permission review validates and redacts filesystem input', () {
+    const preview = 'filesystem-preview-secret-canary';
+    final payload = acpPermissionReviewPayload(
+      AcpPermissionRequest(
+        id: 'permission-filesystem',
+        title: 'Write file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'filesystem',
+        toolKind: 'write',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime.utc(2026, 8, 11),
+        metadata: const <String, Object?>{
+          'rawInput': <String, Object?>{
+            'path': '/workspace/report.txt',
+            'target': '/workspace/report.txt',
+            'line': 1,
+            'limit': 20,
+            'writeBytes': 42,
+            'contentTruncated': false,
+            'contentPreview': preview,
+            'hash': '0123456789abcdef0123456789abcdef',
+          },
+        },
+      ),
+      workspaceRoot: '/workspace',
+    );
+
+    expect(jsonEncode(payload), isNot(contains(preview)));
+    final analysis = payload['analysis'] as Map<String, Object?>;
+    expect(analysis['risk'], 'medium');
+    expect(analysis['suggestedDecision'], 'manual');
+    expect(analysis['signals'], contains('unreviewed_write_content'));
+    final request = payload['request'] as Map<String, Object?>;
+    final input = request['input'] as Map<String, Object?>;
+    expect(input['path'], '/workspace/report.txt');
+    expect(input['line'], 1);
+    expect(input['limit'], 20);
+    expect(input['writeBytes'], 42);
+    expect(input['contentTruncated'], isFalse);
+  });
+
+  test('permission review rejects filesystem paths outside workspace', () {
+    final payload = acpPermissionReviewPayload(
+      AcpPermissionRequest(
+        id: 'permission-filesystem-outside',
+        title: 'Write file',
+        rationale: 'Requested by agent',
+        sessionId: 'session-1',
+        toolName: 'filesystem',
+        toolKind: 'edit',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime.utc(2026, 8, 11),
+        metadata: const <String, Object?>{
+          'rawInput': <String, Object?>{
+            'path': '/outside/report.txt',
+            'writeBytes': 42,
+            'contentPreview': 'hello',
+            'contentTruncated': false,
+          },
+        },
+      ),
+      workspaceRoot: '/workspace',
+    );
+
+    final analysis = payload['analysis'] as Map<String, Object?>;
+    expect(analysis['risk'], 'high');
+    expect(analysis['suggestedDecision'], 'deny');
+    expect(analysis['pathsWithinWorkspace'], isFalse);
+    expect(analysis['signals'], contains('path_outside_workspace'));
+  });
+
+  test('permission review handles Windows workspace boundaries', () {
+    Map<String, Object?> analysisFor(String path) {
+      final payload = acpPermissionReviewPayload(
+        AcpPermissionRequest(
+          id: 'permission-windows-path',
+          title: 'Read file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'filesystem',
+          toolKind: 'read',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 8, 11),
+          metadata: <String, Object?>{
+            'rawInput': <String, Object?>{'path': path, 'line': 1, 'limit': 20},
+          },
+        ),
+        workspaceRoot: r'C:\workspace',
+      );
+      return payload['analysis'] as Map<String, Object?>;
+    }
+
+    expect(analysisFor(r'C:\workspace\src\main.dart')['risk'], 'low');
+    for (final path in <String>[
+      r'C:\workspace-escape\secrets.txt',
+      r'D:\workspace\secrets.txt',
+      r'\Windows\system32\drivers\etc\hosts',
+      r'C:workspace\drive-relative.txt',
+    ]) {
+      final outside = analysisFor(path);
+      expect(outside['risk'], 'high', reason: path);
+      expect(
+        outside['signals'],
+        contains('path_outside_workspace'),
+        reason: path,
+      );
+    }
   });
 
   test(
@@ -577,9 +966,96 @@ void main() {
       expect(fake.lastConfigValue, 'review-model');
       expect(fake.lastPrompt, contains('"model": "review-model"'));
       expect(fake.lastPrompt, contains('"additionalDirectories"'));
-      expect(fake.lastPrompt, contains('"line": "ls -la"'));
+      expect(fake.lastPrompt, isNot(contains('"line": "ls -la"')));
+      expect(fake.lastPrompt, contains('"missing_raw_input_context"'));
       expect(fake.lastPrompt, contains('not separate risk categories'));
       expect(fake.lastPrompt, isNot(contains('network-install')));
+    },
+  );
+
+  test('agent permission reviewer accepts a done-only response', () async {
+    final fake = _ScriptedReviewAgentClient(<AgentEvent>[
+      _reviewEvent(
+        AgentEventType.agentTextDone,
+        '{"decision":"allow","risk":"low","rationale":"Safe."}',
+      ),
+    ]);
+    final reviewer = AcpAgentPermissionReviewer(
+      agentName: 'Sidecar',
+      clientFactory: () => fake,
+    );
+    addTearDown(reviewer.dispose);
+
+    final result = await reviewer.review(
+      _reviewRequest('done-only'),
+      workspaceRoot: '/workspace',
+    );
+
+    expect(result?.decision, AcpPermissionDecision.allow);
+    expect(result?.risk, 'low');
+  });
+
+  test(
+    'oversized sidecar responses reset context and later reviews recover',
+    () async {
+      final oversizedResponses = <List<AgentEvent>>[
+        <AgentEvent>[
+          _reviewEvent(
+            AgentEventType.agentTextDelta,
+            List<String>.filled(
+              defaultPermissionReviewResultEncodedByteLimit + 1,
+              'x',
+            ).join(),
+          ),
+        ],
+        <AgentEvent>[
+          _reviewEvent(
+            AgentEventType.agentTextDelta,
+            List<String>.filled(
+              defaultPermissionReviewResultEncodedByteLimit ~/ 2,
+              'x',
+            ).join(),
+          ),
+          _reviewEvent(
+            AgentEventType.agentTextDelta,
+            List<String>.filled(
+              defaultPermissionReviewResultEncodedByteLimit ~/ 2 + 1,
+              'y',
+            ).join(),
+          ),
+        ],
+      ];
+
+      for (final events in oversizedResponses) {
+        final oversized = _ScriptedReviewAgentClient(events);
+        final recovered = _ReviewFakeAgentClient(
+          reviewText: '{"decision":"allow","risk":"low","rationale":"Safe."}',
+        );
+        var factoryCalls = 0;
+        final reviewer = AcpAgentPermissionReviewer(
+          agentName: 'Sidecar',
+          clientFactory: () {
+            factoryCalls += 1;
+            return factoryCalls == 1 ? oversized : recovered;
+          },
+        );
+
+        final failed = await reviewer.review(
+          _reviewRequest('oversized-$factoryCalls'),
+          workspaceRoot: '/workspace',
+        );
+        final next = await reviewer.review(
+          _reviewRequest('recovered-$factoryCalls'),
+          workspaceRoot: '/workspace',
+        );
+        await reviewer.dispose();
+
+        expect(failed?.risk, 'unknown');
+        expect(failed?.details, containsPair('failure', 'remote_failure'));
+        expect(oversized.disposed, isTrue);
+        expect(next?.decision, AcpPermissionDecision.allow);
+        expect(factoryCalls, 2);
+      }
     },
   );
 
@@ -1380,6 +1856,193 @@ void main() {
     }
   });
 
+  test('MCP reviewer cannot lower dangerous local environment risk', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      if (request.method == 'GET') {
+        request.response.statusCode = HttpStatus.methodNotAllowed;
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'DELETE') {
+        request.response.statusCode = HttpStatus.ok;
+        await request.response.close();
+        return;
+      }
+      final body = await utf8.decoder.bind(request).join();
+      final message = jsonDecode(body) as Map<String, dynamic>;
+      final method = message['method'];
+      if (method == 'notifications/initialized') {
+        request.response.statusCode = HttpStatus.accepted;
+      } else {
+        request.response
+          ..headers.contentType = ContentType.json
+          ..write(
+            jsonEncode(
+              method == 'initialize'
+                  ? _mcpInitializeResponse(message['id'])
+                  : _mcpToolResponse(message['id']),
+            ),
+          );
+      }
+      await request.response.close();
+    });
+    final reviewer = _localMcpReviewer(server.port);
+
+    try {
+      final result = await reviewer.review(
+        AcpPermissionRequest(
+          id: 'permission-risk-floor',
+          title: 'Run list command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 8, 11),
+          metadata: const <String, Object?>{
+            'rawInput': <String, Object?>{
+              'command': 'ls',
+              'cwd': '/workspace',
+              'environment': <Map<String, String>>[
+                <String, String>{'name': 'PATH', 'value': '/attacker'},
+              ],
+            },
+          },
+        ),
+        workspaceRoot: '/workspace',
+      );
+
+      expect(result?.decision, AcpPermissionDecision.allow);
+      expect(result?.risk, 'high');
+      expect(result?.details['localRiskFloor'], 'high');
+      final localAnalysis =
+          result?.details['localAnalysis'] as Map<String, Object?>;
+      expect(
+        localAnalysis['signals'],
+        contains('dangerous_environment_override'),
+      );
+
+      final benignOverride = await reviewer.review(
+        AcpPermissionRequest(
+          id: 'permission-medium-risk-floor',
+          title: 'Run list command',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'terminal',
+          toolKind: 'execute',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 8, 11),
+          metadata: const <String, Object?>{
+            'rawInput': <String, Object?>{
+              'command': 'ls',
+              'cwd': '/workspace',
+              'environment': <Map<String, String>>[
+                <String, String>{'name': 'TERM', 'value': 'xterm-256color'},
+              ],
+            },
+          },
+        ),
+        workspaceRoot: '/workspace',
+      );
+      expect(benignOverride?.decision, AcpPermissionDecision.allow);
+      expect(benignOverride?.risk, 'medium');
+      expect(benignOverride?.details['localRiskFloor'], 'medium');
+
+      for (final rawInput in <Map<String, Object?>?>[
+        null,
+        const <String, Object?>{'path': 42, 'writeBytes': 1},
+        const <String, Object?>{
+          'path': '/workspace/report.txt',
+          'futureWriteMode': 'unreviewed-semantics',
+        },
+      ]) {
+        final filesystem = await reviewer.review(
+          AcpPermissionRequest(
+            id: 'permission-filesystem-risk-floor',
+            title: 'Write file',
+            rationale: 'Requested by agent',
+            sessionId: 'session-1',
+            toolName: 'filesystem',
+            toolKind: 'write',
+            options: const <String>['Allow', 'Deny'],
+            requestedAt: DateTime.utc(2026, 8, 11),
+            metadata: <String, Object?>{'rawInput': ?rawInput},
+          ),
+          workspaceRoot: '/workspace',
+        );
+        expect(filesystem?.decision, AcpPermissionDecision.allow);
+        expect(filesystem?.risk, 'medium', reason: '$rawInput');
+        expect(
+          filesystem?.details['localRiskFloor'],
+          'medium',
+          reason: '$rawInput',
+        );
+      }
+
+      const preview = 'filesystem-write-secret-canary';
+      final completeFilesystem = await reviewer.review(
+        AcpPermissionRequest(
+          id: 'permission-filesystem-content-risk-floor',
+          title: 'Write file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'filesystem',
+          toolKind: 'write',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 8, 11),
+          metadata: const <String, Object?>{
+            'rawInput': <String, Object?>{
+              'path': '/workspace/report.txt',
+              'writeBytes': 1,
+              'contentPreview': preview,
+              'contentTruncated': false,
+            },
+          },
+        ),
+        workspaceRoot: '/workspace',
+      );
+      expect(completeFilesystem?.decision, AcpPermissionDecision.allow);
+      expect(completeFilesystem?.risk, 'medium');
+      expect(completeFilesystem?.details['localRiskFloor'], 'medium');
+      final filesystemAnalysis =
+          completeFilesystem?.details['localAnalysis'] as Map<String, Object?>;
+      expect(
+        filesystemAnalysis['signals'],
+        contains('unreviewed_write_content'),
+      );
+
+      final outsideFilesystem = await reviewer.review(
+        AcpPermissionRequest(
+          id: 'permission-filesystem-outside-risk-floor',
+          title: 'Write file',
+          rationale: 'Requested by agent',
+          sessionId: 'session-1',
+          toolName: 'filesystem',
+          toolKind: 'edit',
+          options: const <String>['Allow', 'Deny'],
+          requestedAt: DateTime.utc(2026, 8, 11),
+          metadata: const <String, Object?>{
+            'rawInput': <String, Object?>{
+              'path': '/outside/report.txt',
+              'writeBytes': 1,
+              'contentPreview': 'x',
+              'contentTruncated': false,
+            },
+          },
+        ),
+        workspaceRoot: '/workspace',
+      );
+      expect(outsideFilesystem?.decision, AcpPermissionDecision.allow);
+      expect(outsideFilesystem?.risk, 'high');
+      expect(outsideFilesystem?.details['localRiskFloor'], 'high');
+    } finally {
+      await reviewer.dispose();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test(
     'MCP reviewer supports JSON sessions without GET or DELETE redirects',
     () async {
@@ -1555,8 +2218,11 @@ AcpPermissionRequest _reviewRequest(String id) {
     options: const <String>['Allow', 'Deny'],
     requestedAt: DateTime.utc(2026, 7, 11),
     metadata: const <String, Object?>{
-      'command': 'git status',
-      'cwd': '/workspace',
+      'rawInput': <String, Object?>{
+        'command': 'git status',
+        'cwd': '/workspace',
+        'environment': <String, String>{},
+      },
     },
   );
 }
@@ -1649,6 +2315,34 @@ class _ReviewFakeAgentClient extends FakeAgentClient {
       text: '',
       timestamp: DateTime(2026, 5, 31, 12),
     );
+  }
+}
+
+AgentEvent _reviewEvent(AgentEventType type, String text) =>
+    AgentEvent(type: type, text: text, timestamp: DateTime.utc(2026, 8, 11));
+
+final class _ScriptedReviewAgentClient extends FakeAgentClient {
+  _ScriptedReviewAgentClient(this.events);
+
+  final List<AgentEvent> events;
+  bool disposed = false;
+
+  @override
+  Stream<AgentEvent> sendPrompt({
+    required String sessionId,
+    required String prompt,
+    List<PromptAttachment> attachments = const <PromptAttachment>[],
+  }) async* {
+    lastPrompt = prompt;
+    for (final event in events) {
+      yield event;
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    await super.dispose();
   }
 }
 

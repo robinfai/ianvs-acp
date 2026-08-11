@@ -182,17 +182,36 @@ class BoundedImagePreview extends StatefulWidget {
     this.decoder = const DartUiBoundedImageDecoder(),
     this.reservationAcquirer,
     this.height = 132,
-  }) : assert(
+    this.fit = BoxFit.contain,
+  }) : bytes = null,
+       assert(
          imageDecodeLedger != null || reservationAcquirer != null,
          'A shared image decode ledger or test reservation acquirer is required.',
        );
 
-  final String data;
+  const BoundedImagePreview.bytes({
+    super.key,
+    required Uint8List this.bytes,
+    this.inputBudget = const AcpInputBudget(),
+    this.imageDecodeLedger,
+    this.decoder = const DartUiBoundedImageDecoder(),
+    this.reservationAcquirer,
+    this.height = 132,
+    this.fit = BoxFit.contain,
+  }) : assert(
+         imageDecodeLedger != null || reservationAcquirer != null,
+         'A shared image decode ledger or test reservation acquirer is required.',
+       ),
+       data = null;
+
+  final String? data;
+  final Uint8List? bytes;
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder decoder;
   final BoundedImageReservationAcquirer? reservationAcquirer;
-  final double height;
+  final double? height;
+  final BoxFit fit;
 
   @override
   State<BoundedImagePreview> createState() => _BoundedImagePreviewState();
@@ -216,6 +235,7 @@ class _BoundedImagePreviewState extends State<BoundedImagePreview> {
     super.didUpdateWidget(oldWidget);
     widget.inputBudget.validate();
     if (widget.data == oldWidget.data &&
+        identical(widget.bytes, oldWidget.bytes) &&
         identical(widget.inputBudget, oldWidget.inputBudget) &&
         identical(widget.imageDecodeLedger, oldWidget.imageDecodeLedger) &&
         identical(widget.decoder, oldWidget.decoder) &&
@@ -260,13 +280,29 @@ class _BoundedImagePreviewState extends State<BoundedImagePreview> {
     int generation,
     AcpImageDecodeCancellationSource cancellation,
   ) async {
-    final AcpBase64ScanResult scan;
+    late final int decodedBytes;
+    Uint8List? sourceBytes;
     try {
-      scan = scanAcpBase64(
-        widget.data,
-        maxDecodedBytes: widget.inputBudget.maxEmbeddedMediaBytes,
-        resource: 'image_data',
-      );
+      final providedBytes = widget.bytes;
+      if (providedBytes != null) {
+        if (providedBytes.length > widget.inputBudget.maxEmbeddedMediaBytes) {
+          throw AcpInputLimitExceeded(
+            resource: 'image_data',
+            limit: widget.inputBudget.maxEmbeddedMediaBytes,
+            observedAtLeast: providedBytes.length,
+          );
+        }
+        decodedBytes = providedBytes.length;
+        sourceBytes = providedBytes;
+      } else {
+        final data = widget.data!;
+        final scan = scanAcpBase64(
+          data,
+          maxDecodedBytes: widget.inputBudget.maxEmbeddedMediaBytes,
+          resource: 'image_data',
+        );
+        decodedBytes = scan.decodedBytes;
+      }
     } catch (_) {
       _showFailure(generation, cancellation);
       return;
@@ -290,12 +326,12 @@ class _BoundedImagePreviewState extends State<BoundedImagePreview> {
             cancellation: cancellation,
           );
       reservation = await acquire(
-        decodedBytes: scan.decodedBytes,
+        decodedBytes: decodedBytes,
         cancellation: cancellation,
       );
       if (!_isCurrent(generation, cancellation)) return;
 
-      final bytes = base64Decode(widget.data);
+      final bytes = sourceBytes ?? base64Decode(widget.data!);
       buffer = await widget.decoder.createBuffer(bytes);
       if (!_isCurrent(generation, cancellation)) return;
 
@@ -315,7 +351,7 @@ class _BoundedImagePreviewState extends State<BoundedImagePreview> {
       final previewPixels = target.width * target.height;
       reservation.shrinkInstalledReservation(
         previewPixels: previewPixels,
-        reservedBytes: scan.decodedBytes + previewPixels * 4,
+        reservedBytes: decodedBytes + previewPixels * 4,
       );
 
       codec = await widget.decoder.createCodec(
@@ -430,7 +466,7 @@ class _BoundedImagePreviewState extends State<BoundedImagePreview> {
       key: const ValueKey('bounded-image-preview'),
       image: image,
       height: widget.height,
-      fit: BoxFit.contain,
+      fit: widget.fit,
     );
   }
 }

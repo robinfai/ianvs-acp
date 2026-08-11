@@ -1045,6 +1045,11 @@ final class FfiIanvsAcpNativeApi implements IanvsAcpNativeApi {
 }
 
 T _withUtf8<T>(String value, T Function(Pointer<Utf8>) operation) {
+  if (value.contains('\u0000')) {
+    throw ArgumentError(
+      'Native UTF-8 arguments must not contain interior NUL.',
+    );
+  }
   final pointer = value.toNativeUtf8();
   try {
     return operation(pointer);

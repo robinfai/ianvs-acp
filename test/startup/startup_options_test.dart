@@ -48,7 +48,7 @@ void main() {
     expect(StartupOptions.fromDeepLink(oversized), isNull);
   });
 
-  test('DeepLinkRequest parses and canonicalizes a session candidate', () {
+  test('DeepLinkRequest parses without touching the candidate workspace', () {
     final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-');
     addTearDown(() => temp.deleteSync(recursive: true));
     final workspace = Directory('${temp.path}/workspace')..createSync();
@@ -61,12 +61,12 @@ void main() {
 
     expect(request?.source, DeepLinkSource.external);
     expect(request?.sessionId, 'session-2');
-    expect(request?.cwd, workspace.resolveSymbolicLinksSync());
+    expect(request?.cwd, alias.path);
     expect(request?.agentName, 'Codex');
     expect(request?.validationErrors, isEmpty);
   });
 
-  test('DeepLinkRequest rejects unsafe session workspaces', () {
+  test('DeepLinkRequest rejects unsafe workspace syntax', () {
     final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-');
     addTearDown(() => temp.deleteSync(recursive: true));
     final missing = '${temp.path}/missing';
@@ -86,10 +86,7 @@ void main() {
       requestFor('relative/workspace').validationErrors,
       contains('Workspace must be an absolute path.'),
     );
-    expect(
-      requestFor(missing).validationErrors,
-      contains('Workspace does not exist.'),
-    );
+    expect(requestFor(missing).validationErrors, isEmpty);
     if (home != null && home.trim().isNotEmpty) {
       expect(
         requestFor(home).validationErrors,
@@ -98,18 +95,46 @@ void main() {
     }
 
     final rootAlias = Link('${temp.path}/root-alias')..createSync('/');
-    expect(
-      requestFor(rootAlias.path).validationErrors,
-      contains('Workspace is too broad.'),
-    );
+    expect(requestFor(rootAlias.path).validationErrors, isEmpty);
     if (home != null && home.trim().isNotEmpty) {
       final homeAlias = Link('${temp.path}/home-alias')..createSync(home);
-      expect(
-        requestFor(homeAlias.path).validationErrors,
-        contains('Workspace is too broad.'),
-      );
+      expect(requestFor(homeAlias.path).validationErrors, isEmpty);
     }
   });
+
+  test(
+    'workspace validation resolves aliases only after confirmation',
+    () async {
+      final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-');
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final workspace = Directory('${temp.path}/workspace')..createSync();
+      final alias = Link('${temp.path}/workspace-alias')
+        ..createSync(workspace.path);
+      final missing = '${temp.path}/missing';
+      final rootAlias = Link('${temp.path}/root-alias')..createSync('/');
+
+      expect(
+        (await validateDeepLinkWorkspace(alias.path)).path,
+        workspace.resolveSymbolicLinksSync(),
+      );
+      expect(
+        (await validateDeepLinkWorkspace(missing)).errors,
+        contains('Workspace does not exist.'),
+      );
+      expect(
+        (await validateDeepLinkWorkspace(rootAlias.path)).errors,
+        contains('Workspace is too broad.'),
+      );
+      final home = Platform.environment['HOME']?.trim();
+      if (home != null && home.isNotEmpty) {
+        final homeAlias = Link('${temp.path}/home-alias')..createSync(home);
+        expect(
+          (await validateDeepLinkWorkspace(homeAlias.path)).errors,
+          contains('Workspace is too broad.'),
+        );
+      }
+    },
+  );
 
   test('DeepLinkRequest rejects unsupported link targets', () {
     expect(StartupOptions.fromDeepLink('ianvs-acp://unsupported?id=1'), isNull);

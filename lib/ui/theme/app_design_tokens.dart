@@ -42,68 +42,6 @@ class AppColors {
   static const Color danger = Color(0xffc33f43);
 }
 
-@immutable
-class AppTerminalTheme extends ThemeExtension<AppTerminalTheme> {
-  const AppTerminalTheme({
-    required this.background,
-    required this.foreground,
-    required this.cursor,
-    required this.selection,
-    required this.scrollbarTrack,
-    required this.scrollbarThumb,
-  });
-
-  // A warm charcoal terminal keeps the focus benefits of a dark viewport
-  // without introducing a pure-black visual island inside the light app shell.
-  static const AppTerminalTheme conversationCanvas = AppTerminalTheme(
-    background: Color(0xff171b1a),
-    foreground: Color(0xffd7e3df),
-    cursor: Color(0xff64c7b8),
-    selection: Color(0x665c968c),
-    scrollbarTrack: Color(0x242e3734),
-    scrollbarThumb: Color(0x9974827d),
-  );
-
-  final Color background;
-  final Color foreground;
-  final Color cursor;
-  final Color selection;
-  final Color scrollbarTrack;
-  final Color scrollbarThumb;
-
-  @override
-  AppTerminalTheme copyWith({
-    Color? background,
-    Color? foreground,
-    Color? cursor,
-    Color? selection,
-    Color? scrollbarTrack,
-    Color? scrollbarThumb,
-  }) {
-    return AppTerminalTheme(
-      background: background ?? this.background,
-      foreground: foreground ?? this.foreground,
-      cursor: cursor ?? this.cursor,
-      selection: selection ?? this.selection,
-      scrollbarTrack: scrollbarTrack ?? this.scrollbarTrack,
-      scrollbarThumb: scrollbarThumb ?? this.scrollbarThumb,
-    );
-  }
-
-  @override
-  AppTerminalTheme lerp(covariant AppTerminalTheme? other, double t) {
-    if (other == null) return this;
-    return AppTerminalTheme(
-      background: Color.lerp(background, other.background, t)!,
-      foreground: Color.lerp(foreground, other.foreground, t)!,
-      cursor: Color.lerp(cursor, other.cursor, t)!,
-      selection: Color.lerp(selection, other.selection, t)!,
-      scrollbarTrack: Color.lerp(scrollbarTrack, other.scrollbarTrack, t)!,
-      scrollbarThumb: Color.lerp(scrollbarThumb, other.scrollbarThumb, t)!,
-    );
-  }
-}
-
 class AppTypography {
   const AppTypography._();
 

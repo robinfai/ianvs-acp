@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ianvs_acp_core::{
-    TerminalConfig, TerminalCreateSpec, TerminalError, TerminalManager, TerminalRuntimeEvent,
-    WorkspaceScope,
+    TerminalConfig, TerminalCreateSpec, TerminalEnvironmentVariable, TerminalError,
+    TerminalManager, TerminalRuntimeEvent, WorkspaceScope,
 };
 
 #[tokio::test]
@@ -157,6 +157,57 @@ fn terminal_handle_quota_counts_pending_approvals() {
         TerminalError::GlobalHandleLimit
     );
     manager.deny_create(&first.approval_id).unwrap();
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn terminal_spec_is_bounded_before_pending_and_approval_preserves_environment() {
+    let workspace = unique_temp_dir("terminal-spec-bound");
+    let manager = TerminalManager::new(
+        TerminalConfig {
+            max_active_handles: 1,
+            max_active_handles_per_session: 1,
+            ..TerminalConfig::default()
+        },
+        |_| {},
+    )
+    .unwrap();
+    manager
+        .register_session(
+            "session-1",
+            WorkspaceScope::new(&workspace, std::iter::empty::<&std::path::Path>()).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        manager
+            .request_create(TerminalCreateSpec {
+                session_id: "session-1".to_string(),
+                command: "/bin/echo".to_string(),
+                args: vec!["x".repeat(7 * 1024); 7],
+                environment: Vec::new(),
+                cwd: None,
+                output_byte_limit: None,
+            })
+            .unwrap_err(),
+        TerminalError::SpecLimit
+    );
+
+    let environment = vec![TerminalEnvironmentVariable {
+        name: "PATH".to_string(),
+        value: "/approved/bin".to_string(),
+    }];
+    let approval = manager
+        .request_create(TerminalCreateSpec {
+            session_id: "session-1".to_string(),
+            command: "/bin/echo".to_string(),
+            args: vec!["ok".to_string()],
+            environment: environment.clone(),
+            cwd: None,
+            output_byte_limit: None,
+        })
+        .unwrap();
+    assert_eq!(approval.environment, environment);
+    manager.deny_create(&approval.approval_id).unwrap();
     fs::remove_dir_all(workspace).unwrap();
 }
 
