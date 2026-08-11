@@ -59,6 +59,7 @@ void main() {
     PromptDroppedImageReader? readDroppedImage,
     List<String> workspaceRoots = const <String>[],
     String? imageAttachmentLimitation,
+    List<String> promptHistory = const <String>[],
     List<ChatQueuedPrompt> queuedPrompts = const <ChatQueuedPrompt>[],
     ValueChanged<int>? onGuideQueuedPrompt,
     ValueChanged<int>? onRemoveQueuedPrompt,
@@ -101,6 +102,7 @@ void main() {
       readDroppedImage: readDroppedImage ?? readDroppedImageForTest,
       workspaceRoots: workspaceRoots,
       imageAttachmentLimitation: imageAttachmentLimitation,
+      promptHistory: promptHistory,
       queuedPrompts: queuedPrompts,
       onGuideQueuedPrompt: onGuideQueuedPrompt,
       onRemoveQueuedPrompt: onRemoveQueuedPrompt,
@@ -297,6 +299,79 @@ void main() {
     await tester.pump();
 
     expect(sentText, 'Line one\nLine two');
+  });
+
+  testWidgets('PromptInput navigates prompt history and ends with blank', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        promptHistory: const ['First prompt', 'Second prompt'],
+        onSend: (_, _) {},
+      ),
+    );
+    final field = find.byType(TextField);
+    await tester.tap(field);
+
+    String text() => tester.widget<TextField>(field).controller!.text;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(text(), 'Second prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(text(), 'First prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(text(), 'First prompt');
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    expect(text(), 'Second prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    expect(text(), isEmpty);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    expect(text(), isEmpty);
+  });
+
+  testWidgets('PromptInput preserves multiline arrow navigation', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        promptHistory: const ['Earlier prompt'],
+        onSend: (_, _) {},
+      ),
+    );
+    final field = find.byType(TextField);
+    await tester.enterText(field, 'Line one\nLine two');
+    await tester.pump();
+    await tester.tap(field);
+    final controller = tester.widget<TextField>(field).controller!;
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(controller.text, 'Line one\nLine two');
+
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(controller.text, 'Earlier prompt');
+  });
+
+  testWidgets('PromptInput resets history navigation after manual edits', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      input(
+        isSending: false,
+        promptHistory: const ['First prompt', 'Second prompt'],
+        onSend: (_, _) {},
+      ),
+    );
+    final field = find.byType(TextField);
+    await tester.tap(field);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.enterText(field, 'Edited prompt');
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+
+    expect(tester.widget<TextField>(field).controller!.text, 'Second prompt');
   });
 
   testWidgets('PromptInput suggests and inserts slash commands', (

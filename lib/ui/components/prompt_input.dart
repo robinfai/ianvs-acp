@@ -43,6 +43,15 @@ const Color _permissionAccentSoft = Color(0xfffffcf8);
 const Color _permissionAccentMist = Color(0xffffedd5);
 const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
 
+bool _samePromptHistory(List<String> left, List<String> right) {
+  if (identical(left, right)) return true;
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
 class PromptAttachmentController {
   _PromptInputState? _state;
   Future<void> _pendingIngress = Future<void>.value();
@@ -109,6 +118,7 @@ class PromptInput extends StatefulWidget {
     this.readDroppedImage = _readDroppedImageAttachment,
     this.workspaceRoots = const <String>[],
     this.imageAttachmentLimitation,
+    this.promptHistory = const <String>[],
     this.queuedPrompts = const <ChatQueuedPrompt>[],
     this.onGuideQueuedPrompt,
     this.onRemoveQueuedPrompt,
@@ -148,6 +158,7 @@ class PromptInput extends StatefulWidget {
   final PromptDroppedImageReader readDroppedImage;
   final List<String> workspaceRoots;
   final String? imageAttachmentLimitation;
+  final List<String> promptHistory;
   final List<ChatQueuedPrompt> queuedPrompts;
   final ValueChanged<int>? onGuideQueuedPrompt;
   final ValueChanged<int>? onRemoveQueuedPrompt;
@@ -162,6 +173,7 @@ class PromptInput extends StatefulWidget {
 class _PromptInputState extends State<PromptInput> {
   final TextEditingController _controller = TextEditingController();
   final List<PromptAttachment> _attachments = <PromptAttachment>[];
+  int? _historyIndex;
   bool _isDraggingAttachments = false;
   String? _commandQuery;
   List<_CommandSearchEntry> _commandSearchEntries =
@@ -229,6 +241,9 @@ class _PromptInputState extends State<PromptInput> {
           );
         });
       }
+    }
+    if (!_samePromptHistory(oldWidget.promptHistory, widget.promptHistory)) {
+      _historyIndex = null;
     }
   }
 
@@ -381,7 +396,12 @@ class _PromptInputState extends State<PromptInput> {
                     : const <ShortcutActivator, VoidCallback>{},
                 child: Focus(
                   onKeyEvent: (node, event) {
-                    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+                      return KeyEventResult.ignored;
+                    }
+                    if (_handleHistoryKey(event)) {
+                      return KeyEventResult.handled;
+                    }
                     if (event.logicalKey != LogicalKeyboardKey.enter) {
                       return KeyEventResult.ignored;
                     }
@@ -564,6 +584,7 @@ class _PromptInputState extends State<PromptInput> {
     final attachments = List<PromptAttachment>.unmodifiable(_attachments);
     widget.onSend(text, attachments);
     _controller.clear();
+    _historyIndex = null;
     _commandQuery = null;
     _attachments.clear();
     setState(() {});
@@ -580,7 +601,71 @@ class _PromptInputState extends State<PromptInput> {
   }
 
   void _handlePromptChanged(String value) {
+    _historyIndex = null;
     _commandQuery = _scanBoundedCommandQuery(value, budget: widget.inputBudget);
+    setState(() {});
+  }
+
+  bool _handleHistoryKey(KeyEvent event) {
+    final key = event.logicalKey;
+    if (key != LogicalKeyboardKey.arrowUp &&
+        key != LogicalKeyboardKey.arrowDown) {
+      return false;
+    }
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isShiftPressed ||
+        keyboard.isAltPressed ||
+        keyboard.isControlPressed ||
+        keyboard.isMetaPressed) {
+      return false;
+    }
+    final composing = _controller.value.composing;
+    if (composing.isValid && !composing.isCollapsed) return false;
+
+    final history = widget.promptHistory;
+    if (history.isEmpty) return false;
+    if (!_isAtHistoryBoundary(moveUp: key == LogicalKeyboardKey.arrowUp)) {
+      return false;
+    }
+
+    if (key == LogicalKeyboardKey.arrowUp) {
+      final current = _historyIndex;
+      _historyIndex = current == null
+          ? history.length - 1
+          : math.max(0, current - 1);
+      _showHistoryText(history[_historyIndex!]);
+      return true;
+    }
+
+    final current = _historyIndex;
+    if (current == null) return false;
+    if (current >= history.length - 1) {
+      _historyIndex = null;
+      _showHistoryText('');
+      return true;
+    }
+    _historyIndex = current + 1;
+    _showHistoryText(history[_historyIndex!]);
+    return true;
+  }
+
+  bool _isAtHistoryBoundary({required bool moveUp}) {
+    final value = _controller.value;
+    final selection = value.selection;
+    if (!selection.isValid || !selection.isCollapsed) return false;
+    final caret = selection.extentOffset;
+    if (moveUp) {
+      return !value.text.substring(0, caret).contains('\n');
+    }
+    return !value.text.substring(caret).contains('\n');
+  }
+
+  void _showHistoryText(String text) {
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _commandQuery = _scanBoundedCommandQuery(text, budget: widget.inputBudget);
     setState(() {});
   }
 

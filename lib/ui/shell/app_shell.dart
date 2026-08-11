@@ -208,6 +208,12 @@ class AppShell extends StatelessWidget {
           promptCapabilities: promptCapabilities,
           workspaceRoots: promptWorkspaceRoots,
           imageAttachmentLimitation: promptCapabilityResolution.imageLimitation,
+          promptHistory: <String>[
+            for (final message in controller.messages)
+              if (message.role == ChatMessageRole.user &&
+                  message.text.trim().isNotEmpty)
+                message.text,
+          ],
           queuedPrompts: controller.queuedPrompts,
           onGuideQueuedPrompt: controller.guideQueuedPrompt,
           onRemoveQueuedPrompt: controller.removeQueuedPrompt,

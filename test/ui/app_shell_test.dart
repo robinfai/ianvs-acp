@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
@@ -456,6 +457,51 @@ void main() {
     expect(sidebarRect.width, moreOrLessEquals(320));
     expect(promptRect.left, greaterThanOrEqualTo(sidebarRect.right));
     expect(promptRect.right, lessThan(inspectorRect.left));
+  });
+
+  testWidgets('AppShell exposes current conversation user prompts as history', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'First user prompt'),
+      startsNewTurn: true,
+    );
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.assistant, text: 'Assistant response'),
+    );
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Second user prompt'),
+      startsNewTurn: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pump();
+    final field = find.descendant(
+      of: find.byKey(const Key('prompt-input-surface')),
+      matching: find.byType(TextField),
+    );
+    await tester.tap(field);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      'Second user prompt',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      'First user prompt',
+    );
   });
 
   testWidgets('AppShell terminal follows the active ACP session lifecycle', (
