@@ -176,9 +176,16 @@ void main() {
       final canvasRect = tester.getRect(
         find.byKey(const Key('conversation-canvas-surface')),
       );
-      expect(canvasRect.top, workspaceRect.top + 12);
-      expect(canvasRect.bottom, workspaceRect.bottom - 12);
-      expect(canvasRect.right, surfaceRect.left - 12);
+      expect(canvasRect.top, workspaceRect.top);
+      expect(canvasRect.bottom, workspaceRect.bottom);
+      expect(canvasRect.right, surfaceRect.left);
+
+      final canvas = tester.widget<Container>(
+        find.byKey(const Key('conversation-canvas-surface')),
+      );
+      final canvasDecoration = canvas.decoration! as BoxDecoration;
+      expect(canvasDecoration.border, isNull);
+      expect(canvasDecoration.boxShadow, isNull);
     },
   );
 

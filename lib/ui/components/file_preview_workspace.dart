@@ -142,19 +142,14 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Container(
-                key: const Key('conversation-canvas-surface'),
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(AppRadius.xl),
-                  border: Border.all(color: AppColors.borderSoft),
-                  boxShadow: AppShadows.soft,
-                ),
-                child: conversation,
+            child: Container(
+              key: const Key('conversation-canvas-surface'),
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(AppRadius.xl),
               ),
+              child: conversation,
             ),
           ),
           if (widget.showInspector)
