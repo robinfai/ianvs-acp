@@ -175,6 +175,8 @@ final class _AcpClientBootstrapState extends State<AcpClientBootstrap> {
       initialResumeSessionId: options.resumeSessionId,
       initialResumeCwd: options.resumeCwd,
       initialResumeAgentName: options.resumeAgentName,
+      initialResumeSessionTemplateId: options.resumeSessionTemplateId,
+      initialResumeSessionTemplateVersion: options.resumeSessionTemplateVersion,
     );
   }
 }

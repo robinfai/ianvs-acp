@@ -6,10 +6,15 @@ import '../../config/acp_client_config.dart';
 import '../theme/app_design_tokens.dart';
 
 class NewSessionSelection {
-  const NewSessionSelection({required this.cwd, this.agentServer});
+  const NewSessionSelection({
+    required this.cwd,
+    this.agentServer,
+    this.sessionTemplate,
+  });
 
   final String cwd;
   final AgentServerConfig? agentServer;
+  final SessionTemplateConfig? sessionTemplate;
 }
 
 class NewSessionAgentDialog extends StatefulWidget {
@@ -17,11 +22,15 @@ class NewSessionAgentDialog extends StatefulWidget {
     super.key,
     required this.agentServers,
     required this.currentAgentName,
+    this.sessionTemplates = const <SessionTemplateConfig>[],
+    this.defaultSessionTemplateId,
     this.initialCwd = '',
   });
 
   final List<AgentServerConfig> agentServers;
   final String currentAgentName;
+  final List<SessionTemplateConfig> sessionTemplates;
+  final String? defaultSessionTemplateId;
   final String initialCwd;
 
   @override
@@ -30,6 +39,7 @@ class NewSessionAgentDialog extends StatefulWidget {
 
 class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
   AgentServerConfig? _selectedServer;
+  SessionTemplateConfig? _selectedTemplate;
   late String _cwd;
   late final TextEditingController _cwdController;
   String? _cwdError;
@@ -38,6 +48,7 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
   void initState() {
     super.initState();
     _selectedServer = _initialSelectedServer();
+    _selectedTemplate = _initialSelectedTemplate();
     _cwd = widget.initialCwd.trim();
     _cwdController = TextEditingController(text: _cwd);
   }
@@ -59,7 +70,29 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (widget.agentServers.isNotEmpty) ...[
+              if (widget.sessionTemplates.isNotEmpty) ...[
+                const _ChoiceSectionLabel('Session template'),
+                const SizedBox(height: 8),
+                for (final template in widget.sessionTemplates) ...[
+                  _TemplateChoiceTile(
+                    template: template,
+                    selected: template.id == _selectedTemplate?.id,
+                    onTap: () => setState(() => _selectedTemplate = template),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                _CustomSessionChoiceTile(
+                  selected: _selectedTemplate == null,
+                  onTap: () => setState(() => _selectedTemplate = null),
+                ),
+                const SizedBox(height: 16),
+              ],
+              if (_selectedTemplate == null &&
+                  widget.agentServers.isNotEmpty) ...[
+                if (widget.sessionTemplates.isNotEmpty) ...[
+                  const _ChoiceSectionLabel('Agent'),
+                  const SizedBox(height: 8),
+                ],
                 for (final server in widget.agentServers) ...[
                   _AgentChoiceTile(
                     server: server,
@@ -105,6 +138,16 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
     return widget.agentServers.isEmpty ? null : widget.agentServers.first;
   }
 
+  SessionTemplateConfig? _initialSelectedTemplate() {
+    final requested = widget.defaultSessionTemplateId?.trim();
+    if (requested != null && requested.isNotEmpty) {
+      for (final template in widget.sessionTemplates) {
+        if (template.id == requested) return template;
+      }
+    }
+    return null;
+  }
+
   void _handleCwdChanged(String value) {
     setState(() {
       _cwd = value;
@@ -126,9 +169,182 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
       setState(() => _cwdError = 'Enter an absolute working directory.');
       return;
     }
-    Navigator.of(
-      context,
-    ).pop(NewSessionSelection(cwd: cwd, agentServer: _selectedServer));
+    Navigator.of(context).pop(
+      NewSessionSelection(
+        cwd: cwd,
+        agentServer: _selectedTemplate == null ? _selectedServer : null,
+        sessionTemplate: _selectedTemplate,
+      ),
+    );
+  }
+}
+
+class _ChoiceSectionLabel extends StatelessWidget {
+  const _ChoiceSectionLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: AppColors.textTertiary,
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.2,
+      ),
+    );
+  }
+}
+
+class _TemplateChoiceTile extends StatelessWidget {
+  const _TemplateChoiceTile({
+    required this.template,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final SessionTemplateConfig template;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final details = <String>[
+      if (template.agentServerName != null) template.agentServerName!,
+      if (template.model != null) template.model!,
+      if (template.mode != null) template.mode!,
+      if (template.reasoningEffort != null)
+        '${template.reasoningEffort} reasoning',
+    ];
+    final description = template.description?.trim();
+    final subtitle = description != null && description.isNotEmpty
+        ? description
+        : details.isEmpty
+        ? 'Configured runtime · v${template.version}'
+        : '${details.join(' · ')} · v${template.version}';
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${template.name}, template version ${template.version}',
+      onTap: onTap,
+      child: ExcludeSemantics(
+        child: _SessionChoiceSurface(
+          selected: selected,
+          icon: Icons.dashboard_customize_outlined,
+          title: template.name,
+          subtitle: subtitle,
+          onTap: onTap,
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomSessionChoiceTile extends StatelessWidget {
+  const _CustomSessionChoiceTile({required this.selected, required this.onTap});
+
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: 'Custom session',
+      onTap: onTap,
+      child: ExcludeSemantics(
+        child: _SessionChoiceSurface(
+          selected: selected,
+          icon: Icons.tune_rounded,
+          title: 'Custom',
+          subtitle: 'Choose an agent without a template',
+          onTap: onTap,
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionChoiceSurface extends StatelessWidget {
+  const _SessionChoiceSurface({
+    required this.selected,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final bool selected;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.primaryMist : AppColors.surfaceRaised,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(
+              color: selected
+                  ? AppColors.primary.withValues(alpha: 0.22)
+                  : AppColors.border,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                selected ? Icons.check_circle_rounded : icon,
+                size: 20,
+                color: selected ? AppColors.success : AppColors.primaryDark,
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textTertiary,
+                        fontSize: 11,
+                        height: 1.25,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -244,7 +460,7 @@ class _AgentChoiceTile extends StatelessWidget {
     return Semantics(
       button: true,
       selected: selected,
-      label: '${server.name}, ${server.displayTarget}',
+      label: '${server.name}, ${server.safeDisplayTarget}',
       onTap: onTap,
       child: ExcludeSemantics(
         child: Material(
@@ -291,9 +507,9 @@ class _AgentChoiceTile extends StatelessWidget {
                         ),
                         const SizedBox(height: 3),
                         Tooltip(
-                          message: server.displayTarget,
+                          message: server.safeDisplayTarget,
                           child: Text(
-                            server.displayTarget,
+                            server.safeDisplayTarget,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: AppColors.textTertiary,

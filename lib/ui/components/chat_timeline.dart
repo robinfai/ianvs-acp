@@ -11,7 +11,9 @@ import '../../state/chat_controller.dart';
 import '../bounded_metadata_preview.dart';
 import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
+import '../user_message_projection.dart';
 import '../markdown_render_budget.dart';
+import '../tool_presentation/tool_presentation_registry.dart';
 import 'bounded_image_preview.dart';
 import 'markdown_code_block.dart';
 import 'markdown_inline_link.dart';
@@ -55,6 +57,7 @@ class ChatTimeline extends StatefulWidget {
     this.inputBudget = const AcpInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
+    this.toolPresentationRegistry,
   });
 
   final List<ChatMessage> messages;
@@ -69,6 +72,7 @@ class ChatTimeline extends StatefulWidget {
   final AcpInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
+  final ToolPresentationRegistry? toolPresentationRegistry;
 
   @override
   State<ChatTimeline> createState() => _ChatTimelineState();
@@ -148,154 +152,160 @@ class _ChatTimelineState extends State<ChatTimeline> {
     final outlineEntries = _turnOutlineEntries(turns);
     final loadingFooterCount = widget.isLoadingSession ? 1 : 0;
 
-    return _ImageDecodeScope(
-      ledger: _imageDecodeLedger,
-      decoder: widget.boundedImageDecoder,
-      inputBudget: widget.inputBudget,
-      child: ColoredBox(
-        color: AppColors.surface,
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final showNavigator =
-                outlineEntries.length > 1 && constraints.maxWidth >= 700;
-            final viewportAnchorTurnIndex = _viewportAnchorTurnIndex.clamp(
-              0,
-              turns.length - 1,
-            );
-            final activeOutlineIndex = _outlineIndexForTurn(
-              outlineEntries,
-              _activeTurnIndex.clamp(0, turns.length - 1),
-            );
-            final hoveredOutlineIndex = _hoveredOutlineIndex;
-            final hasHoveredOutline =
-                hoveredOutlineIndex != null &&
-                hoveredOutlineIndex >= 0 &&
-                hoveredOutlineIndex < outlineEntries.length;
-            return Stack(
-              key: _timelineViewportKey,
-              children: [
-                NotificationListener<ScrollNotification>(
-                  onNotification: _handleTimelineScrollNotification,
-                  child: CustomScrollView(
-                    key: const ValueKey('chat-timeline-list'),
-                    controller: _scrollController,
-                    center: _timelineCenterSliverKey,
-                    anchor: 0.08,
-                    slivers: [
-                      SliverPadding(
-                        padding: EdgeInsets.fromLTRB(
-                          showNavigator ? 66 : 32,
-                          28,
-                          32,
-                          0,
+    return ToolPresentationScope(
+      registry:
+          widget.toolPresentationRegistry ?? ToolPresentationRegistry.defaults,
+      child: _ImageDecodeScope(
+        ledger: _imageDecodeLedger,
+        decoder: widget.boundedImageDecoder,
+        inputBudget: widget.inputBudget,
+        child: ColoredBox(
+          color: AppColors.surface,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final showNavigator =
+                  outlineEntries.length > 1 && constraints.maxWidth >= 700;
+              final viewportAnchorTurnIndex = _viewportAnchorTurnIndex.clamp(
+                0,
+                turns.length - 1,
+              );
+              final activeOutlineIndex = _outlineIndexForTurn(
+                outlineEntries,
+                _activeTurnIndex.clamp(0, turns.length - 1),
+              );
+              final hoveredOutlineIndex = _hoveredOutlineIndex;
+              final hasHoveredOutline =
+                  hoveredOutlineIndex != null &&
+                  hoveredOutlineIndex >= 0 &&
+                  hoveredOutlineIndex < outlineEntries.length;
+              return Stack(
+                key: _timelineViewportKey,
+                children: [
+                  NotificationListener<ScrollNotification>(
+                    onNotification: _handleTimelineScrollNotification,
+                    child: CustomScrollView(
+                      key: const ValueKey('chat-timeline-list'),
+                      controller: _scrollController,
+                      center: _timelineCenterSliverKey,
+                      anchor: 0.08,
+                      slivers: [
+                        SliverPadding(
+                          padding: EdgeInsets.fromLTRB(
+                            showNavigator ? 66 : 32,
+                            28,
+                            32,
+                            0,
+                          ),
+                          sliver: SliverList.builder(
+                            itemCount: viewportAnchorTurnIndex,
+                            itemBuilder: (context, index) {
+                              final turnIndex =
+                                  viewportAnchorTurnIndex - index - 1;
+                              return _buildTimelineTurn(turns, turnIndex);
+                            },
+                          ),
                         ),
-                        sliver: SliverList.builder(
-                          itemCount: viewportAnchorTurnIndex,
-                          itemBuilder: (context, index) {
-                            final turnIndex =
-                                viewportAnchorTurnIndex - index - 1;
-                            return _buildTimelineTurn(turns, turnIndex);
-                          },
+                        SliverPadding(
+                          key: _timelineCenterSliverKey,
+                          padding: EdgeInsets.fromLTRB(
+                            showNavigator ? 66 : 32,
+                            0,
+                            32,
+                            28,
+                          ),
+                          sliver: SliverList.builder(
+                            itemCount:
+                                turns.length -
+                                viewportAnchorTurnIndex +
+                                loadingFooterCount,
+                            itemBuilder: (context, index) {
+                              final turnIndex = viewportAnchorTurnIndex + index;
+                              if (turnIndex >= turns.length) {
+                                return const _SessionLoadingFooter();
+                              }
+                              return _buildTimelineTurn(turns, turnIndex);
+                            },
+                          ),
                         ),
-                      ),
-                      SliverPadding(
-                        key: _timelineCenterSliverKey,
-                        padding: EdgeInsets.fromLTRB(
-                          showNavigator ? 66 : 32,
-                          0,
-                          32,
-                          28,
-                        ),
-                        sliver: SliverList.builder(
-                          itemCount:
-                              turns.length -
-                              viewportAnchorTurnIndex +
-                              loadingFooterCount,
-                          itemBuilder: (context, index) {
-                            final turnIndex = viewportAnchorTurnIndex + index;
-                            if (turnIndex >= turns.length) {
-                              return const _SessionLoadingFooter();
-                            }
-                            return _buildTimelineTurn(turns, turnIndex);
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (showNavigator)
-                  Positioned(
-                    left: 16,
-                    top: 20,
-                    bottom: 22,
-                    width: _turnNavigationMarkerWidth,
-                    child: _TurnNavigationRail(
-                      entries: outlineEntries,
-                      activeIndex: activeOutlineIndex,
-                      hoveredIndex: _hoveredOutlineIndex,
-                      onHover: (index, globalY) {
-                        if (_hoveredOutlineIndex == index &&
-                            _hoveredMarkerGlobalY == globalY) {
-                          return;
-                        }
-                        setState(() {
-                          _hoveredOutlineIndex = index;
-                          _hoveredMarkerGlobalY = globalY;
-                        });
-                      },
-                      onTap: (index) => _selectOutlineTurn(
-                        outlineEntries[index].turnIndex,
-                        turns,
-                      ),
+                      ],
                     ),
                   ),
-                if (showNavigator)
-                  AnimatedPositioned(
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOutCubic,
-                    left: 62,
-                    top: hasHoveredOutline
-                        ? _turnPreviewTop(
-                            markerGlobalY: _hoveredMarkerGlobalY,
-                            viewportHeight: constraints.maxHeight,
-                          )
-                        : 12,
-                    width: 360,
-                    child: IgnorePointer(
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 180),
-                        reverseDuration: const Duration(milliseconds: 120),
-                        switchInCurve: Curves.easeOutCubic,
-                        switchOutCurve: Curves.easeInCubic,
-                        transitionBuilder: (child, animation) {
-                          final offset = Tween<Offset>(
-                            begin: const Offset(-0.025, 0),
-                            end: Offset.zero,
-                          ).animate(animation);
-                          return FadeTransition(
-                            opacity: animation,
-                            child: SlideTransition(
-                              position: offset,
-                              child: child,
-                            ),
-                          );
+                  if (showNavigator)
+                    Positioned(
+                      left: 16,
+                      top: 20,
+                      bottom: 22,
+                      width: _turnNavigationMarkerWidth,
+                      child: _TurnNavigationRail(
+                        entries: outlineEntries,
+                        activeIndex: activeOutlineIndex,
+                        hoveredIndex: _hoveredOutlineIndex,
+                        onHover: (index, globalY) {
+                          if (_hoveredOutlineIndex == index &&
+                              _hoveredMarkerGlobalY == globalY) {
+                            return;
+                          }
+                          setState(() {
+                            _hoveredOutlineIndex = index;
+                            _hoveredMarkerGlobalY = globalY;
+                          });
                         },
-                        child: hasHoveredOutline
-                            ? _TurnNavigationPreview(
-                                key: ValueKey(
-                                  'turn-navigation-preview-$hoveredOutlineIndex',
-                                ),
-                                entry: outlineEntries[hoveredOutlineIndex],
-                              )
-                            : const SizedBox.shrink(
-                                key: ValueKey('turn-navigation-preview-empty'),
-                              ),
+                        onTap: (index) => _selectOutlineTurn(
+                          outlineEntries[index].turnIndex,
+                          turns,
+                        ),
                       ),
                     ),
-                  ),
-              ],
-            );
-          },
+                  if (showNavigator)
+                    AnimatedPositioned(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                      left: 62,
+                      top: hasHoveredOutline
+                          ? _turnPreviewTop(
+                              markerGlobalY: _hoveredMarkerGlobalY,
+                              viewportHeight: constraints.maxHeight,
+                            )
+                          : 12,
+                      width: 360,
+                      child: IgnorePointer(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          reverseDuration: const Duration(milliseconds: 120),
+                          switchInCurve: Curves.easeOutCubic,
+                          switchOutCurve: Curves.easeInCubic,
+                          transitionBuilder: (child, animation) {
+                            final offset = Tween<Offset>(
+                              begin: const Offset(-0.025, 0),
+                              end: Offset.zero,
+                            ).animate(animation);
+                            return FadeTransition(
+                              opacity: animation,
+                              child: SlideTransition(
+                                position: offset,
+                                child: child,
+                              ),
+                            );
+                          },
+                          child: hasHoveredOutline
+                              ? _TurnNavigationPreview(
+                                  key: ValueKey(
+                                    'turn-navigation-preview-$hoveredOutlineIndex',
+                                  ),
+                                  entry: outlineEntries[hoveredOutlineIndex],
+                                )
+                              : const SizedBox.shrink(
+                                  key: ValueKey(
+                                    'turn-navigation-preview-empty',
+                                  ),
+                                ),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -562,69 +572,14 @@ List<_TurnOutlineEntry> _turnOutlineEntries(List<_TimelineTurn> turns) {
 
 String? _outlinePromptPreview(List<ChatMessage> messages) {
   final candidates = messages
-      .map((message) => _userPromptDisplayText(message.text))
+      .map((message) => userPromptDisplayText(message.text))
       .where((text) => text.isNotEmpty)
       .toList(growable: false);
   if (candidates.isEmpty) return null;
   for (final text in candidates) {
-    if (!_isAttachmentProjectionText(text)) return text;
+    if (!isAttachmentProjectionText(text)) return text;
   }
   return null;
-}
-
-String _userPromptDisplayText(String text) {
-  const marker = '## My request for Codex:';
-  final markerIndex = text.indexOf(marker);
-  final request = markerIndex < 0
-      ? text.trim()
-      : text.substring(markerIndex + marker.length).trim();
-  final display = request.isEmpty ? text.trim() : request;
-  return display.replaceAll(_textImageMarkerPattern, '').trim();
-}
-
-final RegExp _textImageMarkerPattern = RegExp(
-  r'\[@(?:codex-clipboard-[^\]]+|image)\]\(([^)]+)\)',
-  caseSensitive: false,
-);
-
-List<String> _textImagePaths(String text) {
-  final paths = <String>[];
-  final seen = <String>{};
-  for (final match in _textImageMarkerPattern.allMatches(text)) {
-    final source = match.group(1)?.trim();
-    if (source == null || source.isEmpty) continue;
-    final uri = Uri.tryParse(source);
-    final path = uri?.scheme == 'file'
-        ? uri!.toFilePath()
-        : uri?.scheme.isEmpty == true && source.startsWith('/')
-        ? source
-        : null;
-    if (path == null || !_looksLikeImagePath(path) || !seen.add(path)) {
-      continue;
-    }
-    paths.add(path);
-  }
-  return List<String>.unmodifiable(paths);
-}
-
-bool _looksLikeImagePath(String path) {
-  final lower = path.toLowerCase();
-  return const <String>[
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.webp',
-    '.bmp',
-  ].any(lower.endsWith);
-}
-
-bool _isAttachmentProjectionText(String text) {
-  final normalized = text.trim();
-  if (!normalized.startsWith('[') || !normalized.endsWith(')')) return false;
-  return normalized.contains('](file://') ||
-      normalized.startsWith('[@image](') ||
-      normalized.startsWith('[@codex-clipboard-');
 }
 
 int _outlineIndexForTurn(List<_TurnOutlineEntry> entries, int activeTurnIndex) {
@@ -889,7 +844,7 @@ bool _isExecutionAfterAssistant(ChatMessage message) {
 
 bool _isPureAttachmentProjection(ChatMessage message) {
   return _lazyMapCount(message.metadata['contentBlocks']) == 0 &&
-      _isAttachmentProjectionText(message.text);
+      isAttachmentProjectionText(message.text);
 }
 
 bool _isPersistentTurnResult(ChatMessage message) {
@@ -897,7 +852,7 @@ bool _isPersistentTurnResult(ChatMessage message) {
     return _stringMetadata(message.metadata, 'kind') == 'diff';
   }
   if (message.role != ChatMessageRole.tool) return false;
-  final parsed = _ParsedTool.fromMessage(message);
+  final parsed = ToolPresentationSource.fromMessage(message);
   return _toolDiffs(parsed.content).isNotEmpty;
 }
 
@@ -1542,7 +1497,7 @@ class _MessageBubble extends StatelessWidget {
     };
     const textColor = AppColors.textPrimary;
     final displayText = user
-        ? _userPromptDisplayText(message.text)
+        ? userPromptDisplayText(message.text)
         : message.text;
     final markdownDecision = displayText.isEmpty
         ? null
@@ -1555,10 +1510,10 @@ class _MessageBubble extends StatelessWidget {
     if (user) {
       final hasContentBlocks =
           _lazyMapCount(message.metadata['contentBlocks']) > 0;
-      final textImagePaths = hasContentBlocks
+      final imagePaths = hasContentBlocks
           ? const <String>[]
-          : _textImagePaths(message.text);
-      final hasImages = hasContentBlocks || textImagePaths.isNotEmpty;
+          : textImagePaths(message.text);
+      final hasImages = hasContentBlocks || imagePaths.isNotEmpty;
       return Align(
         alignment: Alignment.centerRight,
         child: ConstrainedBox(
@@ -1574,8 +1529,8 @@ class _MessageBubble extends StatelessWidget {
                   beforeText: true,
                   compactImages: true,
                 ),
-              if (textImagePaths.isNotEmpty)
-                _TextImageThumbnails(paths: textImagePaths),
+              if (imagePaths.isNotEmpty)
+                _TextImageThumbnails(paths: imagePaths),
               if (hasImages &&
                   (markdownDecision != null || omissions.isNotEmpty))
                 const SizedBox(height: 8),
@@ -2042,7 +1997,7 @@ class _ToolBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final parsed = _ParsedTool.fromMessage(message);
+    final parsed = ToolPresentationSource.fromMessage(message);
     final images = _toolImageBlocks(parsed.content);
     final diffs = _toolDiffs(parsed.content);
     if (images.isNotEmpty || diffs.isNotEmpty) {
@@ -2063,7 +2018,7 @@ class _ToolBubble extends StatelessWidget {
           ? ObjectKey(message)
           : ValueKey('tool-activity-${parsed.id}'),
       parsed: parsed,
-      presentation: _toolActivityPresentation(parsed),
+      presentation: ToolPresentationScope.of(context).resolve(parsed),
       inputBudget: inputBudget,
     );
   }
@@ -2087,7 +2042,9 @@ class _ToolGroupBubble extends StatelessWidget {
     final toolMessages = messages
         .where((message) => message.role == ChatMessageRole.tool)
         .toList(growable: false);
-    final parsedTools = toolMessages.map(_ParsedTool.fromMessage).toList();
+    final parsedTools = toolMessages
+        .map(ToolPresentationSource.fromMessage)
+        .toList();
     final richMessages = <ChatMessage>[];
     final ordinaryMessages = <ChatMessage>[];
     final imageBlocks = <Map<String, Object?>>[];
@@ -2105,7 +2062,7 @@ class _ToolGroupBubble extends StatelessWidget {
     }
     if (imageBlocks.isNotEmpty || diffs.isNotEmpty) {
       final richTools = richMessages
-          .map(_ParsedTool.fromMessage)
+          .map(ToolPresentationSource.fromMessage)
           .toList(growable: false);
       final ordinaryActivity = messages
           .where(
@@ -2869,7 +2826,7 @@ class _ToolFrame extends StatelessWidget {
 class _ToolCallCard extends StatefulWidget {
   const _ToolCallCard({required this.parsed, required this.inputBudget});
 
-  final _ParsedTool parsed;
+  final ToolPresentationSource parsed;
   final AcpInputBudget inputBudget;
 
   @override
@@ -2983,7 +2940,7 @@ class _ToolGroupDisclosure extends StatefulWidget {
     required this.onExpansionChanged,
   });
 
-  final List<_ParsedTool> parsedTools;
+  final List<ToolPresentationSource> parsedTools;
   final List<ChatMessage> activityMessages;
   final AcpInputBudget inputBudget;
   final _ToolGroupStatusSummary statusSummary;
@@ -2998,19 +2955,20 @@ class _ToolGroupDisclosureState extends State<_ToolGroupDisclosure> {
   var _hovered = false;
 
   Widget _buildToolActivityRow(ChatMessage message) {
-    final parsed = _ParsedTool.fromMessage(message);
+    final parsed = ToolPresentationSource.fromMessage(message);
     return _ToolActivityRow(
       key: parsed.id.isEmpty
           ? ObjectKey(message)
           : ValueKey('tool-activity-${parsed.id}'),
       parsed: parsed,
-      presentation: _toolActivityPresentation(parsed),
+      presentation: ToolPresentationScope.of(context).resolve(parsed),
       inputBudget: widget.inputBudget,
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final presentationRegistry = ToolPresentationScope.of(context);
     final expanded = widget.expanded;
     final foreground = _hovered && !expanded
         ? AppColors.textPrimary
@@ -3028,7 +2986,7 @@ class _ToolGroupDisclosureState extends State<_ToolGroupDisclosure> {
           Semantics(
             button: true,
             expanded: expanded,
-            label: _toolGroupActivitySummary(widget.parsedTools),
+            label: presentationRegistry.groupSummary(widget.parsedTools),
             child: Material(
               color: Colors.transparent,
               child: InkWell(
@@ -3048,7 +3006,7 @@ class _ToolGroupDisclosureState extends State<_ToolGroupDisclosure> {
                         curve: Curves.easeOutCubic,
                         tween: ColorTween(end: foreground),
                         builder: (context, color, child) => Icon(
-                          _toolGroupActivityIcon(widget.parsedTools),
+                          presentationRegistry.groupIcon(widget.parsedTools),
                           color: color,
                           size: 18,
                         ),
@@ -3069,7 +3027,9 @@ class _ToolGroupDisclosureState extends State<_ToolGroupDisclosure> {
                             letterSpacing: 0,
                           ),
                           child: Text(
-                            _toolGroupActivitySummary(widget.parsedTools),
+                            presentationRegistry.groupSummary(
+                              widget.parsedTools,
+                            ),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -3154,8 +3114,8 @@ class _ToolActivityRow extends StatefulWidget {
     required this.inputBudget,
   });
 
-  final _ParsedTool parsed;
-  final _ToolActivityPresentation presentation;
+  final ToolPresentationSource parsed;
+  final ToolActivityPresentation presentation;
   final AcpInputBudget inputBudget;
 
   @override
@@ -3321,7 +3281,7 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
     );
   }
 
-  List<Widget> _buildDetails(_ParsedTool parsed) {
+  List<Widget> _buildDetails(ToolPresentationSource parsed) {
     final details = <Widget>[
       if (_hasMetadataDetail(parsed.output))
         _BoundedMetadataDetail(
@@ -3365,259 +3325,6 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
   }
 }
 
-enum _ToolActivityKind {
-  load,
-  read,
-  edit,
-  run,
-  search,
-  interact,
-  wait,
-  context,
-  generic,
-}
-
-class _ToolActivityPresentation {
-  const _ToolActivityPresentation({
-    required this.kind,
-    required this.icon,
-    required this.action,
-    required this.subject,
-    this.suffix = '',
-    this.linkSubject = false,
-  });
-
-  final _ToolActivityKind kind;
-  final IconData icon;
-  final String action;
-  final String subject;
-  final String suffix;
-  final bool linkSubject;
-
-  String get semanticLabel => [
-    action,
-    if (subject.isNotEmpty) subject,
-    if (suffix.isNotEmpty) suffix,
-  ].join(' ');
-}
-
-_ToolActivityPresentation _toolActivityPresentation(_ParsedTool tool) {
-  final kind = _toolActivityKind(tool);
-  final input = _objectMap(tool.input);
-  final diffs = _toolDiffs(tool.content);
-  final path = _toolFilePath(tool, input, diffs);
-  final subject = switch (kind) {
-    _ToolActivityKind.read || _ToolActivityKind.edit => path,
-    _ToolActivityKind.run => _toolCommand(tool, input),
-    _ToolActivityKind.search => _firstNonEmptyString(input, const [
-      'q',
-      'query',
-      'pattern',
-      'search_term',
-    ]),
-    _ToolActivityKind.interact => 'the app',
-    _ToolActivityKind.wait => 'for background work',
-    _ToolActivityKind.context => 'context',
-    _ToolActivityKind.load => _firstNonEmptyString(input, const [
-      'name',
-      'skill',
-      'tool',
-      'path',
-    ]),
-    _ToolActivityKind.generic => tool.title,
-  };
-  final additions = diffs.fold<int>(0, (sum, diff) => sum + diff.additionCount);
-  final deletions = diffs.fold<int>(0, (sum, diff) => sum + diff.deletionCount);
-  final suffix = additions == 0 && deletions == 0
-      ? ''
-      : '+$additions -$deletions';
-  return switch (kind) {
-    _ToolActivityKind.load => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.extension_outlined,
-      action: 'Loaded',
-      subject: subject,
-    ),
-    _ToolActivityKind.read => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.menu_book_outlined,
-      action: 'Read',
-      subject: subject,
-      linkSubject: subject.isNotEmpty,
-    ),
-    _ToolActivityKind.edit => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.edit_outlined,
-      action: 'Edited',
-      subject: subject,
-      suffix: suffix,
-      linkSubject: subject.isNotEmpty,
-    ),
-    _ToolActivityKind.run => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.terminal_rounded,
-      action: 'Ran',
-      subject: subject,
-    ),
-    _ToolActivityKind.search => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.search_rounded,
-      action: 'Searched',
-      subject: subject,
-    ),
-    _ToolActivityKind.interact => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.touch_app_outlined,
-      action: 'Controlled',
-      subject: subject,
-    ),
-    _ToolActivityKind.wait => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.schedule_rounded,
-      action: 'Waited',
-      subject: subject,
-    ),
-    _ToolActivityKind.context => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.compress_rounded,
-      action: 'Compacted',
-      subject: subject,
-    ),
-    _ToolActivityKind.generic => _ToolActivityPresentation(
-      kind: kind,
-      icon: Icons.build_outlined,
-      action: 'Used',
-      subject: subject,
-    ),
-  };
-}
-
-_ToolActivityKind _toolActivityKind(_ParsedTool tool) {
-  final title = tool.title.toLowerCase();
-  if (title.contains('node_repl') ||
-      title.contains('computer_use') ||
-      title.contains('computer-use')) {
-    return _ToolActivityKind.interact;
-  }
-  if (title == 'wait' || title.endsWith('.wait')) {
-    return _ToolActivityKind.wait;
-  }
-  if (title.contains('context compact')) {
-    return _ToolActivityKind.context;
-  }
-  if (title.contains('edit') ||
-      title.contains('write') ||
-      title.contains('patch') ||
-      title.contains('create_file')) {
-    return _ToolActivityKind.edit;
-  }
-  if (title == 'read' ||
-      title.contains('read_file') ||
-      title.contains('view_file') ||
-      title.contains('open_file')) {
-    return _ToolActivityKind.read;
-  }
-  if (title.contains('exec') ||
-      title.contains('command') ||
-      title.contains('shell') ||
-      title.contains('bash') ||
-      title.contains('terminal') ||
-      title.contains('write_stdin')) {
-    return _ToolActivityKind.run;
-  }
-  if (title.contains('search') || title == 'find' || title.contains('grep')) {
-    return _ToolActivityKind.search;
-  }
-  if (title.contains('load') ||
-      title.contains('skill') ||
-      title.contains('tool_search')) {
-    return _ToolActivityKind.load;
-  }
-  return _ToolActivityKind.generic;
-}
-
-String _toolFilePath(
-  _ParsedTool tool,
-  Map<String, Object?> input,
-  List<_ToolDiffProjection> diffs,
-) {
-  final direct = _firstNonEmptyString(input, const [
-    'path',
-    'file_path',
-    'filePath',
-    'filename',
-    'file',
-  ]);
-  final candidate = direct.isNotEmpty
-      ? direct
-      : diffs.isNotEmpty
-      ? diffs.first.path
-      : tool.locations.isNotEmpty
-      ? tool.locations.first.split(':').first
-      : _patchFilePath(tool.input);
-  if (candidate.isEmpty) return '';
-  final normalized = candidate.replaceAll('\\', '/');
-  final parts = normalized.split('/').where((part) => part.isNotEmpty).toList();
-  return parts.isEmpty ? candidate : parts.last;
-}
-
-String _patchFilePath(Object? input) {
-  if (input is! String) return '';
-  final match = RegExp(
-    r'^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$',
-    multiLine: true,
-  ).firstMatch(input);
-  return match?.group(1)?.trim() ?? '';
-}
-
-String _toolCommand(_ParsedTool tool, Map<String, Object?> input) {
-  final command = _firstNonEmptyString(input, const ['cmd', 'command']);
-  if (command.isNotEmpty) return command;
-  return tool.title;
-}
-
-String _firstNonEmptyString(Map<String, Object?> input, List<String> keys) {
-  for (final key in keys) {
-    final value = input[key];
-    if (value is String && value.trim().isNotEmpty) return value.trim();
-  }
-  return '';
-}
-
-String _toolGroupActivitySummary(List<_ParsedTool> tools) {
-  final kinds = tools.map(_toolActivityKind).toSet();
-  final activities = <String>[
-    if (kinds.contains(_ToolActivityKind.load)) 'loaded tools',
-    if (kinds.contains(_ToolActivityKind.edit)) 'edited files',
-    if (kinds.contains(_ToolActivityKind.read)) 'read files',
-    if (kinds.contains(_ToolActivityKind.run)) 'ran commands',
-    if (kinds.contains(_ToolActivityKind.search)) 'searched',
-    if (kinds.contains(_ToolActivityKind.interact)) 'controlled the app',
-    if (kinds.contains(_ToolActivityKind.wait)) 'waited for background work',
-    if (kinds.contains(_ToolActivityKind.context)) 'compacted context',
-  ];
-  if (activities.isEmpty) {
-    final titles = tools.map((tool) => tool.title).toSet();
-    if (titles.length == 1) return 'Used ${titles.single}';
-    return 'Used ${tools.length} tools';
-  }
-  final sentence = _naturalLanguageList(activities);
-  return sentence[0].toUpperCase() + sentence.substring(1);
-}
-
-String _naturalLanguageList(List<String> items) {
-  if (items.length == 1) return items.single;
-  if (items.length == 2) return '${items.first} and ${items.last}';
-  return '${items.take(items.length - 1).join(', ')}, and ${items.last}';
-}
-
-IconData _toolGroupActivityIcon(List<_ParsedTool> tools) {
-  final edited = tools.any(
-    (tool) => _toolActivityKind(tool) == _ToolActivityKind.edit,
-  );
-  return edited ? Icons.edit_outlined : Icons.build_outlined;
-}
-
 enum _ToolGroupStatusKind { pending, inProgress, completed, failed, cancelled }
 
 class _ToolGroupStatusSummary {
@@ -3626,7 +3333,7 @@ class _ToolGroupStatusSummary {
   final String label;
   final Color color;
 
-  factory _ToolGroupStatusSummary.from(List<_ParsedTool> tools) {
+  factory _ToolGroupStatusSummary.from(List<ToolPresentationSource> tools) {
     var pendingCount = 0;
     var inProgressCount = 0;
     var failedCount = 0;
@@ -3695,7 +3402,7 @@ _ToolGroupStatusKind _toolGroupStatusKind(String status) {
 class _ToolHeader extends StatelessWidget {
   const _ToolHeader({required this.parsed, this.compact = false});
 
-  final _ParsedTool parsed;
+  final ToolPresentationSource parsed;
   final bool compact;
 
   @override
@@ -5474,70 +5181,6 @@ String? _toolOutputText(Object? value, {int depth = 0}) {
     if (nested != null) return nested;
   }
   return null;
-}
-
-class _ParsedTool {
-  const _ParsedTool({
-    required this.title,
-    required this.status,
-    required this.id,
-    required this.kind,
-    required this.content,
-    required this.input,
-    required this.output,
-    required this.locations,
-    required this.previewRevision,
-  });
-
-  final String title;
-  final String status;
-  final String id;
-  final String kind;
-  final Object? content;
-  final Object? input;
-  final Object? output;
-  final List<String> locations;
-  final Object previewRevision;
-
-  factory _ParsedTool.fromMessage(ChatMessage message) {
-    final metadata = message.metadata;
-    var title = _stringMetadata(metadata, 'title') ?? message.text;
-    var status = _stringMetadata(metadata, 'status') ?? '';
-    final embeddedToolTitle = RegExp(
-      r'^\[Tool:\s*(.*?)\]\s*(.*)$',
-    ).firstMatch(title);
-    if (embeddedToolTitle != null) {
-      title = embeddedToolTitle.group(1)?.trim() ?? title;
-      status = status.isEmpty
-          ? embeddedToolTitle.group(2)?.trim() ?? ''
-          : status;
-    }
-    status = status.replaceFirst('ToolCallStatus.', '');
-    if (status.isEmpty) status = 'completed';
-
-    final locations = _mapList(metadata['locations'])
-        .map((location) {
-          final path = _stringMetadata(location, 'path') ?? '';
-          final line = location['line'];
-          return line == null ? path : '$path:$line';
-        })
-        .where((location) => location.isNotEmpty)
-        .toList();
-
-    return _ParsedTool(
-      title: title.isEmpty ? 'Tool call' : title,
-      status: status,
-      id: _toolCallIdMetadata(metadata) ?? '',
-      kind: _stringMetadata(metadata, 'kind') == 'tool'
-          ? ''
-          : _stringMetadata(metadata, 'kind') ?? '',
-      content: metadata['content'],
-      input: _firstMetadataValue(metadata, const ['rawInput', 'raw_input']),
-      output: _firstMetadataValue(metadata, const ['rawOutput', 'raw_output']),
-      locations: locations,
-      previewRevision: message.revision,
-    );
-  }
 }
 
 class _DetailEntry {

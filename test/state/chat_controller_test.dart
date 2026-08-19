@@ -17,6 +17,7 @@ import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/prompt_attachment.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
+import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/storage/session_transcript_cache.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
@@ -6454,6 +6455,88 @@ void main() {
     expect(controller.sessions.single.cwd, '/other/project');
   });
 
+  test('create session applies model and reasoning template options', () async {
+    const settings = AcpSessionSettings(
+      configOptions: [
+        AcpConfigOption(
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'balanced',
+          options: [
+            AcpConfigOptionChoice(value: 'balanced', name: 'Balanced'),
+            AcpConfigOptionChoice(value: 'fast', name: 'Fast'),
+          ],
+        ),
+        AcpConfigOption(
+          id: 'reasoning_effort',
+          name: 'Reasoning effort',
+          type: 'select',
+          currentValue: 'low',
+          options: [
+            AcpConfigOptionChoice(value: 'low', name: 'Low'),
+            AcpConfigOptionChoice(value: 'high', name: 'High'),
+          ],
+        ),
+      ],
+    );
+    final controller = ChatController(
+      client: FakeAgentClient(sessionSettings: settings),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+
+    final created = await controller.newSession(
+      template: const SessionTemplateConfig(
+        id: 'fast-review',
+        name: 'Fast review',
+        version: 4,
+        model: 'fast',
+        reasoningEffort: 'high',
+      ),
+    );
+
+    expect(created, isTrue);
+    expect(controller.currentSession?.sessionTemplateId, 'fast-review');
+    expect(controller.currentSession?.sessionTemplateVersion, 4);
+    expect(controller.sessionSettings.modelOption?.currentValue, 'fast');
+    expect(
+      controller.sessionSettings.reasoningEffortOption?.currentValue,
+      'high',
+    );
+    expect(controller.sessionTemplateWarnings, isEmpty);
+  });
+
+  test(
+    'create session applies a mode-only template through ACP fallback',
+    () async {
+      const settings = AcpSessionSettings(
+        modes: AcpSessionModeInfo(
+          currentModeId: 'ask',
+          availableModes: [
+            AcpSessionMode(id: 'ask', name: 'Ask'),
+            AcpSessionMode(id: 'review', name: 'Review'),
+          ],
+        ),
+      );
+      final fake = FakeAgentClient(sessionSettings: settings);
+      final controller = ChatController(client: fake, cwd: '/workspace');
+      addTearDown(controller.dispose);
+
+      await controller.newSession(
+        template: const SessionTemplateConfig(
+          id: 'review',
+          name: 'Review',
+          mode: 'review',
+        ),
+      );
+
+      expect(fake.lastSetModeId, 'review');
+      expect(controller.sessionSettings.modes.currentModeId, 'review');
+      expect(controller.sessionTemplateWarnings, isEmpty);
+    },
+  );
+
   test('usage updates set session usage without timeline messages', () async {
     final controller = ChatController(
       client: FakeAgentClient(
@@ -8801,6 +8884,7 @@ void main() {
             additionalDirectories: const <String>[],
             updatedAt: updatedAt,
           ),
+          timelineHistoryWasTruncated: true,
           messages: <Map<String, Object?>>[
             <String, Object?>{
               'role': 'user',
@@ -8867,6 +8951,7 @@ void main() {
       expect(controller.lastSessionLoadMetrics?.cacheMessageCount, 2);
       expect(controller.lastSessionLoadMetrics?.replayedHistory, isFalse);
       expect(controller.lastSessionLoadMetrics?.replayEventCount, 0);
+      expect(controller.timelineHistoryWasTruncated, isTrue);
     },
   );
 
@@ -10456,7 +10541,7 @@ void main() {
   );
 
   test(
-    'permission requests for closed sessions are cancelled without active session',
+    'permission requests for closed sessions are cancelled without new audit',
     () async {
       final fake = FakeAgentClient();
       final controller = ChatController(client: fake, cwd: '/workspace');
@@ -10482,15 +10567,7 @@ void main() {
       expect(controller.pendingPermissionRequest, isNull);
       expect(fake.lastPermissionRequestId, 'permission-stale');
       expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
-      expect(controller.permissionHistory, hasLength(1));
-      expect(
-        controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
-      );
-      expect(
-        controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.system,
-      );
+      expect(controller.permissionHistory, isEmpty);
     },
   );
 
@@ -11296,6 +11373,52 @@ void main() {
 
     expect(reviewer.workspaceRoots.single, '/other/project');
     expect(reviewer.additionalDirectories.single, ['/other/shared']);
+    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+  });
+
+  test('auto review preserves explicit empty active session roots', () async {
+    final fake = FakeAgentClient();
+    final reviewer = _FakePermissionReviewer(
+      const AcpPermissionReviewResult(
+        decision: AcpPermissionDecision.allow,
+        risk: 'low',
+        rationale: 'No additional roots are needed.',
+        reviewer: 'sidecar-reviewer',
+      ),
+    );
+    final controller = ChatController(
+      client: fake,
+      cwd: '/workspace',
+      additionalDirectories: const <String>['/global-extra'],
+      permissionReviewer: reviewer,
+    );
+    controller.currentSession = AgentSession(
+      id: 'session-empty-extra',
+      cwd: '/other/project',
+      createdAt: DateTime(2026, 5, 31, 12),
+      additionalDirectories: const <String>[],
+    );
+    addTearDown(controller.dispose);
+    controller.setToolCallExecutionPolicy(
+      AcpToolCallExecutionPolicy.autoReview,
+    );
+
+    fake.emitPermissionRequest(
+      AcpPermissionRequest(
+        id: 'permission-empty-extra',
+        title: 'Create terminal',
+        rationale: 'Requested by agent',
+        sessionId: 'session-empty-extra',
+        toolName: 'terminal',
+        toolKind: 'execute',
+        options: const <String>['Allow', 'Deny'],
+        requestedAt: DateTime(2026, 5, 31, 12),
+      ),
+    );
+    await pumpEventQueue(times: 2);
+
+    expect(reviewer.workspaceRoots.single, '/other/project');
+    expect(reviewer.additionalDirectories.single, isEmpty);
     expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
   });
 
@@ -12272,6 +12395,26 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.sessionReady);
   });
 
+  test('fork current session preserves its template identity', () async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
+    addTearDown(controller.dispose);
+    await controller.newSession(
+      template: const SessionTemplateConfig(
+        id: 'review',
+        name: 'Review',
+        version: 4,
+      ),
+    );
+
+    await controller.forkCurrentSession();
+
+    expect(controller.currentSession?.sessionTemplateId, 'review');
+    expect(controller.currentSession?.sessionTemplateVersion, 4);
+  });
+
   test('fork current session applies initial fork events', () async {
     final fake = FakeAgentClient(
       forkSessionEvents: const [
@@ -12375,10 +12518,7 @@ void main() {
       expect(controller.pendingPermissionRequest, isNull);
       expect(controller.lastError, isNull);
       expect(controller.status, app_state.ConnectionStatus.connected);
-      expect(
-        controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
-      );
+      expect(controller.permissionHistory, isEmpty);
     },
   );
 

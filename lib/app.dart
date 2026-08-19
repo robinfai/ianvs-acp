@@ -92,15 +92,18 @@ Map<String, Object?> _rustMcpServerProjection(McpServerConfig server) {
 }
 
 class _PendingDeepLinkRequest {
-  const _PendingDeepLinkRequest({
+  _PendingDeepLinkRequest({
     required this.key,
+    required this.token,
     required this.request,
     required this.handlerEpoch,
   });
 
   final String key;
+  final Object token;
   final DeepLinkRequest request;
   final int handlerEpoch;
+  bool resumeStarted = false;
 }
 
 class AcpClientApp extends StatefulWidget {
@@ -118,6 +121,8 @@ class AcpClientApp extends StatefulWidget {
     this.initialResumeSessionId,
     this.initialResumeCwd,
     this.initialResumeAgentName,
+    this.initialResumeSessionTemplateId,
+    this.initialResumeSessionTemplateVersion,
     this.openSessionWindow,
     this.autoLoadWorkspaceSessions = true,
     this.createAgentClient,
@@ -143,6 +148,8 @@ class AcpClientApp extends StatefulWidget {
   final String? initialResumeSessionId;
   final String? initialResumeCwd;
   final String? initialResumeAgentName;
+  final String? initialResumeSessionTemplateId;
+  final int? initialResumeSessionTemplateVersion;
   final SessionWindowOpener? openSessionWindow;
   final bool autoLoadWorkspaceSessions;
   final AcpAgentClientFactory? createAgentClient;
@@ -171,6 +178,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     'ianvs_acp/deep_links',
   );
   static const int _maxDeepLinkConfirmations = 8;
+  static const int _maxInFlightDeepLinks = 8;
   static Object? _deepLinkHandlerOwner;
 
   late AcpClientConfig _config;
@@ -188,15 +196,22 @@ class _AcpClientAppState extends State<AcpClientApp> {
   // to own catalog loading and ordinary idle session switching.
   final List<ChatController> _supplementalControllers = <ChatController>[];
   final Map<String, String> _controllerSignaturesByAgent = <String, String>{};
-  final Map<String, SessionScopedAgentClientPool> _clientPoolsByAgent =
+  final Map<ChatController, String> _controllerRuntimeSignatures =
+      <ChatController, String>{};
+  final Map<ChatController, AcpClientConfig> _controllerRuntimeConfigs =
+      <ChatController, AcpClientConfig>{};
+  final Map<String, SessionScopedAgentClientPool> _clientPoolsByRuntime =
       <String, SessionScopedAgentClientPool>{};
-  final Map<String, String> _clientPoolSignaturesByAgent = <String, String>{};
   final Map<ChatController, VoidCallback> _sessionIndexListeners =
       <ChatController, VoidCallback>{};
-  final Set<String> _handledDeepLinks = <String>{};
+  // Platform deep-link handlers can move between State instances while a
+  // restore is still in flight. Keep token-guarded dedupe process-wide so a
+  // replacement State cannot start the same external operation twice.
+  static final Map<String, Object> _inFlightDeepLinks = <String, Object>{};
   final Queue<_PendingDeepLinkRequest> _pendingDeepLinkRequests =
       Queue<_PendingDeepLinkRequest>();
-  bool _deepLinkConfirmationActive = false;
+  _PendingDeepLinkRequest? _activeDeepLinkRequest;
+  Object? _activeDeepLinkDrainToken;
   bool _deepLinkHandlerInstalled = false;
   bool _initialDeepLinksLoaded = false;
   final Object _deepLinkHandlerToken = Object();
@@ -210,6 +225,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
       HashSet<ArchivedSessionSnapshot>.identity();
   bool _agentDiscoveryStarted = false;
   bool _sessionIndexHydrated = false;
+  Future<Object?>? _sessionIndexHydration;
+  String? _sessionIndexHydrationError;
   bool _sessionIndexPersistScheduled = false;
   List<AgentSession> _unresolvedSessionIndex = const <AgentSession>[];
   int _sessionIndexHydrationSerial = 0;
@@ -238,7 +255,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (widget.controller == null) {
       _controller = _cachedControllerFor(_config);
       _ensureControllersForSelectableAgents(_config);
-      unawaited(_hydrateSessionIndex());
+      _beginSessionIndexHydration();
     } else {
       _controller = widget.controller!;
     }
@@ -280,14 +297,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (controllerChanged) {
       if (oldWidget.controller == null) {
         _teardownDeepLinkHandling();
-        _disposeControllerList(_takeCachedControllers());
+        _disposeControllerList(_takeCachedControllers(clearClientPools: true));
       }
       _config = nextWidgetConfig;
       _widgetConfigSignature = nextConfigSignature;
       if (widget.controller == null) {
         _controller = _cachedControllerFor(_config);
         _ensureControllersForSelectableAgents(_config);
-        unawaited(_hydrateSessionIndex());
+        _beginSessionIndexHydration();
       } else {
         _controller = widget.controller!;
       }
@@ -316,7 +333,11 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
 
     _widgetConfigSignature = nextConfigSignature;
-    _replaceOwnedControllerConfiguration(nextWidgetConfig, rebuild: false);
+    _replaceOwnedControllerConfiguration(
+      nextWidgetConfig,
+      rebuild: false,
+      clearClientPools: foregroundAgentFactoryChanged,
+    );
   }
 
   StartupOptions get _initialStartupOptions {
@@ -327,6 +348,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
           : _initialResumeSessionId,
       resumeCwd: _trimmedOrNull(widget.initialResumeCwd),
       resumeAgentName: _trimmedOrNull(widget.initialResumeAgentName),
+      resumeSessionTemplateId: _trimmedOrNull(
+        widget.initialResumeSessionTemplateId,
+      ),
+      resumeSessionTemplateVersion: widget.initialResumeSessionTemplateVersion,
     );
   }
 
@@ -349,7 +374,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _pendingUndoSnapshots.clear();
     _teardownDeepLinkHandling();
     if (widget.controller == null) {
-      _disposeControllerList(_takeCachedControllers());
+      _disposeControllerList(_takeCachedControllers(clearClientPools: true));
     }
     super.dispose();
   }
@@ -378,8 +403,16 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (!_deepLinkHandlerInstalled) return;
     _deepLinkHandlerInstalled = false;
     _deepLinkHandlerEpoch += 1;
+    _activeDeepLinkDrainToken = null;
     while (_pendingDeepLinkRequests.isNotEmpty) {
-      _handledDeepLinks.remove(_pendingDeepLinkRequests.removeFirst().key);
+      _releaseDeepLinkRequest(_pendingDeepLinkRequests.removeFirst());
+    }
+    final activeRequest = _activeDeepLinkRequest;
+    if (activeRequest != null) {
+      if (!activeRequest.resumeStarted) {
+        _releaseDeepLinkRequest(activeRequest);
+      }
+      _activeDeepLinkRequest = null;
     }
     final activeDialogRoute = _activeDeepLinkDialogRoute;
     _activeDeepLinkDialogToken = null;
@@ -436,17 +469,24 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (!request.requiresConfirmation) return;
 
     final key = _deepLinkRequestKey(request);
-    if (!_handledDeepLinks.add(key)) return;
+    if (_inFlightDeepLinks.containsKey(key)) return;
+    if (_inFlightDeepLinks.length >= _maxInFlightDeepLinks) return;
+    final requestToken = Object();
+    _inFlightDeepLinks[key] = requestToken;
 
     final confirmationCount =
-        _pendingDeepLinkRequests.length + (_deepLinkConfirmationActive ? 1 : 0);
+        _pendingDeepLinkRequests.length +
+        (_activeDeepLinkDrainToken == null ? 0 : 1);
     if (confirmationCount >= _maxDeepLinkConfirmations) {
-      _handledDeepLinks.remove(key);
+      if (identical(_inFlightDeepLinks[key], requestToken)) {
+        _inFlightDeepLinks.remove(key);
+      }
       return;
     }
     _pendingDeepLinkRequests.add(
       _PendingDeepLinkRequest(
         key: key,
+        token: requestToken,
         request: request,
         handlerEpoch: handlerEpoch,
       ),
@@ -455,16 +495,26 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   String _deepLinkRequestKey(DeepLinkRequest request) {
-    return jsonEncode(<String?>[
+    final canonical = jsonEncode(<Object?>[
       'session',
       request.sessionId,
       request.cwd,
       request.agentName,
+      request.sessionTemplateId,
+      request.sessionTemplateVersion?.toString(),
+      request.validationErrors,
     ]);
+    return sha256.convert(utf8.encode(canonical)).toString();
+  }
+
+  void _releaseDeepLinkRequest(_PendingDeepLinkRequest pending) {
+    if (identical(_inFlightDeepLinks[pending.key], pending.token)) {
+      _inFlightDeepLinks.remove(pending.key);
+    }
   }
 
   Future<void> _drainDeepLinkConfirmationQueue() async {
-    if (_deepLinkConfirmationActive ||
+    if (_activeDeepLinkDrainToken != null ||
         !_ownsDeepLinkHandler(_deepLinkHandlerEpoch)) {
       return;
     }
@@ -475,92 +525,101 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
 
-    _deepLinkConfirmationActive = true;
+    final drainToken = Object();
+    _activeDeepLinkDrainToken = drainToken;
     try {
-      while (_pendingDeepLinkRequests.isNotEmpty) {
+      while (_pendingDeepLinkRequests.isNotEmpty &&
+          identical(_activeDeepLinkDrainToken, drainToken) &&
+          _ownsDeepLinkHandler(_deepLinkHandlerEpoch)) {
         final pending = _pendingDeepLinkRequests.removeFirst();
-        if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
-          _handledDeepLinks.remove(pending.key);
-          continue;
-        }
-        final dialogContext = _navigatorKey.currentContext;
-        if (dialogContext == null) return;
-        if (!dialogContext.mounted) return;
-        final confirmationToken = Object();
-        final confirmed = await showDialog<bool>(
-          context: dialogContext,
-          barrierDismissible: false,
-          builder: (context) {
-            _activeDeepLinkDialogToken = confirmationToken;
-            _activeDeepLinkDialogRoute = ModalRoute.of(context);
-            return DeepLinkConfirmationDialog(request: pending.request);
-          },
-        );
-        if (identical(_activeDeepLinkDialogToken, confirmationToken)) {
-          _activeDeepLinkDialogToken = null;
-          _activeDeepLinkDialogRoute = null;
-        }
-        if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
-          _handledDeepLinks.remove(pending.key);
-          return;
-        }
-        if (confirmed != true) {
-          _handledDeepLinks.remove(pending.key);
-          continue;
-        }
-        final request = pending.request;
-        DeepLinkWorkspaceValidation workspace;
+        _activeDeepLinkRequest = pending;
         try {
-          workspace = await widget.deepLinkWorkspaceValidator(request.cwd);
-        } on Object catch (error) {
-          _handledDeepLinks.remove(pending.key);
-          if (!_ownsDeepLinkHandler(pending.handlerEpoch)) return;
-          _showSnackBar('Could not open external session: $error');
-          continue;
-        }
-        if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
-          _handledDeepLinks.remove(pending.key);
-          return;
-        }
-        if (workspace.errors.isNotEmpty) {
-          _handledDeepLinks.remove(pending.key);
-          _showSnackBar(
-            'Could not open external session: ${workspace.errors.join(' ')}',
+          if (!_ownsDeepLinkHandler(pending.handlerEpoch)) continue;
+          final dialogContext = _navigatorKey.currentContext;
+          if (dialogContext == null || !dialogContext.mounted) return;
+          final confirmationToken = Object();
+          final confirmed = await showDialog<bool>(
+            context: dialogContext,
+            barrierDismissible: false,
+            builder: (context) {
+              _activeDeepLinkDialogToken = confirmationToken;
+              _activeDeepLinkDialogRoute = ModalRoute.of(context);
+              return DeepLinkConfirmationDialog(request: pending.request);
+            },
           );
-          continue;
-        }
-        try {
-          final opened = await _resumeFromStartupOptions(
-            StartupOptions(
-              resumeSessionId: request.sessionId,
-              resumeCwd: workspace.path,
-              resumeAgentName: request.agentName,
-            ),
-          );
-          if (!_ownsDeepLinkHandler(pending.handlerEpoch)) {
-            _handledDeepLinks.remove(pending.key);
-            return;
+          if (identical(_activeDeepLinkDialogToken, confirmationToken)) {
+            _activeDeepLinkDialogToken = null;
+            _activeDeepLinkDialogRoute = null;
           }
-          if (!opened) _handledDeepLinks.remove(pending.key);
-        } on Object catch (error) {
-          _handledDeepLinks.remove(pending.key);
-          if (_ownsDeepLinkHandler(pending.handlerEpoch)) {
+          if (!_ownsDeepLinkHandler(pending.handlerEpoch)) return;
+          if (confirmed != true) continue;
+          final request = pending.request;
+          DeepLinkWorkspaceValidation workspace;
+          try {
+            workspace = await widget.deepLinkWorkspaceValidator(request.cwd);
+          } on Object catch (error) {
+            if (!_ownsDeepLinkHandler(pending.handlerEpoch)) return;
             _showSnackBar('Could not open external session: $error');
+            continue;
+          }
+          if (!_ownsDeepLinkHandler(pending.handlerEpoch)) return;
+          if (workspace.errors.isNotEmpty) {
+            _showSnackBar(
+              'Could not open external session: ${workspace.errors.join(' ')}',
+            );
+            continue;
+          }
+          try {
+            await _resumeFromStartupOptions(
+              StartupOptions(
+                resumeSessionId: request.sessionId,
+                resumeCwd: workspace.path,
+                resumeAgentName: request.agentName,
+                resumeSessionTemplateId: request.sessionTemplateId,
+                resumeSessionTemplateVersion: request.sessionTemplateVersion,
+              ),
+              trustExplicitTemplate: false,
+              isCurrentRequest: () =>
+                  _ownsDeepLinkHandler(pending.handlerEpoch) &&
+                  identical(_activeDeepLinkDrainToken, drainToken) &&
+                  identical(_activeDeepLinkRequest, pending),
+              onResumeStarted: () => pending.resumeStarted = true,
+            );
+          } on Object catch (error) {
+            if (_ownsDeepLinkHandler(pending.handlerEpoch)) {
+              _showSnackBar('Could not open external session: $error');
+            }
+          }
+        } finally {
+          _releaseDeepLinkRequest(pending);
+          if (identical(_activeDeepLinkRequest, pending)) {
+            _activeDeepLinkRequest = null;
           }
         }
       }
     } finally {
-      _deepLinkConfirmationActive = false;
-      if (_pendingDeepLinkRequests.isNotEmpty &&
-          _ownsDeepLinkHandler(_deepLinkHandlerEpoch)) {
-        unawaited(_drainDeepLinkConfirmationQueue());
+      if (identical(_activeDeepLinkDrainToken, drainToken)) {
+        _activeDeepLinkDrainToken = null;
+        if (_pendingDeepLinkRequests.isNotEmpty &&
+            _ownsDeepLinkHandler(_deepLinkHandlerEpoch)) {
+          unawaited(_drainDeepLinkConfirmationQueue());
+        }
       }
     }
   }
 
-  Future<bool> _resumeFromStartupOptions(StartupOptions options) async {
+  Future<bool> _resumeFromStartupOptions(
+    StartupOptions options, {
+    bool trustExplicitTemplate = true,
+    bool Function()? isCurrentRequest,
+    VoidCallback? onResumeStarted,
+  }) async {
     final sessionId = _trimmedOrNull(options.resumeSessionId);
     if (sessionId == null || !mounted) return false;
+    if (widget.controller == null && !await _awaitSessionIndexHydration()) {
+      return false;
+    }
+    if (!mounted || isCurrentRequest?.call() == false) return false;
 
     var config = _config;
     final agentName = _trimmedOrNull(options.resumeAgentName);
@@ -573,10 +632,45 @@ class _AcpClientAppState extends State<AcpClientApp> {
       config = selectedConfig;
     }
 
-    final knownSession = _knownSessionForResume(sessionId, config);
     final explicitCwd = _trimmedOrNull(options.resumeCwd);
-    final targetSession =
-        knownSession?.copyWith(cwd: explicitCwd ?? knownSession.cwd) ??
+    final knownSession = _knownSessionForResume(
+      sessionId,
+      config,
+      cwd: explicitCwd,
+    );
+    final explicitTemplateId = _trimmedOrNull(options.resumeSessionTemplateId);
+    final explicitTemplateVersion = options.resumeSessionTemplateVersion;
+    if (!trustExplicitTemplate &&
+        (explicitTemplateId != null || explicitTemplateVersion != null)) {
+      final markerMatchesIndex =
+          knownSession != null &&
+          explicitTemplateId != null &&
+          explicitTemplateVersion != null &&
+          knownSession.sessionTemplateId?.trim() == explicitTemplateId &&
+          knownSession.sessionTemplateVersion == explicitTemplateVersion;
+      if (!markerMatchesIndex) {
+        _showSnackBar(
+          'Could not open external session: the template does not match the local session index.',
+        );
+        return false;
+      }
+    }
+    final hasCompleteExplicitTemplate =
+        explicitTemplateId != null && explicitTemplateVersion != null;
+    final selectedTemplateId =
+        trustExplicitTemplate && hasCompleteExplicitTemplate
+        ? explicitTemplateId
+        : knownSession?.sessionTemplateId;
+    final selectedTemplateVersion =
+        trustExplicitTemplate && hasCompleteExplicitTemplate
+        ? explicitTemplateVersion
+        : knownSession?.sessionTemplateVersion;
+    var targetSession =
+        knownSession?.copyWith(
+          cwd: explicitCwd ?? knownSession.cwd,
+          sessionTemplateId: selectedTemplateId,
+          sessionTemplateVersion: selectedTemplateVersion,
+        ) ??
         AgentSession(
           id: sessionId,
           cwd: explicitCwd ?? _controller.cwd,
@@ -584,13 +678,31 @@ class _AcpClientAppState extends State<AcpClientApp> {
           additionalDirectories: config.additionalDirectories,
           agentName:
               config.activeAgentServer?.persistenceIdentity ?? config.agentName,
+          sessionTemplateId: selectedTemplateId,
+          sessionTemplateVersion: selectedTemplateVersion,
         );
+    if (widget.controller == null) {
+      config = _configForSessionIndex(targetSession) ?? config;
+    }
+    if (knownSession == null &&
+        selectedTemplateId != null &&
+        selectedTemplateVersion != null) {
+      targetSession = targetSession.copyWith(
+        additionalDirectories: config.additionalDirectories,
+      );
+    }
 
     final activeController = _controllerWithCurrentSession(
       targetSession,
       config: config,
     );
     if (activeController != null) {
+      if (_blockedByBusyLegacyRuntime(config, target: activeController)) {
+        _showSnackBar(
+          'Wait for the current response before opening this session.',
+        );
+        return false;
+      }
       _activateController(config, activeController);
       return true;
     }
@@ -603,6 +715,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
       targetSession,
       config,
     );
+    if (localController != null &&
+        _blockedByBusyLegacyRuntime(config, target: localController)) {
+      _showSnackBar(
+        'Wait for the current response before opening this session.',
+      );
+      return false;
+    }
     final controller =
         localController ??
         (widget.controller == null
@@ -614,7 +733,11 @@ class _AcpClientAppState extends State<AcpClientApp> {
       );
       return false;
     }
+    if (explicitTemplateId != null && explicitTemplateVersion != null) {
+      controller.mergeSessionIndex(<AgentSession>[targetSession]);
+    }
     _activateController(config, controller);
+    onResumeStarted?.call();
     await controller.resumeSession(
       sessionId,
       cwd: targetSession.cwd,
@@ -622,7 +745,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
       title: targetSession.title,
       updatedAt: targetSession.updatedAt,
     );
-    if (mounted) setState(() {});
+    if (!mounted || isCurrentRequest?.call() == false) return false;
+    setState(() {});
     final resumed = controller.currentSession;
     final succeeded =
         resumed != null &&
@@ -664,6 +788,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
         clientProviders: _clientProviderConfig(_config),
         storage: _config.storage,
         assistantAgent: _config.assistantAgent,
+        sessionTemplates: _config.sessionTemplates,
+        defaultSessionTemplateId: _config.defaultSessionTemplateId,
+        runtimeConfig: _controllerRuntimeConfigs[_controller] ?? _config,
         configPath: _config.configPath,
         workspaceStateStore: _workspaceStateStore,
         defaultAgentName: _config.defaultAgentServerName,
@@ -703,6 +830,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
   String? get _combinedStartupError {
     final errors = <String>[
       if (widget.startupError case final error? when error.trim().isNotEmpty)
+        error.trim(),
+      if (_sessionIndexHydrationError case final error?
+          when error.trim().isNotEmpty)
         error.trim(),
     ];
     return errors.isEmpty ? null : errors.join('\n');
@@ -756,14 +886,17 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   AcpAgentClient _acquireAgentClient(AcpClientConfig config) {
+    _clientPoolsByRuntime.removeWhere((_, pool) => pool.isClosed);
     final agentName = config.agentName.trim();
-    final signature = _controllerSignature(config);
-    var pool = _clientPoolsByAgent[agentName];
-    if (pool == null || _clientPoolSignaturesByAgent[agentName] != signature) {
+    final signature = _agentClientRuntimeSignature(config);
+    final runtimeIdentity =
+        config.activeAgentServer?.persistenceIdentity ?? agentName;
+    final runtimeKey = jsonEncode(<String>[runtimeIdentity, signature]);
+    var pool = _clientPoolsByRuntime[runtimeKey];
+    if (pool == null || pool.isClosed) {
       final createAgentClient = widget.createAgentClient ?? _defaultAgentClient;
       pool = SessionScopedAgentClientPool(createAgentClient(config));
-      _clientPoolsByAgent[agentName] = pool;
-      _clientPoolSignaturesByAgent[agentName] = signature;
+      _clientPoolsByRuntime[runtimeKey] = pool;
     }
     return pool.acquire();
   }
@@ -856,16 +989,22 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final existing = _controllersByAgent[agentName];
     if (existing != null &&
         _controllerSignaturesByAgent[agentName] == signature) {
+      _controllerRuntimeSignatures[existing] = signature;
+      _controllerRuntimeConfigs[existing] = config;
       return existing;
     }
 
     if (existing != null) {
       _detachSessionIndexPersistence(existing);
+      _controllerRuntimeSignatures.remove(existing);
+      _controllerRuntimeConfigs.remove(existing);
       existing.dispose();
     }
     final controller = _controllerFor(config);
     _controllersByAgent[agentName] = controller;
     _controllerSignaturesByAgent[agentName] = signature;
+    _controllerRuntimeSignatures[controller] = signature;
+    _controllerRuntimeConfigs[controller] = config;
     _attachSessionIndexPersistence(controller);
     return controller;
   }
@@ -873,12 +1012,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
   ChatController _createSupplementalController(AcpClientConfig config) {
     final controller = _controllerFor(config);
     _supplementalControllers.add(controller);
+    _controllerRuntimeSignatures[controller] = _controllerSignature(config);
+    _controllerRuntimeConfigs[controller] = config;
     _attachSessionIndexPersistence(controller);
     return controller;
   }
 
   ChatController? _idleControllerFor(AcpClientConfig config) {
     final agentName = config.agentName.trim();
+    final signature = _controllerSignature(config);
     final candidates = <ChatController>[
       if (_controller.agentName.trim() == agentName) _controller,
       ?_controllersByAgent[agentName],
@@ -889,6 +1031,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final seen = <ChatController>{};
     for (final controller in candidates) {
       if (!seen.add(controller) ||
+          _controllerRuntimeSignatures[controller] != signature ||
           controller.isStreaming ||
           controller.isSessionOperationRunning) {
         continue;
@@ -899,31 +1042,64 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   ChatController? _availableControllerFor(AcpClientConfig config) {
+    if (_blockedByBusyLegacyRuntime(config)) {
+      return null;
+    }
     final idle = _idleControllerFor(config);
     if (idle != null) return idle;
     final primary = _controllersByAgent[config.agentName.trim()];
-    if (primary?.client.supportsConcurrentPrompts != true) return null;
+    if (primary != null &&
+        _controllerRuntimeSignatures[primary] == _controllerSignature(config) &&
+        primary.client.supportsConcurrentPrompts != true) {
+      return null;
+    }
     return _createSupplementalController(config);
+  }
+
+  bool _blockedByBusyLegacyRuntime(
+    AcpClientConfig config, {
+    ChatController? target,
+  }) {
+    final agentName = config.agentName.trim();
+    return _sessionControllers.any(
+      (controller) =>
+          !identical(controller, target) &&
+          controller.agentName.trim() == agentName &&
+          (controller.isStreaming || controller.isSessionOperationRunning) &&
+          controller.client.supportsConcurrentPrompts != true,
+    );
+  }
+
+  ChatController _controllerForIndexedConfig(AcpClientConfig config) {
+    final base = _configForAgent(_config, config.agentName);
+    if (base != null &&
+        _controllerSignature(base) == _controllerSignature(config)) {
+      return _cachedControllerFor(base);
+    }
+    return _idleControllerFor(config) ?? _createSupplementalController(config);
   }
 
   void _replaceOwnedControllerConfiguration(
     AcpClientConfig nextConfig, {
     bool rebuild = true,
+    bool clearClientPools = false,
   }) {
-    final staleControllers = _takeCachedControllers();
+    final staleControllers = _takeCachedControllers(
+      clearClientPools: clearClientPools,
+    );
     _config = nextConfig;
     _controller = _cachedControllerFor(nextConfig);
     _ensureControllersForSelectableAgents(nextConfig);
-    unawaited(_hydrateSessionIndex());
+    _beginSessionIndexHydration();
     _disposeControllerList(staleControllers);
     if (rebuild && mounted) setState(() {});
   }
 
   void _replaceOwnedControllerFactory() {
-    final staleControllers = _takeCachedControllers();
+    final staleControllers = _takeCachedControllers(clearClientPools: true);
     _controller = _cachedControllerFor(_config);
     _ensureControllersForSelectableAgents(_config);
-    unawaited(_hydrateSessionIndex());
+    _beginSessionIndexHydration();
     _disposeControllerList(staleControllers);
   }
 
@@ -944,7 +1120,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     return configPath != null && configPath.isNotEmpty;
   }
 
-  List<ChatController> _takeCachedControllers() {
+  List<ChatController> _takeCachedControllers({bool clearClientPools = false}) {
     final controllers = <ChatController>{
       ..._controllersByAgent.values,
       ..._supplementalControllers,
@@ -955,10 +1131,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _controllersByAgent.clear();
     _supplementalControllers.clear();
     _controllerSignaturesByAgent.clear();
-    // Pools remain alive through their controller leases and dispose their
-    // single underlying ACP client after the final controller finishes.
-    _clientPoolsByAgent.clear();
-    _clientPoolSignaturesByAgent.clear();
+    _controllerRuntimeSignatures.clear();
+    _controllerRuntimeConfigs.clear();
+    // Configuration-only replacement deliberately keeps exact-recipe pools:
+    // replacement controllers acquire a lease before stale controllers release
+    // theirs, so one recipe never has overlapping authoritative runtimes.
+    if (clearClientPools) _clientPoolsByRuntime.clear();
     return controllers;
   }
 
@@ -994,7 +1172,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         unresolvedSessions.add(session);
         continue;
       }
-      _cachedControllerFor(config).mergeSessionIndex([
+      _controllerForIndexedConfig(config).mergeSessionIndex([
         _sessionIndexWithFallbackAgent(session, config.agentName),
       ]);
     }
@@ -1009,6 +1187,44 @@ class _AcpClientAppState extends State<AcpClientApp> {
       if (!mounted || serial != _sessionIndexHydrationSerial) return;
       unawaited(_loadAllAgentSessionCatalogs().catchError((_) {}));
     });
+  }
+
+  void _beginSessionIndexHydration() {
+    _sessionIndexHydrationError = null;
+    final hydration = _hydrateSessionIndex().then<Object?>(
+      (_) => null,
+      onError: (Object error, StackTrace _) => error,
+    );
+    _sessionIndexHydration = hydration;
+    unawaited(
+      hydration.then((error) {
+        if (!mounted ||
+            !identical(hydration, _sessionIndexHydration) ||
+            error == null) {
+          return;
+        }
+        _sessionIndexHydrationError =
+            'Could not load the local session index: $error';
+        setState(() {});
+      }),
+    );
+  }
+
+  Future<bool> _awaitSessionIndexHydration() async {
+    while (mounted && widget.controller == null) {
+      final hydration = _sessionIndexHydration;
+      if (hydration == null) return true;
+      final error = await hydration;
+      if (!identical(hydration, _sessionIndexHydration)) continue;
+      if (error != null) {
+        if (mounted) {
+          _showSnackBar('Could not load the local session index: $error');
+        }
+        return false;
+      }
+      return true;
+    }
+    return mounted;
   }
 
   Future<void> _loadAllAgentSessionCatalogs() {
@@ -1095,7 +1311,39 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   AcpClientConfig? _configForSessionIndex(AgentSession session) {
-    return _config.configForSessionIndexAgent(session.agentName);
+    final agentConfig = _config.configForSessionIndexAgent(session.agentName);
+    if (agentConfig == null) return null;
+    final template = _sessionTemplateForIndex(session, agentConfig);
+    if (template == null) return agentConfig;
+    try {
+      return agentConfig.forSessionTemplate(template);
+    } on FormatException {
+      return agentConfig;
+    }
+  }
+
+  SessionTemplateConfig? _sessionTemplateForIndex(
+    AgentSession session,
+    AcpClientConfig agentConfig,
+  ) {
+    final templateId = session.sessionTemplateId?.trim();
+    if (templateId == null || templateId.isEmpty) return null;
+    final template = _config.sessionTemplateNamed(templateId);
+    if (template == null ||
+        session.sessionTemplateVersion != template.version) {
+      return null;
+    }
+    try {
+      final runtime = agentConfig.forSessionTemplate(template);
+      final persistedAgent =
+          agentConfig.activeAgentServer?.persistenceIdentity ??
+          agentConfig.agentName;
+      final templateAgent =
+          runtime.activeAgentServer?.persistenceIdentity ?? runtime.agentName;
+      return persistedAgent == templateAgent ? template : null;
+    } on FormatException {
+      return null;
+    }
   }
 
   AgentSession _sessionIndexWithFallbackAgent(
@@ -1113,9 +1361,13 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final injected = widget.workspaceStateStore;
     if (injected != null) return injected;
 
-    final path = WorkspaceSidebarStateStore.defaultPath(
-      configPath: _config.configPath,
-    );
+    final configPath = _config.configPath?.trim();
+    // An in-memory/programmatic config has no stable persistence identity.
+    // Keeping its sidebar index in memory also prevents unrelated ephemeral
+    // app instances from sharing the user's default on-disk state.
+    final path = configPath == null || configPath.isEmpty
+        ? null
+        : WorkspaceSidebarStateStore.defaultPath(configPath: configPath);
     final cached = _ownedWorkspaceStateStore;
     if (cached != null && _ownedWorkspaceStateStorePath == path) return cached;
     final store = WorkspaceSidebarStateStore(path: path);
@@ -1205,6 +1457,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
               'title': session.title,
               'titleOverride': session.titleOverride,
               'agentName': session.agentName,
+              'sessionTemplateId': session.sessionTemplateId,
+              'sessionTemplateVersion': session.sessionTemplateVersion,
               'additionalDirectories': session.additionalDirectories,
               'pinned': session.pinned,
               'archived': session.archived,
@@ -1282,6 +1536,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
             ? agentServers
             : const <AgentServerConfig>[],
         currentAgentName: _config.agentName,
+        sessionTemplates: widget.controller == null
+            ? _config.sessionTemplates
+            : const <SessionTemplateConfig>[],
+        defaultSessionTemplateId: _config.defaultSessionTemplateId,
         initialCwd:
             _trimmedOrNull(initialCwd) ??
             _controller.currentSession?.cwd ??
@@ -1292,6 +1550,37 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
     if (widget.controller != null) {
       await _controller.newSession(cwd: selection.cwd);
+      return;
+    }
+
+    final template = selection.sessionTemplate;
+    if (template != null) {
+      late final AcpClientConfig templateConfig;
+      try {
+        templateConfig = _config.forSessionTemplate(template);
+      } catch (error) {
+        _showSnackBar('Could not resolve session template: $error');
+        return;
+      }
+      final controller = _availableControllerFor(templateConfig);
+      if (controller == null) {
+        _showSnackBar(
+          'Wait for the current response before starting this template.',
+        );
+        return;
+      }
+      _activateController(
+        _config.withActiveAgentServer(templateConfig.agentName),
+        controller,
+      );
+      final created = await controller.newSession(
+        cwd: selection.cwd,
+        template: template,
+      );
+      if (created && controller.sessionTemplateWarnings.isNotEmpty) {
+        _showSnackBar(controller.sessionTemplateWarnings.join(' '));
+      }
+      if (mounted) setState(() {});
       return;
     }
 
@@ -1359,6 +1648,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
       config: sessionConfig,
     );
     if (activeTargetController != null) {
+      if (_blockedByBusyLegacyRuntime(
+        sessionConfig,
+        target: activeTargetController,
+      )) {
+        _showSnackBar(
+          'Wait for the current response before switching sessions.',
+        );
+        return;
+      }
       _restoreSessionAcrossCatalogAliases(
         session,
         preferred: activeTargetController,
@@ -1377,6 +1675,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
       sessionConfig,
     );
     if (localTargetController != null) {
+      if (_blockedByBusyLegacyRuntime(
+        sessionConfig,
+        target: localTargetController,
+      )) {
+        _showSnackBar(
+          'Wait for the current response before switching sessions.',
+        );
+        return;
+      }
       _activateController(sessionConfig, localTargetController);
       await localTargetController.resumeSession(
         session.id,
@@ -1463,7 +1770,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final sourceKey = config == null
         ? null
         : _sessionCatalogSourceKeyForConfig(config);
+    final runtimeSignature = config == null
+        ? null
+        : _controllerSignature(config);
     for (final controller in _sessionControllers) {
+      if (widget.controller == null &&
+          runtimeSignature != null &&
+          _controllerRuntimeSignatures[controller] != runtimeSignature) {
+        continue;
+      }
       if (sourceKey != null &&
           controller.sessionCatalogSourceKey?.trim() != sourceKey) {
         continue;
@@ -1497,8 +1812,12 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final agentName = config.agentName.trim();
     final persistenceIdentity =
         config.activeAgentServer?.persistenceIdentity ?? agentName;
+    final runtimeSignature = _controllerSignature(config);
     for (final controller in _sessionControllers) {
       if (!controller.canActivateSessionLocally(session.id)) continue;
+      if (_controllerRuntimeSignatures[controller] != runtimeSignature) {
+        continue;
+      }
       if (controller.agentName.trim() == agentName ||
           controller.sessionPersistenceIdentity.trim() == persistenceIdentity) {
         return controller;
@@ -1509,8 +1828,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   AgentSession? _knownSessionForResume(
     String sessionId,
-    AcpClientConfig config,
-  ) {
+    AcpClientConfig config, {
+    String? cwd,
+  }) {
     final normalizedSessionId = sessionId.trim();
     final sourceKey = _sessionCatalogSourceKeyForConfig(config);
     final agentName = config.agentName.trim();
@@ -1524,18 +1844,50 @@ class _AcpClientAppState extends State<AcpClientApp> {
                   controller.sessionPersistenceIdentity.trim() ==
                       persistenceIdentity)),
     );
+    final candidates = <AgentSession>[];
     for (final controller in controllers) {
       final current = controller.currentSession;
       if (current != null && current.id.trim() == normalizedSessionId) {
-        return current;
+        candidates.add(current);
       }
     }
     for (final controller in controllers) {
       for (final session in controller.sessions) {
-        if (session.id.trim() == normalizedSessionId) return session;
+        if (session.id.trim() == normalizedSessionId) candidates.add(session);
       }
     }
-    return null;
+    if (candidates.isEmpty) return null;
+    final requestedWorkspace = _trimmedOrNull(cwd);
+    final workspaceCandidates = requestedWorkspace == null
+        ? candidates
+        : candidates
+              .where(
+                (session) =>
+                    normalizeWorkspacePath(session.cwd) ==
+                    normalizeWorkspacePath(requestedWorkspace),
+              )
+              .toList(growable: false);
+    final eligible = workspaceCandidates.isEmpty
+        ? candidates
+        : workspaceCandidates;
+    for (final session in eligible) {
+      final indexedAgentConfig = _config.configForSessionIndexAgent(
+        session.agentName,
+      );
+      if (indexedAgentConfig != null &&
+          _sessionTemplateForIndex(session, indexedAgentConfig) != null) {
+        return session;
+      }
+    }
+    for (final session in eligible) {
+      final templateId = session.sessionTemplateId?.trim();
+      if (templateId != null &&
+          templateId.isNotEmpty &&
+          session.sessionTemplateVersion != null) {
+        return session;
+      }
+    }
+    return eligible.first;
   }
 
   bool _hasBoundSessionWorkspaceConflict(
@@ -1648,18 +2000,24 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (widget.controller == null &&
         agentName != null &&
         agentName.isNotEmpty) {
-      final config = _configForAgent(_config, agentName);
-      preferred = config == null ? _controller : _cachedControllerFor(config);
+      final config = _configForSessionIndex(session);
+      preferred = config == null
+          ? _controller
+          : _controllerForIndexedConfig(config);
     } else {
       preferred = _controller;
     }
     if (_controllerContainsSession(preferred, session)) return preferred;
 
     final sourceKey = preferred.sessionCatalogSourceKey?.trim();
+    final preferredRuntimeSignature = _controllerRuntimeSignatures[preferred];
     if (sourceKey != null && sourceKey.isNotEmpty) {
       for (final controller in _sessionControllers) {
         if (identical(controller, preferred) ||
             controller.sessionCatalogSourceKey?.trim() != sourceKey ||
+            (widget.controller == null &&
+                _controllerRuntimeSignatures[controller] !=
+                    preferredRuntimeSignature) ||
             !_controllerContainsSession(controller, session)) {
           continue;
         }
@@ -1811,9 +2169,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   Future<void> _openSideSession(AgentSession session) async {
-    final config = widget.controller == null
-        ? _configForSessionIndex(session)
+    final agentConfig = widget.controller == null
+        ? _config.configForSessionIndexAgent(session.agentName)
         : _config;
+    final template = widget.controller == null && agentConfig != null
+        ? _sessionTemplateForIndex(session, agentConfig)
+        : null;
+    final config = template == null
+        ? agentConfig
+        : agentConfig!.forSessionTemplate(template);
     if (config == null) {
       _showSnackBar('Could not select the session agent.');
       return;
@@ -1835,7 +2199,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return;
     }
     _activateController(config, controller);
-    final created = await controller.newSession(cwd: session.cwd);
+    final created = await controller.newSession(
+      cwd: session.cwd,
+      template: template,
+    );
     if (!created) {
       _showSnackBar('Could not open a side session.');
       return;
@@ -1850,18 +2217,20 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return false;
     }
 
-    var controller = _controllerForSession(session);
-    final agentName = session.agentName?.trim();
-    if (widget.controller == null &&
-        agentName != null &&
-        agentName.isNotEmpty &&
-        agentName != _config.agentName) {
-      final config = _configForAgent(_config, agentName);
+    final controller = _controllerForSession(session);
+    if (widget.controller == null) {
+      final config = _configForSessionIndex(session);
       if (config == null) {
-        _showSnackBar('Could not select agent "$agentName".');
+        _showSnackBar('Could not select the session runtime.');
         return false;
       }
-      controller = _activateAgent(config);
+      if (_blockedByBusyLegacyRuntime(config, target: controller)) {
+        _showSnackBar(
+          'Wait for the current response before forking a session.',
+        );
+        return false;
+      }
+      _activateController(config, controller);
     }
 
     await controller.forkSession(session);
@@ -2250,19 +2619,26 @@ class _AcpClientAppState extends State<AcpClientApp> {
         'cwd': session.cwd,
         if (session.agentName?.trim().isNotEmpty == true)
           'agent': session.agentName!.trim(),
+        if (session.sessionTemplateId?.trim().isNotEmpty == true)
+          'template': session.sessionTemplateId!.trim(),
+        if (session.sessionTemplateVersion != null)
+          'template_version': session.sessionTemplateVersion.toString(),
       },
     ).toString();
   }
 
   Future<void> _openSessionInNewWindow(AgentSession session) async {
     final args = <String>[
-      '--resume-session-id',
-      session.id,
-      '--resume-cwd',
-      session.cwd,
+      '--resume-session-id=${session.id}',
+      '--resume-cwd=${session.cwd}',
       if (session.agentName?.trim().isNotEmpty == true) ...[
-        '--resume-agent',
-        session.agentName!.trim(),
+        '--resume-agent=${session.agentName!.trim()}',
+      ],
+      if (session.sessionTemplateId?.trim().isNotEmpty == true) ...[
+        '--resume-template=${session.sessionTemplateId!.trim()}',
+      ],
+      if (session.sessionTemplateVersion != null) ...[
+        '--resume-template-version=${session.sessionTemplateVersion}',
       ],
     ];
 
@@ -2317,9 +2693,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
     AcpClientConfig nextConfig,
     ChatController controller,
   ) {
-    _ensureControllersForSelectableAgents(nextConfig);
+    final navigationConfig =
+        widget.controller == null &&
+            _config.agentServerNamed(nextConfig.agentName) != null
+        ? _config.withActiveAgentServer(nextConfig.agentName)
+        : nextConfig;
+    _ensureControllersForSelectableAgents(navigationConfig);
     setState(() {
-      _config = nextConfig;
+      _config = navigationConfig;
       _controller = controller;
     });
   }
@@ -2444,6 +2825,15 @@ class _AcpClientAppState extends State<AcpClientApp> {
       if (server != null) {
         return McpPermissionReviewAgent(config: reviewAgent, mcpServer: server);
       }
+      final target = reviewAgent.mcpServerName?.trim() ?? 'unknown';
+      return AcpAgentPermissionReviewer(
+        agentName: 'Unavailable MCP permission reviewer "$target"',
+        modelOverride: reviewAgent.model,
+        timeout: reviewAgent.timeout,
+        clientFactory: () => UnavailableAcpAgentClient(
+          message: 'Permission-review MCP server "$target" is unavailable.',
+        ),
+      );
     }
 
     final configuredAgentName = reviewAgent.enabled
@@ -2486,37 +2876,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   }
 
   AcpPermissionProviderConfig _permissionConfig(AcpClientConfig config) {
-    final global = config.clientProviders.permissions;
-    final agentReview = config.activeAgentServer?.permissionReviewAgent;
-    if (agentReview == null || !agentReview.isConfigured) return global;
-    return AcpPermissionProviderConfig(
-      trustRules: global.trustRules,
-      reviewAgent: _mergedReviewAgentConfig(global.reviewAgent, agentReview),
-    );
-  }
-
-  AcpPermissionReviewAgentConfig _mergedReviewAgentConfig(
-    AcpPermissionReviewAgentConfig base,
-    AcpPermissionReviewAgentConfig override,
-  ) {
-    final hasOverrideTarget = override.hasExplicitTarget;
-    return AcpPermissionReviewAgentConfig(
-      enabled: override.enabled || base.enabled,
-      mcpServer: hasOverrideTarget ? override.mcpServer : base.mcpServer,
-      mcpServerName: hasOverrideTarget
-          ? override.mcpServerName
-          : base.mcpServerName,
-      agentServerName: hasOverrideTarget
-          ? override.agentServerName
-          : base.agentServerName,
-      toolName: override.toolName != 'review_permission'
-          ? override.toolName
-          : base.toolName,
-      model: override.model ?? base.model,
-      timeout: override.timeout != const Duration(seconds: 10)
-          ? override.timeout
-          : base.timeout,
-    );
+    return config.effectivePermissionConfig;
   }
 
   AcpAgentClient _reviewAgentClient(AgentServerConfig server) {
@@ -2567,8 +2927,14 @@ class _AcpClientAppState extends State<AcpClientApp> {
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
       'storage': config.storage.toJson(),
+      'assistantAgent': config.assistantAgent.toJson(),
+      'sessionTemplates': <String, Object?>{
+        for (final template in config.sessionTemplates)
+          template.id: template.toJson(),
+      },
       'configPath': config.configPath,
       'defaultAgentServerName': config.defaultAgentServerName,
+      'defaultSessionTemplateId': config.defaultSessionTemplateId,
       'runtimeSecretGeneration': config.runtimeSecretGeneration,
     });
   }
@@ -2582,6 +2948,24 @@ class _AcpClientAppState extends State<AcpClientApp> {
           .toList(growable: false),
       'additionalDirectories': config.additionalDirectories,
       'clientProviders': _clientProvidersSignature(config.clientProviders),
+      'assistantAgent': config.assistantAgent.toJson(),
+      'storage': config.storage.toJson(),
+      'configPath': config.configPath,
+      'runtimeSecretGeneration': config.runtimeSecretGeneration,
+    });
+  }
+
+  String _agentClientRuntimeSignature(AcpClientConfig config) {
+    return jsonEncode(<String, Object?>{
+      'agentName': config.agentName,
+      'activeAgentServer': _agentServerSignature(config.activeAgentServer),
+      'mcpServers': config.mcpServers
+          .map(_mcpServerSignature)
+          .toList(growable: false),
+      'additionalDirectories': config.additionalDirectories,
+      'clientProviders': _clientProvidersSignature(config.clientProviders),
+      'storage': config.storage.toJson(),
+      'configPath': config.configPath,
       'runtimeSecretGeneration': config.runtimeSecretGeneration,
     });
   }

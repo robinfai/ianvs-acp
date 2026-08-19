@@ -40,6 +40,7 @@ class AcpConfigStore {
         _withConfigPath(config, path),
         previous,
       ).normalizedAgentPersistenceNamespace();
+      _validateConfigForPersistence(proposal);
       validateUniqueSecretReferences(proposal);
       if (secretStore != null) {
         await _retryPendingSecretCleanup(
@@ -207,6 +208,13 @@ class AcpConfigStore {
             .toList(growable: false),
       if (config.additionalDirectories.isNotEmpty)
         'additional_directories': config.additionalDirectories,
+      if (config.defaultSessionTemplateId?.trim().isNotEmpty == true)
+        'default_session_template': config.defaultSessionTemplateId!.trim(),
+      if (config.sessionTemplates.isNotEmpty)
+        'session_templates': <String, Object?>{
+          for (final template in config.sessionTemplates)
+            template.id: template.toJson(),
+        },
       if (clientProviders.isNotEmpty) 'client_providers': clientProviders,
       'storage': config.storage.toJson(),
       'assistant_agent': config.assistantAgent.toJson(),
@@ -406,6 +414,32 @@ bool _containsUnreferencedSecrets(AcpClientConfig config) {
   return reviewHasSecrets(config.clientProviders.permissions.reviewAgent);
 }
 
+void _validateConfigForPersistence(AcpClientConfig config) {
+  final seenTemplateIds = <String>{};
+  for (final template in config.sessionTemplates) {
+    final id = template.id.trim();
+    if (id.isEmpty || id != template.id) {
+      throw const FormatException(
+        'Session template ids must be non-empty and trimmed.',
+      );
+    }
+    if (!seenTemplateIds.add(id)) {
+      throw FormatException('Duplicate session template id "$id".');
+    }
+  }
+
+  // Typed config constructors intentionally remain lightweight. Round-trip
+  // the canonical representation before any migration or write so the same
+  // parser invariants apply to programmatically constructed edits.
+  AcpClientConfig.fromJson(
+    AcpConfigStore.toSettingsJson(config),
+    configPath: config.configPath,
+  );
+  for (final template in config.sessionTemplates) {
+    config.forSessionTemplate(template);
+  }
+}
+
 bool _deepJsonEquals(Object? left, Object? right) =>
     jsonEncode(left) == jsonEncode(right);
 
@@ -528,6 +562,42 @@ Map<String, dynamic> _persistEditedConfig(
     'additional_directories',
     'additionalDirectories',
   ], desired['additional_directories']);
+  _writeAliasedValue(result, const <String>[
+    'default_session_template',
+    'defaultSessionTemplate',
+  ], desired['default_session_template']);
+  final currentTemplates = _valueForAliases(result, const <String>[
+    'session_templates',
+    'sessionTemplates',
+  ], fieldName: 'session_templates');
+  final desiredTemplates = desired['session_templates'];
+  Map<String, Object?>? mergedTemplates;
+  if (desiredTemplates is Map) {
+    final currentByNormalizedId = <String, Object?>{};
+    if (currentTemplates is Map) {
+      for (final entry in currentTemplates.entries) {
+        final normalizedId = entry.key.toString().trim();
+        if (normalizedId.isNotEmpty) {
+          currentByNormalizedId[normalizedId] = entry.value;
+        }
+      }
+    }
+    mergedTemplates = <String, Object?>{
+      for (final entry in desiredTemplates.entries)
+        entry.key.toString():
+            currentByNormalizedId[entry.key.toString()] is Map &&
+                entry.value is Map
+            ? _mergeSessionTemplateRaw(
+                currentByNormalizedId[entry.key.toString()] as Map,
+                entry.value as Map,
+              )
+            : entry.value,
+    };
+  }
+  _writeAliasedValue(result, const <String>[
+    'session_templates',
+    'sessionTemplates',
+  ], mergedTemplates);
 
   final currentProviders = _valueForAliases(result, const <String>[
     'client_providers',
@@ -566,6 +636,93 @@ Map<String, dynamic> _persistEditedConfig(
     'assistant_agent',
     'assistantAgent',
   ], mergedAssistant);
+  return result;
+}
+
+Map<String, dynamic> _mergeSessionTemplateRaw(Map current, Map desired) {
+  final result = _cloneJsonMap(Map<String, dynamic>.from(current));
+  final currentPermissions = result['permissions'];
+  final currentAssistant = _valueForAliases(result, const <String>[
+    'assistant_agent',
+    'assistantAgent',
+  ], fieldName: 'session_template.assistant_agent');
+  const managed = <String>[
+    'name',
+    'version',
+    'description',
+    'agent_server',
+    'agentServer',
+    'mode',
+    'model',
+    'reasoning_effort',
+    'reasoningEffort',
+    'additional_directories',
+    'additionalDirectories',
+    'mcp_servers',
+    'mcpServers',
+    'permissions',
+    'assistant_agent',
+    'assistantAgent',
+  ];
+  for (final key in managed) {
+    result.remove(key);
+  }
+  for (final entry in desired.entries) {
+    if (entry.key == 'permissions' ||
+        entry.key == 'assistant_agent' ||
+        entry.key == 'assistantAgent') {
+      continue;
+    }
+    result[entry.key.toString()] = _cloneJsonValue(entry.value);
+  }
+
+  final desiredPermissions = desired['permissions'];
+  if (desiredPermissions is Map) {
+    final mergedProviders = _mergeClientProvidersRaw(
+      currentPermissions is Map
+          ? <String, Object?>{'permissions': currentPermissions}
+          : null,
+      <String, Object?>{'permissions': desiredPermissions},
+    );
+    final mergedPermissions = mergedProviders['permissions'];
+    result['permissions'] = mergedPermissions is Map
+        ? mergedPermissions
+        : <String, dynamic>{};
+  }
+
+  final desiredAssistant =
+      desired['assistant_agent'] ?? desired['assistantAgent'];
+  if (desiredAssistant is Map) {
+    final mergedAssistant = currentAssistant is Map
+        ? _cloneJsonMap(Map<String, dynamic>.from(currentAssistant))
+        : <String, dynamic>{};
+    const assistantManaged = <String>[
+      'enabled',
+      'agent',
+      'agent_name',
+      'agentName',
+      'model',
+      'generate_session_titles',
+      'generateSessionTitles',
+      'summarize_turns',
+      'summarizeTurns',
+      'collapse_execution_process',
+      'collapseExecutionProcess',
+      'fallback_title_characters',
+      'fallbackTitleCharacters',
+      'timeout_ms',
+      'timeoutMs',
+    ];
+    for (final key in assistantManaged) {
+      mergedAssistant.remove(key);
+    }
+    for (final entry in desiredAssistant.entries) {
+      mergedAssistant[entry.key.toString()] = _cloneJsonValue(entry.value);
+    }
+    if (mergedAssistant.isNotEmpty) {
+      result['assistant_agent'] = mergedAssistant;
+    }
+  }
   return result;
 }
 
@@ -999,8 +1156,10 @@ AcpClientConfig _withConfigPath(AcpClientConfig config, String path) {
     clientProviders: config.clientProviders,
     storage: config.storage,
     assistantAgent: config.assistantAgent,
+    sessionTemplates: config.sessionTemplates,
     configPath: path,
     defaultAgentServerName: config.defaultAgentServerName,
+    defaultSessionTemplateId: config.defaultSessionTemplateId,
     runtimeSecretGeneration: config.runtimeSecretGeneration,
   );
 }
@@ -1052,8 +1211,10 @@ AcpClientConfig _inheritCurrentSecretReferences(
     ),
     storage: proposal.storage,
     assistantAgent: proposal.assistantAgent,
+    sessionTemplates: proposal.sessionTemplates,
     configPath: proposal.configPath,
     defaultAgentServerName: proposal.defaultAgentServerName,
+    defaultSessionTemplateId: proposal.defaultSessionTemplateId,
     runtimeSecretGeneration: proposal.runtimeSecretGeneration,
   );
 }

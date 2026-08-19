@@ -20,8 +20,10 @@ class AcpClientConfig {
     this.clientProviders = const AcpClientProviderConfig(),
     this.storage = const SqliteStorageConfig(),
     this.assistantAgent = const AssistantAgentConfig(),
+    this.sessionTemplates = const <SessionTemplateConfig>[],
     this.configPath,
     this.defaultAgentServerName,
+    this.defaultSessionTemplateId,
     this.runtimeSecretGeneration = 0,
   });
 
@@ -36,8 +38,10 @@ class AcpClientConfig {
   final AcpClientProviderConfig clientProviders;
   final SqliteStorageConfig storage;
   final AssistantAgentConfig assistantAgent;
+  final List<SessionTemplateConfig> sessionTemplates;
   final String? configPath;
   final String? defaultAgentServerName;
+  final String? defaultSessionTemplateId;
 
   /// Opaque in-memory revision used to invalidate clients after resolving or
   /// changing secrets. It is never serialized to settings JSON.
@@ -60,6 +64,20 @@ class AcpClientConfig {
       if (server.name == trimmed) return server;
     }
     return null;
+  }
+
+  SessionTemplateConfig? sessionTemplateNamed(String id) {
+    final trimmed = id.trim();
+    if (trimmed.isEmpty) return null;
+    for (final template in sessionTemplates) {
+      if (template.id == trimmed) return template;
+    }
+    return null;
+  }
+
+  SessionTemplateConfig? get defaultSessionTemplate {
+    final id = defaultSessionTemplateId;
+    return id == null ? null : sessionTemplateNamed(id);
   }
 
   AgentServerConfig? agentServerWithPersistenceIdentity(String identity) {
@@ -99,8 +117,10 @@ class AcpClientConfig {
       clientProviders: clientProviders,
       storage: storage,
       assistantAgent: assistantAgent,
+      sessionTemplates: sessionTemplates,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
+      defaultSessionTemplateId: defaultSessionTemplateId,
       runtimeSecretGeneration: runtimeSecretGeneration,
     );
   }
@@ -121,9 +141,89 @@ class AcpClientConfig {
       clientProviders: clientProviders,
       storage: storage,
       assistantAgent: assistantAgent,
+      sessionTemplates: sessionTemplates,
       configPath: configPath,
       defaultAgentServerName: defaultAgentServerName,
+      defaultSessionTemplateId: defaultSessionTemplateId,
       runtimeSecretGeneration: runtimeSecretGeneration,
+    );
+  }
+
+  /// Resolves the runtime-level portion of a declarative session template.
+  /// Session-level options (mode/model/reasoning) are applied after creation.
+  AcpClientConfig forSessionTemplate(SessionTemplateConfig template) {
+    var resolved = this;
+    final requestedAgent = template.agentServerName;
+    if (requestedAgent != null) {
+      resolved = resolved.withActiveAgentServer(requestedAgent);
+    }
+    final requestedMcpServers = template.mcpServerNames;
+    final selectedMcpServers = requestedMcpServers == null
+        ? resolved.mcpServers
+        : <McpServerConfig>[
+            for (final name in requestedMcpServers.map((name) => name.trim()))
+              resolved.mcpServers.firstWhere(
+                (server) => server.name == name,
+                orElse: () => throw FormatException(
+                  'Session template "${template.id}" references unknown MCP server "$name".',
+                ),
+              ),
+          ];
+    if (template.permissions?.reviewAgent.mcpServer != null) {
+      throw FormatException(
+        'Session template "${template.id}" must reference a configured permission-review MCP server by name.',
+      );
+    }
+    final directories = <String>{
+      ...resolved.additionalDirectories,
+      ...template.additionalDirectories,
+    }.toList(growable: false);
+    final permissions = template.permissions;
+    final providers = permissions == null
+        ? resolved.clientProviders
+        : AcpClientProviderConfig(
+            filesystem: resolved.clientProviders.filesystem,
+            terminal: resolved.clientProviders.terminal,
+            permissions: permissions,
+          );
+    final runtime = AcpClientConfig(
+      activeAgentServer: resolved.activeAgentServer,
+      agentServers: resolved.agentServers,
+      mcpServers: List<McpServerConfig>.unmodifiable(selectedMcpServers),
+      additionalDirectories: List<String>.unmodifiable(directories),
+      clientProviders: providers,
+      storage: resolved.storage,
+      assistantAgent: template.assistantAgent ?? resolved.assistantAgent,
+      sessionTemplates: resolved.sessionTemplates,
+      configPath: resolved.configPath,
+      defaultAgentServerName: resolved.defaultAgentServerName,
+      defaultSessionTemplateId: resolved.defaultSessionTemplateId,
+      runtimeSecretGeneration: resolved.runtimeSecretGeneration,
+    );
+    final reviewer = runtime.effectivePermissionConfig.reviewAgent;
+    final reviewerMcpName = reviewer.mcpServerName?.trim();
+    if (reviewer.enabled &&
+        reviewer.mcpServer == null &&
+        reviewerMcpName != null &&
+        reviewerMcpName.isNotEmpty &&
+        !runtime.mcpServers.any((server) => server.name == reviewerMcpName)) {
+      throw FormatException(
+        'Session template "${template.id}" excludes permission-review MCP server "$reviewerMcpName".',
+      );
+    }
+    return runtime;
+  }
+
+  AcpPermissionProviderConfig get effectivePermissionConfig {
+    final global = clientProviders.permissions;
+    final agentReview = activeAgentServer?.permissionReviewAgent;
+    if (agentReview == null || !agentReview.isConfigured) return global;
+    return AcpPermissionProviderConfig(
+      trustRules: global.trustRules,
+      reviewAgent: _mergedPermissionReviewAgent(
+        global.reviewAgent,
+        agentReview,
+      ),
     );
   }
 
@@ -227,6 +327,20 @@ class AcpClientConfig {
         'assistantAgent',
       ], fieldName: 'assistant_agent'),
     );
+    final sessionTemplates = _sessionTemplateList(
+      _aliasedValue(json, const <String>[
+        'session_templates',
+        'sessionTemplates',
+      ], fieldName: 'session_templates'),
+    );
+    final defaultSessionTemplateId = _optionalNonEmptyStringValue(
+      _aliasedValue(json, const <String>[
+        'default_session_template',
+        'defaultSessionTemplate',
+      ], fieldName: 'default_session_template'),
+      fieldName: 'default_session_template',
+    );
+    _validateDefaultSessionTemplate(sessionTemplates, defaultSessionTemplateId);
     final serversRaw = _aliasedValue(json, const <String>[
       'agent_servers',
       'agentServers',
@@ -239,6 +353,8 @@ class AcpClientConfig {
         clientProviders: clientProviders,
         storage: storage,
         assistantAgent: assistantAgent,
+        sessionTemplates: sessionTemplates,
+        defaultSessionTemplateId: defaultSessionTemplateId,
       );
     }
     if (serversRaw is! Map<String, dynamic>) {
@@ -265,6 +381,8 @@ class AcpClientConfig {
         clientProviders: clientProviders,
         storage: storage,
         assistantAgent: assistantAgent,
+        sessionTemplates: sessionTemplates,
+        defaultSessionTemplateId: defaultSessionTemplateId,
       );
     }
 
@@ -294,8 +412,10 @@ class AcpClientConfig {
       clientProviders: clientProviders,
       storage: storage,
       assistantAgent: assistantAgent,
+      sessionTemplates: sessionTemplates,
       configPath: configPath,
       defaultAgentServerName: preferredName,
+      defaultSessionTemplateId: defaultSessionTemplateId,
     );
   }
 
@@ -350,6 +470,187 @@ class AcpClientConfig {
     if (home != null && home.trim().isNotEmpty) return home.trim();
 
     return current.isEmpty ? Directory.current.path : current;
+  }
+}
+
+/// A versioned, declarative recipe for constructing and initializing a session.
+final class SessionTemplateConfig {
+  const SessionTemplateConfig({
+    required this.id,
+    required this.name,
+    this.version = 1,
+    this.description,
+    this.agentServerName,
+    this.mode,
+    this.model,
+    this.reasoningEffort,
+    this.additionalDirectories = const <String>[],
+    this.mcpServerNames,
+    this.permissions,
+    this.assistantAgent,
+  });
+
+  final String id;
+  final String name;
+  final int version;
+  final String? description;
+  final String? agentServerName;
+  final String? mode;
+  final String? model;
+  final String? reasoningEffort;
+  final List<String> additionalDirectories;
+
+  /// Null inherits all configured MCP servers; an empty list selects none.
+  final List<String>? mcpServerNames;
+  final AcpPermissionProviderConfig? permissions;
+  final AssistantAgentConfig? assistantAgent;
+
+  String get identity => '$id@$version';
+
+  factory SessionTemplateConfig.fromJson({
+    required String id,
+    required Object? raw,
+  }) {
+    if (raw is! Map) {
+      throw FormatException('Session template "$id" must be an object.');
+    }
+    final json = _jsonMap(raw, fieldName: 'session_templates.$id');
+    final version =
+        _positiveIntValue(
+          json['version'],
+          fieldName: 'session_templates.$id.version',
+        ) ??
+        1;
+    final rawMcpServers = _aliasedValue(json, const <String>[
+      'mcp_servers',
+      'mcpServers',
+    ], fieldName: 'session_templates.$id.mcp_servers');
+    final permissionsRaw = json['permissions'];
+    final assistantRaw = _aliasedValue(json, const <String>[
+      'assistant_agent',
+      'assistantAgent',
+    ], fieldName: 'session_templates.$id.assistant_agent');
+    final permissions = permissionsRaw == null
+        ? null
+        : AcpPermissionProviderConfig.fromJson(permissionsRaw);
+    if (permissions?.reviewAgent.mcpServer != null) {
+      throw FormatException(
+        'session_templates.$id.permissions.review_agent must use mcp_server_name instead of an inline MCP server.',
+      );
+    }
+    return SessionTemplateConfig(
+      id: id,
+      name:
+          _optionalNonEmptyStringValue(
+            json['name'],
+            fieldName: 'session_templates.$id.name',
+          ) ??
+          id,
+      version: version,
+      description: _stringValue(json['description']),
+      agentServerName: _optionalNonEmptyStringValue(
+        _aliasedValue(json, const <String>[
+          'agent_server',
+          'agentServer',
+        ], fieldName: 'session_templates.$id.agent_server'),
+        fieldName: 'session_templates.$id.agent_server',
+      ),
+      mode: _optionalNonEmptyStringValue(
+        json['mode'],
+        fieldName: 'session_templates.$id.mode',
+      ),
+      model: _optionalNonEmptyStringValue(
+        json['model'],
+        fieldName: 'session_templates.$id.model',
+      ),
+      reasoningEffort: _optionalNonEmptyStringValue(
+        _aliasedValue(json, const <String>[
+          'reasoning_effort',
+          'reasoningEffort',
+        ], fieldName: 'session_templates.$id.reasoning_effort'),
+        fieldName: 'session_templates.$id.reasoning_effort',
+      ),
+      additionalDirectories: _additionalDirectories(
+        _aliasedValue(json, const <String>[
+          'additional_directories',
+          'additionalDirectories',
+        ], fieldName: 'session_templates.$id.additional_directories'),
+      ),
+      mcpServerNames: rawMcpServers == null
+          ? null
+          : _sessionTemplateMcpServerNames(rawMcpServers, id),
+      permissions: permissions,
+      assistantAgent: assistantRaw == null
+          ? null
+          : AssistantAgentConfig.fromJson(assistantRaw),
+    );
+  }
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'name': name,
+    'version': version,
+    if (description?.trim().isNotEmpty == true)
+      'description': description!.trim(),
+    if (agentServerName != null) 'agent_server': agentServerName,
+    if (mode != null) 'mode': mode,
+    if (model != null) 'model': model,
+    if (reasoningEffort != null) 'reasoning_effort': reasoningEffort,
+    if (additionalDirectories.isNotEmpty)
+      'additional_directories': additionalDirectories,
+    if (mcpServerNames != null) 'mcp_servers': mcpServerNames,
+    if (permissions != null) 'permissions': permissions!.toJson(),
+    if (assistantAgent != null) 'assistant_agent': assistantAgent!.toJson(),
+  };
+}
+
+List<String> _sessionTemplateMcpServerNames(Object? raw, String templateId) {
+  if (raw is! List) {
+    throw FormatException(
+      'session_templates.$templateId.mcp_servers must be a list.',
+    );
+  }
+  final names = <String>[];
+  final seen = <String>{};
+  for (var index = 0; index < raw.length; index += 1) {
+    final value = raw[index];
+    if (value is! String || value.trim().isEmpty) {
+      throw FormatException(
+        'session_templates.$templateId.mcp_servers[$index] must be a non-empty string.',
+      );
+    }
+    final name = value.trim();
+    if (seen.add(name)) names.add(name);
+  }
+  return List<String>.unmodifiable(names);
+}
+
+List<SessionTemplateConfig> _sessionTemplateList(Object? raw) {
+  if (raw == null) return const <SessionTemplateConfig>[];
+  if (raw is! Map) {
+    throw const FormatException('session_templates must be a JSON object.');
+  }
+  final templates = <SessionTemplateConfig>[];
+  final seenIds = <String>{};
+  for (final entry in raw.entries) {
+    final id = entry.key.toString().trim();
+    if (id.isEmpty) {
+      throw const FormatException('session_templates keys must not be empty.');
+    }
+    if (!seenIds.add(id)) {
+      throw FormatException('Duplicate session template id "$id".');
+    }
+    templates.add(SessionTemplateConfig.fromJson(id: id, raw: entry.value));
+  }
+  return List<SessionTemplateConfig>.unmodifiable(templates);
+}
+
+void _validateDefaultSessionTemplate(
+  List<SessionTemplateConfig> templates,
+  String? defaultId,
+) {
+  if (defaultId == null) return;
+  if (!templates.any((template) => template.id == defaultId)) {
+    throw FormatException('Unknown default session template "$defaultId".');
   }
 }
 
@@ -790,6 +1091,17 @@ class AgentServerConfig {
   bool get isStdio => !isWebSocket && !isStreamableHttp;
 
   String get displayTarget => isStdio ? command : url;
+
+  String get safeDisplayTarget {
+    if (isStdio) return command;
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme.isEmpty || uri.host.trim().isEmpty) {
+      return 'remote endpoint';
+    }
+    return uri
+        .replace(userInfo: '', path: '', query: '', fragment: '')
+        .toString();
+  }
 
   String get persistenceIdentity => _resolvedAgentPersistenceIdentity(
     configured: persistenceId ?? additionalProperties['persistence_id'],
@@ -1330,6 +1642,17 @@ class McpServerConfig {
 
   String get url => _stringValue(raw['url']) ?? '';
 
+  String get safeDisplayTarget {
+    if (url.isEmpty) return command;
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme.isEmpty || uri.host.trim().isEmpty) {
+      return 'remote endpoint';
+    }
+    return uri
+        .replace(userInfo: '', path: '', query: '', fragment: '')
+        .toString();
+  }
+
   String get id =>
       _stringValue(raw['serverId']) ?? _stringValue(raw['id']) ?? '';
 
@@ -1639,6 +1962,41 @@ String? _stringValue(Object? value) {
   return trimmed.isEmpty ? null : trimmed;
 }
 
+String? _optionalNonEmptyStringValue(
+  Object? value, {
+  required String fieldName,
+}) {
+  if (value == null) return null;
+  if (value is! String || value.trim().isEmpty) {
+    throw FormatException('$fieldName must be a non-empty string.');
+  }
+  return value.trim();
+}
+
+AcpPermissionReviewAgentConfig _mergedPermissionReviewAgent(
+  AcpPermissionReviewAgentConfig base,
+  AcpPermissionReviewAgentConfig override,
+) {
+  final hasOverrideTarget = override.hasExplicitTarget;
+  return AcpPermissionReviewAgentConfig(
+    enabled: override.enabled || base.enabled,
+    mcpServer: hasOverrideTarget ? override.mcpServer : base.mcpServer,
+    mcpServerName: hasOverrideTarget
+        ? override.mcpServerName
+        : base.mcpServerName,
+    agentServerName: hasOverrideTarget
+        ? override.agentServerName
+        : base.agentServerName,
+    toolName: override.toolName != 'review_permission'
+        ? override.toolName
+        : base.toolName,
+    model: override.model ?? base.model,
+    timeout: override.timeout != const Duration(seconds: 10)
+        ? override.timeout
+        : base.timeout,
+  );
+}
+
 Object? _aliasedValue(Map map, List<String> keys, {required String fieldName}) {
   final present = <String>[
     for (final key in keys)
@@ -1893,12 +2251,19 @@ List<McpServerConfig> _mcpServerList(Object? value) {
     throw const FormatException('mcp_servers must be a list.');
   }
   final servers = <McpServerConfig>[];
+  final seenNames = <String>{};
   for (var index = 0; index < value.length; index++) {
     final json = value[index];
     if (json is! Map) {
       throw FormatException('MCP server at index $index must be an object.');
     }
-    servers.add(McpServerConfig.fromJson(index: index, json: json));
+    final server = McpServerConfig.fromJson(index: index, json: json);
+    if (!seenNames.add(server.name)) {
+      throw FormatException(
+        'MCP server name "${server.name}" is duplicated after trimming.',
+      );
+    }
+    servers.add(server);
   }
   return servers;
 }

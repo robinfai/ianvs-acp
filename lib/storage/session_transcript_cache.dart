@@ -92,10 +92,12 @@ final class SessionTranscriptSnapshot {
   SessionTranscriptSnapshot({
     required this.identity,
     required List<Map<String, Object?>> messages,
+    this.timelineHistoryWasTruncated = false,
   }) : messages = List<Map<String, Object?>>.unmodifiable(messages);
 
   final SessionTranscriptIdentity identity;
   final List<Map<String, Object?>> messages;
+  final bool timelineHistoryWasTruncated;
 }
 
 abstract interface class SessionTranscriptCache {
@@ -172,6 +174,12 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
         return null;
       }
       final rawMessages = decoded['messages'];
+      final rawTimelineHistoryWasTruncated =
+          decoded['timelineHistoryWasTruncated'];
+      if (rawTimelineHistoryWasTruncated != null &&
+          rawTimelineHistoryWasTruncated is! bool) {
+        return null;
+      }
       if (rawMessages is! List || rawMessages.length > maxMessages) return null;
       final messages = <Map<String, Object?>>[];
       for (final rawMessage in rawMessages) {
@@ -192,6 +200,8 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
       return SessionTranscriptSnapshot(
         identity: storedIdentity,
         messages: messages,
+        timelineHistoryWasTruncated:
+            rawTimelineHistoryWasTruncated as bool? ?? false,
       );
     });
   }
@@ -203,6 +213,7 @@ final class FileSessionTranscriptCache implements SessionTranscriptCache {
       'schemaVersion': schemaVersion,
       'identity': snapshot.identity.toJson(),
       'messages': snapshot.messages,
+      'timelineHistoryWasTruncated': snapshot.timelineHistoryWasTruncated,
     };
     final encodedResult = await Isolate.run(() {
       final encoded = jsonEncode(payload);

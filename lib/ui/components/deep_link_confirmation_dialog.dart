@@ -35,6 +35,12 @@ class DeepLinkConfirmationDialog extends StatelessWidget {
                 label: 'Workspace',
                 value: request.cwd ?? 'Missing',
               ),
+              _RequestValue(
+                label: 'Template',
+                value: request.sessionTemplateId == null
+                    ? 'Use local session setting'
+                    : '${request.sessionTemplateId}@${request.sessionTemplateVersion ?? 'Missing'}',
+              ),
               if (request.validationErrors.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 DecoratedBox(

@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_agent_client.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
@@ -253,6 +254,567 @@ void main() {
     expect(find.text('Codex'), findsOneWidget);
   });
 
+  testWidgets('AcpClientApp starts a session with its template runtime', (
+    tester,
+  ) async {
+    final runtimeConfigs = <AcpClientConfig>[];
+    final clients = <FakeAgentClient>[];
+    const settings = AcpSessionSettings(
+      configOptions: [
+        AcpConfigOption(
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'balanced',
+          options: [
+            AcpConfigOptionChoice(value: 'balanced', name: 'Balanced'),
+            AcpConfigOptionChoice(value: 'fast', name: 'Fast'),
+          ],
+        ),
+        AcpConfigOption(
+          id: 'reasoning_effort',
+          name: 'Reasoning effort',
+          type: 'select',
+          currentValue: 'low',
+          options: [
+            AcpConfigOptionChoice(value: 'low', name: 'Low'),
+            AcpConfigOptionChoice(value: 'high', name: 'High'),
+          ],
+        ),
+      ],
+    );
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'default_session_template': 'review',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex'},
+      },
+      'mcp_servers': [
+        {'name': 'repo', 'command': '/usr/local/bin/repo-mcp'},
+        {'name': 'browser', 'command': '/usr/local/bin/browser-mcp'},
+      ],
+      'additional_directories': ['/workspace/shared'],
+      'session_templates': {
+        'review': {
+          'name': 'Review',
+          'version': 2,
+          'model': 'fast',
+          'reasoning_effort': 'high',
+          'mcp_servers': ['repo'],
+          'additional_directories': ['/workspace/review'],
+        },
+      },
+    });
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (runtimeConfig) {
+          runtimeConfigs.add(runtimeConfig);
+          final client = FakeAgentClient(sessionSettings: settings);
+          clients.add(client);
+          return client;
+        },
+      ),
+    );
+
+    await tester.tap(find.byTooltip('New Session'));
+    await tester.pumpAndSettle();
+    expect(find.text('Review'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Start'));
+    await tester.pumpAndSettle();
+
+    expect(runtimeConfigs.last.mcpServers.map((server) => server.name), [
+      'repo',
+    ]);
+    expect(runtimeConfigs.last.additionalDirectories, [
+      '/workspace/shared',
+      '/workspace/review',
+    ]);
+    expect(clients.last.lastConfigId, 'reasoning_effort');
+    expect(clients.last.lastConfigValue, 'high');
+  });
+
+  testWidgets(
+    'assistant-only template changes reuse the authoritative ACP runtime',
+    (tester) async {
+      final clients = <FakeAgentClient>[];
+      final config = AcpClientConfig.fromJson(<String, Object?>{
+        'default_agent_server': 'Codex',
+        'default_session_template': 'assistant-policy',
+        'agent_servers': <String, Object?>{
+          'Codex': <String, Object?>{
+            'type': 'custom',
+            'command': '/usr/local/bin/codex',
+          },
+        },
+        'session_templates': <String, Object?>{
+          'assistant-policy': <String, Object?>{
+            'name': 'Assistant policy',
+            'version': 1,
+            'assistant_agent': <String, Object?>{
+              'enabled': false,
+              'fallback_title_characters': 32,
+            },
+          },
+        },
+      });
+
+      await tester.pumpWidget(
+        AcpClientApp(
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          createAgentClient: (_) {
+            final client = FakeAgentClient();
+            clients.add(client);
+            return client;
+          },
+        ),
+      );
+      expect(clients, hasLength(1));
+
+      await tester.tap(find.byTooltip('New Session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Start'));
+      await tester.pumpAndSettle();
+
+      expect(clients, hasLength(1));
+      expect(
+        tester.widget<AppShell>(find.byType(AppShell)).sessionControllers,
+        hasLength(2),
+      );
+    },
+  );
+
+  testWidgets('startup resume waits for the indexed template runtime', (
+    tester,
+  ) async {
+    final workspace = Directory.current.resolveSymbolicLinksSync();
+    final creations =
+        <({AcpClientConfig config, _CountingResumeAgentClient client})>[];
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex'},
+      },
+      'mcp_servers': [
+        {'name': 'repo', 'command': '/usr/local/bin/repo-mcp'},
+        {'name': 'browser', 'command': '/usr/local/bin/browser-mcp'},
+      ],
+      'session_templates': {
+        'review': {
+          'name': 'Review',
+          'version': 2,
+          'mcp_servers': ['repo'],
+        },
+      },
+    });
+    final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+      AgentSession(
+        id: 'template-resume',
+        cwd: workspace,
+        createdAt: DateTime(2026),
+        agentName: config.activeAgentServer!.persistenceIdentity,
+        sessionTemplateId: 'review',
+        sessionTemplateVersion: 2,
+      ),
+    ]);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: config,
+        workspaceStateStore: store,
+        initialResumeSessionId: 'template-resume',
+        initialResumeCwd: workspace,
+        initialResumeAgentName: 'Codex',
+        autoLoadWorkspaceSessions: false,
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (runtime) {
+          final client = _CountingResumeAgentClient();
+          creations.add((config: runtime, client: client));
+          return client;
+        },
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(
+      tester,
+      () => creations.any((entry) => entry.client.resumeCalls == 1),
+    );
+
+    final resumed = creations.singleWhere(
+      (entry) => entry.client.resumeCalls == 1,
+    );
+    expect(resumed.config.mcpServers.map((server) => server.name), ['repo']);
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    expect(shell.controller.currentSession?.sessionTemplateId, 'review');
+    expect(shell.controller.currentSession?.sessionTemplateVersion, 2);
+
+    await _openSidebarSessionMenu(tester, shell.controller);
+    await tester.tap(find.text('Fork Locally'));
+    await tester.pumpAndSettle();
+    expect(resumed.client.lastForkedSessionId, 'template-resume');
+    expect(shell.controller.currentSession?.sessionTemplateId, 'review');
+    expect(shell.controller.currentSession?.sessionTemplateVersion, 2);
+
+    final forkedSessionId = shell.controller.currentSession!.id;
+    await _openSidebarSessionMenu(tester, shell.controller);
+    await tester.tap(find.text('Open Side Session'));
+    await tester.pumpAndSettle();
+    expect(shell.controller.currentSession?.id, isNot(forkedSessionId));
+    expect(shell.controller.currentSession?.sessionTemplateId, 'review');
+    expect(shell.controller.currentSession?.sessionTemplateVersion, 2);
+  });
+
+  testWidgets(
+    'startup resume follows a replacement hydration after stale failure',
+    (tester) async {
+      final workspace = Directory.current.resolveSymbolicLinksSync();
+      final indexed = AgentSession(
+        id: 'replacement-hydration-session',
+        cwd: workspace,
+        createdAt: DateTime(2026),
+        agentName: 'Codex',
+        sessionTemplateId: 'strict',
+        sessionTemplateVersion: 1,
+      );
+      final store = _ReplacingHydrationWorkspaceStateStore(<AgentSession>[
+        indexed,
+      ]);
+      final clients =
+          <({AcpClientConfig config, _CountingResumeAgentClient client})>[];
+      var factoryKey = 1;
+      late StateSetter updateHost;
+      final config = AcpClientConfig.fromJson(<String, Object?>{
+        'default_agent_server': 'Codex',
+        'agent_servers': <String, Object?>{
+          'Codex': <String, Object?>{
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+          },
+        },
+        'mcp_servers': <Object?>[
+          <String, Object?>{
+            'name': 'repo',
+            'command': '/usr/local/bin/repo-mcp',
+          },
+        ],
+        'session_templates': <String, Object?>{
+          'strict': <String, Object?>{
+            'name': 'Strict',
+            'version': 1,
+            'mcp_servers': <String>[],
+          },
+        },
+      });
+
+      await tester.pumpWidget(
+        StatefulBuilder(
+          builder: (context, setState) {
+            updateHost = setState;
+            return AcpClientApp(
+              config: config,
+              workspaceStateStore: store,
+              initialResumeSessionId: indexed.id,
+              initialResumeCwd: workspace,
+              initialResumeAgentName: 'Codex',
+              agentClientFactoryKey: factoryKey,
+              autoLoadWorkspaceSessions: false,
+              discoverAgentServers: (_) => const <AgentServerConfig>[],
+              createAgentClient: (runtime) {
+                final client = _CountingResumeAgentClient();
+                clients.add((config: runtime, client: client));
+                return client;
+              },
+            );
+          },
+        ),
+      );
+      await tester.pump();
+      expect(store.loadCalls, 1);
+
+      updateHost(() => factoryKey = 2);
+      await tester.pump();
+      await _pumpUntil(tester, () => store.loadCalls == 2);
+      store.failFirstLoad();
+      await tester.pump();
+      expect(clients.every((entry) => entry.client.resumeCalls == 0), isTrue);
+      store.completeReplacementLoad();
+      await _pumpUntil(
+        tester,
+        () => clients.any((entry) => entry.client.resumeCalls == 1),
+      );
+
+      final resumed = clients.singleWhere(
+        (entry) => entry.client.resumeCalls == 1,
+      );
+      expect(resumed.config.mcpServers, isEmpty);
+
+      expect(
+        find.textContaining('Could not load the local session index'),
+        findsNothing,
+      );
+      expect(
+        tester
+            .widget<AppShell>(find.byType(AppShell))
+            .controller
+            .currentSession
+            ?.id,
+        indexed.id,
+      );
+    },
+  );
+
+  testWidgets('template agent drift cannot reroute an indexed session', (
+    tester,
+  ) async {
+    final workspace = Directory.current.resolveSymbolicLinksSync();
+    final creations =
+        <({AcpClientConfig config, _CountingResumeAgentClient client})>[];
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Agent A',
+      'agent_servers': {
+        'Agent A': {'type': 'custom', 'command': '/usr/local/bin/agent-a'},
+        'Agent B': {'type': 'custom', 'command': '/usr/local/bin/agent-b'},
+      },
+      'session_templates': {
+        'review': {'name': 'Review', 'version': 1, 'agent_server': 'Agent B'},
+      },
+    });
+    final agentA = config.agentServerNamed('Agent A')!;
+    final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+      AgentSession(
+        id: 'agent-a-template-session',
+        cwd: workspace,
+        createdAt: DateTime(2026),
+        agentName: agentA.persistenceIdentity,
+        sessionTemplateId: 'review',
+        sessionTemplateVersion: 1,
+      ),
+    ]);
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: config,
+        workspaceStateStore: store,
+        initialResumeSessionId: 'agent-a-template-session',
+        initialResumeCwd: workspace,
+        initialResumeAgentName: 'Agent A',
+        initialResumeSessionTemplateId: 'review',
+        initialResumeSessionTemplateVersion: 1,
+        autoLoadWorkspaceSessions: false,
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (runtime) {
+          final client = _CountingResumeAgentClient();
+          creations.add((config: runtime, client: client));
+          return client;
+        },
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(
+      tester,
+      () => creations.any((entry) => entry.client.resumeCalls == 1),
+    );
+
+    final resumed = creations.singleWhere(
+      (entry) => entry.client.resumeCalls == 1,
+    );
+    expect(resumed.config.agentName, 'Agent A');
+    expect(
+      creations
+          .where((entry) => entry.config.agentName == 'Agent B')
+          .every((entry) => entry.client.resumeCalls == 0),
+      isTrue,
+    );
+    expect(store.lastSaved.single.agentName, agentA.persistenceIdentity);
+  });
+
+  testWidgets('template selection never reuses a base runtime snapshot', (
+    tester,
+  ) async {
+    final workspace = Directory.current.resolveSymbolicLinksSync();
+    final creations =
+        <({AcpClientConfig config, _CountingResumeAgentClient client})>[];
+    final config = AcpClientConfig.fromJson(<String, Object?>{
+      'default_agent_server': 'Codex',
+      'agent_servers': <String, Object?>{
+        'Codex': <String, Object?>{
+          'type': 'custom',
+          'command': '/usr/local/bin/codex-acp',
+        },
+      },
+      'mcp_servers': <Object?>[
+        <String, Object?>{'name': 'repo', 'command': '/usr/local/bin/repo-mcp'},
+        <String, Object?>{
+          'name': 'browser',
+          'command': '/usr/local/bin/browser-mcp',
+        },
+      ],
+      'session_templates': <String, Object?>{
+        'review': <String, Object?>{
+          'name': 'Review',
+          'version': 1,
+          'mcp_servers': <String>['repo'],
+        },
+      },
+    });
+    final indexed = AgentSession(
+      id: 'same-runtime-session',
+      cwd: workspace,
+      createdAt: DateTime(2026),
+      agentName: config.activeAgentServer!.persistenceIdentity,
+      sessionTemplateId: 'review',
+      sessionTemplateVersion: 1,
+    );
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: config,
+        workspaceStateStore: _SessionIndexWorkspaceStateStore(<AgentSession>[
+          indexed,
+        ]),
+        initialResumeSessionId: indexed.id,
+        initialResumeCwd: workspace,
+        initialResumeAgentName: 'Codex',
+        initialResumeSessionTemplateId: 'review',
+        initialResumeSessionTemplateVersion: 999,
+        autoLoadWorkspaceSessions: false,
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (runtime) {
+          final client = _CountingResumeAgentClient();
+          creations.add((config: runtime, client: client));
+          return client;
+        },
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(
+      tester,
+      () => creations.any(
+        (entry) =>
+            entry.config.mcpServers.length == 2 &&
+            entry.client.resumeCalls == 1,
+      ),
+    );
+
+    tester.widget<AppShell>(find.byType(AppShell)).onSelectSession!(indexed);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+    await _pumpUntil(
+      tester,
+      () => creations.any(
+        (entry) =>
+            entry.config.mcpServers.length == 1 &&
+            entry.client.resumeCalls == 1,
+      ),
+    );
+
+    final active = tester.widget<AppShell>(find.byType(AppShell)).controller;
+    expect(active.currentSession?.sessionTemplateVersion, 1);
+    expect(
+      creations
+          .singleWhere((entry) => entry.config.mcpServers.length == 2)
+          .client
+          .resumeCalls,
+      1,
+    );
+  });
+
+  testWidgets('fork lookup never falls back across template runtimes', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync(
+      'ianvs-template-fork-runtime-',
+    );
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/workspace')..createSync();
+    const targetId = 'template-fork-target';
+    final config = AcpClientConfig.fromJson(<String, Object?>{
+      'default_agent_server': 'Codex',
+      'agent_servers': <String, Object?>{
+        'Codex': <String, Object?>{
+          'type': 'custom',
+          'command': '/usr/local/bin/codex-acp',
+        },
+      },
+      'mcp_servers': <Object?>[
+        <String, Object?>{'name': 'repo', 'command': '/usr/local/bin/repo-mcp'},
+      ],
+      'session_templates': <String, Object?>{
+        'strict': <String, Object?>{
+          'name': 'Strict',
+          'version': 1,
+          'mcp_servers': <String>[],
+        },
+      },
+    }, configPath: '${temp.path}/settings.json');
+    late _TemplateAliasCatalogClient baseClient;
+    final templateClients = <_ConcurrentPromptAgentClient>[];
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: config,
+        workspaceStateStore: _SessionIndexWorkspaceStateStore(
+          const <AgentSession>[],
+        ),
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        createAgentClient: (runtime) {
+          if (runtime.mcpServers.isNotEmpty) {
+            return baseClient = _TemplateAliasCatalogClient(
+              sessionId: targetId,
+              cwd: workspace.path,
+            );
+          }
+          final client = _ConcurrentPromptAgentClient();
+          templateClients.add(client);
+          return client;
+        },
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(tester, () => baseClient.listCalls > 0);
+
+    await tester.tap(find.byTooltip('New Session'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Strict'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Start'));
+    await tester.pumpAndSettle();
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    await shell.controller.sendPrompt('Keep template runtime occupied');
+    await tester.pump();
+    expect(shell.controller.isStreaming, isTrue);
+    expect(shell.controller.client.supportsConcurrentPrompts, isTrue);
+
+    final indexedTarget = AgentSession(
+      id: targetId,
+      cwd: workspace.path,
+      createdAt: DateTime(2026),
+      agentName: config.activeAgentServer!.persistenceIdentity,
+      sessionTemplateId: 'strict',
+      sessionTemplateVersion: 1,
+    );
+    await shell.onSessionMenuAction!(
+      tester.element(find.byType(AppShell)),
+      indexedTarget,
+      WorkspaceSessionMenuAction.forkLocally,
+    );
+    await tester.pump();
+
+    expect(baseClient.lastForkedSessionId, isNull);
+    expect(templateClients, isNotEmpty);
+    expect(
+      tester.widget<AppShell>(find.byType(AppShell)).controller,
+      same(shell.controller),
+    );
+    await shell.controller.stop();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets(
     'AcpClientApp asks for an agent before starting sessions without config',
     (tester) async {
@@ -421,6 +983,88 @@ void main() {
     expect(find.text('Gemini'), findsOneWidget);
   });
 
+  testWidgets('equivalent runtime config replacement reuses its ACP client', (
+    tester,
+  ) async {
+    var factoryCalls = 0;
+    final client = _TrackingHangingAgentClient();
+    AcpClientConfig config({required bool includeTemplate}) =>
+        AcpClientConfig.fromJson({
+          'default_agent_server': 'Codex',
+          'agent_servers': {
+            'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          },
+          if (includeTemplate)
+            'session_templates': {
+              'review': {'name': 'Review', 'version': 1},
+            },
+        });
+    AcpClientApp app(bool includeTemplate) => AcpClientApp(
+      config: config(includeTemplate: includeTemplate),
+      autoLoadWorkspaceSessions: false,
+      createAgentClient: (_) {
+        factoryCalls += 1;
+        return client;
+      },
+    );
+
+    await tester.pumpWidget(app(false));
+    expect(factoryCalls, 1);
+
+    await tester.pumpWidget(app(true));
+    await tester.pump();
+
+    expect(factoryCalls, 1);
+    expect(client.disposed, isFalse);
+  });
+
+  testWidgets('session store recipe changes replace the ACP client', (
+    tester,
+  ) async {
+    final clients = <_TrackingHangingAgentClient>[];
+    AcpClientConfig config({required String path, required int maxSizeGb}) =>
+        AcpClientConfig.fromJson(<String, dynamic>{
+          'default_agent_server': 'Codex',
+          'agent_servers': <String, Object?>{
+            'Codex': <String, Object?>{
+              'type': 'custom',
+              'command': '/usr/local/bin/codex-acp',
+            },
+          },
+          'storage': <String, Object?>{
+            'max_size_gb': maxSizeGb,
+            'retention_days': 30,
+          },
+        }, configPath: path);
+    AcpClientApp app({required String path, required int maxSizeGb}) =>
+        AcpClientApp(
+          config: config(path: path, maxSizeGb: maxSizeGb),
+          autoLoadWorkspaceSessions: false,
+          createAgentClient: (_) {
+            final client = _TrackingHangingAgentClient();
+            clients.add(client);
+            return client;
+          },
+        );
+
+    await tester.pumpWidget(
+      app(path: '/tmp/ianvs-a/settings.json', maxSizeGb: 50),
+    );
+    expect(clients, hasLength(1));
+
+    await tester.pumpWidget(
+      app(path: '/tmp/ianvs-a/settings.json', maxSizeGb: 51),
+    );
+    await _pumpUntil(tester, () => clients.length == 2 && clients[0].disposed);
+    expect(clients[1].disposed, isFalse);
+
+    await tester.pumpWidget(
+      app(path: '/tmp/ianvs-b/settings.json', maxSizeGb: 51),
+    );
+    await _pumpUntil(tester, () => clients.length == 3 && clients[1].disposed);
+    expect(clients[2].disposed, isFalse);
+  });
+
   testWidgets('AcpClientApp shows startup config errors without crashing', (
     tester,
   ) async {
@@ -515,6 +1159,76 @@ void main() {
     expect(oldClient.disposed, isTrue);
     expect(newClients.single.disposed, isFalse);
   });
+
+  testWidgets(
+    'config and factory replacement cannot retain the previous client pool',
+    (tester) async {
+      AcpClientConfig config({required bool summarizeTurns}) {
+        return AcpClientConfig.fromJson({
+          'default_agent_server': 'Codex',
+          'agent_servers': {
+            'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+          },
+          'assistant_agent': <String, Object?>{
+            'enabled': false,
+            'summarize_turns': summarizeTurns,
+          },
+        });
+      }
+
+      final oldClients = <_TrackingHangingAgentClient>[];
+      final newClients = <_TrackingHangingAgentClient>[];
+      _TrackingHangingAgentClient oldFactory(AcpClientConfig _) {
+        final client = _TrackingHangingAgentClient();
+        oldClients.add(client);
+        return client;
+      }
+
+      _TrackingHangingAgentClient newFactory(AcpClientConfig _) {
+        final client = _TrackingHangingAgentClient();
+        newClients.add(client);
+        return client;
+      }
+
+      Widget app({
+        required AcpClientConfig config,
+        required AcpAgentClientFactory factory,
+        required Object factoryKey,
+      }) {
+        return AcpClientApp(
+          key: const ValueKey('combined-config-factory-replacement'),
+          config: config,
+          autoLoadWorkspaceSessions: false,
+          createAgentClient: factory,
+          agentClientFactoryKey: factoryKey,
+        );
+      }
+
+      await tester.pumpWidget(
+        app(
+          config: config(summarizeTurns: true),
+          factory: oldFactory,
+          factoryKey: 'old-factory',
+        ),
+      );
+      final oldClient = oldClients.single;
+
+      await tester.pumpWidget(
+        app(
+          config: config(summarizeTurns: false),
+          factory: newFactory,
+          factoryKey: 'new-factory',
+        ),
+      );
+      await _pumpUntil(
+        tester,
+        () => oldClient.disposed && newClients.isNotEmpty,
+      );
+
+      expect(oldClient.disposed, isTrue);
+      expect(newClients.single.disposed, isFalse);
+    },
+  );
 
   testWidgets('AcpClientApp replaces owned client when only secret changes', (
     tester,
@@ -890,7 +1604,10 @@ void main() {
     expect(fake.lastResumeCwd, isNull);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
-    await tester.pump();
+    await _pumpUntil(
+      tester,
+      () => find.text('Loading session').evaluate().isNotEmpty,
+    );
 
     expect(find.text('Loading session'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
@@ -906,9 +1623,208 @@ void main() {
       'ianvs-acp://session?id=session-runtime&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
     );
     await tester.pumpAndSettle();
-    expect(find.text('Open external session?'), findsNothing);
+    expect(find.text('Open external session?'), findsOneWidget);
     expect(fake.resumeCalls, 1);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
   });
+
+  testWidgets(
+    'external links cannot override indexed templates and remain distinct',
+    (tester) async {
+      final temp = Directory.systemTemp.createTempSync(
+        'ianvs-deep-link-template-',
+      );
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final workspace = Directory('${temp.path}/workspace')..createSync();
+      final creations =
+          <({AcpClientConfig config, _CountingResumeAgentClient client})>[];
+      final config = AcpClientConfig.fromJson(<String, Object?>{
+        'default_agent_server': 'Codex',
+        'agent_servers': <String, Object?>{
+          'Codex': <String, Object?>{
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+          },
+        },
+        'mcp_servers': <Object?>[
+          <String, Object?>{
+            'name': 'repo',
+            'command': '/usr/local/bin/repo-mcp',
+          },
+        ],
+        'session_templates': <String, Object?>{
+          'strict': <String, Object?>{
+            'name': 'Strict',
+            'version': 1,
+            'mcp_servers': <String>[],
+          },
+          'broad': <String, Object?>{
+            'name': 'Broad',
+            'version': 1,
+            'mcp_servers': <String>['repo'],
+          },
+        },
+      });
+      final store = _SessionIndexWorkspaceStateStore(<AgentSession>[
+        AgentSession(
+          id: 'indexed-template-session',
+          cwd: workspace.path,
+          createdAt: DateTime(2026),
+          agentName: config.activeAgentServer!.persistenceIdentity,
+          sessionTemplateId: 'strict',
+          sessionTemplateVersion: 1,
+        ),
+      ]);
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          workspaceStateStore: store,
+          autoLoadWorkspaceSessions: false,
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
+          createAgentClient: (runtime) {
+            final client = _CountingResumeAgentClient();
+            creations.add((config: runtime, client: client));
+            return client;
+          },
+        ),
+        const Size(1400, 900),
+      );
+      await tester.pumpAndSettle();
+
+      final encodedWorkspace = Uri.encodeQueryComponent(workspace.path);
+      await Future.wait(<Future<void>>[
+        sendDeepLink(
+          tester,
+          'ianvs-acp://session?id=indexed-template-session&cwd=$encodedWorkspace&agent=Codex&template=broad&template_version=1',
+        ),
+        sendDeepLink(
+          tester,
+          'ianvs-acp://session?id=indexed-template-session&cwd=$encodedWorkspace&agent=Codex&template=strict&template_version=1',
+        ),
+      ]);
+      await tester.pumpAndSettle();
+
+      expect(find.text('broad@1'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await _pumpUntil(
+        tester,
+        () => find.text('strict@1').evaluate().isNotEmpty,
+      );
+      expect(
+        find.textContaining('template does not match the local session index'),
+        findsOneWidget,
+      );
+      expect(find.text('strict@1'), findsOneWidget);
+      expect(creations.every((entry) => entry.client.resumeCalls == 0), isTrue);
+
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await _pumpUntil(
+        tester,
+        () => creations.any((entry) => entry.client.resumeCalls == 1),
+      );
+      final resumed = creations.singleWhere(
+        (entry) => entry.client.resumeCalls == 1,
+      );
+      expect(resumed.config.mcpServers, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'external resume prefers a valid indexed template over a catalog alias',
+    (tester) async {
+      final temp = Directory.systemTemp.createTempSync(
+        'ianvs-catalog-template-alias-',
+      );
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final workspace = Directory('${temp.path}/workspace')..createSync();
+      final config = AcpClientConfig.fromJson(<String, Object?>{
+        'default_agent_server': 'Codex',
+        'agent_servers': <String, Object?>{
+          'Codex': <String, Object?>{
+            'type': 'custom',
+            'command': '/usr/local/bin/codex-acp',
+          },
+        },
+        'mcp_servers': <Object?>[
+          <String, Object?>{
+            'name': 'repo',
+            'command': '/usr/local/bin/repo-mcp',
+          },
+        ],
+        'session_templates': <String, Object?>{
+          'strict': <String, Object?>{
+            'name': 'Strict',
+            'version': 1,
+            'mcp_servers': <String>[],
+          },
+        },
+      }, configPath: '${temp.path}/settings.json');
+      final indexed = AgentSession(
+        id: 'catalog-template-alias',
+        cwd: workspace.path,
+        createdAt: DateTime(2026),
+        agentName: config.activeAgentServer!.persistenceIdentity,
+        sessionTemplateId: 'strict',
+        sessionTemplateVersion: 1,
+      );
+      final creations =
+          <({AcpClientConfig config, _TemplateAliasCatalogClient client})>[];
+
+      await pumpWithWindowSize(
+        tester,
+        AcpClientApp(
+          config: config,
+          workspaceStateStore: _SessionIndexWorkspaceStateStore(<AgentSession>[
+            indexed,
+          ]),
+          discoverAgentServers: (_) => const <AgentServerConfig>[],
+          deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
+          createAgentClient: (runtime) {
+            final client = _TemplateAliasCatalogClient(
+              sessionId: indexed.id,
+              cwd: workspace.path,
+            );
+            creations.add((config: runtime, client: client));
+            return client;
+          },
+        ),
+        const Size(1400, 900),
+      );
+      await _pumpUntil(
+        tester,
+        () => creations.any((entry) => entry.client.listCalls > 0),
+      );
+
+      await sendDeepLink(
+        tester,
+        'ianvs-acp://session?id=${indexed.id}'
+        '&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await _pumpUntil(
+        tester,
+        () => creations.any((entry) => entry.client.resumeCalls == 1),
+      );
+
+      final resumed = creations.singleWhere(
+        (entry) => entry.client.resumeCalls == 1,
+      );
+      expect(resumed.config.mcpServers, isEmpty);
+      expect(
+        tester
+            .widget<AppShell>(find.byType(AppShell))
+            .controller
+            .currentSession
+            ?.sessionTemplateId,
+        'strict',
+      );
+    },
+  );
 
   testWidgets('AcpClientApp disables confirmation for a dangerous workspace', (
     tester,
@@ -1085,6 +2001,330 @@ void main() {
     expect(find.text('session-retry'), findsOneWidget);
   });
 
+  testWidgets('malformed and valid deep links do not share an in-flight key', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/validity')..createSync();
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    final base =
+        'ianvs-acp://session?id=session-validity&cwd='
+        '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) => FakeAgentClient(),
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await sendDeepLink(tester, '$base&template_version=oops');
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Template version must be a positive integer.'),
+      findsOneWidget,
+    );
+    await sendDeepLink(tester, base);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('session-validity'), findsOneWidget);
+    final confirm = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Open Session'),
+    );
+    expect(confirm.onPressed, isNotNull);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('deep-link teardown releases only its own active token', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/active-token')..createSync();
+    final firstValidation = Completer<DeepLinkWorkspaceValidation>();
+    var validationCalls = 0;
+    final injected = ChatController(
+      client: FakeAgentClient(),
+      cwd: workspace.path,
+    );
+    addTearDown(injected.dispose);
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    final link =
+        'ianvs-acp://session?id=session-active-token&cwd='
+        '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+    Future<DeepLinkWorkspaceValidation> validator(String? path) {
+      validationCalls += 1;
+      if (validationCalls == 1) return firstValidation.future;
+      return validateDeepLinkWorkspaceSync(path);
+    }
+
+    Widget ownedApp() => AcpClientApp(
+      config: config,
+      autoLoadWorkspaceSessions: false,
+      createAgentClient: (_) => FakeAgentClient(),
+      deepLinkWorkspaceValidator: validator,
+    );
+
+    await tester.pumpWidget(ownedApp());
+    await tester.pumpAndSettle();
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await tester.pump();
+    expect(validationCalls, 1);
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: injected,
+        config: config,
+        autoLoadWorkspaceSessions: false,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(ownedApp());
+    await tester.pumpAndSettle();
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    expect(find.text('session-active-token'), findsOneWidget);
+
+    firstValidation.complete(validateDeepLinkWorkspaceSyntax(workspace.path));
+    await tester.pump();
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open external session?'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('deep-link teardown retains a key until resume finishes', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-ui-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/resume-token')..createSync();
+    final injected = ChatController(
+      client: FakeAgentClient(),
+      cwd: workspace.path,
+    );
+    addTearDown(injected.dispose);
+    final clients = <_ControlledDeepLinkResumeAgentClient>[];
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+    final link =
+        'ianvs-acp://session?id=session-resume-token&cwd='
+        '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+
+    Widget ownedApp() => AcpClientApp(
+      config: config,
+      autoLoadWorkspaceSessions: false,
+      createAgentClient: (_) {
+        final client = _ControlledDeepLinkResumeAgentClient();
+        clients.add(client);
+        return client;
+      },
+      deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
+    );
+
+    await tester.pumpWidget(ownedApp());
+    await tester.pumpAndSettle();
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await _pumpUntil(tester, () => clients.single.restoreCalls == 1);
+    await clients.single.restoreStarted;
+    expect(clients.single.restoreCalls, 1);
+
+    await tester.pumpWidget(
+      AcpClientApp(
+        controller: injected,
+        config: config,
+        autoLoadWorkspaceSessions: false,
+      ),
+    );
+    await tester.pump();
+    await tester.pumpWidget(ownedApp());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(clients, hasLength(2));
+
+    await sendDeepLink(tester, link);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('Open external session?'), findsNothing);
+    expect(clients.fold<int>(0, (sum, client) => sum + client.restoreCalls), 1);
+
+    clients.first.releaseRestore();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Could not open external session'),
+      findsNothing,
+    );
+
+    await sendDeepLink(tester, link);
+    await tester.pumpAndSettle();
+    expect(find.text('Open external session?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets(
+    'deep-link resume dedupe survives AcpClientApp State replacement',
+    (tester) async {
+      final temp = Directory.systemTemp.createTempSync(
+        'ianvs-deep-link-state-',
+      );
+      addTearDown(() => temp.deleteSync(recursive: true));
+      final workspace = Directory('${temp.path}/workspace')..createSync();
+      final clients = <_ControlledDeepLinkResumeAgentClient>[];
+      final config = AcpClientConfig.fromJson({
+        'default_agent_server': 'Codex',
+        'agent_servers': {
+          'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+        },
+      });
+      final link =
+          'ianvs-acp://session?id=session-cross-state&cwd='
+          '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+
+      Widget app(String key) => AcpClientApp(
+        key: ValueKey<String>(key),
+        config: config,
+        autoLoadWorkspaceSessions: false,
+        createAgentClient: (_) {
+          final client = _ControlledDeepLinkResumeAgentClient();
+          clients.add(client);
+          return client;
+        },
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
+      );
+
+      await tester.pumpWidget(app('first-state'));
+      await tester.pumpAndSettle();
+      await sendDeepLink(tester, link);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await _pumpUntil(tester, () => clients.first.restoreCalls == 1);
+      await clients.first.restoreStarted;
+
+      await tester.pumpWidget(app('second-state'));
+      await tester.pump();
+      expect(clients, hasLength(2));
+      await sendDeepLink(tester, link);
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Open external session?'), findsNothing);
+      expect(
+        clients.fold<int>(0, (sum, client) => sum + client.restoreCalls),
+        1,
+      );
+
+      clients.first.releaseRestore();
+      await tester.pump();
+      await tester.pumpAndSettle();
+      await sendDeepLink(tester, link);
+      await tester.pumpAndSettle();
+      expect(find.text('Open external session?'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets('cross-State hung deep-link resumes remain globally bounded', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync('ianvs-deep-link-bound-');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/workspace')..createSync();
+    final clients = <_ControlledDeepLinkResumeAgentClient>[];
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex-acp'},
+      },
+    });
+
+    Widget app(int generation) => AcpClientApp(
+      key: ValueKey<String>('bounded-state-$generation'),
+      config: config,
+      autoLoadWorkspaceSessions: false,
+      createAgentClient: (_) {
+        final client = _ControlledDeepLinkResumeAgentClient();
+        clients.add(client);
+        return client;
+      },
+      deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
+    );
+
+    for (var generation = 0; generation < 8; generation += 1) {
+      await tester.pumpWidget(app(generation));
+      await tester.pump();
+      final link =
+          'ianvs-acp://session?id=hung-$generation&cwd='
+          '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
+      await sendDeepLink(tester, link);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await _pumpUntil(
+        tester,
+        () =>
+            clients.fold<int>(0, (sum, client) => sum + client.restoreCalls) ==
+            generation + 1,
+      );
+    }
+
+    await tester.pumpWidget(app(8));
+    await tester.pump();
+    await sendDeepLink(
+      tester,
+      'ianvs-acp://session?id=hung-overflow&cwd='
+      '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('Open external session?'), findsNothing);
+    expect(clients.fold<int>(0, (sum, client) => sum + client.restoreCalls), 8);
+
+    for (final client in clients) {
+      client.releaseRestore();
+    }
+    await tester.pump();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('AcpClientApp serializes distinct session confirmations', (
     tester,
   ) async {
@@ -1125,13 +2365,17 @@ void main() {
     expect(find.text('session-second'), findsNothing);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
-    await tester.pumpAndSettle();
+    await _pumpUntil(
+      tester,
+      () => find.text('session-second').evaluate().isNotEmpty,
+    );
 
     expect(find.text('session-second'), findsOneWidget);
     expect(fake.resumeCalls, 1);
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await _pumpUntil(tester, () => fake.resumeCalls == 2);
 
     expect(fake.resumeCalls, 2);
     expect(fake.lastResumeCwd, second.resolveSymbolicLinksSync());
@@ -1810,6 +3054,111 @@ void main() {
     },
   );
 
+  testWidgets('busy legacy template blocks an idle concurrent base runtime', (
+    tester,
+  ) async {
+    final temp = Directory.systemTemp.createTempSync(
+      'ianvs-mixed-concurrency-',
+    );
+    addTearDown(() => temp.deleteSync(recursive: true));
+    final workspace = Directory('${temp.path}/workspace')..createSync();
+    final legacy = _LegacyHangingAgentClient();
+    final concurrent = _ConcurrentPromptAgentClient();
+    final config = AcpClientConfig.fromJson(<String, Object?>{
+      'default_agent_server': 'Codex',
+      'default_session_template': 'strict',
+      'agent_servers': <String, Object?>{
+        'Codex': <String, Object?>{
+          'type': 'custom',
+          'command': '/usr/local/bin/codex-acp',
+        },
+      },
+      'mcp_servers': <Object?>[
+        <String, Object?>{'name': 'repo', 'command': '/usr/local/bin/repo-mcp'},
+      ],
+      'session_templates': <String, Object?>{
+        'strict': <String, Object?>{
+          'name': 'Strict',
+          'mcp_servers': <String>[],
+        },
+      },
+    }, configPath: '${temp.path}/settings.json');
+    final baseSession = AgentSession(
+      id: 'idle-base-session',
+      cwd: workspace.path,
+      createdAt: DateTime(2026),
+      title: 'Idle base session',
+      agentName: config.activeAgentServer!.persistenceIdentity,
+    );
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(
+        config: config,
+        workspaceStateStore: _SessionIndexWorkspaceStateStore(<AgentSession>[
+          baseSession,
+        ]),
+        discoverAgentServers: (_) => const <AgentServerConfig>[],
+        deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
+        createAgentClient: (runtime) =>
+            runtime.mcpServers.isEmpty ? legacy : concurrent,
+      ),
+      const Size(1400, 900),
+    );
+    await _pumpUntil(tester, () => concurrent.connected);
+    await tester.tap(find.byTooltip('New Session'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Start'));
+    await tester.pumpAndSettle();
+
+    final shell = tester.widget<AppShell>(find.byType(AppShell));
+    expect(shell.controller.client.supportsConcurrentPrompts, isFalse);
+    await shell.controller.sendPrompt('Keep the strict runtime busy');
+    await tester.pump();
+
+    await sendDeepLink(
+      tester,
+      'ianvs-acp://session?id=base-target&cwd=${Uri.encodeQueryComponent(workspace.path)}&agent=Codex',
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+    await _pumpUntil(
+      tester,
+      () => find
+          .textContaining('Wait for the current response')
+          .evaluate()
+          .isNotEmpty,
+    );
+
+    expect(concurrent.lastResumeCwd, isNull);
+    expect(
+      find.textContaining('Wait for the current response'),
+      findsOneWidget,
+    );
+
+    final activeShell = tester.widget<AppShell>(find.byType(AppShell));
+    final baseController = activeShell.sessionControllers.firstWhere(
+      (controller) =>
+          !identical(controller, activeShell.controller) &&
+          controller.supportsSessionFork &&
+          controller.sessions.isNotEmpty,
+    );
+    final forkTarget = baseController.sessions.first;
+    await activeShell.onSessionMenuAction!(
+      tester.element(find.byType(AppShell)),
+      forkTarget,
+      WorkspaceSessionMenuAction.forkLocally,
+    );
+    await tester.pump();
+    expect(concurrent.lastForkedSessionId, isNull);
+    expect(
+      tester.widget<AppShell>(find.byType(AppShell)).controller,
+      same(activeShell.controller),
+    );
+
+    await legacy.finishPrompt();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets(
     'AcpClientApp keeps deep links on the requested same-source agent',
     (tester) async {
@@ -1875,7 +3224,14 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(controller.dispose);
-    await controller.newSession(cwd: '/workspace/current');
+    await controller.newSession(
+      cwd: '/workspace/current',
+      template: const SessionTemplateConfig(
+        id: 'review',
+        name: 'Review',
+        version: 2,
+      ),
+    );
     final sessionId = controller.currentSession!.id;
 
     await pumpWithWindowSize(
@@ -1894,12 +3250,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(openedArgs, [
-      '--resume-session-id',
-      sessionId,
-      '--resume-cwd',
-      '/workspace/current',
-      '--resume-agent',
-      'Codex',
+      '--resume-session-id=$sessionId',
+      '--resume-cwd=/workspace/current',
+      '--resume-agent=Codex',
+      '--resume-template=review',
+      '--resume-template-version=2',
     ]);
   });
 
@@ -4147,6 +5502,32 @@ class _SharedAliasCatalogClient extends FakeAgentClient {
   }
 }
 
+class _TemplateAliasCatalogClient extends _CountingResumeAgentClient {
+  _TemplateAliasCatalogClient({required this.sessionId, required this.cwd});
+
+  final String sessionId;
+  final String cwd;
+  int listCalls = 0;
+
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    if (!connected) throw StateError('Fake client is not connected.');
+    listCalls += 1;
+    return <AcpProjectSessions>[
+      AcpProjectSessions(
+        cwd: cwd,
+        sessions: <AcpSessionEntry>[
+          AcpSessionEntry(
+            id: sessionId,
+            cwd: cwd,
+            title: 'Catalog alias without a template marker',
+          ),
+        ],
+      ),
+    ];
+  }
+}
+
 class _RemoteWorkspaceSessionClient extends FakeAgentClient {
   _RemoteWorkspaceSessionClient(this.agentName);
 
@@ -4221,6 +5602,38 @@ class _CountingResumeAgentClient extends FakeAgentClient {
       cwd: cwd,
       additionalDirectories: additionalDirectories,
     );
+  }
+}
+
+class _ControlledDeepLinkResumeAgentClient extends FakeAgentClient {
+  final Completer<void> _restoreStarted = Completer<void>();
+  final Completer<void> _restoreGate = Completer<void>();
+  int restoreCalls = 0;
+
+  Future<void> get restoreStarted => _restoreStarted.future;
+
+  @override
+  Future<AcpSessionRestoreSummary> restoreSession({
+    required String sessionId,
+    required String cwd,
+    List<String> additionalDirectories = const <String>[],
+    bool replayHistory = true,
+    required AcpSessionRestoreEventObserver onEvent,
+  }) async {
+    restoreCalls += 1;
+    if (!_restoreStarted.isCompleted) _restoreStarted.complete();
+    await _restoreGate.future;
+    return super.restoreSession(
+      sessionId: sessionId,
+      cwd: cwd,
+      additionalDirectories: additionalDirectories,
+      replayHistory: replayHistory,
+      onEvent: onEvent,
+    );
+  }
+
+  void releaseRestore() {
+    if (!_restoreGate.isCompleted) _restoreGate.complete();
   }
 }
 
@@ -4430,5 +5843,35 @@ class _SessionIndexWorkspaceStateStore extends WorkspaceSidebarStateStore {
   @override
   Future<void> saveSessionIndex(Iterable<AgentSession> sessions) async {
     lastSaved = List<AgentSession>.unmodifiable(sessions);
+  }
+}
+
+class _ReplacingHydrationWorkspaceStateStore
+    extends WorkspaceSidebarStateStore {
+  _ReplacingHydrationWorkspaceStateStore(this.sessions) : super(path: null);
+
+  final List<AgentSession> sessions;
+  final Completer<List<AgentSession>> _firstLoad =
+      Completer<List<AgentSession>>();
+  final Completer<List<AgentSession>> _replacementLoad =
+      Completer<List<AgentSession>>();
+  int loadCalls = 0;
+
+  @override
+  Future<List<AgentSession>> loadSessionIndex() {
+    loadCalls += 1;
+    if (loadCalls == 1) return _firstLoad.future;
+    if (loadCalls == 2) return _replacementLoad.future;
+    return Future<List<AgentSession>>.value(sessions);
+  }
+
+  void failFirstLoad() {
+    _firstLoad.completeError(
+      const FileSystemException('obsolete hydration failure'),
+    );
+  }
+
+  void completeReplacementLoad() {
+    _replacementLoad.complete(sessions);
   }
 }

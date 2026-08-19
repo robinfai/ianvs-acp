@@ -1,6 +1,6 @@
 # ACP runtime coverage
 
-Updated: 2026-08-11
+Updated: 2026-08-19
 
 This document records the ACP surface implemented by the production Rust
 runtime. The official ACP schema consumed by `ianvs-acp-core` remains the

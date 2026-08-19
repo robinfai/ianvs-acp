@@ -22,6 +22,8 @@ class AgentToolbar extends StatelessWidget {
     this.onSelectAgent,
     this.onShowAgentConfig,
     this.onShowProtocolCoverage,
+    this.onShowActivity,
+    this.onShowRuntimeInventory,
     this.onAuthenticate,
     this.onShowPermissionHistory,
     this.onLogout,
@@ -45,6 +47,8 @@ class AgentToolbar extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowProtocolCoverage;
+  final VoidCallback? onShowActivity;
+  final VoidCallback? onShowRuntimeInventory;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
   final VoidCallback? onLogout;
@@ -104,6 +108,8 @@ class AgentToolbar extends StatelessWidget {
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
                   onShowProtocolCoverage: onShowProtocolCoverage,
+                  onShowActivity: onShowActivity,
+                  onShowRuntimeInventory: onShowRuntimeInventory,
                   onAuthenticate: onAuthenticate,
                   onShowPermissionHistory: onShowPermissionHistory,
                   onLogout: onLogout,
@@ -151,6 +157,8 @@ class _AgentMenuButton extends StatelessWidget {
     required this.onSelectAgent,
     required this.onShowAgentConfig,
     required this.onShowProtocolCoverage,
+    required this.onShowActivity,
+    required this.onShowRuntimeInventory,
     required this.onAuthenticate,
     required this.onShowPermissionHistory,
     required this.onLogout,
@@ -163,6 +171,8 @@ class _AgentMenuButton extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowProtocolCoverage;
+  final VoidCallback? onShowActivity;
+  final VoidCallback? onShowRuntimeInventory;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onShowPermissionHistory;
   final VoidCallback? onLogout;
@@ -173,6 +183,8 @@ class _AgentMenuButton extends StatelessWidget {
         agentServers.isNotEmpty ||
         onShowAgentConfig != null ||
         onShowProtocolCoverage != null ||
+        onShowActivity != null ||
+        onShowRuntimeInventory != null ||
         onAuthenticate != null ||
         onShowPermissionHistory != null ||
         onLogout != null;
@@ -188,6 +200,10 @@ class _AgentMenuButton extends StatelessWidget {
             onShowAgentConfig?.call();
           case _AgentMenuSelectionType.protocolCoverage:
             onShowProtocolCoverage?.call();
+          case _AgentMenuSelectionType.activity:
+            onShowActivity?.call();
+          case _AgentMenuSelectionType.runtimeInventory:
+            onShowRuntimeInventory?.call();
           case _AgentMenuSelectionType.authenticate:
             onAuthenticate?.call();
           case _AgentMenuSelectionType.permissionHistory:
@@ -275,10 +291,62 @@ class _AgentMenuButton extends StatelessWidget {
                 ],
               ),
             ),
+          if (onShowActivity != null)
+            const PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.activity(),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.timeline_rounded,
+                    size: 17,
+                    color: AppColors.primaryDark,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Session Activity',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (onShowRuntimeInventory != null)
+            const PopupMenuItem<_AgentMenuSelection>(
+              value: _AgentMenuSelection.runtimeInventory(),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.account_tree_outlined,
+                    size: 17,
+                    color: AppColors.primaryDark,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Runtime Inventory',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (onShowPermissionHistory != null &&
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
-                  onShowProtocolCoverage != null))
+                  onShowProtocolCoverage != null ||
+                  onShowActivity != null ||
+                  onShowRuntimeInventory != null))
             const PopupMenuDivider(),
           if (onShowPermissionHistory != null)
             const PopupMenuItem<_AgentMenuSelection>(
@@ -309,6 +377,8 @@ class _AgentMenuButton extends StatelessWidget {
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
                   onShowProtocolCoverage != null ||
+                  onShowActivity != null ||
+                  onShowRuntimeInventory != null ||
                   onShowPermissionHistory != null))
             const PopupMenuDivider(),
           if (onAuthenticate != null)
@@ -340,6 +410,8 @@ class _AgentMenuButton extends StatelessWidget {
               (agentServers.isNotEmpty ||
                   onShowAgentConfig != null ||
                   onShowProtocolCoverage != null ||
+                  onShowActivity != null ||
+                  onShowRuntimeInventory != null ||
                   onShowPermissionHistory != null ||
                   onAuthenticate != null))
             const PopupMenuDivider(),
@@ -379,6 +451,8 @@ enum _AgentMenuSelectionType {
   agent,
   configure,
   protocolCoverage,
+  activity,
+  runtimeInventory,
   authenticate,
   permissionHistory,
   logout,
@@ -394,6 +468,14 @@ class _AgentMenuSelection {
 
   const _AgentMenuSelection.protocolCoverage()
     : type = _AgentMenuSelectionType.protocolCoverage,
+      agentName = null;
+
+  const _AgentMenuSelection.activity()
+    : type = _AgentMenuSelectionType.activity,
+      agentName = null;
+
+  const _AgentMenuSelection.runtimeInventory()
+    : type = _AgentMenuSelectionType.runtimeInventory,
       agentName = null;
 
   const _AgentMenuSelection.authenticate()
@@ -443,7 +525,7 @@ class _AgentMenuItem extends StatelessWidget {
                 ),
               ),
               Text(
-                server.displayTarget,
+                server.safeDisplayTarget,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.textTertiary,

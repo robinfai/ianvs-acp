@@ -207,6 +207,10 @@ class _WorkspaceSessionBucket {
       titleOverride: selected.titleOverride ?? candidate.titleOverride,
       updatedAt: _latestDateTime(selected.updatedAt, candidate.updatedAt),
       agentName: selected.agentName,
+      sessionTemplateId:
+          selected.sessionTemplateId ?? candidate.sessionTemplateId,
+      sessionTemplateVersion:
+          selected.sessionTemplateVersion ?? candidate.sessionTemplateVersion,
       initialEvents: selected.initialEvents.isEmpty
           ? candidate.initialEvents
           : selected.initialEvents,

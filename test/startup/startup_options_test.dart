@@ -12,11 +12,45 @@ void main() {
       '--resume-cwd=/workspace/project',
       '--resume-agent',
       'Codex',
+      '--resume-template=review',
+      '--resume-template-version',
+      '3',
     ]);
 
     expect(options.resumeSessionId, 'session-1');
     expect(options.resumeCwd, '/workspace/project');
     expect(options.resumeAgentName, 'Codex');
+    expect(options.resumeSessionTemplateId, 'review');
+    expect(options.resumeSessionTemplateVersion, 3);
+  });
+
+  test('StartupOptions preserves leading-dash resume values', () {
+    final options = StartupOptions.fromArgs(<String>[
+      '--resume-session-id=--resume-cwd',
+      '--resume-cwd=/workspace/project',
+    ]);
+
+    expect(options.resumeSessionId, '--resume-cwd');
+    expect(options.resumeCwd, '/workspace/project');
+  });
+
+  test('StartupOptions keeps resume template markers atomic', () {
+    for (final args in <List<String>>[
+      <String>['--resume-template', 'review'],
+      <String>['--resume-template-version', '3'],
+      <String>[
+        '--resume-template',
+        'review',
+        '--resume-template-version',
+        'invalid',
+      ],
+      <String>['--resume-template', 'review', '--resume-template-version', '0'],
+      <String>['--resume-template', '--resume-template-version', '3'],
+    ]) {
+      final options = StartupOptions.fromArgs(args);
+      expect(options.resumeSessionTemplateId, isNull, reason: '$args');
+      expect(options.resumeSessionTemplateVersion, isNull, reason: '$args');
+    }
   });
 
   test('StartupOptions trusts explicit flags and ignores external links', () {
@@ -56,13 +90,15 @@ void main() {
       ..createSync(workspace.path);
 
     final request = StartupOptions.fromDeepLink(
-      'ianvs-acp://session?id=session-2&cwd=${Uri.encodeQueryComponent(alias.path)}&agent=Codex',
+      'ianvs-acp://session?id=session-2&cwd=${Uri.encodeQueryComponent(alias.path)}&agent=Codex&template=review&template_version=4',
     );
 
     expect(request?.source, DeepLinkSource.external);
     expect(request?.sessionId, 'session-2');
     expect(request?.cwd, alias.path);
     expect(request?.agentName, 'Codex');
+    expect(request?.sessionTemplateId, 'review');
+    expect(request?.sessionTemplateVersion, 4);
     expect(request?.validationErrors, isEmpty);
   });
 
@@ -100,6 +136,27 @@ void main() {
       final homeAlias = Link('${temp.path}/home-alias')..createSync(home);
       expect(requestFor(homeAlias.path).validationErrors, isEmpty);
     }
+  });
+
+  test('DeepLinkRequest requires an atomic valid template marker', () {
+    DeepLinkRequest requestFor(String query) {
+      return StartupOptions.fromDeepLink(
+        'ianvs-acp://session?id=s1&cwd=%2Ftmp&$query',
+      )!;
+    }
+
+    expect(
+      requestFor('template=review').validationErrors,
+      contains('Template and template version must be provided together.'),
+    );
+    expect(
+      requestFor('template_version=2').validationErrors,
+      contains('Template and template version must be provided together.'),
+    );
+    expect(
+      requestFor('template=review&template_version=invalid').validationErrors,
+      contains('Template version must be a positive integer.'),
+    );
   });
 
   test(

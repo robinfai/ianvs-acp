@@ -66,6 +66,53 @@ void main() {
     expect(raw['expanded_workspaces'], ['/workspace/a', '/workspace/b']);
   });
 
+  test('in-memory store retains an explicitly empty expanded state', () async {
+    final store = WorkspaceSidebarStateStore(path: null);
+
+    expect(await store.hasSavedExpandedWorkspacePaths(), isFalse);
+    await store.saveExpandedWorkspacePaths(const <String>{});
+
+    expect(await store.hasSavedExpandedWorkspacePaths(), isTrue);
+    expect(await store.loadExpandedWorkspacePaths(), isEmpty);
+  });
+
+  test(
+    'in-memory store retains workspace and templated session indexes',
+    () async {
+      final store = WorkspaceSidebarStateStore(path: null);
+      const workspace = WorkspaceSidebarWorkspaceState(
+        path: '/workspace/app',
+        displayName: 'App',
+        pinned: true,
+        manuallyAdded: true,
+      );
+      final session = AgentSession(
+        id: 'templated-session',
+        cwd: workspace.path,
+        createdAt: DateTime.utc(2026, 8, 19),
+        agentName: 'Codex',
+        sessionTemplateId: 'review',
+        sessionTemplateVersion: 3,
+      );
+
+      await store.saveWorkspaceStates(const <WorkspaceSidebarWorkspaceState>[
+        workspace,
+      ]);
+      await store.saveSessionIndex(<AgentSession>[session]);
+
+      final restoredWorkspaces = await store.loadWorkspaceStates();
+      final restoredSessions = await store.loadSessionIndex();
+      expect(restoredWorkspaces, hasLength(1));
+      expect(restoredWorkspaces.single.path, workspace.path);
+      expect(restoredWorkspaces.single.displayName, 'App');
+      expect(restoredWorkspaces.single.pinned, isTrue);
+      expect(restoredSessions, hasLength(1));
+      expect(restoredSessions.single.id, session.id);
+      expect(restoredSessions.single.sessionTemplateId, 'review');
+      expect(restoredSessions.single.sessionTemplateVersion, 3);
+    },
+  );
+
   test('WorkspaceSidebarStateStore resolves default path near config', () {
     final path = WorkspaceSidebarStateStore.defaultPath(
       configPath: '/tmp/ianvs-acp/settings.json',
@@ -238,6 +285,8 @@ void main() {
         titleOverride: 'User renamed session',
         updatedAt: DateTime(2026, 7, 2, 9),
         agentName: 'Kimi',
+        sessionTemplateId: 'review',
+        sessionTemplateVersion: 3,
         pinned: true,
         archived: true,
         unread: true,
@@ -253,6 +302,8 @@ void main() {
     expect(sessions.first.title, 'Newer indexed session');
     expect(sessions.first.titleOverride, 'User renamed session');
     expect(sessions.first.agentName, 'Kimi');
+    expect(sessions.first.sessionTemplateId, 'review');
+    expect(sessions.first.sessionTemplateVersion, 3);
     expect(sessions.first.additionalDirectories, ['/workspace/extra']);
     expect(sessions.first.pinned, isTrue);
     expect(sessions.first.archived, isTrue);

@@ -1,6 +1,6 @@
 # Runtime architecture
 
-Updated: 2026-08-11
+Updated: 2026-08-19
 
 ianvs is a workspace-oriented ACP desktop client. The production runtime has
 one path: Flutter presents workspaces and sessions, while Rust owns the local
@@ -49,9 +49,17 @@ fork, rename, pin, archive, copy, and open sessions without introducing a
 second execution model.
 
 Each simultaneously active conversation has an isolated Flutter controller.
-Controllers for the same configured agent hold session-scoped leases on one
-shared ACP client, so timelines, permissions, and cancellation remain scoped to
-their sessions while Rust stays the single protocol and process authority.
+Controllers with the same exact runtime recipe hold session-scoped leases on
+one shared ACP client, so timelines, permissions, and cancellation remain
+scoped to their sessions while Rust stays the protocol and process authority.
+A recipe includes its Agent transport, MCP set, client providers, workspace
+defaults, recovery-store path and retention policy, and secret generation.
+Recipes that differ at those execution boundaries intentionally use isolated
+Rust runtimes, including when two session templates target the same configured
+Agent; this prevents a restricted template from inheriting a broader recipe's
+tools, providers, or recovery database.
+Permission-review and Assistant Agent sidecars are separate, short-lived helper
+runtimes and never become the authoritative owner of a user conversation.
 
 ## Persistence
 

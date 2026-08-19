@@ -66,6 +66,210 @@ void main() {
     );
   });
 
+  test('loads and resolves versioned declarative session templates', () {
+    final config = AcpClientConfig.fromJson({
+      'default_agent_server': 'Codex',
+      'default_session_template': 'fast-review',
+      'agent_servers': {
+        'Codex': {'type': 'custom', 'command': '/usr/local/bin/codex'},
+        'Reviewer': {'type': 'custom', 'command': '/usr/local/bin/reviewer'},
+      },
+      'mcp_servers': [
+        {'name': 'repo', 'command': '/usr/local/bin/repo-mcp'},
+        {'name': 'browser', 'command': '/usr/local/bin/browser-mcp'},
+      ],
+      'additional_directories': ['/workspace/shared'],
+      'session_templates': {
+        'fast-review': {
+          'name': 'Fast review',
+          'version': 3,
+          'description': 'Review with a focused runtime.',
+          'agent_server': 'Reviewer',
+          'mode': 'review',
+          'model': 'fast',
+          'reasoning_effort': 'medium',
+          'additional_directories': ['/workspace/review'],
+          'mcp_servers': ['repo'],
+          'permissions': {
+            'trust_rules': [
+              {'tool_name': 'read_file', 'decision': 'allow'},
+            ],
+          },
+          'assistant_agent': {
+            'enabled': true,
+            'agent': 'Codex',
+            'summarize_turns': true,
+          },
+        },
+      },
+    });
+
+    final template = config.defaultSessionTemplate!;
+    expect(template.identity, 'fast-review@3');
+    expect(template.mode, 'review');
+    expect(template.model, 'fast');
+    expect(template.reasoningEffort, 'medium');
+
+    final runtime = config.forSessionTemplate(template);
+    expect(runtime.agentName, 'Reviewer');
+    expect(runtime.mcpServers.map((server) => server.name), ['repo']);
+    expect(runtime.additionalDirectories, [
+      '/workspace/shared',
+      '/workspace/review',
+    ]);
+    expect(runtime.clientProviders.permissions.trustRules, hasLength(1));
+    expect(runtime.assistantAgent.agentName, 'Codex');
+    expect(runtime.sessionTemplates.single.identity, 'fast-review@3');
+  });
+
+  test('rejects duplicate trimmed MCP server names', () {
+    expect(
+      () => AcpClientConfig.fromJson({
+        'mcp_servers': [
+          {'name': 'tools', 'command': '/usr/local/bin/wide-tools'},
+          {'name': ' tools ', 'command': '/usr/local/bin/restricted-tools'},
+        ],
+        'session_templates': {
+          'restricted': {
+            'name': 'Restricted',
+            'mcp_servers': ['tools'],
+          },
+        },
+      }),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          contains('MCP server name "tools" is duplicated'),
+        ),
+      ),
+    );
+  });
+
+  test('distinguishes inherited and explicitly empty template MCP sets', () {
+    final config = AcpClientConfig.fromJson({
+      'mcp_servers': [
+        {'name': 'repo', 'command': '/usr/local/bin/repo-mcp'},
+      ],
+      'session_templates': {
+        'inherit': {'name': 'Inherit'},
+        'isolated': {'name': 'Isolated', 'mcp_servers': []},
+      },
+    });
+
+    expect(
+      config
+          .forSessionTemplate(config.sessionTemplateNamed('inherit')!)
+          .mcpServers,
+      hasLength(1),
+    );
+    expect(
+      config
+          .forSessionTemplate(config.sessionTemplateNamed('isolated')!)
+          .mcpServers,
+      isEmpty,
+    );
+  });
+
+  test('rejects templates that exclude their effective review MCP', () {
+    final globalReviewer = AcpClientConfig.fromJson({
+      'mcp_servers': [
+        {'name': 'reviewer', 'command': '/usr/local/bin/reviewer-mcp'},
+      ],
+      'client_providers': {
+        'permissions': {
+          'review_agent': {'mcp_server_name': 'reviewer'},
+        },
+      },
+      'session_templates': {
+        'isolated': {'name': 'Isolated', 'mcp_servers': []},
+      },
+    });
+
+    expect(
+      () => globalReviewer.forSessionTemplate(
+        globalReviewer.sessionTemplateNamed('isolated')!,
+      ),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          contains('excludes permission-review MCP server "reviewer"'),
+        ),
+      ),
+    );
+
+    final agentReviewer = AcpClientConfig.fromJson({
+      'agent_servers': {
+        'Codex': {
+          'type': 'custom',
+          'command': '/usr/local/bin/codex',
+          'review_agent': {'mcp_server_name': 'reviewer'},
+        },
+      },
+      'mcp_servers': [
+        {'name': 'reviewer', 'command': '/usr/local/bin/reviewer-mcp'},
+      ],
+      'session_templates': {
+        'isolated': {'name': 'Isolated', 'mcp_servers': []},
+      },
+    });
+    expect(
+      () => agentReviewer.forSessionTemplate(
+        agentReviewer.sessionTemplateNamed('isolated')!,
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test(
+    'rejects malformed template string fields and trimmed duplicate ids',
+    () {
+      for (final entry in <String, Object?>{
+        'name': 3,
+        'agent_server': 3,
+        'mode': false,
+        'model': <String>[],
+        'reasoning_effort': 9,
+      }.entries) {
+        expect(
+          () => AcpClientConfig.fromJson({
+            'session_templates': {
+              'review': {entry.key: entry.value},
+            },
+          }),
+          throwsFormatException,
+          reason: entry.key,
+        );
+      }
+      expect(
+        () => AcpClientConfig.fromJson({
+          'default_session_template': 7,
+          'session_templates': {
+            'review': {'name': 'Review'},
+          },
+        }),
+        throwsFormatException,
+      );
+      expect(
+        () => AcpClientConfig.fromJson({
+          'session_templates': {
+            'review': {'name': 'First'},
+            ' review ': {'name': 'Second'},
+          },
+        }),
+        throwsFormatException,
+      );
+    },
+  );
+
+  test('rejects an unknown default session template', () {
+    expect(
+      () => AcpClientConfig.fromJson({'default_session_template': 'missing'}),
+      throwsFormatException,
+    );
+  });
+
   test('loads custom agent server config', () async {
     final temp = await Directory.systemTemp.createTemp('ianvs_acp_config_test');
     addTearDown(() => temp.delete(recursive: true));

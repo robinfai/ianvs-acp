@@ -167,6 +167,18 @@ void main() {
         ),
       ],
       additionalDirectories: ['/Users/example/extra'],
+      defaultSessionTemplateId: 'review',
+      sessionTemplates: [
+        SessionTemplateConfig(
+          id: 'review',
+          name: 'Review',
+          version: 2,
+          agentServerName: 'Codex',
+          model: 'gpt-5.6-sol',
+          reasoningEffort: 'high',
+          mcpServerNames: ['api-tools'],
+        ),
+      ],
       clientProviders: AcpClientProviderConfig(
         filesystem: AcpFilesystemProviderConfig(
           readTextFile: true,
@@ -227,6 +239,15 @@ void main() {
     expect(await file.readAsString(), isNot(contains('Bearer token')));
     expect(await file.readAsString(), isNot(contains('"secret"')));
     expect(decoded['additional_directories'], ['/Users/example/extra']);
+    expect(decoded['default_session_template'], 'review');
+    expect(decoded['session_templates']['review'], {
+      'name': 'Review',
+      'version': 2,
+      'agent_server': 'Codex',
+      'model': 'gpt-5.6-sol',
+      'reasoning_effort': 'high',
+      'mcp_servers': ['api-tools'],
+    });
     expect(decoded['client_providers']['filesystem']['read_text_file'], isTrue);
     expect(
       decoded['client_providers']['filesystem']['write_text_file'],
@@ -250,6 +271,173 @@ void main() {
       decoded['client_providers']['permissions']['review_agent']['timeout_ms'],
       5000,
     );
+  });
+
+  test(
+    'clears omitted template fields while preserving unknown fields',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'ianvs-acp-template-clear-',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final file = File('${temp.path}/settings.json');
+      await file.writeAsString(
+        jsonEncode(<String, Object?>{
+          'default_session_template': 'review',
+          'session_templates': <String, Object?>{
+            ' review ': <String, Object?>{
+              'name': 'Old review',
+              'version': 1,
+              'description': 'old description',
+              'model': 'fast',
+              'mcp_servers': <String>['repo'],
+              'permissions': <String, Object?>{
+                'trust_rules': <Object?>[
+                  <String, Object?>{
+                    'tool_name': 'write_file',
+                    'decision': 'allow',
+                  },
+                ],
+              },
+              'assistant_agent': <String, Object?>{
+                'enabled': true,
+                'agent': 'Codex',
+              },
+              'future_template_field': <String, Object?>{'kept': true},
+            },
+          },
+        }),
+      );
+
+      await AcpConfigStore.writeConfig(
+        config: AcpClientConfig(
+          configPath: file.path,
+          sessionTemplates: const <SessionTemplateConfig>[
+            SessionTemplateConfig(id: 'review', name: 'Review'),
+          ],
+        ),
+        secretStore: _MemorySecretStore(),
+      );
+
+      final decoded =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      final template =
+          decoded['session_templates']['review'] as Map<String, dynamic>;
+      expect(decoded, isNot(contains('default_session_template')));
+      expect(template['name'], 'Review');
+      expect(template['version'], 1);
+      expect(template['future_template_field'], <String, Object?>{
+        'kept': true,
+      });
+      for (final removed in <String>[
+        'description',
+        'model',
+        'mcp_servers',
+        'permissions',
+        'assistant_agent',
+      ]) {
+        expect(template, isNot(contains(removed)), reason: removed);
+      }
+    },
+  );
+
+  test('preserves an explicitly empty template permission override', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-template-empty-permissions-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString(
+      jsonEncode(<String, Object?>{
+        'client_providers': <String, Object?>{
+          'permissions': <String, Object?>{
+            'trust_rules': <Object?>[
+              <String, Object?>{'tool_name': 'write_file', 'decision': 'allow'},
+            ],
+          },
+        },
+        'session_templates': <String, Object?>{
+          'review': <String, Object?>{
+            'name': 'Review',
+            'version': 1,
+            'permissions': <String, Object?>{
+              'trust_rules': <Object?>[
+                <String, Object?>{
+                  'tool_name': 'read_file',
+                  'decision': 'allow',
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+
+    await AcpConfigStore.writeConfig(
+      config: AcpClientConfig(
+        configPath: file.path,
+        sessionTemplates: const <SessionTemplateConfig>[
+          SessionTemplateConfig(
+            id: 'review',
+            name: 'Review',
+            permissions: AcpPermissionProviderConfig(),
+          ),
+        ],
+      ),
+    );
+
+    final decoded =
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    expect(decoded['session_templates']['review']['permissions'], isEmpty);
+    final reloaded = AcpClientConfig.fromJson(decoded);
+    expect(reloaded.sessionTemplateNamed('review')?.permissions, isNotNull);
+    expect(
+      reloaded.sessionTemplateNamed('review')!.permissions!.trustRules,
+      isEmpty,
+    );
+  });
+
+  test('rejects invalid typed templates before writing secrets', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'ianvs-acp-template-invalid-write-',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final file = File('${temp.path}/settings.json');
+    await file.writeAsString('{"existing":true}\n');
+    const canary = 'template-secret-canary';
+    const inlineReviewer = McpServerConfig(
+      raw: <String, dynamic>{
+        'name': 'inline-reviewer',
+        'type': 'stdio',
+        'command': 'reviewer',
+        'env': <String, String>{'API_TOKEN': canary},
+      },
+    );
+
+    await expectLater(
+      AcpConfigStore.writeConfig(
+        config: AcpClientConfig(
+          configPath: file.path,
+          sessionTemplates: const <SessionTemplateConfig>[
+            SessionTemplateConfig(
+              id: 'review',
+              name: 'Review',
+              permissions: AcpPermissionProviderConfig(
+                reviewAgent: AcpPermissionReviewAgentConfig(
+                  enabled: true,
+                  mcpServer: inlineReviewer,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      throwsFormatException,
+    );
+
+    final contents = await file.readAsString();
+    expect(contents, '{"existing":true}\n');
+    expect(contents, isNot(contains(canary)));
   });
 
   test('writes edited config without dropping unknown nested fields', () async {

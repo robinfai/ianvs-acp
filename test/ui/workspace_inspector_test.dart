@@ -73,6 +73,14 @@ void main() {
                     'command': 'mcp-filesystem',
                   },
                 ),
+                McpServerConfig(
+                  raw: {
+                    'name': 'Remote MCP',
+                    'type': 'http',
+                    'url':
+                        'https://user-canary:pass-canary@mcp.example/secret-canary?token=query-canary#fragment-canary',
+                  },
+                ),
               ],
               additionalDirectories: const ['/workspace/shared'],
               clientProviders: const AcpClientProviderConfig(
@@ -100,9 +108,14 @@ void main() {
     expect(find.text('25%  2K / 8K'), findsOneWidget);
     expect(find.text('/workspace/shared'), findsOneWidget);
     expect(find.text('Filesystem MCP'), findsOneWidget);
-    expect(find.text('read'), findsOneWidget);
+    expect(find.text('Remote MCP'), findsOneWidget);
+    expect(find.textContaining('https://mcp.example'), findsOneWidget);
+    expect(find.textContaining('user-canary'), findsNothing);
+    expect(find.textContaining('secret-canary'), findsNothing);
+    expect(find.textContaining('query-canary'), findsNothing);
     await tester.drag(find.byType(ListView).last, const Offset(0, -260));
     await tester.pumpAndSettle();
+    expect(find.text('read'), findsOneWidget);
     expect(find.text('Enabled'), findsOneWidget);
 
     await tester.tap(find.text('Overview'));

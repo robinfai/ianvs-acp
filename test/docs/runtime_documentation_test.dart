@@ -26,7 +26,7 @@ void main() {
     ];
     for (final path in docs) {
       expect(File(path).existsSync(), isTrue, reason: 'Missing $path');
-      expect(File(path).readAsStringSync(), contains('Updated: 2026-08-11'));
+      expect(File(path).readAsStringSync(), contains('Updated: 2026-08-19'));
     }
 
     final readme = File('README.md').readAsStringSync();

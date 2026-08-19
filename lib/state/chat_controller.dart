@@ -19,6 +19,7 @@ import '../acp/agent_session.dart';
 import '../acp/prompt_attachment.dart';
 import '../acp/session_title.dart';
 import '../config/assistant_agent_config.dart';
+import '../config/acp_client_config.dart' show SessionTemplateConfig;
 import '../storage/session_transcript_cache.dart';
 import 'connection_state.dart';
 import '../acp/permission_context.dart';
@@ -418,11 +419,17 @@ class ChatMessage {
        _acceptedUtf8Bytes = acceptedUtf8Bytes ?? utf8.encode(text).length,
        // The private named constructor keeps a readable `turnId` argument.
        // ignore: prefer_initializing_formals
-       _turnId = turnId;
+       _turnId = turnId {
+    final preview = _boundedChatMessagePreview(text);
+    _previewText = preview.text;
+    _previewTextTruncated = preview.truncated;
+  }
 
   final ChatMessageRole role;
   StringBuffer _textBuffer;
   String? _materializedText;
+  late String _previewText;
+  late bool _previewTextTruncated;
   int _revision;
   int _materializationCount = 0;
   int _acceptedUtf8Bytes;
@@ -457,6 +464,11 @@ class ChatMessage {
     return materialized;
   }
 
+  /// A stable bounded prefix for compact UI projections that must not
+  /// materialize a multi-megabyte streaming response on every text delta.
+  String get previewText =>
+      _previewTextTruncated ? '$_previewText…' : _previewText;
+
   set text(String value) {
     _requireActive();
     _setText(value);
@@ -470,6 +482,9 @@ class ChatMessage {
   void _setText(String value) {
     _textBuffer = StringBuffer(value);
     _materializedText = value;
+    final preview = _boundedChatMessagePreview(value);
+    _previewText = preview.text;
+    _previewTextTruncated = preview.truncated;
     _acceptedUtf8Bytes = utf8.encode(value).length;
     _revision += 1;
     _retainedBytes = null;
@@ -528,6 +543,16 @@ class ChatMessage {
     if (value.isEmpty) return;
     _textBuffer.write(value);
     _materializedText = null;
+    if (!_previewTextTruncated) {
+      final remaining = _chatMessagePreviewCodeUnits - _previewText.length;
+      if (remaining <= 0) {
+        _previewTextTruncated = true;
+      } else {
+        final appended = _boundedChatMessagePreview(value, limit: remaining);
+        _previewText += appended.text;
+        _previewTextTruncated = appended.truncated;
+      }
+    }
     _acceptedUtf8Bytes += acceptedUtf8Bytes;
     _revision += 1;
     _retainedBytes = null;
@@ -662,6 +687,21 @@ class ChatMessage {
       throw StateError('Controller-owned chat message is immutable.');
     }
   }
+}
+
+const int _chatMessagePreviewCodeUnits = 4096;
+
+({String text, bool truncated}) _boundedChatMessagePreview(
+  String value, {
+  int limit = _chatMessagePreviewCodeUnits,
+}) {
+  if (value.length <= limit) return (text: value, truncated: false);
+  var end = limit;
+  if (end > 0) {
+    final last = value.codeUnitAt(end - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) end -= 1;
+  }
+  return (text: value.substring(0, end), truncated: true);
 }
 
 acp.AcpInputOmission _copyInputOmission(acp.AcpInputOmission omission) {
@@ -1690,6 +1730,7 @@ class ArchivedSessionSnapshot {
     required bool sessionSettingsLoading,
     required ConnectionStatus status,
     required int? activeSessionSettingsLoadId,
+    bool timelineHistoryWasTruncated = false,
     acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
   }) : this._prepared(
          _prepareArchivedSessionSnapshot(
@@ -1704,6 +1745,7 @@ class ArchivedSessionSnapshot {
            sessionSettingsLoading: sessionSettingsLoading,
            status: status,
            activeSessionSettingsLoadId: activeSessionSettingsLoadId,
+           timelineHistoryWasTruncated: timelineHistoryWasTruncated,
            inputBudget: inputBudget,
          ),
        );
@@ -1720,6 +1762,7 @@ class ArchivedSessionSnapshot {
       sessionSettingsLoading = prepared.sessionSettingsLoading,
       status = prepared.status,
       activeSessionSettingsLoadId = prepared.activeSessionSettingsLoadId,
+      timelineHistoryWasTruncated = prepared.timelineHistoryWasTruncated,
       retainedBytes = prepared.retainedBytes;
 
   bool _leaseIssued = false;
@@ -1738,6 +1781,7 @@ class ArchivedSessionSnapshot {
   final bool sessionSettingsLoading;
   final ConnectionStatus status;
   final int? activeSessionSettingsLoadId;
+  final bool timelineHistoryWasTruncated;
   final int retainedBytes;
 
   void _attachLease({
@@ -1794,6 +1838,7 @@ final class _PreparedArchivedSessionSnapshot {
     required this.sessionSettingsLoading,
     required this.status,
     required this.activeSessionSettingsLoadId,
+    required this.timelineHistoryWasTruncated,
     required this.retainedBytes,
   });
 
@@ -1808,6 +1853,7 @@ final class _PreparedArchivedSessionSnapshot {
   final bool sessionSettingsLoading;
   final ConnectionStatus status;
   final int? activeSessionSettingsLoadId;
+  final bool timelineHistoryWasTruncated;
   final int retainedBytes;
 }
 
@@ -1823,6 +1869,7 @@ _PreparedArchivedSessionSnapshot _prepareArchivedSessionSnapshot({
   required bool sessionSettingsLoading,
   required ConnectionStatus status,
   required int? activeSessionSettingsLoadId,
+  required bool timelineHistoryWasTruncated,
   required acp.AcpInputBudget inputBudget,
 }) {
   inputBudget.validate();
@@ -1837,6 +1884,7 @@ _PreparedArchivedSessionSnapshot _prepareArchivedSessionSnapshot({
     sessionSettingsLoading: sessionSettingsLoading,
     status: status,
     activeSessionSettingsLoadId: activeSessionSettingsLoadId,
+    timelineHistoryWasTruncated: timelineHistoryWasTruncated,
     inputBudget: inputBudget,
   );
   return _PreparedArchivedSessionSnapshot(
@@ -1851,6 +1899,7 @@ _PreparedArchivedSessionSnapshot _prepareArchivedSessionSnapshot({
     sessionSettingsLoading: prepared.sessionSettingsLoading,
     status: prepared.status,
     activeSessionSettingsLoadId: prepared.activeSessionSettingsLoadId,
+    timelineHistoryWasTruncated: prepared.timelineHistoryWasTruncated,
     retainedBytes: prepared.retainedBytes,
   );
 }
@@ -1867,6 +1916,7 @@ class _SessionViewSnapshot {
     required bool sessionSettingsLoading,
     required ConnectionStatus status,
     required int? activeSessionSettingsLoadId,
+    bool timelineHistoryWasTruncated = false,
     required acp.AcpInputBudget inputBudget,
   }) {
     final frozenMessages = _freezeSnapshotMessages(messages, inputBudget);
@@ -1888,6 +1938,7 @@ class _SessionViewSnapshot {
       sessionSettingsLoading: sessionSettingsLoading,
       status: status,
       activeSessionSettingsLoadId: activeSessionSettingsLoadId,
+      timelineHistoryWasTruncated: timelineHistoryWasTruncated,
       retainedBytes: _estimateSessionViewRetainedBytes(
         messages: frozenMessages,
         availableCommands: copiedCommands,
@@ -1913,6 +1964,7 @@ class _SessionViewSnapshot {
     required this.sessionSettingsLoading,
     required this.status,
     required this.activeSessionSettingsLoadId,
+    required this.timelineHistoryWasTruncated,
     required this.retainedBytes,
   });
 
@@ -1926,6 +1978,7 @@ class _SessionViewSnapshot {
   final bool sessionSettingsLoading;
   final ConnectionStatus status;
   final int? activeSessionSettingsLoadId;
+  final bool timelineHistoryWasTruncated;
   final int retainedBytes;
 }
 
@@ -1968,6 +2021,8 @@ AgentSession _copyAgentSession(
       titleOverride: session.titleOverride,
       updatedAt: session.updatedAt,
       agentName: session.agentName,
+      sessionTemplateId: session.sessionTemplateId,
+      sessionTemplateVersion: session.sessionTemplateVersion,
       pinned: session.pinned,
       archived: session.archived,
       unread: session.unread,
@@ -2028,6 +2083,11 @@ AgentSession _copyAgentSessionStrict(
     ),
     updatedAt: session.updatedAt,
     agentName: copyOptionalString(session.agentName, 'session agent name'),
+    sessionTemplateId: copyOptionalString(
+      session.sessionTemplateId,
+      'session template id',
+    ),
+    sessionTemplateVersion: session.sessionTemplateVersion,
     initialEvents: events,
     pinned: session.pinned,
     archived: session.archived,
@@ -2374,6 +2434,8 @@ int _addAgentSessionRetainedBytes(
     if (session.titleOverride != null) session.titleOverride,
     if (session.updatedAt != null) session.updatedAt!.microsecondsSinceEpoch,
     if (session.agentName != null) session.agentName,
+    if (session.sessionTemplateId != null) session.sessionTemplateId,
+    if (session.sessionTemplateVersion != null) session.sessionTemplateVersion,
   ]) {
     retained = _addEstimatedRetainedBytes(retained, estimator, value);
   }
@@ -2599,6 +2661,13 @@ class ChatController extends ChangeNotifier {
       _handleAvailableCommandsUpdate,
       onError: (Object error, StackTrace stackTrace) => _setActionError(error),
     );
+    if (client case final AcpAgentLifecycleEventSource lifecycleSource) {
+      _agentLifecycleSubscription = lifecycleSource.lifecycleEvents.listen(
+        _handleAgentLifecycleEvent,
+        onError: (Object error, StackTrace stackTrace) =>
+            _setActionError(error),
+      );
+    }
   }
 
   static const int defaultPermissionHistoryLimit = 500;
@@ -2627,9 +2696,17 @@ class ChatController extends ChangeNotifier {
   AgentSession? _currentSession;
   AgentSession? get currentSession => _currentSession;
   set currentSession(AgentSession? value) {
+    final previousId = _currentSession?.id.trim();
+    final nextId = value?.id.trim();
+    if (previousId != nextId) {
+      _sessionTemplateWarnings = const <String>[];
+    }
     _currentSession = value;
     _requestActiveUiStateRefresh();
   }
+
+  List<String> _sessionTemplateWarnings = const <String>[];
+  List<String> get sessionTemplateWarnings => _sessionTemplateWarnings;
 
   final List<AgentSession> sessions = <AgentSession>[];
   final Object _messageOwnerToken = Object();
@@ -2689,9 +2766,18 @@ class ChatController extends ChangeNotifier {
       <AcpPermissionAuditEntry>[];
   final List<int> _permissionHistoryEntryEncodedBytes = <int>[];
   int _permissionHistoryEncodedBytes = 0;
+  int _permissionHistoryRevision = 0;
+  final LinkedHashSet<String> _permissionHistoryTruncatedSessionIds =
+      LinkedHashSet<String>();
+  bool _permissionHistoryProvenanceOverflow = false;
+  final LinkedHashSet<String> _permissionHistoryOverflowExemptSessionIds =
+      LinkedHashSet<String>();
+  bool _timelineHistoryWasTruncated = false;
   final Set<String> _resolvingPermissionRequestIds = <String>{};
   final Set<String> _reviewingPermissionRequestIds = <String>{};
-  final Set<String> _retiredSessionIds = <String>{};
+  bool _permissionRequestStreamDone = false;
+  final LinkedHashSet<String> _retiredSessionIds = LinkedHashSet<String>();
+  bool _retiredSessionIdsOverflow = false;
   final Set<String> _localUnstartedSessionIds = <String>{};
   final List<ChatAgentEventObserver> _agentEventObservers =
       <ChatAgentEventObserver>[];
@@ -2884,6 +2970,31 @@ class ChatController extends ChangeNotifier {
     return List.unmodifiable(_permissionHistory);
   }
 
+  int get permissionHistoryRevision => _permissionHistoryRevision;
+
+  bool get permissionHistoryWasTruncated {
+    final sessionId = currentSession?.id.trim();
+    return sessionId != null &&
+        sessionId.isNotEmpty &&
+        _permissionHistoryWasTruncatedForNormalizedSession(sessionId);
+  }
+
+  bool permissionHistoryWasTruncatedForSession(String sessionId) {
+    final normalizedSessionId = sessionId.trim();
+    return normalizedSessionId.isNotEmpty &&
+        _permissionHistoryWasTruncatedForNormalizedSession(normalizedSessionId);
+  }
+
+  bool _permissionHistoryWasTruncatedForNormalizedSession(String sessionId) {
+    return _permissionHistoryTruncatedSessionIds.contains(sessionId) ||
+        (_permissionHistoryProvenanceOverflow &&
+            !_permissionHistoryOverflowExemptSessionIds.contains(sessionId));
+  }
+
+  bool get timelineHistoryWasTruncated =>
+      currentSession != null &&
+      (_timelineHistoryWasTruncated || _messages.any(_isHistoryMarker));
+
   int get permissionHistoryEncodedBytes => _permissionHistoryEncodedBytes;
 
   StreamSubscription<AgentEvent>? _promptSubscription;
@@ -2893,6 +3004,7 @@ class ChatController extends ChangeNotifier {
   _permissionInvalidationSubscription;
   late final StreamSubscription<AcpAvailableCommandsUpdate>
   _availableCommandsSubscription;
+  StreamSubscription<AcpAgentLifecycleEvent>? _agentLifecycleSubscription;
   DateTime? _lastPromptStartedAt;
   Duration? _lastLatency;
   Duration? get lastLatency => _lastLatency;
@@ -2904,6 +3016,7 @@ class ChatController extends ChangeNotifier {
   int _sessionSettingsLoadSerial = 0;
   int _availableCommandsLoadSerial = 0;
   int _sessionOperationGeneration = 0;
+  int? _pendingSessionSetupGeneration;
   int? __activeSessionSettingsLoadId;
   int? get _activeSessionSettingsLoadId => __activeSessionSettingsLoadId;
   set _activeSessionSettingsLoadId(int? value) {
@@ -2936,7 +3049,10 @@ class ChatController extends ChangeNotifier {
     return () => _permissionEventObservers.remove(observer);
   }
 
-  Future<bool> newSession({String? cwd}) async {
+  Future<bool> newSession({
+    String? cwd,
+    SessionTemplateConfig? template,
+  }) async {
     if (isStreaming || isSessionOperationRunning) return false;
     _finishTurnBudget();
     final workspaceCwd = cwd == null || cwd.trim().isEmpty
@@ -2954,13 +3070,26 @@ class ChatController extends ChangeNotifier {
           }
           if (status == ConnectionStatus.error) return;
         }
-        final remoteSession = await client.createSession(
-          cwd: workspaceCwd,
-          additionalDirectories: additionalDirectories,
-        );
+        _pendingSessionSetupGeneration = operationGeneration;
+        late final AgentSession remoteSession;
+        try {
+          remoteSession = await client.createSession(
+            cwd: workspaceCwd,
+            additionalDirectories: additionalDirectories,
+          );
+        } finally {
+          if (_pendingSessionSetupGeneration == operationGeneration) {
+            _pendingSessionSetupGeneration = null;
+          }
+        }
+        _cancelPendingPermissionOutsideSession(remoteSession.id);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         final createdSession = _copyAgentSessionStrict(
-          remoteSession.copyWith(agentName: agentName),
+          remoteSession.copyWith(
+            agentName: agentName,
+            sessionTemplateId: template?.id,
+            sessionTemplateVersion: template?.version,
+          ),
           inputBudget,
         );
         final initialEvents = createdSession.initialEvents;
@@ -2970,7 +3099,9 @@ class ChatController extends ChangeNotifier {
         await _runUiStateTransaction(() {
           _snapshotCurrentSession();
           _retiredSessionIds.remove(session.id);
+          _markPermissionHistoryCompleteForSession(session.id);
           currentSession = session;
+          _timelineHistoryWasTruncated = false;
           _upsertSession(session);
           _clearMessages();
           availableCommands = const <Map<String, Object?>>[];
@@ -2978,6 +3109,7 @@ class ChatController extends ChangeNotifier {
           lastError = null;
           sessionSettings = const AcpSessionSettings();
           sessionUsage = null;
+          _sessionTemplateWarnings = const <String>[];
           sessionSettingsLoading = false;
           _activeSessionSettingsLoadId = null;
           for (final event in initialEvents) {
@@ -3000,13 +3132,102 @@ class ChatController extends ChangeNotifier {
         _notifyListeners();
         await _loadSessionSettings(session.id, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        if (template != null) {
+          _sessionTemplateWarnings = await _applySessionTemplateSettings(
+            session.id,
+            template,
+          );
+          if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
+            return;
+          }
+        }
         _notifyListeners();
       } catch (error) {
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        _cancelPendingPermissionOutsideSession(currentSession?.id);
         _setError(error);
       }
     });
     return created;
+  }
+
+  Future<List<String>> _applySessionTemplateSettings(
+    String sessionId,
+    SessionTemplateConfig template,
+  ) async {
+    final warnings = <String>[];
+    final requestedMode = template.mode?.trim();
+    if (requestedMode != null && requestedMode.isNotEmpty) {
+      if (!sessionSettings.shouldUseModeFallback) {
+        warnings.add(
+          'Mode "$requestedMode" was not applied because this agent uses config options.',
+        );
+      } else if (!sessionSettings.modes.availableModes.any(
+        (mode) => mode.id == requestedMode,
+      )) {
+        warnings.add('Mode "$requestedMode" is not exposed by this session.');
+      } else {
+        try {
+          final didSet = await client.setSessionMode(
+            sessionId: sessionId,
+            modeId: requestedMode,
+          );
+          if (didSet && _isActiveSession(sessionId)) {
+            sessionSettings = sessionSettings.withCurrentMode(requestedMode);
+          } else if (!didSet) {
+            warnings.add('The agent rejected mode "$requestedMode".');
+          }
+        } catch (_) {
+          warnings.add('Mode "$requestedMode" could not be applied.');
+        }
+      }
+    }
+
+    Future<void> applyOption({
+      required String label,
+      required String? requested,
+      required AcpConfigOption? option,
+    }) async {
+      final value = requested?.trim();
+      if (value == null || value.isEmpty) return;
+      if (option == null) {
+        warnings.add('$label "$value" is not exposed by this session.');
+        return;
+      }
+      if (option.options.isNotEmpty &&
+          !option.options.any((choice) => choice.value == value)) {
+        warnings.add('$label "$value" is not offered by this session.');
+        return;
+      }
+      try {
+        final options = await client.setConfigOption(
+          sessionId: sessionId,
+          configId: option.id,
+          value: value,
+        );
+        if (!_isActiveSession(sessionId)) return;
+        final updatedOptions = options.isEmpty
+            ? _configOptionsWithOverride(option.id, value)
+            : options;
+        sessionSettings = sessionSettings.withPreferredConfigOptions(
+          updatedOptions,
+        );
+      } catch (_) {
+        warnings.add('$label "$value" could not be applied.');
+      }
+    }
+
+    await applyOption(
+      label: 'Model',
+      requested: template.model,
+      option: sessionSettings.modelOption,
+    );
+    await applyOption(
+      label: 'Reasoning effort',
+      requested: template.reasoningEffort,
+      option: sessionSettings.reasoningEffortOption,
+    );
+    return List<String>.unmodifiable(warnings);
   }
 
   Future<void> resumeSession(
@@ -3077,6 +3298,7 @@ class ChatController extends ChangeNotifier {
       final previousSessionReplayLoading = isSessionReplayLoading;
       final previousCachedSessionTranscriptVisible =
           _cachedSessionTranscriptVisible;
+      final previousTimelineHistoryWasTruncated = _timelineHistoryWasTruncated;
       final previousSessionLoadMetrics = lastSessionLoadMetrics;
       final previousSessionViewSnapshots = Map<String, _SessionViewSnapshot>.of(
         _sessionViewSnapshots,
@@ -3135,6 +3357,7 @@ class ChatController extends ChangeNotifier {
           status = ConnectionStatus.reconnecting;
           isStreaming = false;
           lastError = null;
+          _timelineHistoryWasTruncated = false;
           _clearMessages();
           availableCommands = const <Map<String, Object?>>[];
           lastLatency = null;
@@ -3153,6 +3376,12 @@ class ChatController extends ChangeNotifier {
               titleOverride: existingSession?.titleOverride,
               updatedAt: updatedAt,
               agentName: agentName,
+              sessionTemplateId:
+                  boundSession?.sessionTemplateId ??
+                  existingSession?.sessionTemplateId,
+              sessionTemplateVersion:
+                  boundSession?.sessionTemplateVersion ??
+                  existingSession?.sessionTemplateVersion,
               pinned: existingSession?.pinned ?? false,
               archived: false,
               unread: false,
@@ -3204,6 +3433,8 @@ class ChatController extends ChangeNotifier {
             cachedMessages.isNotEmpty &&
             client.capabilities?.session.resume == true;
         if (cacheHit) {
+          _timelineHistoryWasTruncated =
+              cacheResult.snapshot!.timelineHistoryWasTruncated;
           _replaceAllMessages(cachedMessages);
           _cachedSessionTranscriptVisible = true;
           // This is the complete transcript for the exact catalog revision,
@@ -3286,15 +3517,25 @@ class ChatController extends ChangeNotifier {
             _saveCachedSessionTranscript(
               transcriptIdentity,
               List<ChatMessage>.of(_messages),
+              timelineHistoryWasTruncated: _timelineHistoryWasTruncated,
             ),
           );
         }
       } catch (error) {
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         await _runUiStateTransaction(() {
+          for (final sessionId in _sessionViewSnapshots.keys) {
+            _releaseLocalSessionView(sessionId);
+          }
           _sessionViewSnapshots
             ..clear()
             ..addAll(previousSessionViewSnapshots);
+          for (final sessionId in previousSessionViewSnapshots.keys) {
+            _retainLocalSessionView(sessionId);
+          }
+          if (previousSession != null) {
+            _retainLocalSessionView(previousSession.id);
+          }
           _inactiveSnapshotRetainedBytes =
               previousInactiveSnapshotRetainedBytes;
           currentSession = previousSession;
@@ -3313,6 +3554,7 @@ class ChatController extends ChangeNotifier {
           _cachedSessionTranscriptVisible =
               previousCachedSessionTranscriptVisible;
           lastSessionLoadMetrics = previousSessionLoadMetrics;
+          _timelineHistoryWasTruncated = previousTimelineHistoryWasTruncated;
         });
         _setError(error);
       }
@@ -3425,8 +3667,9 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _saveCachedSessionTranscript(
     SessionTranscriptIdentity identity,
-    List<ChatMessage> sourceMessages,
-  ) async {
+    List<ChatMessage> sourceMessages, {
+    required bool timelineHistoryWasTruncated,
+  }) async {
     final cache = sessionTranscriptCache;
     if (cache == null || sourceMessages.isEmpty) return;
     await Future<void>.delayed(Duration.zero);
@@ -3453,6 +3696,7 @@ class ChatController extends ChangeNotifier {
         SessionTranscriptSnapshot(
           identity: identity,
           messages: encodedMessages,
+          timelineHistoryWasTruncated: timelineHistoryWasTruncated,
         ),
       );
     } on Object {
@@ -3603,6 +3847,9 @@ class ChatController extends ChangeNotifier {
       activeSessionSettingsLoadId: wasCurrent
           ? _activeSessionSettingsLoadId
           : inactiveSnapshot?.activeSessionSettingsLoadId,
+      timelineHistoryWasTruncated: wasCurrent
+          ? _timelineHistoryWasTruncated
+          : inactiveSnapshot?.timelineHistoryWasTruncated ?? false,
       inputBudget: inputBudget,
     );
 
@@ -3623,6 +3870,7 @@ class ChatController extends ChangeNotifier {
       _removeSessionViewSnapshot(sessionId);
       if (wasCurrent) {
         currentSession = null;
+        _timelineHistoryWasTruncated = false;
         _clearMessages();
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
@@ -3660,6 +3908,7 @@ class ChatController extends ChangeNotifier {
       sessionSettingsLoading: snapshot.sessionSettingsLoading,
       status: snapshot.status,
       activeSessionSettingsLoadId: snapshot.activeSessionSettingsLoadId,
+      timelineHistoryWasTruncated: snapshot.timelineHistoryWasTruncated,
       inputBudget: inputBudget,
     );
     _runSynchronousUiStateTransaction(() {
@@ -3667,6 +3916,7 @@ class ChatController extends ChangeNotifier {
       _upsertSession(prepared.session);
       if (wasCurrent && currentSession == null) {
         currentSession = prepared.session;
+        _timelineHistoryWasTruncated = prepared.timelineHistoryWasTruncated;
         _replaceAllMessages(prepared.messages.map((message) => message.thaw()));
         availableCommands = _copyAvailableCommands(
           prepared.availableCommands,
@@ -3726,11 +3976,30 @@ class ChatController extends ChangeNotifier {
     });
   }
 
+  void _retainLocalSessionView(String sessionId) {
+    final ownership = client;
+    if (ownership is AcpLocalSessionViewOwnership) {
+      (ownership as AcpLocalSessionViewOwnership).retainLocalSessionView(
+        sessionId,
+      );
+    }
+  }
+
+  void _releaseLocalSessionView(String sessionId) {
+    final ownership = client;
+    if (ownership is AcpLocalSessionViewOwnership) {
+      (ownership as AcpLocalSessionViewOwnership).releaseLocalSessionView(
+        sessionId,
+      );
+    }
+  }
+
   void _storeSessionViewSnapshot(
     String sessionId,
     _SessionViewSnapshot snapshot,
   ) {
     final normalizedSessionId = sessionId.trim();
+    _retainLocalSessionView(normalizedSessionId);
     final previousKey = _sessionViewSnapshotKeyWithId(normalizedSessionId);
     final previous = previousKey == null
         ? null
@@ -3750,17 +4019,21 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  _SessionViewSnapshot? _takeSessionViewSnapshot(String sessionId) {
+  _SessionViewSnapshot? _takeSessionViewSnapshot(
+    String sessionId, {
+    bool releaseOwnership = false,
+  }) {
     final key = _sessionViewSnapshotKeyWithId(sessionId);
     final snapshot = key == null ? null : _sessionViewSnapshots.remove(key);
     if (snapshot != null) {
       _inactiveSnapshotRetainedBytes -= snapshot.retainedBytes;
+      if (releaseOwnership) _releaseLocalSessionView(snapshot.session.id);
     }
     return snapshot;
   }
 
   void _removeSessionViewSnapshot(String sessionId) {
-    _takeSessionViewSnapshot(sessionId);
+    _takeSessionViewSnapshot(sessionId, releaseOwnership: true);
   }
 
   _SessionViewSnapshot? _touchSessionViewSnapshot(String sessionId) {
@@ -3788,6 +4061,9 @@ class ChatController extends ChangeNotifier {
   }
 
   void _clearSessionViewSnapshots() {
+    for (final sessionId in _sessionViewSnapshots.keys) {
+      _releaseLocalSessionView(sessionId);
+    }
     _sessionViewSnapshots.clear();
     _inactiveSnapshotRetainedBytes = 0;
   }
@@ -3934,7 +4210,10 @@ class ChatController extends ChangeNotifier {
     try {
       while (debugUiStateRetainedBytes > inputBudget.maxUiStateBytes &&
           _sessionViewSnapshots.isNotEmpty) {
-        _takeSessionViewSnapshot(_sessionViewSnapshots.keys.first);
+        _takeSessionViewSnapshot(
+          _sessionViewSnapshots.keys.first,
+          releaseOwnership: true,
+        );
       }
       while (debugUiStateRetainedBytes > inputBudget.maxUiStateBytes) {
         int? oldestTurnId;
@@ -3953,6 +4232,7 @@ class ChatController extends ChangeNotifier {
           enforceBudget: false,
         );
         removedHistory = true;
+        _timelineHistoryWasTruncated = true;
         _recomputeActiveUiStateRetainedBytes();
       }
       if (removedHistory && !_messages.any(_isHistoryMarker)) {
@@ -4029,6 +4309,7 @@ class ChatController extends ChangeNotifier {
         sessionSettingsLoading: sessionSettingsLoading,
         status: status,
         activeSessionSettingsLoadId: _activeSessionSettingsLoadId,
+        timelineHistoryWasTruncated: _timelineHistoryWasTruncated,
         inputBudget: inputBudget,
       ),
     );
@@ -4041,6 +4322,7 @@ class ChatController extends ChangeNotifier {
     String? title,
     DateTime? updatedAt,
   }) {
+    _retainLocalSessionView(snapshot.session.id);
     final existingSession = _sessionWithId(snapshot.session.id);
     final sidebarSession = existingSession ?? snapshot.session;
     final session = _copyAgentSessionStrict(
@@ -4059,6 +4341,7 @@ class ChatController extends ChangeNotifier {
     currentSession = session;
     _upsertSession(session);
     _cancelPendingPermissionOutsideSession(session.id);
+    _timelineHistoryWasTruncated = snapshot.timelineHistoryWasTruncated;
     _replaceAllMessages(snapshot.messages.map((message) => message.thaw()));
     availableCommands = _copyAvailableCommands(
       snapshot.availableCommands,
@@ -4086,6 +4369,7 @@ class ChatController extends ChangeNotifier {
     String? title,
     DateTime? updatedAt,
   }) {
+    _retainLocalSessionView(existingSession.id);
     final session = _copyAgentSessionStrict(
       existingSession.copyWith(
         cwd: cwd ?? existingSession.cwd,
@@ -4102,6 +4386,7 @@ class ChatController extends ChangeNotifier {
     currentSession = session;
     _upsertSession(session);
     _cancelPendingPermissionOutsideSession(session.id);
+    _timelineHistoryWasTruncated = false;
     _clearMessages();
     availableCommands = const <Map<String, Object?>>[];
     lastLatency = null;
@@ -4383,8 +4668,17 @@ class ChatController extends ChangeNotifier {
       _promptSubscription = null;
       isStreaming = false;
       await _cancelPendingPermissionRequest(reportErrors: false);
+      if (currentSession case final session?) {
+        final ownership = client;
+        if (ownership is AcpLocalSessionViewOwnership) {
+          (ownership as AcpLocalSessionViewOwnership).abandonLocalSessionView(
+            session.id,
+          );
+        }
+      }
       currentSession = null;
       sessions.clear();
+      _timelineHistoryWasTruncated = false;
       _localUnstartedSessionIds.clear();
       _clearSessionViewSnapshots();
       _clearMessages();
@@ -4525,11 +4819,20 @@ class ChatController extends ChangeNotifier {
           }
           if (status == ConnectionStatus.error) return;
         }
-        final remoteFork = await client.forkSession(
-          sessionId: session.id,
-          cwd: session.cwd,
-          additionalDirectories: session.additionalDirectories,
-        );
+        _pendingSessionSetupGeneration = operationGeneration;
+        late final AgentSession remoteFork;
+        try {
+          remoteFork = await client.forkSession(
+            sessionId: session.id,
+            cwd: session.cwd,
+            additionalDirectories: session.additionalDirectories,
+          );
+        } finally {
+          if (_pendingSessionSetupGeneration == operationGeneration) {
+            _pendingSessionSetupGeneration = null;
+          }
+        }
+        _cancelPendingPermissionOutsideSession(remoteFork.id);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         final forked = _copyAgentSessionStrict(remoteFork, inputBudget);
         final forkedTitle = forked.title?.trim().isNotEmpty == true
@@ -4540,12 +4843,16 @@ class ChatController extends ChangeNotifier {
           forked.copyWith(
             title: forkedTitle,
             agentName: agentName,
+            sessionTemplateId: session.sessionTemplateId,
+            sessionTemplateVersion: session.sessionTemplateVersion,
             initialEvents: const <AgentEvent>[],
           ),
           inputBudget,
         );
         _retiredSessionIds.remove(updatedSession.id);
+        _markPermissionHistoryCompleteForSession(updatedSession.id);
         currentSession = updatedSession;
+        _timelineHistoryWasTruncated = false;
         _upsertSession(updatedSession);
         _clearMessages();
         availableCommands = const <Map<String, Object?>>[];
@@ -4569,6 +4876,7 @@ class ChatController extends ChangeNotifier {
         _notifyListeners();
       } catch (error) {
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        _cancelPendingPermissionOutsideSession(currentSession?.id);
         _setActionError(error);
       }
     });
@@ -4600,10 +4908,18 @@ class ChatController extends ChangeNotifier {
       }
       if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
 
-      _retiredSessionIds.add(session.id);
+      final ownership = client;
+      if (ownership is AcpLocalSessionViewOwnership) {
+        (ownership as AcpLocalSessionViewOwnership).abandonLocalSessionView(
+          session.id,
+        );
+      }
+
+      _retireSessionId(session.id);
       _removeLocalUnstartedSessionId(session.id);
       _removeSessionViewSnapshot(session.id);
       currentSession = null;
+      _timelineHistoryWasTruncated = false;
       sessions.removeWhere((item) => _sessionIdsMatch(item.id, session.id));
       _clearMessages();
       availableCommands = const <Map<String, Object?>>[];
@@ -4615,6 +4931,7 @@ class ChatController extends ChangeNotifier {
       _activeSessionSettingsLoadId = null;
       await _cancelPendingPermissionRequest(reportErrors: false);
       if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+      _removePermissionHistoryForSession(session.id);
       status = ConnectionStatus.connected;
       if (closeError != null) {
         _setActionError(closeError);
@@ -4634,10 +4951,11 @@ class ChatController extends ChangeNotifier {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
         await client.deleteSession(sessionId: session.id);
-        _retiredSessionIds.add(session.id);
+        _retireSessionId(session.id);
         _localUnstartedSessionIds.remove(session.id);
         _sessionViewSnapshots.remove(session.id);
         currentSession = null;
+        _timelineHistoryWasTruncated = false;
         sessions.removeWhere((item) => item.id == session.id);
         messages.clear();
         availableCommands = const <Map<String, Object?>>[];
@@ -4647,6 +4965,7 @@ class ChatController extends ChangeNotifier {
         sessionUsage = null;
         sessionSettingsLoading = false;
         await _cancelPendingPermissionRequest(reportErrors: false);
+        _removePermissionHistoryForSession(session.id);
         status = ConnectionStatus.connected;
         _notifyListeners();
       } catch (error) {
@@ -4665,28 +4984,53 @@ class ChatController extends ChangeNotifier {
         await _promptSubscription?.cancel();
         _promptSubscription = null;
         await client.logout();
-        if (currentSession case final session?) {
-          _retiredSessionIds.add(session.id);
-        }
-        _retiredSessionIds.addAll(sessions.map((session) => session.id));
-        _localUnstartedSessionIds.clear();
-        _clearSessionViewSnapshots();
-        currentSession = null;
-        sessions.clear();
-        _clearMessages();
-        availableCommands = const <Map<String, Object?>>[];
-        lastLatency = null;
-        lastError = null;
-        sessionSettings = const AcpSessionSettings();
-        sessionUsage = null;
-        sessionSettingsLoading = false;
-        await _cancelPendingPermissionRequest(reportErrors: false);
-        status = ConnectionStatus.connected;
-        _notifyListeners();
+        _clearLocalStateAfterAgentLogout();
       } catch (error) {
         _setActionError(error);
       }
     });
+  }
+
+  void _handleAgentLifecycleEvent(AcpAgentLifecycleEvent event) {
+    if (_isDisposed) return;
+    switch (event) {
+      case AcpAgentLifecycleEvent.loggedOut:
+        _clearLocalStateAfterAgentLogout();
+    }
+  }
+
+  void _clearLocalStateAfterAgentLogout() {
+    _sessionOperationGeneration += 1;
+    _sessionSettingsLoadSerial += 1;
+    if (currentSession case final session?) {
+      _retireSessionId(session.id);
+    }
+    for (final session in sessions) {
+      _retireSessionId(session.id);
+    }
+    _localUnstartedSessionIds.clear();
+    _clearSessionViewSnapshots();
+    currentSession = null;
+    sessions.clear();
+    _timelineHistoryWasTruncated = false;
+    _clearMessages();
+    availableCommands = const <Map<String, Object?>>[];
+    lastLatency = null;
+    lastError = null;
+    sessionSettings = const AcpSessionSettings();
+    sessionUsage = null;
+    _sessionTemplateWarnings = const <String>[];
+    sessionSettingsLoading = false;
+    _activeSessionSettingsLoadId = null;
+    isSessionReplayLoading = false;
+    _cachedSessionTranscriptVisible = false;
+    lastSessionLoadMetrics = null;
+    pendingPermissionRequest = null;
+    _resolvingPermissionRequestIds.clear();
+    _reviewingPermissionRequestIds.clear();
+    _clearPermissionHistory();
+    status = ConnectionStatus.connected;
+    _notifyListeners();
   }
 
   Future<bool> authenticate(String methodId) async {
@@ -4748,6 +5092,7 @@ class ChatController extends ChangeNotifier {
         return;
       }
       _retiredSessionIds.clear();
+      _retiredSessionIdsOverflow = false;
       capabilities = client.capabilities;
       status = ConnectionStatus.connected;
       _notifyListeners();
@@ -5306,6 +5651,19 @@ class ChatController extends ChangeNotifier {
     final request = incomingRequest.withGeneration(
       ++_nextPermissionRequestGeneration,
     );
+    final requestSessionId = request.sessionId.trim();
+
+    if (requestSessionId.isNotEmpty &&
+        _isRetiredPermissionSession(requestSessionId)) {
+      unawaited(
+        _sendPermissionDecision(
+          id: request.id,
+          decision: AcpPermissionDecision.cancel,
+          reportErrors: false,
+        ),
+      );
+      return;
+    }
 
     if (!_isPermissionRequestForActiveSession(request)) {
       _recordPermissionRequest(request);
@@ -5359,16 +5717,49 @@ class ChatController extends ChangeNotifier {
   bool _isPermissionRequestForActiveSession(AcpPermissionRequest request) {
     final requestSessionId = request.sessionId.trim();
     if (requestSessionId.isEmpty) return false;
-    if (_retiredSessionIds.contains(requestSessionId)) return false;
     final session = currentSession;
+    if (_sessionIdsMatch(session?.id, requestSessionId)) return true;
+    if (_isPendingSessionSetup) return true;
+    if (_isRetiredPermissionSession(requestSessionId)) return false;
     if (session == null) return true;
-    return requestSessionId == session.id;
+    return false;
+  }
+
+  bool _isRetiredPermissionSession(String sessionId) {
+    if (_sessionIdsMatch(currentSession?.id, sessionId)) return false;
+    if (_isPendingSessionSetup) return false;
+    return _retiredSessionIds.contains(sessionId) || _retiredSessionIdsOverflow;
+  }
+
+  bool get _isPendingSessionSetup {
+    final generation = _pendingSessionSetupGeneration;
+    return generation != null &&
+        !_isDisposed &&
+        generation == _sessionOperationGeneration;
+  }
+
+  void _retireSessionId(String sessionId) {
+    final normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) return;
+    _retiredSessionIds.remove(normalizedSessionId);
+    _retiredSessionIds.add(normalizedSessionId);
+    while (_retiredSessionIds.length > permissionHistoryLimit) {
+      _retiredSessionIds.remove(_retiredSessionIds.first);
+      _retiredSessionIdsOverflow = true;
+    }
   }
 
   void _handlePermissionRequestsDone() {
     if (_isDisposed) return;
+    _permissionRequestStreamDone = true;
+    _cancelPendingPermissionAfterRequestStreamDone();
+  }
+
+  void _cancelPendingPermissionAfterRequestStreamDone() {
+    if (_isDisposed || !_permissionRequestStreamDone) return;
     final request = pendingPermissionRequest;
     if (request == null) return;
+    if (_resolvingPermissionRequestIds.contains(request.bindingKey)) return;
     pendingPermissionRequest = null;
     _recordPromptActivity();
     _recordPermissionDecision(
@@ -5480,6 +5871,7 @@ class ChatController extends ChangeNotifier {
       _notifyListeners();
     } finally {
       _resolvingPermissionRequestIds.remove(bindingKey);
+      _cancelPendingPermissionAfterRequestStreamDone();
     }
   }
 
@@ -5495,10 +5887,9 @@ class ChatController extends ChangeNotifier {
         final reviewWorkspaceRoot = reviewSession?.cwd.trim().isNotEmpty == true
             ? reviewSession!.cwd
             : cwd;
-        final reviewAdditionalDirectories =
-            reviewSession?.additionalDirectories.isNotEmpty == true
-            ? reviewSession!.additionalDirectories
-            : additionalDirectories;
+        final reviewAdditionalDirectories = reviewSession == null
+            ? additionalDirectories
+            : reviewSession.additionalDirectories;
         final result = await reviewer.review(
           request,
           workspaceRoot: reviewWorkspaceRoot,
@@ -5638,6 +6029,7 @@ class ChatController extends ChangeNotifier {
     _permissionHistoryEntryEncodedBytes.insert(0, encodedBytes);
     _permissionHistoryEncodedBytes += encodedBytes;
     _trimPermissionHistory();
+    _permissionHistoryRevision += 1;
   }
 
   AcpPermissionRequest _permissionRequestForAudit(
@@ -5653,10 +6045,110 @@ class ChatController extends ChangeNotifier {
   void _trimPermissionHistory() {
     while (_permissionHistory.length > permissionHistoryLimit ||
         _permissionHistoryEncodedBytes > permissionHistoryEncodedByteLimit) {
-      _permissionHistory.removeLast();
+      final evicted = _permissionHistory.removeLast();
+      final sessionId = evicted.request.sessionId.trim();
+      if (sessionId.isNotEmpty) {
+        _permissionHistoryOverflowExemptSessionIds.remove(sessionId);
+        _permissionHistoryTruncatedSessionIds.remove(sessionId);
+        _permissionHistoryTruncatedSessionIds.add(sessionId);
+      }
       _permissionHistoryEncodedBytes -= _permissionHistoryEntryEncodedBytes
           .removeLast();
     }
+    final retainedSessionIds = _permissionHistory
+        .map((entry) => entry.request.sessionId.trim())
+        .where((sessionId) => sessionId.isNotEmpty)
+        .toSet();
+    final protectedSessionIds = <String>{...retainedSessionIds};
+    final activeSessionId = currentSession?.id.trim();
+    if (activeSessionId != null && activeSessionId.isNotEmpty) {
+      protectedSessionIds.add(activeSessionId);
+    }
+    protectedSessionIds.addAll(
+      sessions
+          .map((session) => session.id.trim())
+          .where((sessionId) => sessionId.isNotEmpty),
+    );
+    protectedSessionIds.addAll(
+      _sessionViewSnapshots.values
+          .map((snapshot) => snapshot.session.id.trim())
+          .where((sessionId) => sessionId.isNotEmpty),
+    );
+    final excessMarkerIds =
+        _permissionHistoryTruncatedSessionIds.length - permissionHistoryLimit;
+    if (excessMarkerIds > 0 && !_permissionHistoryProvenanceOverflow) {
+      _permissionHistoryProvenanceOverflow = true;
+      for (final sessionId in protectedSessionIds) {
+        if (!_permissionHistoryTruncatedSessionIds.contains(sessionId)) {
+          _rememberPermissionHistoryOverflowExemption(sessionId);
+        }
+      }
+    }
+    final evictedMarkerIds = _permissionHistoryTruncatedSessionIds
+        .take(excessMarkerIds < 0 ? 0 : excessMarkerIds)
+        .toList(growable: false);
+    for (final sessionId in evictedMarkerIds) {
+      _permissionHistoryTruncatedSessionIds.remove(sessionId);
+      _permissionHistoryOverflowExemptSessionIds.remove(sessionId);
+    }
+  }
+
+  void _markPermissionHistoryCompleteForSession(String sessionId) {
+    final normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) return;
+    _permissionHistoryTruncatedSessionIds.remove(normalizedSessionId);
+    if (_permissionHistoryProvenanceOverflow) {
+      _rememberPermissionHistoryOverflowExemption(normalizedSessionId);
+    }
+  }
+
+  void _rememberPermissionHistoryOverflowExemption(String sessionId) {
+    _permissionHistoryOverflowExemptSessionIds.remove(sessionId);
+    _permissionHistoryOverflowExemptSessionIds.add(sessionId);
+    while (_permissionHistoryOverflowExemptSessionIds.length >
+        permissionHistoryLimit) {
+      _permissionHistoryOverflowExemptSessionIds.remove(
+        _permissionHistoryOverflowExemptSessionIds.first,
+      );
+    }
+  }
+
+  void _removePermissionHistoryForSession(String sessionId) {
+    final normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) return;
+    var changed = false;
+    for (var index = _permissionHistory.length - 1; index >= 0; index -= 1) {
+      if (_permissionHistory[index].request.sessionId.trim() !=
+          normalizedSessionId) {
+        continue;
+      }
+      _permissionHistory.removeAt(index);
+      _permissionHistoryEncodedBytes -= _permissionHistoryEntryEncodedBytes
+          .removeAt(index);
+      changed = true;
+    }
+    changed =
+        _permissionHistoryTruncatedSessionIds.remove(normalizedSessionId) ||
+        changed;
+    if (_permissionHistoryProvenanceOverflow) {
+      _rememberPermissionHistoryOverflowExemption(normalizedSessionId);
+    }
+    if (changed) _permissionHistoryRevision += 1;
+  }
+
+  void _clearPermissionHistory() {
+    if (_permissionHistory.isEmpty &&
+        _permissionHistoryTruncatedSessionIds.isEmpty &&
+        !_permissionHistoryProvenanceOverflow) {
+      return;
+    }
+    _permissionHistory.clear();
+    _permissionHistoryEntryEncodedBytes.clear();
+    _permissionHistoryEncodedBytes = 0;
+    _permissionHistoryTruncatedSessionIds.clear();
+    _permissionHistoryProvenanceOverflow = false;
+    _permissionHistoryOverflowExemptSessionIds.clear();
+    _permissionHistoryRevision += 1;
   }
 
   void _replacePermissionHistoryEntry(
@@ -5669,6 +6161,7 @@ class ChatController extends ChangeNotifier {
     _permissionHistoryEntryEncodedBytes[index] = replacementBytes;
     _permissionHistoryEncodedBytes += replacementBytes - previousBytes;
     _trimPermissionHistory();
+    _permissionHistoryRevision += 1;
   }
 
   void _recordPermissionDecision(
@@ -5956,6 +6449,9 @@ class ChatController extends ChangeNotifier {
         ..clear()
         ..addAll(copied);
     });
+    if (_messages.any(_isHistoryMarker)) {
+      _timelineHistoryWasTruncated = true;
+    }
   }
 
   void _clearMessages() {
@@ -6010,6 +6506,7 @@ class ChatController extends ChangeNotifier {
           enforceBudget: false,
         );
         removedHistory = true;
+        _timelineHistoryWasTruncated = true;
       }
       if (removedHistory && !_messages.any(_isHistoryMarker)) {
         final marker = _prepareOwnedMessage(
@@ -7332,6 +7829,11 @@ class ChatController extends ChangeNotifier {
           agentName: boundAgentName != null && boundAgentName.isNotEmpty
               ? boundSession!.agentName
               : catalogAgentName ?? existing?.agentName,
+          sessionTemplateId:
+              boundSession?.sessionTemplateId ?? existing?.sessionTemplateId,
+          sessionTemplateVersion:
+              boundSession?.sessionTemplateVersion ??
+              existing?.sessionTemplateVersion,
           initialEvents: existing?.initialEvents ?? const <AgentEvent>[],
           pinned: existing?.pinned ?? false,
           archived: existing?.archived ?? false,
@@ -7447,6 +7949,10 @@ class ChatController extends ChangeNotifier {
           : indexedAgentName != null && indexedAgentName.isNotEmpty
           ? indexed.agentName
           : null,
+      sessionTemplateId:
+          existing.sessionTemplateId ?? indexed.sessionTemplateId,
+      sessionTemplateVersion:
+          existing.sessionTemplateVersion ?? indexed.sessionTemplateVersion,
       initialEvents: existing.initialEvents,
       pinned: indexed.pinned,
       archived: isCurrent ? false : indexed.archived,
@@ -7490,6 +7996,8 @@ class ChatController extends ChangeNotifier {
         a.title == b.title &&
         a.titleOverride == b.titleOverride &&
         a.agentName == b.agentName &&
+        a.sessionTemplateId == b.sessionTemplateId &&
+        a.sessionTemplateVersion == b.sessionTemplateVersion &&
         a.pinned == b.pinned &&
         a.archived == b.archived &&
         a.unread == b.unread &&
@@ -7991,6 +8499,7 @@ class ChatController extends ChangeNotifier {
     await _ignoreCleanup(_permissionSubscription.cancel);
     await _ignoreCleanup(_permissionInvalidationSubscription.cancel);
     await _ignoreCleanup(_availableCommandsSubscription.cancel);
+    await _ignoreCleanup(() => _agentLifecycleSubscription?.cancel());
     await _ignoreCleanup(client.dispose);
     await _ignoreCleanup(() => assistantAgentEnhancer?.dispose());
     await _ignoreCleanup(() => permissionReviewer?.dispose());

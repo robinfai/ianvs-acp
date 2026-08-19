@@ -42,6 +42,7 @@ class WorkspaceSidebarStateStore {
 
   final String? path;
   Set<String>? _expandedWorkspacePathsBase;
+  bool _hasExpandedWorkspacePathsBase = false;
   Map<String, Map<String, Object?>>? _workspaceIndexBase;
   Map<String, Map<String, Object?>>? _sessionIndexBase;
 
@@ -59,8 +60,7 @@ class WorkspaceSidebarStateStore {
   Future<Set<String>> loadExpandedWorkspacePaths() async {
     final file = _fileOrNull();
     if (file == null) {
-      _expandedWorkspacePathsBase = <String>{};
-      return <String>{};
+      return Set<String>.of(_expandedWorkspacePathsBase ?? const <String>{});
     }
     return _withCoordinator(file, (_) async {
       return _synchronizedStateFile(file, (resolvedFile) async {
@@ -73,6 +73,7 @@ class WorkspaceSidebarStateStore {
   }
 
   Future<bool> hasSavedExpandedWorkspacePaths() async {
+    if (_fileOrNull() == null) return _hasExpandedWorkspacePathsBase;
     final state = await _readState();
     return state.containsKey('expanded_workspaces') ||
         state.containsKey('expandedWorkspacePaths');
@@ -86,6 +87,7 @@ class WorkspaceSidebarStateStore {
     final file = _fileOrNull();
     if (file == null) {
       _expandedWorkspacePathsBase = Set<String>.of(desired);
+      _hasExpandedWorkspacePathsBase = true;
       return;
     }
     await _withCoordinator(file, (_) async {
@@ -108,8 +110,13 @@ class WorkspaceSidebarStateStore {
   Future<List<WorkspaceSidebarWorkspaceState>> loadWorkspaceStates() async {
     final file = _fileOrNull();
     if (file == null) {
-      _workspaceIndexBase = <String, Map<String, Object?>>{};
-      return const <WorkspaceSidebarWorkspaceState>[];
+      final workspaces = <WorkspaceSidebarWorkspaceState>[];
+      for (final raw in (_workspaceIndexBase ?? const {}).values) {
+        final workspace = _workspaceStateFromJson(raw);
+        if (workspace != null) workspaces.add(workspace);
+      }
+      workspaces.sort((a, b) => a.path.compareTo(b.path));
+      return List<WorkspaceSidebarWorkspaceState>.unmodifiable(workspaces);
     }
     return _withCoordinator(file, (_) async {
       return _synchronizedStateFile(file, (resolvedFile) async {
@@ -180,8 +187,13 @@ class WorkspaceSidebarStateStore {
   Future<List<AgentSession>> loadSessionIndex() async {
     final file = _fileOrNull();
     if (file == null) {
-      _sessionIndexBase = <String, Map<String, Object?>>{};
-      return const <AgentSession>[];
+      final sessions = <AgentSession>[];
+      for (final raw in (_sessionIndexBase ?? const {}).values) {
+        final session = _sessionIndexFromJson(raw);
+        if (session != null) sessions.add(session);
+      }
+      sessions.sort((a, b) => b.displayTime.compareTo(a.displayTime));
+      return List<AgentSession>.unmodifiable(sessions);
     }
     return _withCoordinator(file, (_) async {
       return _synchronizedStateFile(file, (resolvedFile) async {
@@ -473,6 +485,12 @@ class WorkspaceSidebarStateStore {
       ),
       updatedAt: updatedAt,
       agentName: _stringFromJson(json['agent_name'] ?? json['agentName']),
+      sessionTemplateId: _stringFromJson(
+        json['session_template_id'] ?? json['sessionTemplateId'],
+      ),
+      sessionTemplateVersion: _positiveIntFromJson(
+        json['session_template_version'] ?? json['sessionTemplateVersion'],
+      ),
       pinned: _boolFromJson(json['pinned']),
       archived: _boolFromJson(json['archived']),
       unread: _boolFromJson(json['unread']),
@@ -566,6 +584,7 @@ class WorkspaceSidebarStateStore {
     final title = normalizeSessionTitle(session.title);
     final titleOverride = normalizeSessionTitle(session.titleOverride);
     final agentName = session.agentName?.trim();
+    final templateId = session.sessionTemplateId?.trim();
     return <String, Object?>{
       'id': session.id,
       'cwd': session.cwd,
@@ -576,6 +595,10 @@ class WorkspaceSidebarStateStore {
       if (titleOverride != null && titleOverride.isNotEmpty)
         'title_override': titleOverride,
       if (agentName != null && agentName.isNotEmpty) 'agent_name': agentName,
+      if (templateId != null && templateId.isNotEmpty)
+        'session_template_id': templateId,
+      if (session.sessionTemplateVersion != null)
+        'session_template_version': session.sessionTemplateVersion,
       if (session.additionalDirectories.isNotEmpty)
         'additional_directories': session.additionalDirectories,
       if (session.pinned) 'pinned': true,
@@ -613,6 +636,10 @@ class WorkspaceSidebarStateStore {
   bool _boolFromJson(Object? raw) {
     return raw == true;
   }
+
+  int? _positiveIntFromJson(Object? raw) {
+    return raw is int && raw > 0 ? raw : null;
+  }
 }
 
 const Map<String, List<String>> _workspaceIndexFieldAliases =
@@ -633,6 +660,14 @@ const Map<String, List<String>> _sessionIndexFieldAliases =
       'title': <String>['title'],
       'title_override': <String>['title_override', 'titleOverride'],
       'agent_name': <String>['agent_name', 'agentName'],
+      'session_template_id': <String>[
+        'session_template_id',
+        'sessionTemplateId',
+      ],
+      'session_template_version': <String>[
+        'session_template_version',
+        'sessionTemplateVersion',
+      ],
       'additional_directories': <String>[
         'additional_directories',
         'additionalDirectories',

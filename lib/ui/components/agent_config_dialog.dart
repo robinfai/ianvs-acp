@@ -22,6 +22,8 @@ class AgentConfigDialog extends StatefulWidget {
     this.clientProviders = const AcpClientProviderConfig(),
     this.storage = const SqliteStorageConfig(),
     this.assistantAgent = const AssistantAgentConfig(),
+    this.sessionTemplates = const <SessionTemplateConfig>[],
+    this.defaultSessionTemplateId,
     this.configPath,
     this.defaultAgentName,
     this.onSaveConfig,
@@ -35,6 +37,8 @@ class AgentConfigDialog extends StatefulWidget {
   final AcpClientProviderConfig clientProviders;
   final SqliteStorageConfig storage;
   final AssistantAgentConfig assistantAgent;
+  final List<SessionTemplateConfig> sessionTemplates;
+  final String? defaultSessionTemplateId;
   final String activeAgentName;
   final String? configPath;
   final String? defaultAgentName;
@@ -304,8 +308,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           clientProviders: _clientProvidersConfig(),
           storage: _storageConfig(),
           assistantAgent: _assistantAgentConfig(),
+          sessionTemplates: widget.sessionTemplates,
           configPath: widget.configPath,
           defaultAgentServerName: _defaultAgentName,
+          defaultSessionTemplateId: widget.defaultSessionTemplateId,
         ),
       );
       if (!context.mounted) return;

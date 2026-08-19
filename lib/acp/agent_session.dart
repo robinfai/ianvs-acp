@@ -10,6 +10,8 @@ class AgentSession {
     this.titleOverride,
     this.updatedAt,
     this.agentName,
+    this.sessionTemplateId,
+    this.sessionTemplateVersion,
     this.initialEvents = const <AgentEvent>[],
     this.pinned = false,
     this.archived = false,
@@ -25,6 +27,8 @@ class AgentSession {
   final String? titleOverride;
   final DateTime? updatedAt;
   final String? agentName;
+  final String? sessionTemplateId;
+  final int? sessionTemplateVersion;
   final List<AgentEvent> initialEvents;
   final bool pinned;
   final bool archived;
@@ -48,6 +52,8 @@ class AgentSession {
     String? titleOverride,
     DateTime? updatedAt,
     String? agentName,
+    String? sessionTemplateId,
+    int? sessionTemplateVersion,
     List<String>? additionalDirectories,
     List<AgentEvent>? initialEvents,
     bool? pinned,
@@ -65,6 +71,9 @@ class AgentSession {
       titleOverride: titleOverride ?? this.titleOverride,
       updatedAt: updatedAt ?? this.updatedAt,
       agentName: agentName ?? this.agentName,
+      sessionTemplateId: sessionTemplateId ?? this.sessionTemplateId,
+      sessionTemplateVersion:
+          sessionTemplateVersion ?? this.sessionTemplateVersion,
       initialEvents: initialEvents ?? this.initialEvents,
       pinned: pinned ?? this.pinned,
       archived: archived ?? this.archived,

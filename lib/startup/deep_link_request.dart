@@ -13,6 +13,8 @@ class DeepLinkRequest {
     this.sessionId,
     this.cwd,
     this.agentName,
+    this.sessionTemplateId,
+    this.sessionTemplateVersion,
     this.validationErrors = const <String>[],
   });
 
@@ -22,6 +24,8 @@ class DeepLinkRequest {
   final String? sessionId;
   final String? cwd;
   final String? agentName;
+  final String? sessionTemplateId;
+  final int? sessionTemplateVersion;
   final List<String> validationErrors;
 
   static const int maxRawLinkLength = 8 * 1024;

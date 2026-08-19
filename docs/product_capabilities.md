@@ -1,6 +1,6 @@
 # Product capabilities
 
-Updated: 2026-08-11
+Updated: 2026-08-19
 
 ianvs is a workspace and ACP session client. Runtime ownership and protocol
 details live in [Runtime architecture](runtime_architecture.md) and
@@ -14,11 +14,18 @@ details live in [Runtime architecture](runtime_architecture.md) and
 - Stream text, plan, tool-call, status, usage, and terminal events into the
   conversation timeline.
 - Keep multiple conversations active in one app window, with independent
-  timelines, permission handling, and session-targeted cancellation while each
-  configured agent retains one authoritative ACP runtime.
+  timelines, permission handling, and session-targeted cancellation. Exact
+  runtime recipes share one authoritative ACP runtime; templates with different
+  MCP or provider boundaries use isolated runtimes even when they target the
+  same configured agent.
 - Send text and workspace-scoped attachments using the negotiated prompt
   capabilities.
 - Change advertised modes and select/boolean configuration options.
+- Start sessions from versioned declarative templates that can select the
+  agent, MCP set, workspace roots, permission policy, assistant enhancer, mode,
+  model, and reasoning effort.
+- Inspect a chronological session activity trajectory and a secret-safe runtime
+  inventory with template drift and capability degradation reporting.
 - Recover registered sessions after a recoverable agent-process restart.
 
 ## Human decisions

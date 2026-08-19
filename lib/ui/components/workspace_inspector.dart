@@ -760,7 +760,7 @@ class _McpServerRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final target = server.url.isNotEmpty ? server.url : server.command;
+    final target = server.safeDisplayTarget;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(

@@ -26,6 +26,8 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onShowProtocolCoverage,
+    VoidCallback? onShowActivity,
+    VoidCallback? onShowRuntimeInventory,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onLogout,
@@ -40,6 +42,8 @@ void main() {
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
           onShowProtocolCoverage: onShowProtocolCoverage,
+          onShowActivity: onShowActivity,
+          onShowRuntimeInventory: onShowRuntimeInventory,
           onAuthenticate: onAuthenticate,
           onShowPermissionHistory: onShowPermissionHistory,
           onLogout: onLogout,
@@ -60,6 +64,8 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onShowProtocolCoverage,
+    VoidCallback? onShowActivity,
+    VoidCallback? onShowRuntimeInventory,
     VoidCallback? onAuthenticate,
     VoidCallback? onShowPermissionHistory,
     VoidCallback? onLogout,
@@ -77,6 +83,8 @@ void main() {
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
         onShowProtocolCoverage: onShowProtocolCoverage,
+        onShowActivity: onShowActivity,
+        onShowRuntimeInventory: onShowRuntimeInventory,
         onAuthenticate: onAuthenticate,
         onShowPermissionHistory: onShowPermissionHistory,
         onLogout: onLogout,
@@ -148,7 +156,9 @@ void main() {
     expect(openedConfig, isTrue);
   });
 
-  testWidgets('AgentToolbar shows remote agent URLs in menu', (tester) async {
+  testWidgets('AgentToolbar redacts remote agent URL credentials', (
+    tester,
+  ) async {
     await pumpToolbar(
       tester,
       app_state.ConnectionStatus.disconnected,
@@ -157,12 +167,13 @@ void main() {
         AgentServerConfig(
           name: 'Remote HTTP Agent',
           type: 'http',
-          url: 'https://agent.example.com/acp',
+          url:
+              'https://user:password@agent.example.com/acp/path-token?key=query-token',
         ),
         AgentServerConfig(
           name: 'Remote WS Agent',
           type: 'websocket',
-          url: 'wss://agent.example.com/acp',
+          url: 'wss://agent.example.com/private/ws-token#fragment-token',
         ),
       ],
       onSelectAgent: (_) {},
@@ -171,8 +182,17 @@ void main() {
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
 
-    expect(find.text('https://agent.example.com/acp'), findsOneWidget);
-    expect(find.text('wss://agent.example.com/acp'), findsOneWidget);
+    expect(find.textContaining('https://agent.example.com'), findsOneWidget);
+    expect(find.textContaining('wss://agent.example.com'), findsOneWidget);
+    for (final secret in <String>[
+      'password',
+      'path-token',
+      'query-token',
+      'ws-token',
+      'fragment-token',
+    ]) {
+      expect(find.textContaining(secret), findsNothing);
+    }
   });
 
   testWidgets('AgentToolbar hides healthy status and shows errors', (
@@ -292,6 +312,38 @@ void main() {
     expect(openedProtocolCoverage, isTrue);
   });
 
+  testWidgets('AgentToolbar exposes activity and runtime inventory', (
+    tester,
+  ) async {
+    var openedActivity = false;
+    var openedRuntimeInventory = false;
+    await pumpToolbar(
+      tester,
+      app_state.ConnectionStatus.sessionReady,
+      onShowActivity: () {
+        openedActivity = true;
+      },
+      onShowRuntimeInventory: () {
+        openedRuntimeInventory = true;
+      },
+    );
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    expect(find.text('Session Activity'), findsOneWidget);
+    expect(find.text('Runtime Inventory'), findsOneWidget);
+
+    await tester.tap(find.text('Session Activity'));
+    await tester.pumpAndSettle();
+    expect(openedActivity, isTrue);
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Runtime Inventory'));
+    await tester.pumpAndSettle();
+    expect(openedRuntimeInventory, isTrue);
+  });
+
   testWidgets('AgentToolbar renders connecting state', (tester) async {
     await pumpToolbar(tester, app_state.ConnectionStatus.connecting);
 
@@ -383,6 +435,65 @@ void main() {
       inInclusiveRange(menuRect.left, menuRect.right),
     );
     expect(menuRect.top, greaterThan(actionRect.bottom));
+  });
+
+  testWidgets('AppShell opens session activity and exact runtime inventory', (
+    tester,
+  ) async {
+    const server = AgentServerConfig(
+      name: 'Codex',
+      type: 'custom',
+      command: 'codex-acp',
+    );
+    const runtimeConfig = AcpClientConfig(
+      activeAgentServer: server,
+      agentServers: <AgentServerConfig>[server],
+    );
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace/app',
+    );
+    addTearDown(controller.dispose);
+    expect(await controller.newSession(), isTrue);
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Inspect the runtime'),
+      startsNewTurn: true,
+    );
+
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(
+          controller: controller,
+          agentName: 'Codex',
+          agentServers: const <AgentServerConfig>[server],
+          runtimeConfig: runtimeConfig,
+          autoLoadWorkspaceSessions: false,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Runtime Inventory'));
+    await tester.pumpAndSettle();
+    expect(find.byType(Dialog), findsOneWidget);
+    expect(find.text('Agent runtime'), findsOneWidget);
+    expect(find.text('codex-acp'), findsOneWidget);
+
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Agents'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Session Activity'));
+    await tester.pumpAndSettle();
+    expect(find.byType(Dialog), findsOneWidget);
+    expect(find.text('1 events'), findsOneWidget);
+    expect(find.text('Prompt'), findsOneWidget);
   });
 
   testWidgets('AppShell loads session catalogs for every controller', (
@@ -791,6 +902,16 @@ void main() {
       cwd: '/workspace/app',
       agentName: 'pi ACP',
     );
+    pi.mergeSessionIndex(<AgentSession>[
+      AgentSession(
+        id: 'session-a',
+        cwd: '/workspace/project-a',
+        createdAt: DateTime(2026),
+        agentName: 'pi ACP',
+        sessionTemplateId: 'review',
+        sessionTemplateVersion: 3,
+      ),
+    ]);
     AgentSession? selectedSession;
     addTearDown(codex.dispose);
     addTearDown(pi.dispose);
@@ -825,6 +946,8 @@ void main() {
     expect(selectedSession?.agentName, 'pi ACP');
     expect(selectedSession?.id, 'session-a');
     expect(selectedSession?.cwd, '/workspace/project-a');
+    expect(selectedSession?.sessionTemplateId, 'review');
+    expect(selectedSession?.sessionTemplateVersion, 3);
     expect(codexClient.lastResumeCwd, isNull);
     expect(piClient.lastResumeCwd, isNull);
   });

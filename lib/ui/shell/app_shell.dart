@@ -31,6 +31,8 @@ import '../components/permission_history_dialog.dart';
 import '../components/prompt_input.dart';
 import '../components/protocol_feature_review_dialog.dart';
 import '../components/resume_session_dialog.dart';
+import '../components/runtime_inventory_dialog.dart';
+import '../components/session_activity_dialog.dart';
 import '../components/session_settings_dialog.dart';
 import '../components/session_workspace_review_dialog.dart';
 import '../components/workspace_inspector.dart';
@@ -52,6 +54,9 @@ class AppShell extends StatelessWidget {
     this.clientProviders = const AcpClientProviderConfig(),
     this.storage = const SqliteStorageConfig(),
     this.assistantAgent = const AssistantAgentConfig(),
+    this.sessionTemplates = const <SessionTemplateConfig>[],
+    this.defaultSessionTemplateId,
+    this.runtimeConfig,
     this.configPath,
     this.workspaceStateStore,
     this.defaultAgentName,
@@ -88,6 +93,9 @@ class AppShell extends StatelessWidget {
   final AcpClientProviderConfig clientProviders;
   final SqliteStorageConfig storage;
   final AssistantAgentConfig assistantAgent;
+  final List<SessionTemplateConfig> sessionTemplates;
+  final String? defaultSessionTemplateId;
+  final AcpClientConfig? runtimeConfig;
   final String? configPath;
   final WorkspaceSidebarStateStore? workspaceStateStore;
   final String? defaultAgentName;
@@ -496,6 +504,14 @@ class AppShell extends StatelessWidget {
                                         _showProtocolFeatureReviewDialog(
                                           context,
                                         ),
+                                    onShowActivity:
+                                        controller.currentSession == null
+                                        ? null
+                                        : () => _showSessionActivityDialog(
+                                            context,
+                                          ),
+                                    onShowRuntimeInventory: () =>
+                                        _showRuntimeInventoryDialog(context),
                                     onAuthenticate:
                                         controller.canAuthenticate &&
                                             !agentLifecycleBusy
@@ -647,6 +663,43 @@ class AppShell extends StatelessWidget {
       builder: (context) {
         return PermissionHistoryDialog(entries: controller.permissionHistory);
       },
+    );
+  }
+
+  Future<void> _showSessionActivityDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => SessionActivityDialog(controller: controller),
+    );
+  }
+
+  Future<void> _showRuntimeInventoryDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => RuntimeInventoryDialog(
+        controller: controller,
+        runtimeConfig: runtimeConfig ?? _fallbackRuntimeConfig(),
+      ),
+    );
+  }
+
+  AcpClientConfig _fallbackRuntimeConfig() {
+    AgentServerConfig? active;
+    for (final server in agentServers) {
+      if (server.name == agentName) active = server;
+    }
+    return AcpClientConfig(
+      activeAgentServer: active,
+      agentServers: agentServers,
+      mcpServers: mcpServers,
+      additionalDirectories: additionalDirectories,
+      clientProviders: clientProviders,
+      storage: storage,
+      assistantAgent: assistantAgent,
+      sessionTemplates: sessionTemplates,
+      defaultAgentServerName: defaultAgentName,
+      defaultSessionTemplateId: defaultSessionTemplateId,
+      configPath: configPath,
     );
   }
 
@@ -853,6 +906,8 @@ class AppShell extends StatelessWidget {
           clientProviders: clientProviders,
           storage: storage,
           assistantAgent: assistantAgent,
+          sessionTemplates: sessionTemplates,
+          defaultSessionTemplateId: defaultSessionTemplateId,
           activeAgentName: agentName,
           configPath: configPath,
           defaultAgentName: defaultAgentName,
@@ -904,6 +959,13 @@ class AppShell extends StatelessWidget {
 
     if (selection == null) return;
     if (!context.mounted) return;
+    final selectionAgentName = _resumeSelectionAgentName(selection);
+    final indexedSession = _indexedSessionForResume(
+      sessionControllerList,
+      sessionId: selection.conversation.id,
+      cwd: selection.conversation.cwd,
+      agentName: selectionAgentName,
+    );
     final selectedSession = AgentSession(
       id: selection.conversation.id,
       cwd: selection.conversation.cwd,
@@ -913,7 +975,9 @@ class AppShell extends StatelessWidget {
       additionalDirectories: selection.conversation.additionalDirectories,
       title: selection.conversation.title,
       updatedAt: selection.conversation.updatedAt,
-      agentName: _resumeSelectionAgentName(selection),
+      agentName: selectionAgentName,
+      sessionTemplateId: indexedSession?.sessionTemplateId,
+      sessionTemplateVersion: indexedSession?.sessionTemplateVersion,
     );
     final selectedAgentName = selectedSession.agentName?.trim();
     final trustedTargetController = _controllerForAgentName(
@@ -1014,6 +1078,42 @@ class AppShell extends StatelessWidget {
     if (agentName is! String) return null;
     final trimmed = agentName.trim();
     return trimmed.isEmpty ? null : trimmed;
+  }
+
+  AgentSession? _indexedSessionForResume(
+    List<ChatController> controllers, {
+    required String sessionId,
+    required String cwd,
+    required String? agentName,
+  }) {
+    final normalizedId = sessionId.trim();
+    final normalizedCwd = normalizeWorkspacePath(cwd);
+    final normalizedAgent = agentName?.trim();
+    AgentSession? fallback;
+    for (final candidateController in controllers) {
+      if (normalizedAgent != null &&
+          normalizedAgent.isNotEmpty &&
+          candidateController.agentName.trim() != normalizedAgent &&
+          candidateController.sessionPersistenceIdentity.trim() !=
+              normalizedAgent) {
+        continue;
+      }
+      final candidates = <AgentSession>[
+        ?candidateController.currentSession,
+        ...candidateController.sessions,
+      ];
+      for (final candidate in candidates) {
+        if (candidate.id.trim() != normalizedId ||
+            normalizeWorkspacePath(candidate.cwd) != normalizedCwd) {
+          continue;
+        }
+        if (candidate.sessionTemplateId?.trim().isNotEmpty == true) {
+          return candidate;
+        }
+        fallback ??= candidate;
+      }
+    }
+    return fallback;
   }
 }
 

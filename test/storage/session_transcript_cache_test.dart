@@ -99,6 +99,7 @@ void main() {
       await cache.save(
         SessionTranscriptSnapshot(
           identity: identity,
+          timelineHistoryWasTruncated: true,
           messages: <Map<String, Object?>>[
             <String, Object?>{
               'role': 'assistant',
@@ -119,6 +120,7 @@ void main() {
 
       expect(restored, isNotNull);
       expect(restored!.identity.matches(identity), isTrue);
+      expect(restored.timelineHistoryWasTruncated, isTrue);
       expect(restored.messages.single['text'], 'cached answer');
       expect(
         (restored.messages.single['metadata'] as Map)['rawOutput'],

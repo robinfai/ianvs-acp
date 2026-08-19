@@ -14,13 +14,17 @@ See [Product capabilities](docs/product_capabilities.md),
 [Runtime architecture](docs/runtime_architecture.md). Open decisions and manual
 release checks are tracked in [Manual follow-ups](docs/manual_followups.md).
 
-Starting a new session prompts for the session working directory and offers
-local directory path completions while typing.
+Starting a new session prompts for the session working directory, offers local
+directory path completions while typing, and can apply a versioned session
+template that selects the agent runtime, MCP set, workspace roots, permission
+policy, assistant enhancer, mode, model, and reasoning effort.
 
 Multiple conversations can remain active in the same window. Switching or
 starting another session does not interrupt an in-flight response; prompt
-cancellation and permission requests remain scoped to their session while each
-configured agent continues to use one authoritative ACP runtime.
+cancellation and permission requests remain scoped to their session. Controllers
+with the same exact runtime recipe share one authoritative ACP runtime; templates
+that intentionally change MCP or client-provider boundaries use isolated
+runtimes so a broader recipe cannot leak capabilities into a restricted one.
 
 ## Configuration
 
@@ -115,12 +119,40 @@ Saved shape example for automation and debugging:
       }
     }
   },
+  "default_session_template": "review",
+  "session_templates": {
+    "review": {
+      "name": "Code review",
+      "version": 1,
+      "agent_server": "Codex",
+      "mcp_servers": ["filesystem"],
+      "additional_directories": ["/Users/example/related-project"],
+      "mode": "plan",
+      "model": "review-model",
+      "reasoning_effort": "high"
+    }
+  },
   "storage": {
     "max_size_gb": 50,
     "retention_days": 30
   }
 }
 ```
+
+`session_templates` are declarative, versioned recipes shown in the New
+Session dialog. Omitting `mcp_servers` inherits every configured MCP server;
+an empty array selects none. Template permission settings replace the global
+permission policy for that runtime, while omitted fields inherit the active
+configuration. Templates are currently edited in `settings.json`; Agent
+Configuration preserves them during unrelated GUI edits. The selected
+template ID and version are retained in the local session index, so resumed
+sessions can report missing definitions or version drift.
+
+The `Agents` menu exposes `Session Activity`, a chronological prompt/response,
+tool, status, permission, and error trajectory for the active session, plus
+`Runtime Inventory`, which reports the exact template runtime, MCP/providers,
+negotiated ACP capabilities, credential-reference counts, and degradations.
+Credential values and URL credentials/query strings are never displayed.
 
 `storage.max_size_gb` and `storage.retention_days` bound two recovery payload
 stores: the ACP session registry and the exact-revision transcript cache. Each

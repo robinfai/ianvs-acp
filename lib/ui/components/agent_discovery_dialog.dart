@@ -156,6 +156,5 @@ class _DiscoveredAgentTile extends StatelessWidget {
 }
 
 String _serverTarget(AgentServerConfig server) {
-  final args = server.args.isEmpty ? '' : ' ${server.args.join(' ')}';
-  return '${server.displayTarget}$args';
+  return server.safeDisplayTarget;
 }

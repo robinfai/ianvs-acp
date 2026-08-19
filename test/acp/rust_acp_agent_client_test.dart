@@ -149,6 +149,28 @@ void main() {
     );
   });
 
+  test('explicit empty session roots never inherit client defaults', () async {
+    final native = _ClientFakeNative()..supportsAdditionalDirectories = true;
+    final client = RustAcpAgentClient(
+      agentName: 'fixture',
+      agentCommand: 'fixture-agent',
+      additionalDirectories: const <String>['/configured-extra'],
+      runtime: IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      ),
+    );
+    addTearDown(client.dispose);
+
+    await client.connect();
+    await client.createSession(
+      cwd: '/tmp',
+      additionalDirectories: const <String>[],
+    );
+
+    expect(native.lastCreateAdditionalDirectories, isEmpty);
+  });
+
   test('ignores command updates for unknown sessions', () async {
     final native = _ClientFakeNative();
     final client = RustAcpAgentClient(
@@ -1023,8 +1045,10 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   final List<String> cancelledSessionIds = <String>[];
   Map<String, Object?>? startedConfig;
   List<Map<String, Object?>>? promptAttachments;
+  List<String>? lastCreateAdditionalDirectories;
   bool completeCreates = true;
   bool emitReadyOnStart = true;
+  bool supportsAdditionalDirectories = false;
   int startCalls = 0;
   String sessionTitle = 'Fixture session';
   Map<String, Object?>? restoredUserPayload;
@@ -1096,7 +1120,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
         'mcpCapabilities': false,
         'mcpHttp': true,
         'mcpSse': false,
-        'additionalDirectories': false,
+        'additionalDirectories': supportsAdditionalDirectories,
         'filesystemReadTextFile':
             config['enableFilesystemReadTextFile'] == true,
         'filesystemWriteTextFile':
@@ -1136,6 +1160,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
     required String cwd,
     required List<String> additionalDirectories,
   }) {
+    lastCreateAdditionalDirectories = List<String>.of(additionalDirectories);
     if (!completeCreates) return true;
     emit('session_update', <String, Object?>{
       'update': <String, Object?>{

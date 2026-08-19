@@ -1635,13 +1635,12 @@ final class RustAcpAgentClient implements AcpAgentClient {
   String _requestId(String operation) => '$operation-${_nextRequestId++}';
 
   List<String> _additionalDirectoriesForRequest(List<String> override) {
-    final selected = override.isEmpty ? additionalDirectories : override;
     if (_capabilities?.session.additionalDirectories != true) {
       return const <String>[];
     }
     final result = <String>[];
     final seen = <String>{};
-    for (final directory in selected) {
+    for (final directory in override) {
       final trimmed = directory.trim();
       if (trimmed.isEmpty || !seen.add(trimmed)) continue;
       result.add(trimmed);
