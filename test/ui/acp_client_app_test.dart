@@ -3511,13 +3511,13 @@ void main() {
         () => find.text('Resume ACP Session').evaluate().isNotEmpty,
       );
       await _pumpUntil(tester, () {
-        final loadButton = find.widgetWithText(FilledButton, 'Load');
+        final loadButton = find.widgetWithText(FilledButton, 'Open Session');
         return loadButton.evaluate().isNotEmpty &&
             tester.widget<FilledButton>(loadButton).onPressed != null;
       });
       await tester.pump(const Duration(milliseconds: 300));
       final loadButton = find
-          .widgetWithText(FilledButton, 'Load')
+          .widgetWithText(FilledButton, 'Open Session')
           .hitTestable();
       expect(loadButton, findsOneWidget);
       await tester.tap(loadButton);
@@ -3594,7 +3594,8 @@ void main() {
 
       await tester.tap(find.text('Resume'));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await _selectResumeAgent(tester, 'pi ACP');
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await tester.pumpAndSettle();
 
       expect(find.text('Review Session Workspace'), findsNothing);
@@ -3649,12 +3650,13 @@ void main() {
         tester,
         () => find.text('Resume ACP Session').evaluate().isNotEmpty,
       );
+      await _selectResumeAgent(tester, 'pi ACP');
       await _pumpUntil(tester, () {
-        final loadButton = find.widgetWithText(FilledButton, 'Load');
+        final loadButton = find.widgetWithText(FilledButton, 'Open Session');
         return loadButton.evaluate().isNotEmpty &&
             tester.widget<FilledButton>(loadButton).onPressed != null;
       });
-      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await _pumpUntil(
         tester,
         () => find.text('Review Session Workspace').evaluate().isNotEmpty,
@@ -3738,31 +3740,30 @@ void main() {
       () => find.text('Resume ACP Session').evaluate().isNotEmpty,
     );
     await _pumpUntil(tester, () {
-      final loadButton = find.widgetWithText(FilledButton, 'Load');
+      final loadButton = find.widgetWithText(FilledButton, 'Open Session');
       return loadButton.evaluate().isNotEmpty &&
           tester.widget<FilledButton>(loadButton).onPressed != null;
     });
+    final sessionList = find.byKey(const ValueKey('resume-session-list'));
     final codexProject = find.descendant(
-      of: find.byKey(const ValueKey('resume-project-list')),
-      matching: find.textContaining('/workspace/codex-catalog'),
+      of: sessionList,
+      matching: find.text('codex-catalog'),
     );
     final piProject = find.descendant(
-      of: find.byKey(const ValueKey('resume-project-list')),
-      matching: find.textContaining('/workspace/pi'),
+      of: sessionList,
+      matching: find.text('pi'),
     );
     expect(codexProject, findsOneWidget);
-    expect(piProject, findsOneWidget);
+    expect(piProject, findsNothing);
 
-    await tester.tap(codexProject);
-    await tester.pump();
     expect(
       find.descendant(
-        of: find.byKey(const ValueKey('resume-conversation-list')),
+        of: sessionList,
         matching: find.text('Codex shared session'),
       ),
       findsOneWidget,
     );
-    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await _pumpUntil(
       tester,
       () => find.textContaining('different workspace').evaluate().isNotEmpty,
@@ -3786,33 +3787,32 @@ void main() {
       tester,
       () => find.text('Resume ACP Session').evaluate().isNotEmpty,
     );
+    await _selectResumeAgent(tester, 'pi ACP');
     await _pumpUntil(tester, () {
-      final loadButton = find.widgetWithText(FilledButton, 'Load');
+      final loadButton = find.widgetWithText(FilledButton, 'Open Session');
       return loadButton.evaluate().isNotEmpty &&
           tester.widget<FilledButton>(loadButton).onPressed != null;
     });
     expect(
       find.descendant(
-        of: find.byKey(const ValueKey('resume-project-list')),
-        matching: find.textContaining('/workspace/codex-catalog'),
+        of: find.byKey(const ValueKey('resume-session-list')),
+        matching: find.text('codex-catalog'),
       ),
-      findsOneWidget,
+      findsNothing,
     );
     final reloadedPiProject = find.descendant(
-      of: find.byKey(const ValueKey('resume-project-list')),
-      matching: find.textContaining('/workspace/pi'),
+      of: find.byKey(const ValueKey('resume-session-list')),
+      matching: find.text('pi'),
     );
     expect(reloadedPiProject, findsOneWidget);
-    await tester.tap(reloadedPiProject);
-    await tester.pump();
     expect(
       find.descendant(
-        of: find.byKey(const ValueKey('resume-conversation-list')),
+        of: find.byKey(const ValueKey('resume-session-list')),
         matching: find.text('Pi shared session'),
       ),
       findsOneWidget,
     );
-    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await _pumpUntil(
       tester,
       () => find.text('Review Session Workspace').evaluate().isNotEmpty,
@@ -4467,13 +4467,13 @@ void main() {
       expect(fake.connected, isTrue);
       expect(controller.canListSessions, isTrue);
       expect(controller.canResumeSessions, isFalse);
-      expect(find.text('Could not list ACP sessions'), findsOneWidget);
+      expect(find.text('Could not list Codex sessions'), findsOneWidget);
       expect(
         find.textContaining('session/load or session/resume'),
         findsOneWidget,
       );
       final loadButton = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Load'),
+        find.widgetWithText(FilledButton, 'Open Session'),
       );
       expect(loadButton.onPressed, isNull);
     },
@@ -5232,19 +5232,13 @@ void main() {
         tester,
         () => find.text('Resume ACP Session').evaluate().isNotEmpty,
       );
+      await _selectResumeAgent(tester, 'codex-thinking');
       await _pumpUntil(tester, () {
-        final loadButton = find.widgetWithText(FilledButton, 'Load');
+        final loadButton = find.widgetWithText(FilledButton, 'Open Session');
         return loadButton.evaluate().isNotEmpty &&
             tester.widget<FilledButton>(loadButton).onPressed != null;
       });
-      final thinkingConversation = find.descendant(
-        of: find.byKey(const ValueKey('resume-conversation-list')),
-        matching: find.text('codex-thinking'),
-      );
-      expect(thinkingConversation, findsOneWidget);
-      await tester.tap(thinkingConversation);
-      await tester.pump();
-      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await _pumpUntil(
         tester,
         () => find.text('Review Session Workspace').evaluate().isNotEmpty,
@@ -5416,6 +5410,14 @@ Future<void> _pumpUntil(
     );
     await tester.pump(const Duration(milliseconds: 1));
   }
+}
+
+Future<void> _selectResumeAgent(WidgetTester tester, String agentName) async {
+  final agentList = find.byKey(const ValueKey('resume-agent-list'));
+  final agent = find.descendant(of: agentList, matching: find.text(agentName));
+  expect(agent, findsOneWidget);
+  await tester.tap(agent);
+  await tester.pumpAndSettle();
 }
 
 class _SameIdAcrossAgentsClient extends FakeAgentClient {

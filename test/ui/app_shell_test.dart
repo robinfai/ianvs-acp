@@ -829,6 +829,51 @@ void main() {
     },
   );
 
+  testWidgets('AppShell keeps resume status visible while an agent is busy', (
+    tester,
+  ) async {
+    final client = FakeAgentClient(chunkDelay: const Duration(seconds: 1));
+    final controller = ChatController(
+      client: client,
+      cwd: '/workspace/app',
+      agentName: 'Codex',
+    );
+    addTearDown(controller.dispose);
+    await tester.runAsync(controller.newSession);
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppShell(controller: controller, agentName: 'Codex'),
+      ),
+    );
+    await tester.pump();
+
+    await tester.runAsync(() => controller.sendPrompt('active turn'));
+    await tester.pump();
+    expect(controller.isStreaming, isTrue);
+
+    await tester.tap(find.text('Resume'));
+    await tester.pumpAndSettle();
+    expect(find.text('Resume ACP Session'), findsOneWidget);
+    expect(find.text('Response in progress'), findsNWidgets(2));
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Open Session'),
+          )
+          .onPressed,
+      isNull,
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    await tester.runAsync(controller.stop);
+  });
+
   testWidgets('AppShell adds an explicit empty-state action on desktop', (
     tester,
   ) async {
@@ -937,9 +982,17 @@ void main() {
     await tester.tap(find.text('Resume'));
     await tester.pumpAndSettle();
 
+    final agentList = find.byKey(const ValueKey('resume-agent-list'));
+    final piAgent = find.descendant(
+      of: agentList,
+      matching: find.text('pi ACP'),
+    );
+    expect(piAgent, findsOneWidget);
+    await tester.tap(piAgent);
+    await tester.pumpAndSettle();
     expect(find.text('Resume this project conversation'), findsWidgets);
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await tester.pumpAndSettle();
 
     expect(find.text('Review Session Workspace'), findsNothing);
@@ -976,7 +1029,7 @@ void main() {
 
     await tester.tap(find.text('Resume'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await tester.pumpAndSettle();
 
     expect(find.text('Review Session Workspace'), findsOneWidget);
@@ -998,7 +1051,7 @@ void main() {
 
     await tester.tap(find.text('Resume'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
     await tester.pumpAndSettle();
@@ -1054,14 +1107,14 @@ void main() {
 
     await tester.tap(find.text('Resume'));
     await tester.pumpAndSettle();
-    final piConversation = find.descendant(
-      of: find.byKey(const ValueKey('resume-conversation-list')),
-      matching: find.textContaining('pi ACP ·'),
+    final piAgent = find.descendant(
+      of: find.byKey(const ValueKey('resume-agent-list')),
+      matching: find.text('pi ACP'),
     );
-    expect(piConversation, findsOneWidget);
-    await tester.tap(piConversation);
-    await tester.pump();
-    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    expect(piAgent, findsOneWidget);
+    await tester.tap(piAgent);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
     await _pumpUntil(
@@ -1100,7 +1153,7 @@ void main() {
 
     await tester.tap(find.text('Resume'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await _pumpUntil(
       tester,
       () => find.textContaining('different workspace').evaluate().isNotEmpty,
@@ -1149,7 +1202,7 @@ void main() {
 
       await tester.tap(find.text('Resume'));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Load'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await _pumpUntil(
         tester,
         () => find.textContaining('different workspace').evaluate().isNotEmpty,

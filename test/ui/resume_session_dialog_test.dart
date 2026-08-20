@@ -9,7 +9,7 @@ import 'package:ianvs_acp/ui/components/resume_session_dialog.dart';
 import 'package:ianvs_acp/ui/components/session_workspace_review_dialog.dart';
 
 void main() {
-  testWidgets('ResumeSessionDialog labels both search fields for semantics', (
+  testWidgets('ResumeSessionDialog labels the unified search for semantics', (
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
@@ -27,7 +27,11 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ResumeSessionDialog(loadSessions: () async => [project]),
+          body: ResumeSessionDialog(
+            agents: [
+              _agent(() async => [project]),
+            ],
+          ),
         ),
       ),
     );
@@ -36,22 +40,165 @@ void main() {
     expect(
       find.semantics.byPredicate(
         (node) =>
-            node.label == 'Filter projects' &&
-            node.hint == 'Filter projects...' &&
-            node.getSemanticsData().flagsCollection.isTextField,
-      ),
-      findsOne,
-    );
-    expect(
-      find.semantics.byPredicate(
-        (node) =>
-            node.label == 'Filter conversations' &&
-            node.hint == 'Filter conversations...' &&
+            node.label == 'Filter sessions' &&
+            node.hint == 'Search sessions...' &&
             node.getSemanticsData().flagsCollection.isTextField,
       ),
       findsOne,
     );
     semantics.dispose();
+  });
+
+  testWidgets('ResumeSessionDialog loads only the selected agent catalog', (
+    tester,
+  ) async {
+    var codexLoads = 0;
+    var piLoads = 0;
+    final codexProject = AcpProjectSessions(
+      cwd: '/workspace/codex-project',
+      sessions: const [
+        AcpSessionEntry(
+          id: 'codex-session',
+          cwd: '/workspace/codex-project',
+          title: 'Codex session',
+        ),
+      ],
+    );
+    final piProject = AcpProjectSessions(
+      cwd: '/workspace/pi-project',
+      sessions: const [
+        AcpSessionEntry(
+          id: 'pi-session',
+          cwd: '/workspace/pi-project',
+          title: 'Pi session',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(
+            agents: [
+              _agent(() async {
+                codexLoads += 1;
+                return [codexProject];
+              }),
+              _agent(
+                () async {
+                  piLoads += 1;
+                  return [piProject];
+                },
+                id: 'pi',
+                name: 'pi ACP',
+                isCurrent: false,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(codexLoads, 1);
+    expect(piLoads, 0);
+    expect(find.text('Codex session'), findsWidgets);
+
+    final agentList = find.byKey(const ValueKey('resume-agent-list'));
+    await tester.tap(
+      find.descendant(of: agentList, matching: find.text('pi ACP')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(codexLoads, 1);
+    expect(piLoads, 1);
+    expect(find.text('Pi session'), findsWidgets);
+    expect(find.text('Codex session'), findsNothing);
+
+    await tester.tap(
+      find.descendant(of: agentList, matching: find.text('Codex')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(codexLoads, 1);
+    expect(piLoads, 1);
+    expect(find.text('Codex session'), findsWidgets);
+  });
+
+  testWidgets('ResumeSessionDialog explains a busy current agent locally', (
+    tester,
+  ) async {
+    var loads = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(
+            agents: [
+              _agent(
+                () async {
+                  loads += 1;
+                  return const <AcpProjectSessions>[];
+                },
+                enabled: false,
+                description: 'Session operation in progress',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Sessions for Codex'), findsOneWidget);
+    expect(find.text('Session operation in progress'), findsNWidgets(2));
+    expect(
+      find.textContaining('cannot list sessions right now'),
+      findsOneWidget,
+    );
+    expect(loads, 0);
+    expect(_loadButton(tester).onPressed, isNull);
+  });
+
+  testWidgets('ResumeSessionDialog authenticates an agent from the banner', (
+    tester,
+  ) async {
+    var authenticationCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(
+            agents: [
+              _agent(() async => const <AcpProjectSessions>[]),
+              _agent(
+                () async => const <AcpProjectSessions>[],
+                id: 'pi',
+                name: 'pi ACP',
+                isCurrent: false,
+                description: 'Authentication required',
+                authenticate: () async {
+                  authenticationCalls += 1;
+                  return true;
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('pi ACP needs new credentials to list sessions.'),
+      findsOneWidget,
+    );
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Authenticate'));
+    await tester.pumpAndSettle();
+
+    expect(authenticationCalls, 1);
+    expect(
+      find.text('pi ACP needs new credentials to list sessions.'),
+      findsNothing,
+    );
   });
 
   testWidgets('ResumeSessionDialog lazily builds 1024 searchable entries', (
@@ -88,7 +235,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ResumeSessionDialog(loadSessions: () async => projects),
+          body: ResumeSessionDialog(agents: [_agent(() async => projects)]),
         ),
       ),
     );
@@ -98,48 +245,29 @@ void main() {
       find.byWidgetPredicate((widget) => widget is DropdownButtonFormField),
       findsNothing,
     );
-    final projectListFinder = find.byKey(const ValueKey('resume-project-list'));
-    final conversationListFinder = find.byKey(
-      const ValueKey('resume-conversation-list'),
-    );
-    expect(projectListFinder, findsOneWidget);
-    expect(conversationListFinder, findsOneWidget);
-    expect(tester.widget<ListView>(projectListFinder).primary, isFalse);
-    expect(tester.widget<ListView>(conversationListFinder).primary, isFalse);
+    final sessionListFinder = find.byKey(const ValueKey('resume-session-list'));
+    expect(sessionListFinder, findsOneWidget);
+    expect(tester.widget<ListView>(sessionListFinder).primary, isFalse);
     expect(projects.itemReads, lessThan(128));
     expect(conversations.itemReads, lessThan(128));
     expect(find.text('Conversation 1023'), findsNothing);
 
     await tester.enterText(
-      find.byKey(const ValueKey('resume-conversation-search')),
+      find.byKey(const ValueKey('resume-session-search')),
       'Conversation 1023',
     );
     await tester.pumpAndSettle();
     expect(find.text('Conversation 1023'), findsWidgets);
-    await tester.ensureVisible(conversationListFinder);
-    await tester.pumpAndSettle();
-    final conversationTile = _listTileContaining(
-      conversationListFinder,
-      'Conversation 1023',
-    );
-    await tester.tap(conversationTile);
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-1023')));
     await tester.pumpAndSettle();
     expect(_loadButton(tester).onPressed, isNotNull);
 
     await tester.enterText(
-      find.byKey(const ValueKey('resume-project-search')),
+      find.byKey(const ValueKey('resume-session-search')),
       'project-1023',
     );
     await tester.pumpAndSettle();
-    expect(find.textContaining('/workspace/project-1023'), findsOneWidget);
-    await tester.ensureVisible(projectListFinder);
-    await tester.pumpAndSettle();
-    final projectTile = _listTileContaining(
-      projectListFinder,
-      '/workspace/project-1023',
-    );
-    await tester.tap(projectTile);
-    await tester.pumpAndSettle();
+    expect(find.text('project-1023'), findsWidgets);
     expect(find.text('Project 1023 conversation'), findsWidgets);
   });
 
@@ -169,7 +297,9 @@ void main() {
                   selection = await showDialog<ResumeSessionSelection>(
                     context: context,
                     builder: (context) => ResumeSessionDialog(
-                      loadSessions: () async => [project],
+                      agents: [
+                        _agent(() async => [project]),
+                      ],
                     ),
                   );
                 },
@@ -184,16 +314,19 @@ void main() {
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Project'), findsOneWidget);
-    expect(find.text('Conversation'), findsOneWidget);
-    expect(find.textContaining('2026-05-28 12:00'), findsWidgets);
-    expect(find.text('Load'), findsOneWidget);
+    expect(find.text('Select Agent'), findsOneWidget);
+    expect(find.text('Sessions for Codex'), findsOneWidget);
+    expect(find.text('project-a'), findsOneWidget);
+    expect(find.text('Resume this project conversation'), findsOneWidget);
+    expect(find.byIcon(Icons.smart_toy_outlined), findsNothing);
+    expect(find.text('Open Session'), findsOneWidget);
 
-    await tester.tap(find.text('Load'));
+    await tester.tap(find.text('Open Session'));
     await tester.pumpAndSettle();
 
     expect(selection?.project.cwd, '/workspace/project-a');
     expect(selection?.conversation.id, 'session-a');
+    expect(selection?.agentName, 'Codex');
   });
 
   testWidgets('ResumeSessionDialog previews every workspace root', (
@@ -217,10 +350,17 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ResumeSessionDialog(loadSessions: () async => [project]),
+          body: ResumeSessionDialog(
+            agents: [
+              _agent(() async => [project]),
+            ],
+          ),
         ),
       ),
     );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-a')));
     await tester.pumpAndSettle();
 
     expect(find.text('/workspace/project-a'), findsWidgets);
@@ -254,7 +394,9 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: ResumeSessionDialog(
-            loadSessions: () async => [project],
+            agents: [
+              _agent(() async => [project]),
+            ],
             inputBudget: const AcpInputBudget(
               maxMetadataPreviewChars: 8,
               maxMetadataPreviewBytes: 8,
@@ -268,6 +410,8 @@ void main() {
     expect(metadata.entriesReads, 0);
     expect(tester.takeException(), isNull);
 
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-a')));
+    await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Metadata'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Metadata'));
@@ -301,10 +445,16 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ResumeSessionDialog(loadSessions: () async => [project]),
+          body: ResumeSessionDialog(
+            agents: [
+              _agent(() async => [project]),
+            ],
+          ),
         ),
       ),
     );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-a')));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Metadata'));
     await tester.pumpAndSettle();
@@ -312,19 +462,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('SESSION_A_CANARY'), findsOneWidget);
 
-    final conversationList = find.byKey(
-      const ValueKey('resume-conversation-list'),
-    );
-    await tester.ensureVisible(conversationList);
+    await tester.tap(find.text('Metadata'));
     await tester.pumpAndSettle();
-    await tester.tap(
-      find
-          .descendant(
-            of: conversationList,
-            matching: find.textContaining('Session B'),
-          )
-          .first,
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('resume-session-session-a')),
     );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-a')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('resume-session-session-b')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-b')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('resume-session-session-b')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-b')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Metadata'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Metadata'));
     await tester.pumpAndSettle();
 
     expect(find.textContaining('SESSION_A_CANARY'), findsNothing);
@@ -353,13 +513,17 @@ void main() {
           body: ValueListenableBuilder<AcpInputBudget>(
             valueListenable: budget,
             builder: (context, inputBudget, _) => ResumeSessionDialog(
-              loadSessions: () async => [project],
+              agents: [
+                _agent(() async => [project]),
+              ],
               inputBudget: inputBudget,
             ),
           ),
         ),
       ),
     );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-a')));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Metadata'));
     await tester.pumpAndSettle();
@@ -488,7 +652,9 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: ResumeSessionDialog(
-            loadSessions: () async => [projectA, projectB],
+            agents: [
+              _agent(() async => [projectA, projectB]),
+            ],
           ),
         ),
       ),
@@ -496,47 +662,35 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.enterText(
-      find.byKey(const ValueKey('resume-project-search')),
+      find.byKey(const ValueKey('resume-session-search')),
       'other',
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('other'), findsOneWidget);
-    expect(find.textContaining('projotherect-a'), findsNothing);
+    expect(find.text('other'), findsWidgets);
     expect(find.text('Alpha chat'), findsNothing);
-    expect(find.text('Select a conversation'), findsWidgets);
+    expect(find.text('Other chat'), findsOneWidget);
     expect(_loadButton(tester).onPressed, isNull);
 
-    final projectList = find.byKey(const ValueKey('resume-project-list'));
-    await tester.ensureVisible(projectList);
-    await tester.pumpAndSettle();
-    final projectTile = _listTileContaining(projectList, '/workspace/other');
-    await tester.tap(projectTile);
+    await tester.tap(
+      find.byKey(const ValueKey('resume-session-session-other')),
+    );
     await tester.pumpAndSettle();
 
-    expect(find.text('Other chat'), findsNWidgets(2));
     expect(_loadButton(tester).onPressed, isNotNull);
 
     await tester.enterText(
-      find.byKey(const ValueKey('resume-conversation-search')),
+      find.byKey(const ValueKey('resume-session-search')),
       'beta',
     );
     await tester.pumpAndSettle();
     expect(find.text('Other chat'), findsNothing);
-    expect(find.text('Select a conversation'), findsWidgets);
     expect(_loadButton(tester).onPressed, isNull);
 
-    final conversationList = find.byKey(
-      const ValueKey('resume-conversation-list'),
-    );
-    await tester.ensureVisible(conversationList);
-    await tester.pumpAndSettle();
-    final conversationTile = _listTileContaining(conversationList, 'Beta task');
-    await tester.tap(conversationTile);
+    await tester.tap(find.byKey(const ValueKey('resume-session-session-beta')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Beta task'), findsNWidgets(2));
-    expect(find.textContaining('Othbetaer'), findsNothing);
+    expect(find.text('Beta task'), findsOneWidget);
     expect(_loadButton(tester).onPressed, isNotNull);
   });
 
@@ -560,11 +714,13 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: ResumeSessionDialog(
-            loadSessions: () async {
-              loadCount += 1;
-              if (loadCount == 1) return [project];
-              throw Exception('refresh failed');
-            },
+            agents: [
+              _agent(() async {
+                loadCount += 1;
+                if (loadCount == 1) return [project];
+                throw Exception('refresh failed');
+              }),
+            ],
           ),
         ),
       ),
@@ -576,22 +732,36 @@ void main() {
     await tester.tap(find.widgetWithText(TextButton, 'Refresh'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Could not list ACP sessions'), findsOneWidget);
+    expect(find.text('Could not list Codex sessions'), findsOneWidget);
     expect(find.textContaining('refresh failed'), findsOneWidget);
     expect(_loadButton(tester).onPressed, isNull);
   });
 }
 
 FilledButton _loadButton(WidgetTester tester) {
-  return tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Load'));
+  return tester.widget<FilledButton>(
+    find.widgetWithText(FilledButton, 'Open Session'),
+  );
 }
 
-Finder _listTileContaining(Finder list, String text) {
-  final textInList = find.descendant(
-    of: list,
-    matching: find.textContaining(text),
+ResumeSessionAgentOption _agent(
+  Future<List<AcpProjectSessions>> Function() loadSessions, {
+  String id = 'codex',
+  String name = 'Codex',
+  bool isCurrent = true,
+  bool enabled = true,
+  String description = 'Ready',
+  Future<bool> Function()? authenticate,
+}) {
+  return ResumeSessionAgentOption(
+    id: id,
+    name: name,
+    isCurrent: isCurrent,
+    enabled: enabled,
+    description: description,
+    authenticate: authenticate,
+    loadSessions: loadSessions,
   );
-  return find.ancestor(of: textInList, matching: find.byType(ListTile));
 }
 
 final class _ThrowingEntriesMetadata extends MapBase<String, Object?> {

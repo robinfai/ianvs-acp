@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_prompt_capability_policy.dart';
-import '../../acp/acp_session_catalog.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../config/acp_agent_discovery.dart';
@@ -186,8 +185,12 @@ class AppShell extends StatelessWidget {
           defaultAgentName: defaultAgentName ?? agentName,
         );
         final currentWorkspace = workspaceController.currentWorkspace;
-        final canResumeSessions = sessionControllerList.any(
-          (controller) => controller.canResumeSessions,
+        final canOpenResumeDialog = sessionControllerList.any(
+          (candidate) =>
+              candidate.canResumeSessions ||
+              ((candidate.isStreaming || candidate.isSessionOperationRunning) &&
+                  candidate.supportsSessionList &&
+                  candidate.supportsSessionResume),
         );
         final canLoadWorkspaceSessions =
             autoLoadWorkspaceSessions &&
@@ -337,7 +340,7 @@ class AppShell extends StatelessWidget {
                           agentName: agentName,
                           sessionTitle: controller.currentSession?.displayTitle,
                           onNewSession: startNewSession,
-                          onResumeSession: canResumeSessions
+                          onResumeSession: canOpenResumeDialog
                               ? () => _showResumeDialog(context)
                               : null,
                           onShowAgentConfig: () =>
@@ -351,7 +354,7 @@ class AppShell extends StatelessWidget {
                             currentSession: controller.currentSession,
                             onNewSession: startNewSession,
                             onNewSessionInWorkspace: startNewSessionInWorkspace,
-                            onResumeSession: canResumeSessions
+                            onResumeSession: canOpenResumeDialog
                                 ? () => _showResumeDialog(context)
                                 : null,
                             onSelectSession: onSelectSession,
@@ -552,7 +555,7 @@ class AppShell extends StatelessWidget {
                                             }
                                           },
                                     onNewSession: startNewSession,
-                                    onResumeSession: canResumeSessions
+                                    onResumeSession: canOpenResumeDialog
                                         ? () => _showResumeDialog(context)
                                         : null,
                                     onReconnect: canReconnect
@@ -735,9 +738,13 @@ class AppShell extends StatelessWidget {
     }
   }
 
-  Future<void> _showAuthenticateDialog(BuildContext context) async {
-    final methods = controller.authMethods;
-    if (methods.isEmpty) return;
+  Future<bool> _showAuthenticateDialog(
+    BuildContext context, {
+    ChatController? targetController,
+  }) async {
+    final authenticationController = targetController ?? controller;
+    final methods = authenticationController.authMethods;
+    if (methods.isEmpty) return false;
     final methodId = methods.length == 1
         ? _authMethodId(methods.single)
         : await showDialog<String>(
@@ -768,9 +775,9 @@ class AppShell extends StatelessWidget {
               );
             },
           );
-    if (methodId == null || methodId.isEmpty) return;
-    if (!context.mounted) return;
-    await controller.authenticate(methodId);
+    if (methodId == null || methodId.isEmpty) return false;
+    if (!context.mounted) return false;
+    return authenticationController.authenticate(methodId);
   }
 
   List<ChatController> _controllers() {
@@ -811,69 +818,82 @@ class AppShell extends StatelessWidget {
     if (errors.length == loadable.length) throw errors.first;
   }
 
-  Future<List<AcpProjectSessions>> _loadResumableSessions(
+  List<_ResumeSessionAgentBinding> _resumeSessionAgentBindings(
     List<ChatController> controllers,
-  ) async {
-    final loadable = controllers
-        .where(
-          (controller) =>
-              controller.canListSessions &&
-              !controller.isStreaming &&
-              !controller.isSessionOperationRunning,
-        )
+    BuildContext context,
+  ) {
+    final controllersByAgent = <String, ChatController>{};
+    for (final candidate in controllers) {
+      final name = candidate.agentName.trim();
+      if (name.isEmpty) continue;
+      final existing = controllersByAgent[name];
+      if (existing == null ||
+          _resumeControllerPriority(candidate) >
+              _resumeControllerPriority(existing)) {
+        controllersByAgent[name] = candidate;
+      }
+    }
+
+    var nextId = 0;
+    return controllersByAgent.entries
+        .map((entry) {
+          final candidate = entry.value;
+          final isCurrent = entry.key == controller.agentName.trim();
+          return _ResumeSessionAgentBinding(
+            option: ResumeSessionAgentOption(
+              id: 'resume-agent-${nextId++}',
+              name: entry.key,
+              description: _resumeAgentDescription(candidate),
+              enabled: candidate.canResumeSessions,
+              isCurrent: isCurrent,
+              authenticate: candidate.canAuthenticate
+                  ? () => _showAuthenticateDialog(
+                      context,
+                      targetController: candidate,
+                    )
+                  : null,
+              loadSessions: candidate.listResumableSessions,
+            ),
+            controller: candidate,
+          );
+        })
         .toList(growable: false);
-    if (loadable.isEmpty) {
-      throw StateError('No configured ACP agent can list resumable sessions.');
-    }
-
-    final errors = <Object>[];
-    final sessions = <AcpSessionEntry>[];
-    await Future.wait(
-      loadable.map((controller) async {
-        try {
-          final projects = await controller.listResumableSessions();
-          for (final project in projects) {
-            final fallbackCwd = normalizeWorkspacePath(project.cwd);
-            for (final session in project.sessions) {
-              final sessionCwd = normalizeWorkspacePath(session.cwd);
-              sessions.add(
-                AcpSessionEntry(
-                  id: session.id,
-                  cwd: sessionCwd.isEmpty ? fallbackCwd : sessionCwd,
-                  title: session.title,
-                  additionalDirectories: session.additionalDirectories,
-                  updatedAt: session.updatedAt,
-                  meta: <String, Object?>{
-                    ...session.meta,
-                    resumeSessionAgentNameMetaKey: controller.agentName,
-                  },
-                ),
-              );
-            }
-          }
-        } catch (error) {
-          errors.add(error);
-        }
-      }),
-    );
-
-    if (sessions.isEmpty) {
-      if (errors.isNotEmpty) throw errors.first;
-      return const <AcpProjectSessions>[];
-    }
-    return groupAcpSessionsByProject(sessions);
   }
 
-  ChatController? _controllerForAgentName(
-    List<ChatController> controllers,
-    String? agentName,
-  ) {
-    final trimmed = agentName?.trim();
-    if (trimmed == null || trimmed.isEmpty) return null;
-    for (final controller in controllers) {
-      if (controller.agentName == trimmed) return controller;
+  int _resumeControllerPriority(ChatController candidate) {
+    return (candidate.canResumeSessions ? 4 : 0) +
+        (identical(candidate, controller) ? 2 : 0) +
+        (!candidate.isStreaming && !candidate.isSessionOperationRunning
+            ? 1
+            : 0);
+  }
+
+  String _resumeAgentDescription(ChatController candidate) {
+    if (candidate.isStreaming) return 'Response in progress';
+    if (candidate.isSessionOperationRunning) {
+      return 'Session operation in progress';
     }
-    return null;
+    final lastError = candidate.lastError?.toLowerCase() ?? '';
+    if (lastError.contains('auth_required') ||
+        lastError.contains('authentication required')) {
+      return 'Authentication required';
+    }
+    if (!candidate.canResumeSessions && candidate.capabilities != null) {
+      if (!candidate.supportsSessionList) {
+        return 'Session listing unsupported';
+      }
+      if (!candidate.supportsSessionResume) {
+        return 'Session restore unsupported';
+      }
+    }
+    if (candidate.status == ConnectionStatus.connecting ||
+        candidate.status == ConnectionStatus.reconnecting) {
+      return 'Connecting...';
+    }
+    if (candidate.status == ConnectionStatus.error) {
+      return 'Connection error';
+    }
+    return 'Ready';
   }
 
   Future<void> _revealWorkspaceInFinder(
@@ -948,18 +968,39 @@ class AppShell extends StatelessWidget {
 
   Future<void> _showResumeDialog(BuildContext context) async {
     final sessionControllerList = _controllers();
+    final agentBindings = _resumeSessionAgentBindings(
+      sessionControllerList,
+      context,
+    );
+    final bindingsById = <String, _ResumeSessionAgentBinding>{
+      for (final binding in agentBindings) binding.option.id: binding,
+    };
     final selection = await showDialog<ResumeSessionSelection>(
       context: context,
       builder: (context) => ResumeSessionDialog(
         inputBudget: inputBudget,
-        loadSessions: () => _loadResumableSessions(sessionControllerList),
+        agents: agentBindings
+            .map((binding) => binding.option)
+            .toList(growable: false),
+        initialAgentId: agentBindings
+            .where((binding) => binding.option.isCurrent)
+            .firstOrNull
+            ?.option
+            .id,
         initialCwd: controller.currentSession?.cwd ?? controller.cwd,
       ),
     );
 
     if (selection == null) return;
     if (!context.mounted) return;
-    final selectionAgentName = _resumeSelectionAgentName(selection);
+    final selectedBinding = bindingsById[selection.agentId];
+    if (selectedBinding == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('The selected ACP agent is unavailable.')),
+      );
+      return;
+    }
+    final selectionAgentName = selection.agentName.trim();
     final indexedSession = _indexedSessionForResume(
       sessionControllerList,
       sessionId: selection.conversation.id,
@@ -979,21 +1020,11 @@ class AppShell extends StatelessWidget {
       sessionTemplateId: indexedSession?.sessionTemplateId,
       sessionTemplateVersion: indexedSession?.sessionTemplateVersion,
     );
-    final selectedAgentName = selectedSession.agentName?.trim();
-    final trustedTargetController = _controllerForAgentName(
-      sessionControllerList,
-      selectedSession.agentName,
-    );
+    final trustedTargetController = selectedBinding.controller;
     final externalSelectSession = onSelectSession;
-    final conflictController =
-        trustedTargetController ??
-        (externalSelectSession == null ||
-                selectedAgentName == null ||
-                selectedAgentName.isEmpty
-            ? controller
-            : null);
-    if (conflictController?.hasBoundSessionWorkspaceConflict(selectedSession) ==
-        true) {
+    if (trustedTargetController.hasBoundSessionWorkspaceConflict(
+      selectedSession,
+    )) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(sessionWorkspaceConflictMessage(selectedSession.id)),
@@ -1006,7 +1037,7 @@ class AppShell extends StatelessWidget {
       return;
     }
 
-    final targetController = trustedTargetController ?? controller;
+    final targetController = trustedTargetController;
     final activeSession = targetController.currentSession;
     if (activeSession != null &&
         activeSession.id.trim() == selectedSession.id.trim()) {
@@ -1072,14 +1103,6 @@ class AppShell extends StatelessWidget {
     }
   }
 
-  String? _resumeSelectionAgentName(ResumeSessionSelection selection) {
-    final agentName =
-        selection.conversation.meta[resumeSessionAgentNameMetaKey];
-    if (agentName is! String) return null;
-    final trimmed = agentName.trim();
-    return trimmed.isEmpty ? null : trimmed;
-  }
-
   AgentSession? _indexedSessionForResume(
     List<ChatController> controllers, {
     required String sessionId,
@@ -1115,6 +1138,16 @@ class AppShell extends StatelessWidget {
     }
     return fallback;
   }
+}
+
+final class _ResumeSessionAgentBinding {
+  const _ResumeSessionAgentBinding({
+    required this.option,
+    required this.controller,
+  });
+
+  final ResumeSessionAgentOption option;
+  final ChatController controller;
 }
 
 class _CompactShellNavigation extends StatelessWidget {
