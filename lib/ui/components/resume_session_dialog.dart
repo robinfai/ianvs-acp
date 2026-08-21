@@ -278,6 +278,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                 Expanded(
                   child: AnimatedSwitcher(
                     duration: AppMotion.standard,
+                    transitionBuilder: _sessionResultTransition,
                     child: _sessionResults(selectedAgent),
                   ),
                 ),
@@ -501,6 +502,14 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       if (mounted) setState(() => _authenticatingAgentId = null);
     }
   }
+}
+
+Widget _sessionResultTransition(Widget child, Animation<double> animation) {
+  // Keep the transition itself unkeyed so AnimatedSwitcher assigns its
+  // monotonically increasing entry key. Its default transition derives a key
+  // from child.key, which collides when several keyless loading/message panels
+  // are still fading out during a fast refresh cycle.
+  return FadeTransition(opacity: animation, child: child);
 }
 
 class _AgentSelectionList extends StatelessWidget {

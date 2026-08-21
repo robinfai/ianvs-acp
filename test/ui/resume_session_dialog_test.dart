@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:collection';
 
 import 'package:ianvs_acp/acp/acp_input_budget.dart';
@@ -736,6 +737,57 @@ void main() {
     expect(find.textContaining('refresh failed'), findsOneWidget);
     expect(_loadButton(tester).onPressed, isNull);
   });
+
+  testWidgets(
+    'ResumeSessionDialog survives rapid loading and result transitions',
+    (tester) async {
+      final initialLoad = Completer<List<AcpProjectSessions>>();
+      final refreshLoad = Completer<List<AcpProjectSessions>>();
+      var loadCount = 0;
+      final project = AcpProjectSessions(
+        cwd: '/workspace/project-a',
+        sessions: const [
+          AcpSessionEntry(
+            id: 'session-a',
+            cwd: '/workspace/project-a',
+            title: 'Recovered session',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ResumeSessionDialog(
+              agents: [
+                _agent(() {
+                  loadCount += 1;
+                  return loadCount == 1
+                      ? initialLoad.future
+                      : refreshLoad.future;
+                }),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      initialLoad.complete(const <AcpProjectSessions>[]);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(find.text('No sessions from Codex'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(TextButton, 'Refresh'));
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(find.text('Loading sessions from Codex...'), findsWidgets);
+
+      refreshLoad.complete([project]);
+      await tester.pump(const Duration(milliseconds: 1));
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Recovered session'), findsOneWidget);
+    },
+  );
 }
 
 FilledButton _loadButton(WidgetTester tester) {
