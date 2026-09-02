@@ -1168,7 +1168,7 @@ Review the screenshot''',
       await expectLater(
         appOverlay,
         matchesGoldenFile(
-          '../../design-qa-artifacts/file-diff-redesign-default.png',
+          '../../artifacts/design-qa/chat-timeline/file-diff-redesign-default.png',
         ),
       );
 
@@ -1186,7 +1186,7 @@ Review the screenshot''',
       await expectLater(
         appOverlay,
         matchesGoldenFile(
-          '../../design-qa-artifacts/file-diff-redesign-hover.png',
+          '../../artifacts/design-qa/chat-timeline/file-diff-redesign-hover.png',
         ),
       );
     },
@@ -1363,7 +1363,7 @@ foregroundDecoration: BoxDecoration(
       await expectLater(
         find.byType(Overlay).first,
         matchesGoldenFile(
-          '../../design-qa-artifacts/markdown-rendering-polish.png',
+          '../../artifacts/design-qa/chat-timeline/markdown-rendering-polish.png',
         ),
       );
     },

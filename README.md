@@ -239,16 +239,25 @@ Use `NativeMermanRenderer` when a screen needs to reuse one engine instance,
 ## Development
 
 ```sh
-flutter analyze
-./tool/flutter_test_isolated.sh
+make help
+make bootstrap
+make verify
 ```
+
+Run the app locally with `make run`. The default `make` target only prints the
+available commands and does not build, test, clean, or publish anything.
 
 Build and verify a local ad-hoc macOS release:
 
 ```sh
-flutter build macos --release
-./tool/verify_macos_bundle.sh 'build/macos/Build/Products/Release/ACP Client.app'
+make build
+make verify-macos
 ```
+
+Install the verified local build into `/Applications` with `make install`.
+Use `make install INSTALL_DIR=/absolute/directory` to install elsewhere. An
+existing app is replaced only after the staged copy passes bundle verification;
+the previous app is restored if installation or final verification fails.
 
 Local ad-hoc builds are for development and verification only. They are not
 external release artifacts.
@@ -259,7 +268,7 @@ Application certificate and `IANVS_NOTARY_PROFILE` to name a configured
 environment, run:
 
 ```sh
-./tool/package_macos_release.sh
+make package-macos
 ```
 
 The release script fails when either credential is missing. It signs nested
@@ -285,8 +294,8 @@ classify commands or destinations as external egress; external side effects are
 owned by the agent and its tools:
 
 ```sh
-flutter run -d macos
-./tool/verify_rust_runtime.sh
+make run
+make test-rust
 ```
 
 That verification script covers the Rust workspace and the Flutter/Rust

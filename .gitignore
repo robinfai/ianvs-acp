@@ -13,6 +13,11 @@
 migrate_working_dir/
 .tmp-*
 
+# Keep generated design review images under artifacts/ instead of the project root.
+/design-qa-*.png
+/design-qa-*.jpg
+/design-qa-*.jpeg
+
 # IntelliJ related
 *.iml
 *.ipr

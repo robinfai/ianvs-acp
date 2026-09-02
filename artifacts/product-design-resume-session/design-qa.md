@@ -3,10 +3,10 @@
 ## Evidence
 
 - Source visual truth: `/Users/luobinghui/.codex/generated_images/01a01fe8-db31-7610-af93-e475971c774b/exec-da4cbf23-9c77-42b4-ace2-2e3763127e9d.png`
-- Rendered implementation: `/Users/luobinghui/projects/flutter/ianvs-acp/artifacts/product-design-resume-session/implementation-full.png`
-- Normalized source component: `/Users/luobinghui/projects/flutter/ianvs-acp/artifacts/product-design-resume-session/reference-dialog.png`
-- Normalized implementation component: `/Users/luobinghui/projects/flutter/ianvs-acp/artifacts/product-design-resume-session/implementation-dialog.png`
-- Final side-by-side comparison: `/Users/luobinghui/projects/flutter/ianvs-acp/artifacts/product-design-resume-session/comparison-final.png`
+- Rendered implementation: `implementation-full.png`
+- Normalized source component: `reference-dialog.png`
+- Normalized implementation component: `implementation-dialog.png`
+- Final side-by-side comparison: `comparison-final.png`
 - Viewport and CSS size: 1586 × 992 logical pixels
 - Source pixels: 1586 × 992; implementation pixels: 1586 × 992
 - Density normalization: device pixel ratio 1.0 for both captures; dialog crops normalized to 808 × 669 pixels
