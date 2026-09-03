@@ -20,8 +20,8 @@ class WorkspaceSidebar extends StatefulWidget {
     required this.currentWorkspace,
     required this.currentSession,
     required this.onNewSession,
-    required this.onResumeSession,
     this.onNewSessionInWorkspace,
+    this.onResumeSessionInWorkspace,
     this.onSelectSession,
     this.canForkSession,
     this.onSessionMenuAction,
@@ -39,8 +39,8 @@ class WorkspaceSidebar extends StatefulWidget {
   final WorkspaceRecord currentWorkspace;
   final AgentSession? currentSession;
   final VoidCallback? onNewSession;
-  final VoidCallback? onResumeSession;
   final ValueChanged<WorkspaceRecord>? onNewSessionInWorkspace;
+  final ValueChanged<WorkspaceRecord>? onResumeSessionInWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
   final bool Function(AgentSession session)? canForkSession;
   final FutureOr<void> Function(
@@ -234,6 +234,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                       widget.onArchiveWorkspaceSessions != null &&
                       workspace.sessions.isNotEmpty,
                   canRemove: !selected,
+                  canResumeSession: widget.onResumeSessionInWorkspace != null,
                   onHoverChanged: (hovered) =>
                       _setHoveredWorkspace(workspace.path, hovered),
                   onMenuAction: (action) =>
@@ -553,6 +554,8 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
           workspace,
           workspace.path == widget.currentWorkspace.path,
         )?.call();
+      case _WorkspaceMenuAction.resumeSession:
+        widget.onResumeSessionInWorkspace?.call(workspace);
       case _WorkspaceMenuAction.togglePinned:
         setState(() {
           if (!_pinnedWorkspacePaths.remove(workspace.path)) {
@@ -859,6 +862,7 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.supportsGitWorktrees,
     required this.canArchiveConversations,
     required this.canRemove,
+    required this.canResumeSession,
     required this.onHoverChanged,
     required this.onMenuAction,
   });
@@ -892,6 +896,7 @@ class _WorkspaceGroup extends StatelessWidget {
   final bool supportsGitWorktrees;
   final bool canArchiveConversations;
   final bool canRemove;
+  final bool canResumeSession;
   final ValueChanged<bool> onHoverChanged;
   final ValueChanged<_WorkspaceMenuAction> onMenuAction;
 
@@ -920,6 +925,7 @@ class _WorkspaceGroup extends StatelessWidget {
               canCreatePermanentWorktree: canCreatePermanentWorktree,
               canArchiveConversations: canArchiveConversations,
               canRemove: canRemove,
+              canResumeSession: canResumeSession,
               onPressed: onWorkspacePressed,
               onToggleWorkspace: onToggleWorkspace,
               onNewSession: onNewSession,
@@ -1106,6 +1112,7 @@ class _WorkspaceTile extends StatelessWidget {
     required this.canCreatePermanentWorktree,
     required this.canArchiveConversations,
     required this.canRemove,
+    required this.canResumeSession,
     required this.onPressed,
     required this.onToggleWorkspace,
     required this.onNewSession,
@@ -1122,6 +1129,7 @@ class _WorkspaceTile extends StatelessWidget {
   final bool canCreatePermanentWorktree;
   final bool canArchiveConversations;
   final bool canRemove;
+  final bool canResumeSession;
   final VoidCallback? onPressed;
   final VoidCallback? onToggleWorkspace;
   final VoidCallback? onNewSession;
@@ -1193,6 +1201,7 @@ class _WorkspaceTile extends StatelessWidget {
                     canArchiveConversations: canArchiveConversations,
                     canRemove: canRemove,
                     canStartNewSession: onNewSession != null,
+                    canResumeSession: canResumeSession,
                     onMenuAction: onMenuAction,
                   ),
                 ],
@@ -1226,6 +1235,7 @@ class _WorkspaceTile extends StatelessWidget {
         canArchiveConversations: canArchiveConversations,
         canRemove: canRemove,
         canStartNewSession: onNewSession != null,
+        canResumeSession: canResumeSession,
       ),
     );
     if (action == null) return;
@@ -1284,6 +1294,7 @@ class _WorkspaceInlineActions extends StatelessWidget {
     required this.canArchiveConversations,
     required this.canRemove,
     required this.canStartNewSession,
+    required this.canResumeSession,
     required this.onMenuAction,
   });
 
@@ -1294,6 +1305,7 @@ class _WorkspaceInlineActions extends StatelessWidget {
   final bool canArchiveConversations;
   final bool canRemove;
   final bool canStartNewSession;
+  final bool canResumeSession;
   final ValueChanged<_WorkspaceMenuAction> onMenuAction;
 
   @override
@@ -1309,6 +1321,7 @@ class _WorkspaceInlineActions extends StatelessWidget {
           canArchiveConversations: canArchiveConversations,
           canRemove: canRemove,
           canStartNewSession: canStartNewSession,
+          canResumeSession: canResumeSession,
           onSelected: onMenuAction,
         ),
       ],
@@ -1325,6 +1338,7 @@ class _WorkspaceMenuButton extends StatelessWidget {
     required this.canArchiveConversations,
     required this.canRemove,
     required this.canStartNewSession,
+    required this.canResumeSession,
     required this.onSelected,
   });
 
@@ -1334,6 +1348,7 @@ class _WorkspaceMenuButton extends StatelessWidget {
   final bool canArchiveConversations;
   final bool canRemove;
   final bool canStartNewSession;
+  final bool canResumeSession;
   final ValueChanged<_WorkspaceMenuAction> onSelected;
 
   @override
@@ -1358,6 +1373,7 @@ class _WorkspaceMenuButton extends StatelessWidget {
           canArchiveConversations: canArchiveConversations,
           canRemove: canRemove,
           canStartNewSession: canStartNewSession,
+          canResumeSession: canResumeSession,
         );
       },
     );
@@ -1371,6 +1387,7 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
   required bool canArchiveConversations,
   required bool canRemove,
   required bool canStartNewSession,
+  required bool canResumeSession,
 }) {
   return [
     _workspaceMenuItem(
@@ -1378,6 +1395,12 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
       icon: Icons.edit_square,
       label: 'New Session',
       enabled: canStartNewSession,
+    ),
+    _workspaceMenuItem(
+      value: _WorkspaceMenuAction.resumeSession,
+      icon: Icons.history_rounded,
+      label: 'Resume Session',
+      enabled: canResumeSession,
     ),
     const PopupMenuDivider(height: 8),
     _workspaceMenuItem(
@@ -1455,6 +1478,7 @@ PopupMenuItem<_WorkspaceMenuAction> _workspaceMenuItem({
 
 enum _WorkspaceMenuAction {
   newSession,
+  resumeSession,
   togglePinned,
   revealInFinder,
   createPermanentWorktree,

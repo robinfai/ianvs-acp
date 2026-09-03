@@ -13,7 +13,6 @@ class AgentToolbar extends StatelessWidget {
     this.agentName = 'Codex',
     required this.status,
     required this.onNewSession,
-    required this.onResumeSession,
     required this.onReconnect,
     this.agentServers = const <AgentServerConfig>[],
     this.canSwitchAgent = true,
@@ -38,7 +37,6 @@ class AgentToolbar extends StatelessWidget {
   final String agentName;
   final app_state.ConnectionStatus status;
   final VoidCallback? onNewSession;
-  final VoidCallback? onResumeSession;
   final VoidCallback? onReconnect;
   final List<AgentServerConfig> agentServers;
   final bool canSwitchAgent;
@@ -113,13 +111,6 @@ class AgentToolbar extends StatelessWidget {
                   onAuthenticate: onAuthenticate,
                   onShowPermissionHistory: onShowPermissionHistory,
                   onLogout: onLogout,
-                ),
-                SizedBox(width: compact ? 5 : 8),
-                _ToolbarAction(
-                  icon: Icons.play_circle_outline,
-                  label: compact ? null : 'Resume',
-                  tooltip: 'Resume',
-                  onPressed: onResumeSession,
                 ),
                 if (onReconnect != null) ...[
                   SizedBox(width: compact ? 5 : 8),

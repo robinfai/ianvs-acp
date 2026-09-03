@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
+import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
@@ -48,7 +49,6 @@ void main() {
           onShowPermissionHistory: onShowPermissionHistory,
           onLogout: onLogout,
           onNewSession: () {},
-          onResumeSession: () {},
           onReconnect: onReconnect,
         ),
       ),
@@ -101,7 +101,7 @@ void main() {
     expect(find.text('Codex'), findsWidgets);
     expect(find.text('disconnected'), findsOneWidget);
     expect(find.text('New Session'), findsOneWidget);
-    expect(find.text('Resume'), findsOneWidget);
+    expect(find.text('Resume'), findsNothing);
     expect(find.text('Reconnect'), findsOneWidget);
   });
 
@@ -360,31 +360,22 @@ void main() {
     );
 
     expect(find.text('Codex'), findsOneWidget);
-    expect(find.byIcon(Icons.play_circle_outline), findsOneWidget);
+    expect(find.byIcon(Icons.play_circle_outline), findsNothing);
     expect(find.byIcon(Icons.manage_accounts_outlined), findsOneWidget);
     expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
     expect(find.byIcon(Icons.add_rounded), findsOneWidget);
     expect(find.text('Agents'), findsNothing);
     expect(find.text('New Session'), findsNothing);
 
-    final resumeButton = find
-        .ancestor(
-          of: find.byIcon(Icons.play_circle_outline),
-          matching: find.byType(InkWell),
-        )
-        .first;
     final newSessionButton = find
         .ancestor(
           of: find.byIcon(Icons.add_rounded),
           matching: find.byType(FilledButton),
         )
         .first;
-    final resumeSize = tester.getSize(resumeButton);
     final newSessionSize = tester.getSize(newSessionButton);
-    expect(resumeSize.width, 34);
     expect(newSessionSize.width, 34);
-    expect(resumeSize.height, greaterThanOrEqualTo(31));
-    expect(newSessionSize.height, resumeSize.height);
+    expect(newSessionSize.height, greaterThanOrEqualTo(31));
   });
 
   testWidgets('AgentToolbar uses conversation labels for session actions', (
@@ -401,7 +392,6 @@ void main() {
             title: 'UI review',
             status: app_state.ConnectionStatus.sessionReady,
             onNewSession: _noop,
-            onResumeSession: _noop,
             onReconnect: null,
             currentSession: AgentSession(
               id: 'session-1',
@@ -856,8 +846,7 @@ void main() {
     await tester.pump();
     expect(controller.isStreaming, isTrue);
 
-    await tester.tap(find.text('Resume'));
-    await tester.pumpAndSettle();
+    await _openWorkspaceResume(tester, '/workspace/app');
     expect(find.text('Resume ACP Session'), findsOneWidget);
     expect(find.text('Response in progress'), findsNWidgets(2));
     expect(
@@ -901,6 +890,8 @@ void main() {
 
     expect(find.text('ACP Client'), findsOneWidget);
     expect(find.text('New Session'), findsNWidgets(2));
+    expect(find.text('Resume'), findsNothing);
+    expect(find.text('恢复会话'), findsNothing);
   });
 
   testWidgets('AppShell keeps an explicit New Session action when compact', (
@@ -930,6 +921,52 @@ void main() {
 
     expect(find.widgetWithText(FilledButton, 'New Session'), findsOneWidget);
   });
+
+  testWidgets(
+    'AppShell workspace menu resumes only sessions in that workspace',
+    (tester) async {
+      final client = _MultiWorkspaceCatalogClient();
+      final controller = ChatController(
+        client: client,
+        cwd: '/workspace/project-a',
+        agentName: 'Codex',
+      );
+      addTearDown(controller.dispose);
+
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AppShell(controller: controller, agentName: 'Codex'),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>('workspace-actions:/workspace/project-a'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Resume Session'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Resume ACP Session'), findsOneWidget);
+      expect(find.text('Project A session'), findsWidgets);
+      expect(find.text('Project B session'), findsNothing);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
+      await tester.pumpAndSettle();
+
+      expect(client.lastResumeCwd, '/workspace/project-a');
+    },
+  );
 
   testWidgets('AppShell resumes sessions from another agent', (tester) async {
     final codexClient = FakeAgentClient(
@@ -979,8 +1016,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
     await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.tap(find.text('Resume'));
-    await tester.pumpAndSettle();
+    await _openWorkspaceResume(tester, '/workspace/project-a');
 
     final agentList = find.byKey(const ValueKey('resume-agent-list'));
     final piAgent = find.descendant(
@@ -1027,8 +1063,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Resume'));
-    await tester.pumpAndSettle();
+    await _openWorkspaceResume(tester, '/workspace/project-a');
     await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await tester.pumpAndSettle();
 
@@ -1049,8 +1084,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(client.lastResumeCwd, isNull);
 
-    await tester.tap(find.text('Resume'));
-    await tester.pumpAndSettle();
+    await _openWorkspaceResume(tester, '/workspace/project-a');
     await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Resume Session'));
@@ -1089,6 +1123,14 @@ void main() {
         ),
       ]);
     }
+    codex.mergeSessionIndex(<AgentSession>[
+      AgentSession(
+        id: 'project-a-workspace-anchor',
+        cwd: '/workspace/project-a',
+        createdAt: DateTime(2026),
+        agentName: 'Codex',
+      ),
+    ]);
 
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1;
@@ -1105,8 +1147,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Resume'));
-    await tester.pumpAndSettle();
+    await _openWorkspaceResume(tester, '/workspace/project-a');
     final piAgent = find.descendant(
       of: find.byKey(const ValueKey('resume-agent-list')),
       matching: find.text('pi ACP'),
@@ -1123,9 +1164,17 @@ void main() {
           pi.currentSession?.id == 'session-a' && !pi.isSessionOperationRunning,
     );
 
-    expect(codex.sessions.single.archived, isFalse);
+    expect(
+      codex.sessions
+          .firstWhere((session) => session.id == 'session-a')
+          .archived,
+      isFalse,
+    );
     expect(pi.sessions.single.archived, isFalse);
-    expect(codex.sessions.single.unread, isFalse);
+    expect(
+      codex.sessions.firstWhere((session) => session.id == 'session-a').unread,
+      isFalse,
+    );
     expect(pi.sessions.single.unread, isFalse);
   });
 
@@ -1139,6 +1188,14 @@ void main() {
       () => controller.resumeSession('session-a', cwd: '/workspace/current'),
     );
     expect(client.resumeCalls, 1);
+    controller.mergeSessionIndex(<AgentSession>[
+      AgentSession(
+        id: 'project-a-workspace-anchor',
+        cwd: '/workspace/project-a',
+        createdAt: DateTime(2026),
+        agentName: 'Codex',
+      ),
+    ]);
 
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1;
@@ -1151,8 +1208,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Resume'));
-    await tester.pumpAndSettle();
+    await _openWorkspaceResume(tester, '/workspace/project-a');
     await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
     await _pumpUntil(
       tester,
@@ -1188,6 +1244,14 @@ void main() {
       );
       expect(client.resumeCalls, 2);
       expect(controller.debugInactiveSnapshotIds, contains('session-a'));
+      controller.mergeSessionIndex(<AgentSession>[
+        AgentSession(
+          id: 'project-a-workspace-anchor',
+          cwd: '/workspace/project-a',
+          createdAt: DateTime(2026),
+          agentName: 'Codex',
+        ),
+      ]);
 
       tester.view.physicalSize = const Size(1400, 900);
       tester.view.devicePixelRatio = 1;
@@ -1200,8 +1264,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Resume'));
-      await tester.pumpAndSettle();
+      await _openWorkspaceResume(tester, '/workspace/project-a');
       await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await _pumpUntil(
         tester,
@@ -1376,6 +1439,20 @@ void main() {
   });
 }
 
+Future<void> _openWorkspaceResume(
+  WidgetTester tester,
+  String workspacePath,
+) async {
+  final actions = find.byKey(
+    ValueKey<String>('workspace-actions:$workspacePath'),
+  );
+  expect(actions, findsOneWidget);
+  await tester.tap(actions);
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Resume Session'));
+  await tester.pumpAndSettle();
+}
+
 Future<void> _pumpUntil(
   WidgetTester tester,
   bool Function() condition, {
@@ -1403,6 +1480,34 @@ class _CountingResumeClient extends FakeAgentClient {
       cwd: cwd,
       additionalDirectories: additionalDirectories,
     );
+  }
+}
+
+class _MultiWorkspaceCatalogClient extends FakeAgentClient {
+  @override
+  Future<List<AcpProjectSessions>> listSessions() async {
+    return [
+      AcpProjectSessions(
+        cwd: '/workspace/project-a',
+        sessions: const [
+          AcpSessionEntry(
+            id: 'project-a-session',
+            cwd: '/workspace/project-a',
+            title: 'Project A session',
+          ),
+        ],
+      ),
+      AcpProjectSessions(
+        cwd: '/workspace/project-b',
+        sessions: const [
+          AcpSessionEntry(
+            id: 'project-b-session',
+            cwd: '/workspace/project-b',
+            title: 'Project B session',
+          ),
+        ],
+      ),
+    ];
   }
 }
 

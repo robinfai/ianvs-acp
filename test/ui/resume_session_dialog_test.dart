@@ -126,6 +126,58 @@ void main() {
     expect(find.text('Codex session'), findsWidgets);
   });
 
+  testWidgets('ResumeSessionDialog limits every agent to one workspace', (
+    tester,
+  ) async {
+    AcpProjectSessions project(String cwd, String id, String title) {
+      return AcpProjectSessions(
+        cwd: cwd,
+        sessions: [AcpSessionEntry(id: id, cwd: cwd, title: title)],
+      );
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(
+            workspaceCwd: '/workspace/target/',
+            agents: [
+              _agent(
+                () async => [
+                  project('/workspace/other', 'codex-other', 'Codex other'),
+                  project('/workspace/target', 'codex-target', 'Codex target'),
+                ],
+              ),
+              _agent(
+                () async => [
+                  project('/workspace/target', 'pi-target', 'Pi target'),
+                  project('/workspace/other', 'pi-other', 'Pi other'),
+                ],
+                id: 'pi',
+                name: 'pi ACP',
+                isCurrent: false,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Codex target'), findsWidgets);
+    expect(find.text('Codex other'), findsNothing);
+
+    final agentList = find.byKey(const ValueKey('resume-agent-list'));
+    await tester.tap(
+      find.descendant(of: agentList, matching: find.text('pi ACP')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pi target'), findsWidgets);
+    expect(find.text('Pi other'), findsNothing);
+    expect(find.text('Codex target'), findsNothing);
+  });
+
   testWidgets('ResumeSessionDialog explains a busy current agent locally', (
     tester,
   ) async {

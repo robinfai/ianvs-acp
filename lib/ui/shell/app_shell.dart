@@ -73,6 +73,7 @@ class AppShell extends StatelessWidget {
     this.onArchiveWorkspaceSessions,
     this.onSaveConfig,
     this.onValidateAssistantAgent,
+    this.onLoadAssistantAgentModels,
     this.onLoadSessionCatalogs,
     this.sessionControllers = const <ChatController>[],
     this.supportsConcurrentSessions = false,
@@ -126,6 +127,7 @@ class AppShell extends StatelessWidget {
   onArchiveWorkspaceSessions;
   final AcpConfigSaveCallback? onSaveConfig;
   final AssistantAgentValidationCallback? onValidateAssistantAgent;
+  final AssistantAgentModelsLoadCallback? onLoadAssistantAgentModels;
   final Future<void> Function()? onLoadSessionCatalogs;
   final List<ChatController> sessionControllers;
   final bool supportsConcurrentSessions;
@@ -340,9 +342,6 @@ class AppShell extends StatelessWidget {
                           agentName: agentName,
                           sessionTitle: controller.currentSession?.displayTitle,
                           onNewSession: startNewSession,
-                          onResumeSession: canOpenResumeDialog
-                              ? () => _showResumeDialog(context)
-                              : null,
                           onShowAgentConfig: () =>
                               _showAgentConfigDialog(context),
                           onShowPermissionHistory: () =>
@@ -354,8 +353,11 @@ class AppShell extends StatelessWidget {
                             currentSession: controller.currentSession,
                             onNewSession: startNewSession,
                             onNewSessionInWorkspace: startNewSessionInWorkspace,
-                            onResumeSession: canOpenResumeDialog
-                                ? () => _showResumeDialog(context)
+                            onResumeSessionInWorkspace: canOpenResumeDialog
+                                ? (workspace) => _showResumeDialog(
+                                    context,
+                                    workspaceCwd: workspace.path,
+                                  )
                                 : null,
                             onSelectSession: onSelectSession,
                             canForkSession: canForkSession,
@@ -555,9 +557,6 @@ class AppShell extends StatelessWidget {
                                             }
                                           },
                                     onNewSession: startNewSession,
-                                    onResumeSession: canOpenResumeDialog
-                                        ? () => _showResumeDialog(context)
-                                        : null,
                                     onReconnect: canReconnect
                                         ? controller.reconnect
                                         : null,
@@ -933,6 +932,7 @@ class AppShell extends StatelessWidget {
           defaultAgentName: defaultAgentName,
           onSaveConfig: onSaveConfig,
           onValidateAssistantAgent: onValidateAssistantAgent,
+          onLoadAssistantAgentModels: onLoadAssistantAgentModels,
         );
       },
     );
@@ -966,7 +966,10 @@ class AppShell extends StatelessWidget {
     );
   }
 
-  Future<void> _showResumeDialog(BuildContext context) async {
+  Future<void> _showResumeDialog(
+    BuildContext context, {
+    required String workspaceCwd,
+  }) async {
     final sessionControllerList = _controllers();
     final agentBindings = _resumeSessionAgentBindings(
       sessionControllerList,
@@ -987,7 +990,8 @@ class AppShell extends StatelessWidget {
             .firstOrNull
             ?.option
             .id,
-        initialCwd: controller.currentSession?.cwd ?? controller.cwd,
+        initialCwd: workspaceCwd,
+        workspaceCwd: workspaceCwd,
       ),
     );
 
@@ -1277,7 +1281,6 @@ class _ShellSidebar extends StatelessWidget {
     required this.agentName,
     required this.sessionTitle,
     required this.onNewSession,
-    required this.onResumeSession,
     required this.onShowAgentConfig,
     required this.onShowPermissionHistory,
     required this.workspaceSidebar,
@@ -1286,7 +1289,6 @@ class _ShellSidebar extends StatelessWidget {
   final String agentName;
   final String? sessionTitle;
   final VoidCallback? onNewSession;
-  final VoidCallback? onResumeSession;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowPermissionHistory;
   final Widget workspaceSidebar;
@@ -1302,7 +1304,6 @@ class _ShellSidebar extends StatelessWidget {
             sessionTitle: sessionTitle,
             windowControlsInset: Platform.isMacOS ? 28 : 0,
             onNewSession: onNewSession,
-            onResumeSession: onResumeSession,
             onShowAgentConfig: onShowAgentConfig,
             onShowPermissionHistory: onShowPermissionHistory,
           ),
@@ -1320,7 +1321,6 @@ class _SidebarBrandHeader extends StatelessWidget {
     required this.sessionTitle,
     required this.windowControlsInset,
     required this.onNewSession,
-    required this.onResumeSession,
     required this.onShowAgentConfig,
     required this.onShowPermissionHistory,
   });
@@ -1329,7 +1329,6 @@ class _SidebarBrandHeader extends StatelessWidget {
   final String? sessionTitle;
   final double windowControlsInset;
   final VoidCallback? onNewSession;
-  final VoidCallback? onResumeSession;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowPermissionHistory;
 
@@ -1368,11 +1367,6 @@ class _SidebarBrandHeader extends StatelessWidget {
             icon: Icons.edit_square,
             label: '新对话',
             onTap: onNewSession,
-          ),
-          _SidebarNavItem(
-            icon: Icons.history_rounded,
-            label: '恢复会话',
-            onTap: onResumeSession,
           ),
           _SidebarNavItem(
             icon: Icons.manage_accounts_outlined,

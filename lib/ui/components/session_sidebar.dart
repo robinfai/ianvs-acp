@@ -11,7 +11,6 @@ class SessionSidebar extends StatelessWidget {
     required this.sessions,
     required this.currentSession,
     required this.onNewSession,
-    required this.onResumeSession,
     this.onSelectSession,
   });
 
@@ -19,7 +18,6 @@ class SessionSidebar extends StatelessWidget {
   final List<AgentSession> sessions;
   final AgentSession? currentSession;
   final VoidCallback? onNewSession;
-  final VoidCallback? onResumeSession;
   final ValueChanged<AgentSession>? onSelectSession;
 
   @override
@@ -40,12 +38,6 @@ class SessionSidebar extends StatelessWidget {
                     color: AppColors.textPrimary,
                     letterSpacing: 0,
                   ),
-                ),
-                const Spacer(),
-                _IconShell(
-                  icon: Icons.history_rounded,
-                  tooltip: 'Resume session',
-                  onPressed: onResumeSession,
                 ),
               ],
             ),
@@ -295,50 +287,6 @@ class _AgentPill extends StatelessWidget {
             fontSize: 10,
             fontWeight: FontWeight.w600,
             letterSpacing: 0,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _IconShell extends StatelessWidget {
-  const _IconShell({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      enabled: onPressed != null,
-      label: tooltip,
-      child: Tooltip(
-        message: tooltip,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(AppRadius.sm),
-          onTap: onPressed,
-          child: Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Icon(
-              icon,
-              color: onPressed == null
-                  ? AppColors.textTertiary
-                  : AppColors.textSecondary,
-              size: 16,
-            ),
           ),
         ),
       ),

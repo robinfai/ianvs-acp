@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../acp/acp_permission_request.dart';
+import '../../acp/acp_session_settings.dart';
 import '../../config/acp_client_config.dart';
 import '../../config/assistant_agent_config.dart';
 import '../../storage/sqlite_storage_config.dart';
@@ -10,6 +11,8 @@ typedef AcpConfigSaveCallback =
     Future<AcpClientConfig> Function(AcpClientConfig config);
 typedef AssistantAgentValidationCallback =
     Future<void> Function(AssistantAgentConfig config);
+typedef AssistantAgentModelsLoadCallback =
+    Future<AcpConfigOption?> Function(String agentName);
 
 class AgentConfigDialog extends StatefulWidget {
   const AgentConfigDialog({
@@ -28,6 +31,7 @@ class AgentConfigDialog extends StatefulWidget {
     this.defaultAgentName,
     this.onSaveConfig,
     this.onValidateAssistantAgent,
+    this.onLoadAssistantAgentModels,
   });
 
   final List<AgentServerConfig> agentServers;
@@ -44,6 +48,7 @@ class AgentConfigDialog extends StatefulWidget {
   final String? defaultAgentName;
   final AcpConfigSaveCallback? onSaveConfig;
   final AssistantAgentValidationCallback? onValidateAssistantAgent;
+  final AssistantAgentModelsLoadCallback? onLoadAssistantAgentModels;
 
   @override
   State<AgentConfigDialog> createState() => _AgentConfigDialogState();
@@ -108,8 +113,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   late bool _assistantSummarizeTurns = widget.assistantAgent.summarizeTurns;
   late bool _assistantCollapseProcess =
       widget.assistantAgent.collapseExecutionProcess;
-  late final TextEditingController _assistantModelController =
-      TextEditingController(text: widget.assistantAgent.model ?? '');
+  late String? _assistantModel = widget.assistantAgent.model;
+  AcpConfigOption? _assistantModelOption;
+  bool _assistantModelsLoading = false;
+  String? _assistantModelsError;
+  int _assistantModelLoadGeneration = 0;
   late final TextEditingController _assistantFallbackTitleController =
       TextEditingController(
         text: widget.assistantAgent.fallbackTitleCharacters.toString(),
@@ -132,6 +140,16 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    if (_assistantEnabled && _assistantAgentName?.trim().isNotEmpty == true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadAssistantAgentModels(_assistantAgentName);
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _contentScrollController.dispose();
     _reviewAgentServerNameController.dispose();
@@ -139,7 +157,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     _reviewToolNameController.dispose();
     _reviewModelController.dispose();
     _reviewTimeoutController.dispose();
-    _assistantModelController.dispose();
     _assistantFallbackTitleController.dispose();
     _storageMaxSizeController.dispose();
     _storageRetentionController.dispose();
@@ -332,7 +349,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         _assistantSummarizeTurns = saved.assistantAgent.summarizeTurns;
         _assistantCollapseProcess =
             saved.assistantAgent.collapseExecutionProcess;
-        _assistantModelController.text = saved.assistantAgent.model ?? '';
+        _assistantModel = saved.assistantAgent.model;
         _assistantFallbackTitleController.text = saved
             .assistantAgent
             .fallbackTitleCharacters
@@ -428,7 +445,14 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               setState(() {
                 _assistantEnabled = value;
                 _assistantValidationStatus = null;
+                if (!value) {
+                  _assistantModelLoadGeneration += 1;
+                  _assistantModelsLoading = false;
+                }
               });
+              if (value) {
+                _loadAssistantAgentModels(_assistantAgentName);
+              }
             },
           ),
           const SizedBox(height: 4),
@@ -460,25 +484,16 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                 : (value) {
                     setState(() {
                       _assistantAgentName = value;
+                      _assistantModel = null;
+                      _assistantModelOption = null;
+                      _assistantModelsError = null;
                       _assistantValidationStatus = null;
                     });
+                    _loadAssistantAgentModels(value);
                   },
           ),
           const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('review-agent-server-name-field'),
-            controller: _reviewAgentServerNameController,
-            label: 'Review ACP agent name',
-            icon: Icons.smart_toy_outlined,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('assistant-agent-model-field'),
-            controller: _assistantModelController,
-            label: 'Model (optional)',
-            icon: Icons.memory_outlined,
-            enabled: _assistantEnabled,
-          ),
+          _buildAssistantModelField(selectedAgent),
           const SizedBox(height: 8),
           Wrap(
             spacing: 10,
@@ -487,7 +502,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             children: [
               OutlinedButton.icon(
                 key: const Key('assistant-agent-validate-button'),
-                onPressed: !_assistantEnabled || _assistantValidating
+                onPressed:
+                    !_assistantEnabled ||
+                        _assistantValidating ||
+                        _assistantModelsLoading
                     ? null
                     : _validateAssistantConfiguration,
                 icon: _assistantValidating
@@ -615,6 +633,147 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     );
   }
 
+  Widget _buildAssistantModelField(String? selectedAgent) {
+    final option = _assistantModelOption;
+    final choicesByValue = <String, AcpConfigOptionChoice>{};
+    for (final choice in option?.options ?? const <AcpConfigOptionChoice>[]) {
+      if (choice.value.trim().isEmpty) continue;
+      choicesByValue.putIfAbsent(choice.value, () => choice);
+    }
+    final choices = choicesByValue.values.toList(growable: false);
+    final configuredModel = _trimmedOrNull(_assistantModel);
+    final hasConfiguredChoice = configuredModel == null
+        ? true
+        : choices.any((choice) => choice.value == configuredModel);
+    final selectedValue = configuredModel ?? '';
+    final canSelect =
+        _assistantEnabled &&
+        selectedAgent != null &&
+        !_assistantModelsLoading &&
+        widget.onLoadAssistantAgentModels != null &&
+        choices.isNotEmpty;
+    final defaultModelLabel = option?.currentChoiceLabel.trim();
+    final defaultLabel = defaultModelLabel == null || defaultModelLabel.isEmpty
+        ? 'Use agent default'
+        : 'Use agent default ($defaultModelLabel)';
+    String? helperText;
+    if (_assistantModelsLoading && selectedAgent != null) {
+      helperText = 'Loading models from $selectedAgent through ACP…';
+    } else if (selectedAgent == null) {
+      helperText = 'Choose an agent to load its models.';
+    } else if (widget.onLoadAssistantAgentModels == null) {
+      helperText = 'ACP model discovery is unavailable.';
+    } else if (option == null && _assistantModelsError == null) {
+      helperText = 'This agent does not expose a model selector through ACP.';
+    }
+
+    return KeyedSubtree(
+      key: const Key('assistant-agent-model-field'),
+      child: DropdownButtonFormField<String>(
+        key: ValueKey((selectedAgent, selectedValue, _assistantModelsLoading)),
+        initialValue: selectedValue,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: 'Model (optional)',
+          prefixIcon: const Icon(Icons.memory_outlined),
+          helperText: helperText,
+          errorText: _assistantModelsError,
+          errorMaxLines: 2,
+          suffixIcon: _assistantModelsLoading
+              ? const Padding(
+                  padding: EdgeInsets.all(14),
+                  child: SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              : selectedAgent != null &&
+                    _assistantEnabled &&
+                    widget.onLoadAssistantAgentModels != null
+              ? IconButton(
+                  tooltip: 'Reload models from $selectedAgent',
+                  onPressed: () => _loadAssistantAgentModels(selectedAgent),
+                  icon: const Icon(Icons.refresh_rounded),
+                )
+              : null,
+        ),
+        items: <DropdownMenuItem<String>>[
+          DropdownMenuItem(value: '', child: Text(defaultLabel)),
+          if (configuredModel != null && !hasConfiguredChoice)
+            DropdownMenuItem(
+              value: configuredModel,
+              child: Text('$configuredModel (configured)'),
+            ),
+          for (final choice in choices)
+            DropdownMenuItem(value: choice.value, child: Text(choice.label)),
+        ],
+        onChanged: canSelect
+            ? (value) {
+                setState(() {
+                  _assistantModel = _trimmedOrNull(value);
+                  _assistantValidationStatus = null;
+                });
+              }
+            : null,
+      ),
+    );
+  }
+
+  Future<void> _loadAssistantAgentModels(String? agentName) async {
+    final normalizedAgentName = _trimmedOrNull(agentName);
+    final loader = widget.onLoadAssistantAgentModels;
+    final generation = ++_assistantModelLoadGeneration;
+    if (!_assistantEnabled || normalizedAgentName == null || loader == null) {
+      if (!mounted) return;
+      setState(() {
+        _assistantModelsLoading = false;
+        _assistantModelOption = null;
+        _assistantModelsError = null;
+      });
+      return;
+    }
+    setState(() {
+      _assistantModelsLoading = true;
+      _assistantModelOption = null;
+      _assistantModelsError = null;
+    });
+    try {
+      final option = await loader(normalizedAgentName);
+      if (!mounted ||
+          generation != _assistantModelLoadGeneration ||
+          normalizedAgentName != _assistantAgentName?.trim()) {
+        return;
+      }
+      final configuredModel = _trimmedOrNull(_assistantModel);
+      String? resolvedModel = configuredModel;
+      if (configuredModel != null && option != null) {
+        final normalizedModel = configuredModel.toLowerCase();
+        for (final choice in option.options) {
+          if (choice.value.trim().toLowerCase() == normalizedModel ||
+              choice.label.trim().toLowerCase() == normalizedModel) {
+            resolvedModel = choice.value;
+            break;
+          }
+        }
+      }
+      setState(() {
+        _assistantModelsLoading = false;
+        _assistantModelOption = option;
+        _assistantModel = resolvedModel;
+      });
+    } on Object catch (error) {
+      if (!mounted || generation != _assistantModelLoadGeneration) return;
+      setState(() {
+        _assistantModelsLoading = false;
+        _assistantModelOption = null;
+        _assistantModelsError = error
+            .toString()
+            .replaceFirst('Bad state: ', '')
+            .replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
   Widget _buildClientProvidersSection() {
     return _Panel(
       icon: Icons.security_rounded,
@@ -714,6 +873,13 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             title: 'Review agent',
             value: _reviewAgentEnabled,
             onChanged: (value) => setState(() => _reviewAgentEnabled = value),
+          ),
+          const SizedBox(height: 8),
+          _DialogTextField(
+            key: const Key('review-agent-server-name-field'),
+            controller: _reviewAgentServerNameController,
+            label: 'Review ACP agent name',
+            icon: Icons.smart_toy_outlined,
           ),
           const SizedBox(height: 8),
           _DialogTextField(
@@ -848,7 +1014,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     return AssistantAgentConfig(
       enabled: _assistantEnabled,
       agentName: agentName,
-      model: _trimmedOrNull(_assistantModelController.text),
+      model: _trimmedOrNull(_assistantModel),
       generateSessionTitles: _assistantGenerateTitles,
       summarizeTurns: _assistantSummarizeTurns,
       collapseExecutionProcess: _assistantCollapseProcess,
@@ -2172,21 +2338,18 @@ class _DialogTextField extends StatelessWidget {
     required this.label,
     required this.icon,
     this.obscureText = false,
-    this.enabled = true,
   });
 
   final TextEditingController controller;
   final String label;
   final IconData icon;
   final bool obscureText;
-  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
       obscureText: obscureText,
-      enabled: enabled,
       decoration: _fieldDecoration(label: label, icon: icon),
     );
   }
@@ -2466,9 +2629,9 @@ List<String> _stringValues(List<TextEditingController> controllers) {
       .toList(growable: false);
 }
 
-String? _trimmedOrNull(String value) {
-  final trimmed = value.trim();
-  return trimmed.isEmpty ? null : trimmed;
+String? _trimmedOrNull(String? value) {
+  final trimmed = value?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
 }
 
 int _positiveIntValue(String value, String label) {

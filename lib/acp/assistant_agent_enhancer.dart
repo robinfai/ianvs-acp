@@ -160,6 +160,28 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
     }
   }
 
+  Future<AcpConfigOption?> discoverModelOption() async {
+    if (_disposed) {
+      throw StateError('Assistant Agent model discovery is disposed.');
+    }
+    if (!_connected) {
+      await _client.connect();
+      _connected = true;
+    }
+    final session = await _client.createSession(cwd: _cwd);
+    try {
+      final settings = await _client.sessionSettings(session.id);
+      return settings.modelOption;
+    } finally {
+      try {
+        await _client.closeSession(sessionId: session.id);
+      } on Object {
+        // Model discovery succeeded even if the temporary session cannot be
+        // closed. Disposing the helper client still performs final cleanup.
+      }
+    }
+  }
+
   Future<void> _selectConfiguredModel(
     String sessionId, {
     bool requireMatch = false,

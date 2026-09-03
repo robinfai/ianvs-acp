@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_session_catalog.dart';
+import '../../workspace/workspace.dart';
 import '../theme/app_design_tokens.dart';
 import '../bounded_metadata_preview.dart';
 import 'accessible_text_field.dart';
@@ -49,12 +50,14 @@ class ResumeSessionDialog extends StatefulWidget {
     required this.agents,
     this.initialAgentId,
     this.initialCwd,
+    this.workspaceCwd,
     this.inputBudget = const AcpInputBudget(),
   });
 
   final List<ResumeSessionAgentOption> agents;
   final String? initialAgentId;
   final String? initialCwd;
+  final String? workspaceCwd;
   final AcpInputBudget inputBudget;
 
   @override
@@ -322,9 +325,14 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       );
     }
     if (_projects.isEmpty) {
+      final workspaceCwd = widget.workspaceCwd?.trim();
       return _MessagePanel(
-        title: 'No sessions from ${selectedAgent.name}',
-        message: 'This agent did not return any resumable sessions.',
+        title: workspaceCwd == null || workspaceCwd.isEmpty
+            ? 'No sessions from ${selectedAgent.name}'
+            : 'No sessions in this workspace',
+        message: workspaceCwd == null || workspaceCwd.isEmpty
+            ? 'This agent did not return any resumable sessions.'
+            : '${selectedAgent.name} did not return any resumable sessions for $workspaceCwd.',
       );
     }
     return _GroupedSessionList(
@@ -415,16 +423,8 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       _catalogs[agent.id] = projects;
       _catalogErrors.remove(agent.id);
       if (!mounted || generation != _loadGeneration) return;
-      final selectedProject = _initialProject(projects);
-      final selectedConversation =
-          selectedProject == null || selectedProject.sessions.isEmpty
-          ? null
-          : selectedProject.sessions.first;
       setState(() {
-        _projects = projects;
-        _selectedProject = selectedProject;
-        _selectedConversation = selectedConversation;
-        _expandedConversation = null;
+        _applyProjects(projects);
         _sessionSearchController.clear();
         _loading = false;
       });
@@ -441,14 +441,25 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   }
 
   void _applyProjects(List<AcpProjectSessions> projects) {
-    final selectedProject = _initialProject(projects);
-    _projects = projects;
+    final scopedProjects = _projectsInWorkspace(projects);
+    final selectedProject = _initialProject(scopedProjects);
+    _projects = scopedProjects;
     _selectedProject = selectedProject;
     _selectedConversation =
         selectedProject == null || selectedProject.sessions.isEmpty
         ? null
         : selectedProject.sessions.first;
     _expandedConversation = null;
+  }
+
+  List<AcpProjectSessions> _projectsInWorkspace(
+    List<AcpProjectSessions> projects,
+  ) {
+    final workspaceCwd = normalizeWorkspacePath(widget.workspaceCwd ?? '');
+    if (workspaceCwd.isEmpty) return projects;
+    return projects
+        .where((project) => normalizeWorkspacePath(project.cwd) == workspaceCwd)
+        .toList(growable: false);
   }
 
   AcpProjectSessions? _initialProject(List<AcpProjectSessions> projects) {

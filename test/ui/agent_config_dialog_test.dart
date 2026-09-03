@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
@@ -58,6 +61,7 @@ void main() {
   ) async {
     AcpClientConfig? savedConfig;
     AssistantAgentConfig? validatedConfig;
+    String? loadedModelsForAgent;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -70,6 +74,25 @@ void main() {
             },
             onValidateAssistantAgent: (config) async {
               validatedConfig = config;
+            },
+            onLoadAssistantAgentModels: (agentName) async {
+              loadedModelsForAgent = agentName;
+              return const AcpConfigOption(
+                id: 'model',
+                name: 'Model',
+                type: 'select',
+                currentValue: 'deepseek-v2',
+                options: [
+                  AcpConfigOptionChoice(
+                    value: 'deepseek-v2',
+                    name: 'DeepSeek V2',
+                  ),
+                  AcpConfigOptionChoice(
+                    value: 'deepseek-v3',
+                    name: 'DeepSeek V3',
+                  ),
+                ],
+              );
             },
             agentServers: const [
               AgentServerConfig(
@@ -110,13 +133,23 @@ void main() {
     );
     dropdown.onChanged?.call('Pi');
     await tester.pump();
+    await tester.pump();
     await tester.ensureVisible(
       find.byKey(const Key('assistant-agent-model-field')),
     );
-    await tester.enterText(
-      find.byKey(const Key('assistant-agent-model-field')),
-      'deepseek-v3',
+    expect(loadedModelsForAgent, 'Pi');
+    final modelDropdown = tester.widget<DropdownButton<String>>(
+      find.descendant(
+        of: find.byKey(const Key('assistant-agent-model-field')),
+        matching: find.byType(DropdownButton<String>),
+      ),
     );
+    expect(
+      modelDropdown.items?.map((item) => (item.child as Text).data),
+      containsAll(<String>['DeepSeek V2', 'DeepSeek V3']),
+    );
+    modelDropdown.onChanged?.call('deepseek-v3');
+    await tester.pump();
     await tester.ensureVisible(
       find.byKey(const Key('assistant-title-character-limit-field')),
     );
@@ -291,6 +324,86 @@ void main() {
     expect(find.text('Default'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
   });
+
+  testWidgets(
+    'Assistant Agent ignores stale model results after agent switch',
+    (tester) async {
+      final codexModels = Completer<AcpConfigOption?>();
+      final piModels = Completer<AcpConfigOption?>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AgentConfigDialog(
+              activeAgentName: 'Codex',
+              onLoadAssistantAgentModels: (agentName) => switch (agentName) {
+                'Codex' => codexModels.future,
+                'Pi' => piModels.future,
+                _ => throw StateError('Unexpected agent $agentName'),
+              },
+              agentServers: const [
+                AgentServerConfig(
+                  name: 'Codex',
+                  type: 'custom',
+                  command: '/usr/local/bin/codex',
+                ),
+                AgentServerConfig(
+                  name: 'Pi',
+                  type: 'custom',
+                  command: '/usr/local/bin/pi',
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final enabledSwitch = tester.widget<Switch>(
+        find.descendant(
+          of: find.byKey(const Key('assistant-agent-enabled-switch')),
+          matching: find.byType(Switch),
+        ),
+      );
+      enabledSwitch.onChanged?.call(true);
+      await tester.pump();
+      tester
+          .widget<DropdownButton<String>>(
+            find.descendant(
+              of: find.byKey(const Key('assistant-agent-name-field')),
+              matching: find.byType(DropdownButton<String>),
+            ),
+          )
+          .onChanged
+          ?.call('Codex');
+      await tester.pump();
+      tester
+          .widget<DropdownButton<String>>(
+            find.descendant(
+              of: find.byKey(const Key('assistant-agent-name-field')),
+              matching: find.byType(DropdownButton<String>),
+            ),
+          )
+          .onChanged
+          ?.call('Pi');
+      await tester.pump();
+
+      piModels.complete(_modelOption('pi-model', 'Pi Model'));
+      await tester.pump();
+      codexModels.complete(_modelOption('codex-model', 'Codex Model'));
+      await tester.pump();
+
+      final modelDropdown = tester.widget<DropdownButton<String>>(
+        find.descendant(
+          of: find.byKey(const Key('assistant-agent-model-field')),
+          matching: find.byType(DropdownButton<String>),
+        ),
+      );
+      final modelLabels = modelDropdown.items
+          ?.map((item) => (item.child as Text).data)
+          .toList();
+      expect(modelLabels, contains('Pi Model'));
+      expect(modelLabels, isNot(contains('Codex Model')));
+    },
+  );
 
   testWidgets('AgentConfigDialog exposes editable configuration controls', (
     tester,
@@ -950,4 +1063,14 @@ void main() {
     expect(review?.mcpServer?.env, {'TOKEN': 'resolved-secret'});
     expect(review?.mcpServer?.envRefs, isEmpty);
   });
+}
+
+AcpConfigOption _modelOption(String value, String name) {
+  return AcpConfigOption(
+    id: 'model',
+    name: 'Model',
+    type: 'select',
+    currentValue: value,
+    options: [AcpConfigOptionChoice(value: value, name: name)],
+  );
 }

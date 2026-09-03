@@ -34,7 +34,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
               pickWorkspaceDirectory: () async => '/workspace/manual',
             ),
@@ -105,7 +104,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               onSelectSession: (session) => selected = session,
             ),
           ),
@@ -160,7 +158,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               onSelectSession: (value) => selected = value,
               onSessionMenuAction: (_, action) => menuAction = action,
             ),
@@ -255,7 +252,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               onSelectSession: (session) => selected = session,
             ),
           ),
@@ -313,7 +309,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -365,7 +360,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -405,7 +399,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -497,7 +490,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
             ),
           ),
@@ -546,7 +538,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
             ),
           ),
@@ -576,7 +567,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
             ),
           ),
@@ -621,7 +611,6 @@ void main() {
                 currentWorkspace: currentWorkspace,
                 currentSession: currentSession,
                 onNewSession: () {},
-                onResumeSession: () {},
                 stateStore: store,
               ),
             ),
@@ -675,7 +664,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
             ),
           ),
@@ -749,7 +737,6 @@ void main() {
                 currentWorkspace: currentWorkspace,
                 currentSession: null,
                 onNewSession: () {},
-                onResumeSession: () {},
                 stateStore: store,
               ),
             ),
@@ -815,7 +802,6 @@ void main() {
                 currentWorkspace: currentWorkspace,
                 currentSession: null,
                 onNewSession: () {},
-                onResumeSession: () {},
                 onLoadWorkspaceSessions: (workspace) {
                   loadCount += 1;
                   loadedWorkspace = workspace;
@@ -879,7 +865,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               onLoadWorkspaceSessions: (workspace) async {
                 loadedPaths.add(workspace.path);
               },
@@ -933,7 +918,6 @@ void main() {
               onNewSessionInWorkspace: (workspace) {
                 newSessionWorkspace = workspace;
               },
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -961,6 +945,7 @@ void main() {
   testWidgets('WorkspaceSidebar exposes workspace action menu', (tester) async {
     WorkspaceRecord? revealed;
     WorkspaceRecord? worktreeWorkspace;
+    WorkspaceRecord? resumedWorkspace;
     var newSessionCount = 0;
     final workspace = WorkspaceRecord(
       path: '/workspace/current',
@@ -988,7 +973,8 @@ void main() {
               currentWorkspace: workspace,
               currentSession: workspace.sessions.single,
               onNewSession: () => newSessionCount += 1,
-              onResumeSession: () {},
+              onResumeSessionInWorkspace: (workspace) =>
+                  resumedWorkspace = workspace,
               onRevealWorkspace: (workspace) => revealed = workspace,
               onCreateWorkspaceWorktree: (workspace) =>
                   worktreeWorkspace = workspace,
@@ -1003,6 +989,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('New Session'), findsOneWidget);
+    expect(find.text('Resume Session'), findsOneWidget);
     expect(find.text('Pin Project'), findsOneWidget);
     expect(find.text('Show in Finder'), findsOneWidget);
     expect(find.text('Create Permanent Worktree'), findsOneWidget);
@@ -1010,6 +997,12 @@ void main() {
     expect(find.text('Archive Conversations'), findsOneWidget);
     expect(find.text('Hide from Sidebar'), findsOneWidget);
 
+    await tester.tap(find.text('Resume Session'));
+    await tester.pumpAndSettle();
+    expect(resumedWorkspace, workspace);
+
+    await tester.tap(find.byTooltip('Workspace actions'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Create Permanent Worktree'));
     await tester.pumpAndSettle();
     expect(worktreeWorkspace, workspace);
@@ -1055,7 +1048,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: session,
               onNewSession: () {},
-              onResumeSession: () {},
               onCreateWorkspaceWorktree: (_) {},
               canForkSession: (_) => true,
               onSessionMenuAction: (_, _) {},
@@ -1109,7 +1101,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               onLoadWorkspaceSessions: (workspace) async {
                 loadedPaths.add(workspace.path);
               },
@@ -1153,7 +1144,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               onRevealWorkspace: (workspace) => revealed = workspace,
               gitWorkspaceDetector: (_) => true,
             ),
@@ -1208,7 +1198,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: session,
               onNewSession: () {},
-              onResumeSession: () {},
               canForkSession: (_) => true,
               onSessionMenuAction: (session, selectedAction) {
                 actionSession = session;
@@ -1281,7 +1270,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -1378,7 +1366,6 @@ void main() {
                 currentWorkspace: workspace,
                 currentSession: currentSession,
                 onNewSession: () {},
-                onResumeSession: () {},
               ),
             ),
           ),
@@ -1447,7 +1434,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: sessions.first,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -1513,7 +1499,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               onSelectSession: (session) => selectedSession = session,
             ),
           ),
@@ -1578,7 +1563,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -1622,7 +1606,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -1670,7 +1653,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
             ),
           ),
         ),
@@ -1731,7 +1713,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               onSessionMenuAction: (_, _) {},
             ),
           ),
@@ -1788,7 +1769,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               canForkSession: (_) => true,
               onSessionMenuAction: (_, _) {},
             ),
@@ -1843,7 +1823,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               onSelectSession: (_) {},
               onSessionMenuAction: (_, selectedAction) {
                 action = selectedAction;
@@ -1927,7 +1906,6 @@ void main() {
                   currentWorkspace: workspace,
                   currentSession: currentSession,
                   onNewSession: () {},
-                  onResumeSession: () {},
                   canForkSession: (_) => true,
                   onSessionMenuAction: (_, _) {},
                 ),
@@ -2003,7 +1981,6 @@ void main() {
                   currentWorkspace: workspace,
                   currentSession: null,
                   onNewSession: () {},
-                  onResumeSession: () {},
                 ),
               ),
               const Expanded(child: SizedBox()),
@@ -2065,7 +2042,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               onSessionMenuAction: (_, action) => selectedAction = action,
             ),
           ),
@@ -2129,7 +2105,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              onResumeSession: () {},
               canForkSession: (_) => true,
               onSessionMenuAction: (session, selectedAction) {
                 actionSession = session;
@@ -2195,7 +2170,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: session,
               onNewSession: () {},
-              onResumeSession: () {},
               canForkSession: (_) => false,
               onSessionMenuAction: (_, _) {},
               gitWorkspaceDetector: (_) => true,
@@ -2252,7 +2226,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
             ),
           ),
@@ -2300,7 +2273,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
             ),
           ),
@@ -2347,7 +2319,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onResumeSession: () {},
               stateStore: store,
             ),
           ),

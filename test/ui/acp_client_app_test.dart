@@ -3498,6 +3498,14 @@ void main() {
         ),
       );
       expect(fake.resumeCalls, 1);
+      controller.mergeSessionIndex(<AgentSession>[
+        AgentSession(
+          id: 'project-a-workspace-anchor',
+          cwd: '/workspace/project-a',
+          createdAt: DateTime(2026),
+          agentName: 'Codex',
+        ),
+      ]);
 
       await pumpWithWindowSize(
         tester,
@@ -3505,11 +3513,7 @@ void main() {
         const Size(1400, 900),
       );
 
-      await tester.tap(find.text('Resume'));
-      await _pumpUntil(
-        tester,
-        () => find.text('Resume ACP Session').evaluate().isNotEmpty,
-      );
+      await _openWorkspaceResume(tester, '/workspace/project-a');
       await _pumpUntil(tester, () {
         final loadButton = find.widgetWithText(FilledButton, 'Open Session');
         return loadButton.evaluate().isNotEmpty &&
@@ -3591,9 +3595,21 @@ void main() {
         'Codex',
       );
       final piFactoryCallsBeforeSelection = factoryCalls['pi ACP'] ?? 0;
+      final piController = tester
+          .widget<AppShell>(find.byType(AppShell))
+          .sessionControllers
+          .singleWhere((controller) => controller.agentName == 'pi ACP');
+      piController.mergeSessionIndex(<AgentSession>[
+        AgentSession(
+          id: 'pi-workspace-anchor',
+          cwd: '/workspace/pi',
+          createdAt: DateTime(2026),
+          agentName: 'pi ACP',
+        ),
+      ]);
+      await tester.pump();
 
-      await tester.tap(find.text('Resume'));
-      await tester.pumpAndSettle();
+      await _openWorkspaceResume(tester, '/workspace/pi');
       await _selectResumeAgent(tester, 'pi ACP');
       await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await tester.pumpAndSettle();
@@ -3644,12 +3660,21 @@ void main() {
         tester.widget<AgentToolbar>(find.byType(AgentToolbar)).agentName,
         'Codex',
       );
+      final piController = tester
+          .widget<AppShell>(find.byType(AppShell))
+          .sessionControllers
+          .singleWhere((controller) => controller.agentName == 'pi ACP');
+      piController.mergeSessionIndex(<AgentSession>[
+        AgentSession(
+          id: 'pi-workspace-anchor',
+          cwd: '/workspace/pi',
+          createdAt: DateTime(2026),
+          agentName: 'pi ACP',
+        ),
+      ]);
+      await tester.pump();
 
-      await tester.tap(find.text('Resume'));
-      await _pumpUntil(
-        tester,
-        () => find.text('Resume ACP Session').evaluate().isNotEmpty,
-      );
+      await _openWorkspaceResume(tester, '/workspace/pi');
       await _selectResumeAgent(tester, 'pi ACP');
       await _pumpUntil(tester, () {
         final loadButton = find.widgetWithText(FilledButton, 'Open Session');
@@ -3733,12 +3758,28 @@ void main() {
     expect(codexController.currentSession?.id, 'shared-session');
     expect(codexController.currentSession?.cwd, '/workspace/codex-bound');
     expect(codexController.currentSession?.agentName, 'Codex');
-
-    await tester.tap(find.text('Resume'));
-    await _pumpUntil(
-      tester,
-      () => find.text('Resume ACP Session').evaluate().isNotEmpty,
+    codexController.mergeSessionIndex(<AgentSession>[
+      AgentSession(
+        id: 'codex-catalog-workspace-anchor',
+        cwd: '/workspace/codex-catalog',
+        createdAt: DateTime(2026),
+        agentName: 'Codex',
+      ),
+    ]);
+    final piController = initialShell.sessionControllers.singleWhere(
+      (controller) => controller.agentName == 'pi ACP',
     );
+    piController.mergeSessionIndex(<AgentSession>[
+      AgentSession(
+        id: 'pi-workspace-anchor',
+        cwd: '/workspace/pi',
+        createdAt: DateTime(2026),
+        agentName: 'pi ACP',
+      ),
+    ]);
+    await tester.pump();
+
+    await _openWorkspaceResume(tester, '/workspace/codex-catalog');
     await _pumpUntil(tester, () {
       final loadButton = find.widgetWithText(FilledButton, 'Open Session');
       return loadButton.evaluate().isNotEmpty &&
@@ -3782,11 +3823,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('different workspace'), findsNothing);
 
-    await tester.tap(find.text('Resume'));
-    await _pumpUntil(
-      tester,
-      () => find.text('Resume ACP Session').evaluate().isNotEmpty,
-    );
+    await _openWorkspaceResume(tester, '/workspace/pi');
     await _selectResumeAgent(tester, 'pi ACP');
     await _pumpUntil(tester, () {
       final loadButton = find.widgetWithText(FilledButton, 'Open Session');
@@ -4424,7 +4461,8 @@ void main() {
     expect(controller.canListSessions, isFalse);
     expect(controller.canResumeSessions, isFalse);
 
-    await tester.tap(find.byTooltip('Resume'));
+    await _openWorkspaceActions(tester, '/workspace');
+    await tester.tap(find.text('Resume Session'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsNothing);
@@ -4443,7 +4481,8 @@ void main() {
       expect(controller.canListSessions, isTrue);
       expect(controller.canResumeSessions, isFalse);
 
-      await tester.tap(find.byTooltip('Resume'));
+      await _openWorkspaceActions(tester, '/workspace');
+      await tester.tap(find.text('Resume Session'));
       await tester.pumpAndSettle();
 
       expect(find.byType(AlertDialog), findsNothing);
@@ -4451,7 +4490,7 @@ void main() {
   );
 
   testWidgets(
-    'AcpClientApp blocks resume after connecting to list-only agents',
+    'AcpClientApp disables workspace resume after connecting list-only agents',
     (tester) async {
       final fake = FakeAgentClient(supportsLoadSession: false);
       final controller = ChatController(client: fake, cwd: '/workspace');
@@ -4461,21 +4500,17 @@ void main() {
 
       expect(controller.canResumeSessions, isTrue);
 
-      await tester.tap(find.byTooltip('Resume'));
-      await tester.pumpAndSettle();
+      await _openWorkspaceResume(tester, '/workspace');
 
       expect(fake.connected, isTrue);
       expect(controller.canListSessions, isTrue);
       expect(controller.canResumeSessions, isFalse);
-      expect(find.text('Could not list Codex sessions'), findsOneWidget);
-      expect(
-        find.textContaining('session/load or session/resume'),
-        findsOneWidget,
-      );
-      final loadButton = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, 'Open Session'),
-      );
-      expect(loadButton.onPressed, isNull);
+      expect(find.byType(AlertDialog), findsNothing);
+
+      await _openWorkspaceActions(tester, '/workspace');
+      await tester.tap(find.text('Resume Session'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
     },
   );
 
@@ -5227,11 +5262,7 @@ void main() {
       );
       expect(find.text('Canonical session title'), findsNothing);
 
-      await tester.tap(find.text('Resume'));
-      await _pumpUntil(
-        tester,
-        () => find.text('Resume ACP Session').evaluate().isNotEmpty,
-      );
+      await _openWorkspaceResume(tester, workspacePath);
       await _selectResumeAgent(tester, 'codex-thinking');
       await _pumpUntil(tester, () {
         final loadButton = find.widgetWithText(FilledButton, 'Open Session');
@@ -5392,6 +5423,27 @@ Future<void> _openSidebarSessionMenuForTitle(
     tester.getCenter(sessionTitle.first),
     buttons: kSecondaryMouseButton,
   );
+  await tester.pumpAndSettle();
+}
+
+Future<void> _openWorkspaceActions(
+  WidgetTester tester,
+  String workspacePath,
+) async {
+  final actions = find.byKey(
+    ValueKey<String>('workspace-actions:$workspacePath'),
+  );
+  await _pumpUntil(tester, () => actions.evaluate().isNotEmpty);
+  await tester.tap(actions);
+  await tester.pumpAndSettle();
+}
+
+Future<void> _openWorkspaceResume(
+  WidgetTester tester,
+  String workspacePath,
+) async {
+  await _openWorkspaceActions(tester, workspacePath);
+  await tester.tap(find.text('Resume Session'));
   await tester.pumpAndSettle();
 }
 

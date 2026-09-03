@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'acp/acp_agent_client.dart';
 import 'acp/assistant_agent_enhancer.dart';
 import 'acp/acp_input_budget.dart';
+import 'acp/acp_session_settings.dart';
 import 'acp/agent_event.dart';
 import 'acp/agent_session.dart';
 import 'acp/rust_acp_agent_client.dart';
@@ -817,6 +818,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
         onArchiveWorkspaceSessions: (context, workspace) =>
             _archiveWorkspaceSessions(workspace),
         onValidateAssistantAgent: _validateAssistantAgent,
+        onLoadAssistantAgentModels: _loadAssistantAgentModels,
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
@@ -967,6 +969,32 @@ class _AcpClientAppState extends State<AcpClientApp> {
     );
     try {
       await enhancer.validate().timeout(assistant.timeout);
+    } finally {
+      await enhancer.dispose();
+    }
+  }
+
+  Future<AcpConfigOption?> _loadAssistantAgentModels(String agentName) async {
+    final normalizedAgentName = agentName.trim();
+    if (normalizedAgentName.isEmpty) {
+      throw StateError('Choose an Assistant Agent before loading models.');
+    }
+    final assistant = _config.assistantAgent.copyWith(
+      enabled: true,
+      agentName: normalizedAgentName,
+      clearModel: true,
+    );
+    final helperConfig = _config.withActiveAgentServer(normalizedAgentName);
+    final helperClient =
+        widget.createAgentClient?.call(helperConfig) ??
+        _defaultAgentClient(helperConfig, restrictedAssistant: true);
+    final enhancer = AcpAssistantAgentEnhancer(
+      helperClient,
+      _cwd,
+      config: assistant,
+    );
+    try {
+      return await enhancer.discoverModelOption().timeout(assistant.timeout);
     } finally {
       await enhancer.dispose();
     }

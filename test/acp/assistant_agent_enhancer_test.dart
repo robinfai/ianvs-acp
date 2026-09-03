@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/assistant_agent_enhancer.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -11,6 +12,40 @@ void main() {
     agentName: 'helper',
     timeout: Duration(seconds: 2),
   );
+
+  test('discovers the helper model selector through an ACP session', () async {
+    final client = FakeAgentClient(
+      sessionSettings: const AcpSessionSettings(
+        configOptions: [
+          AcpConfigOption(
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'model-a',
+            options: [
+              AcpConfigOptionChoice(value: 'model-a', name: 'Model A'),
+              AcpConfigOptionChoice(value: 'model-b', name: 'Model B'),
+            ],
+          ),
+        ],
+      ),
+    );
+    final enhancer = AcpAssistantAgentEnhancer(
+      client,
+      '/workspace',
+      config: config,
+    );
+    addTearDown(enhancer.dispose);
+
+    final option = await enhancer.discoverModelOption();
+
+    expect(option?.id, 'model');
+    expect(option?.options.map((choice) => choice.value), [
+      'model-a',
+      'model-b',
+    ]);
+    expect(client.lastClosedSessionId, 'fake-session-1');
+  });
 
   test('accepts a done-only helper response', () async {
     final client = _ScriptedAssistantClient(<List<AgentEvent>>[
