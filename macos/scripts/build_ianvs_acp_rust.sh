@@ -9,6 +9,16 @@ if [ "${CONFIGURATION}" != "Debug" ]; then
   CARGO_FLAGS="--release"
 fi
 
+# Xcode puts Homebrew's standalone Rust ahead of rustup in PATH. The
+# standalone toolchain only contains its host standard library, so universal
+# release builds fail for x86_64 even when rustup has that target installed.
+if command -v rustup >/dev/null 2>&1; then
+  RUSTUP_CARGO=$(rustup which cargo)
+  RUST_TOOLCHAIN_BIN=$(dirname "${RUSTUP_CARGO}")
+  PATH="${RUST_TOOLCHAIN_BIN}:/usr/bin:${PATH}"
+  export PATH
+fi
+
 cd "${RUST_WORKSPACE}"
 FRAMEWORKS_DIRECTORY="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
 DESTINATION_LIBRARY="${FRAMEWORKS_DIRECTORY}/libianvs_acp_ffi.dylib"

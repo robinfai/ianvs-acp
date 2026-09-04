@@ -395,7 +395,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
+			shellScript = "rustup_cargo=\"$(rustup which cargo)\" || exit 1\nexport PATH=\"/usr/bin:$(dirname \"$rustup_cargo\"):$PATH\"\n\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
 			showEnvVarsInLog = 0;
 		};
 		4FEAD2CA8EFA4B65FBFE7706 /* [CP] Embed Pods Frameworks */ = {
