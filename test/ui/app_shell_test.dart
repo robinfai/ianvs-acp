@@ -15,9 +15,22 @@ import 'package:ianvs_acp/ui/components/prompt_input.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
+import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 import 'package:ianvs_terminal_core/ianvs_terminal_core.dart';
 
 void _noop() {}
+
+Future<WorkspaceSidebarStateStore> _workspaceStateStoreWithManualPaths(
+  Iterable<String> paths,
+) async {
+  final store = WorkspaceSidebarStateStore(path: null);
+  await store.saveWorkspaceStates(
+    paths.map(
+      (path) => WorkspaceSidebarWorkspaceState(path: path, manuallyAdded: true),
+    ),
+  );
+  return store;
+}
 
 void main() {
   Widget toolbar(
@@ -461,7 +474,6 @@ void main() {
           agentName: 'Codex',
           agentServers: const <AgentServerConfig>[server],
           runtimeConfig: runtimeConfig,
-          autoLoadWorkspaceSessions: false,
         ),
       ),
     );
@@ -486,7 +498,7 @@ void main() {
     expect(find.text('Prompt'), findsOneWidget);
   });
 
-  testWidgets('AppShell loads session catalogs for every controller', (
+  testWidgets('AppShell does not load session catalogs automatically', (
     tester,
   ) async {
     final codexClient = FakeAgentClient();
@@ -521,10 +533,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(codexClient.connected, isTrue);
-    expect(piClient.connected, isTrue);
-    expect(codex.sessions.map((session) => session.id), contains('session-a'));
-    expect(pi.sessions.map((session) => session.id), contains('session-a'));
+    expect(codexClient.connected, isFalse);
+    expect(piClient.connected, isFalse);
+    expect(codex.sessions, isEmpty);
+    expect(pi.sessions, isEmpty);
   });
 
   testWidgets('AppShell docks prompt and status inside conversation column', (
@@ -997,6 +1009,9 @@ void main() {
     AgentSession? selectedSession;
     addTearDown(codex.dispose);
     addTearDown(pi.dispose);
+    final workspaceStateStore = await _workspaceStateStoreWithManualPaths([
+      '/workspace/project-a',
+    ]);
 
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1;
@@ -1008,6 +1023,7 @@ void main() {
           controller: codex,
           agentName: 'Codex',
           sessionControllers: [codex, pi],
+          workspaceStateStore: workspaceStateStore,
           onSelectSession: (session) => selectedSession = session,
         ),
       ),
@@ -1051,6 +1067,9 @@ void main() {
       agentName: 'Codex',
     );
     addTearDown(controller.dispose);
+    final workspaceStateStore = await _workspaceStateStoreWithManualPaths([
+      '/workspace/project-a',
+    ]);
 
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1;
@@ -1058,7 +1077,11 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
-        home: AppShell(controller: controller, agentName: 'Codex'),
+        home: AppShell(
+          controller: controller,
+          agentName: 'Codex',
+          workspaceStateStore: workspaceStateStore,
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -1110,6 +1133,9 @@ void main() {
     );
     addTearDown(codex.dispose);
     addTearDown(pi.dispose);
+    final workspaceStateStore = await _workspaceStateStoreWithManualPaths([
+      '/workspace/project-a',
+    ]);
     for (final controller in <ChatController>[codex, pi]) {
       controller.mergeSessionIndex(<AgentSession>[
         AgentSession(
@@ -1142,6 +1168,7 @@ void main() {
           controller: codex,
           agentName: 'Codex',
           sessionControllers: <ChatController>[codex, pi],
+          workspaceStateStore: workspaceStateStore,
         ),
       ),
     );
@@ -1196,6 +1223,9 @@ void main() {
         agentName: 'Codex',
       ),
     ]);
+    final workspaceStateStore = await _workspaceStateStoreWithManualPaths([
+      '/workspace/project-a',
+    ]);
 
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1;
@@ -1203,7 +1233,11 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
-        home: AppShell(controller: controller, agentName: 'Codex'),
+        home: AppShell(
+          controller: controller,
+          agentName: 'Codex',
+          workspaceStateStore: workspaceStateStore,
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -1252,6 +1286,9 @@ void main() {
           agentName: 'Codex',
         ),
       ]);
+      final workspaceStateStore = await _workspaceStateStoreWithManualPaths([
+        '/workspace/project-a',
+      ]);
 
       tester.view.physicalSize = const Size(1400, 900);
       tester.view.devicePixelRatio = 1;
@@ -1259,7 +1296,11 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(
         MaterialApp(
-          home: AppShell(controller: controller, agentName: 'Codex'),
+          home: AppShell(
+            controller: controller,
+            agentName: 'Codex',
+            workspaceStateStore: workspaceStateStore,
+          ),
         ),
       );
       await tester.pumpAndSettle();

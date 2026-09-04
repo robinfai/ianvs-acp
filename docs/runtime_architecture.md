@@ -44,9 +44,10 @@ of additional directories. Core validates these roots before creating or
 restoring a session and uses the same scope for attachments and reverse
 filesystem/terminal requests.
 
-The Flutter sidebar groups sessions by workspace. Users can create, restore,
-fork, rename, pin, archive, copy, and open sessions without introducing a
-second execution model.
+The Flutter sidebar shows workspaces users add explicitly and groups locally
+known sessions inside them. It does not scan all agent sessions to derive the
+workspace list. Users can create, manually list and restore, fork, rename, pin,
+archive, copy, and open sessions without introducing a second execution model.
 
 Each simultaneously active conversation has an isolated Flutter controller.
 Controllers with the same exact runtime recipe hold session-scoped leases on
@@ -67,8 +68,9 @@ runtimes and never become the authoritative owner of a user conversation.
 for process recovery. It uses the application-wide size and retention policy.
 The exact-revision transcript cache stores a bounded private copy of locally
 projected messages and tool metadata to avoid replaying unchanged sessions.
-`workspace_ui_state.json` separately stores Workspace/sidebar preferences and
-the local session index. Concurrent app windows merge independent record-field
+`workspace_ui_state.json` separately stores explicitly added Workspace/sidebar
+preferences and the local index of sessions the app has created or resumed.
+Concurrent app windows merge independent record-field
 updates and expanded-Workspace set changes across processes. This state file is
 not covered by the payload-store size and retention policy. The ACP agent
 remains the canonical owner of conversation events.

@@ -92,11 +92,7 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
-      AcpClientApp(
-        controller: controller,
-        inputBudget: budget,
-        autoLoadWorkspaceSessions: false,
-      ),
+      AcpClientApp(controller: controller, inputBudget: budget),
     );
     await tester.pump();
 
@@ -108,7 +104,6 @@ void main() {
       AcpClientApp(
         controller: controller,
         inputBudget: const AcpInputBudget(maxMarkdownSyntaxTokens: 0),
-        autoLoadWorkspaceSessions: false,
       ),
     );
     expect(tester.takeException(), isArgumentError);
@@ -132,7 +127,6 @@ void main() {
         inputBudget: budget,
         imageDecodeLedger: ledger,
         boundedImageDecoder: decoder,
-        autoLoadWorkspaceSessions: false,
       ),
     );
     await tester.pump();
@@ -156,10 +150,8 @@ void main() {
     addTearDown(controller.dispose);
     addTearDown(replacementController.dispose);
 
-    Widget app(ChatController activeController) => AcpClientApp(
-      controller: activeController,
-      autoLoadWorkspaceSessions: false,
-    );
+    Widget app(ChatController activeController) =>
+        AcpClientApp(controller: activeController);
 
     await tester.pumpWidget(app(controller));
     await tester.pump();
@@ -183,7 +175,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: const AcpClientConfig(configPath: '/tmp/ianvs-acp.json'),
-        autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) async => const [
           AgentServerConfig(
             name: 'Codex',
@@ -309,7 +300,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (runtimeConfig) {
           runtimeConfigs.add(runtimeConfig);
           final client = FakeAgentClient(sessionSettings: settings);
@@ -364,7 +354,6 @@ void main() {
       await tester.pumpWidget(
         AcpClientApp(
           config: config,
-          autoLoadWorkspaceSessions: false,
           createAgentClient: (_) {
             final client = FakeAgentClient();
             clients.add(client);
@@ -429,7 +418,6 @@ void main() {
         initialResumeSessionId: 'template-resume',
         initialResumeCwd: workspace,
         initialResumeAgentName: 'Codex',
-        autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         createAgentClient: (runtime) {
           final client = _CountingResumeAgentClient();
@@ -521,7 +509,6 @@ void main() {
               initialResumeCwd: workspace,
               initialResumeAgentName: 'Codex',
               agentClientFactoryKey: factoryKey,
-              autoLoadWorkspaceSessions: false,
               discoverAgentServers: (_) => const <AgentServerConfig>[],
               createAgentClient: (runtime) {
                 final client = _CountingResumeAgentClient();
@@ -605,7 +592,6 @@ void main() {
         initialResumeAgentName: 'Agent A',
         initialResumeSessionTemplateId: 'review',
         initialResumeSessionTemplateVersion: 1,
-        autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         createAgentClient: (runtime) {
           final client = _CountingResumeAgentClient();
@@ -682,7 +668,6 @@ void main() {
         initialResumeAgentName: 'Codex',
         initialResumeSessionTemplateId: 'review',
         initialResumeSessionTemplateVersion: 999,
-        autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         createAgentClient: (runtime) {
           final client = _CountingResumeAgentClient();
@@ -752,23 +737,24 @@ void main() {
         },
       },
     }, configPath: '${temp.path}/settings.json');
-    late _TemplateAliasCatalogClient baseClient;
+    final baseSession = AgentSession(
+      id: targetId,
+      cwd: workspace.path,
+      createdAt: DateTime(2026),
+      agentName: config.activeAgentServer!.persistenceIdentity,
+    );
+    late _CountingResumeAgentClient baseClient;
     final templateClients = <_ConcurrentPromptAgentClient>[];
 
     await pumpWithWindowSize(
       tester,
       AcpClientApp(
         config: config,
-        workspaceStateStore: _SessionIndexWorkspaceStateStore(
-          const <AgentSession>[],
-        ),
+        workspaceStateStore: _SessionIndexWorkspaceStateStore([baseSession]),
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         createAgentClient: (runtime) {
           if (runtime.mcpServers.isNotEmpty) {
-            return baseClient = _TemplateAliasCatalogClient(
-              sessionId: targetId,
-              cwd: workspace.path,
-            );
+            return baseClient = _CountingResumeAgentClient();
           }
           final client = _ConcurrentPromptAgentClient();
           templateClients.add(client);
@@ -777,7 +763,7 @@ void main() {
       ),
       const Size(1400, 900),
     );
-    await _pumpUntil(tester, () => baseClient.listCalls > 0);
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
@@ -820,10 +806,7 @@ void main() {
     (tester) async {
       await pumpWithWindowSize(
         tester,
-        AcpClientApp(
-          config: AcpClientConfig(),
-          autoLoadWorkspaceSessions: false,
-        ),
+        AcpClientApp(config: AcpClientConfig()),
         const Size(1400, 900),
       );
 
@@ -858,7 +841,6 @@ void main() {
             },
           },
         }, configPath: '/tmp/ianvs-acp-test-settings.json'),
-        autoLoadWorkspaceSessions: false,
         discoverAgentServers: (_) => const <AgentServerConfig>[],
         writeConfig: (config) async {
           savedConfig = config;
@@ -1001,7 +983,6 @@ void main() {
         });
     AcpClientApp app(bool includeTemplate) => AcpClientApp(
       config: config(includeTemplate: includeTemplate),
-      autoLoadWorkspaceSessions: false,
       createAgentClient: (_) {
         factoryCalls += 1;
         return client;
@@ -1039,7 +1020,6 @@ void main() {
     AcpClientApp app({required String path, required int maxSizeGb}) =>
         AcpClientApp(
           config: config(path: path, maxSizeGb: maxSizeGb),
-          autoLoadWorkspaceSessions: false,
           createAgentClient: (_) {
             final client = _TrackingHangingAgentClient();
             clients.add(client);
@@ -1144,7 +1124,6 @@ void main() {
         AcpClientApp(
           key: const ValueKey('foreground-factory-replacement'),
           config: config,
-          autoLoadWorkspaceSessions: false,
           createAgentClient: factory,
           agentClientFactoryKey: factoryKey,
         );
@@ -1198,7 +1177,6 @@ void main() {
         return AcpClientApp(
           key: const ValueKey('combined-config-factory-replacement'),
           config: config,
-          autoLoadWorkspaceSessions: false,
           createAgentClient: factory,
           agentClientFactoryKey: factoryKey,
         );
@@ -1260,7 +1238,6 @@ void main() {
     AcpClientApp app(AcpClientConfig config) => AcpClientApp(
       key: const ValueKey('secret-only-config-change'),
       config: config,
-      autoLoadWorkspaceSessions: false,
       createAgentClient: factory,
       agentClientFactoryKey: 'stable-factory',
     );
@@ -1316,7 +1293,6 @@ void main() {
       AcpClientApp app(AcpClientConfig value) => AcpClientApp(
         key: const ValueKey('inline-reviewer-secret-change'),
         config: value,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: factory,
         agentClientFactoryKey: 'stable-factory',
       );
@@ -1360,7 +1336,6 @@ void main() {
     AcpClientApp app() => AcpClientApp(
       key: const ValueKey('mutable-secret-change'),
       config: config,
-      autoLoadWorkspaceSessions: false,
       createAgentClient: factory,
       agentClientFactoryKey: 'stable-factory',
     );
@@ -1429,10 +1404,20 @@ void main() {
         agentName: 'Codex',
       ),
     ]);
+    final workspaceStateStore = WorkspaceSidebarStateStore(path: null);
+    await workspaceStateStore.saveWorkspaceStates(const [
+      WorkspaceSidebarWorkspaceState(
+        path: '/workspace/other',
+        manuallyAdded: true,
+      ),
+    ]);
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        workspaceStateStore: workspaceStateStore,
+      ),
       const Size(1400, 900),
     );
 
@@ -1473,7 +1458,7 @@ void main() {
     expect(field.controller?.text, '/workspace/other');
   });
 
-  testWidgets('AcpClientApp auto-loads workspaces on startup before sessions', (
+  testWidgets('AcpClientApp keeps workspace discovery manual on startup', (
     tester,
   ) async {
     final fake = _WorkspaceCatalogAgentClient();
@@ -1489,17 +1474,10 @@ void main() {
       const Size(1400, 900),
     );
 
-    expect(fake.connected, isTrue);
-    expect(
-      controller.sessions.map((session) => session.id),
-      contains('session-a'),
-    );
-    expect(
-      controller.sessions.map((session) => session.id),
-      contains('session-b'),
-    );
+    expect(fake.connected, isFalse);
+    expect(controller.sessions, isEmpty);
     expect(find.text('project-a'), findsWidgets);
-    expect(find.text('project-b'), findsOneWidget);
+    expect(find.text('project-b'), findsNothing);
   });
 
   testWidgets('AcpClientApp resumes initial session arguments', (tester) async {
@@ -1579,7 +1557,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
@@ -1681,7 +1658,6 @@ void main() {
         AcpClientApp(
           config: config,
           workspaceStateStore: store,
-          autoLoadWorkspaceSessions: false,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
           createAgentClient: (runtime) {
@@ -1734,7 +1710,7 @@ void main() {
   );
 
   testWidgets(
-    'external resume prefers a valid indexed template over a catalog alias',
+    'external resume uses an indexed template without scanning catalogs',
     (tester) async {
       final temp = Directory.systemTemp.createTempSync(
         'ianvs-catalog-template-alias-',
@@ -1794,10 +1770,8 @@ void main() {
         ),
         const Size(1400, 900),
       );
-      await _pumpUntil(
-        tester,
-        () => creations.any((entry) => entry.client.listCalls > 0),
-      );
+      await tester.pumpAndSettle();
+      expect(creations.every((entry) => entry.client.listCalls == 0), isTrue);
 
       await sendDeepLink(
         tester,
@@ -1815,6 +1789,7 @@ void main() {
         (entry) => entry.client.resumeCalls == 1,
       );
       expect(resumed.config.mcpServers, isEmpty);
+      expect(creations.every((entry) => entry.client.listCalls == 0), isTrue);
       expect(
         tester
             .widget<AppShell>(find.byType(AppShell))
@@ -1840,7 +1815,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
@@ -1883,7 +1857,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
@@ -1929,7 +1902,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         deepLinkWorkspaceValidator: (path) {
           validationCalls += 1;
@@ -1979,7 +1951,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
@@ -2020,7 +1991,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => FakeAgentClient(),
         deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
@@ -2080,7 +2050,6 @@ void main() {
 
     Widget ownedApp() => AcpClientApp(
       config: config,
-      autoLoadWorkspaceSessions: false,
       createAgentClient: (_) => FakeAgentClient(),
       deepLinkWorkspaceValidator: validator,
     );
@@ -2093,13 +2062,7 @@ void main() {
     await tester.pump();
     expect(validationCalls, 1);
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: injected,
-        config: config,
-        autoLoadWorkspaceSessions: false,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: injected, config: config));
     await tester.pumpAndSettle();
     await tester.pumpWidget(ownedApp());
     await tester.pumpAndSettle();
@@ -2145,7 +2108,6 @@ void main() {
 
     Widget ownedApp() => AcpClientApp(
       config: config,
-      autoLoadWorkspaceSessions: false,
       createAgentClient: (_) {
         final client = _ControlledDeepLinkResumeAgentClient();
         clients.add(client);
@@ -2163,13 +2125,7 @@ void main() {
     await clients.single.restoreStarted;
     expect(clients.single.restoreCalls, 1);
 
-    await tester.pumpWidget(
-      AcpClientApp(
-        controller: injected,
-        config: config,
-        autoLoadWorkspaceSessions: false,
-      ),
-    );
+    await tester.pumpWidget(AcpClientApp(controller: injected, config: config));
     await tester.pump();
     await tester.pumpWidget(ownedApp());
     await tester.pump();
@@ -2224,7 +2180,6 @@ void main() {
       Widget app(String key) => AcpClientApp(
         key: ValueKey<String>(key),
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) {
           final client = _ControlledDeepLinkResumeAgentClient();
           clients.add(client);
@@ -2281,7 +2236,6 @@ void main() {
     Widget app(int generation) => AcpClientApp(
       key: ValueKey<String>('bounded-state-$generation'),
       config: config,
-      autoLoadWorkspaceSessions: false,
       createAgentClient: (_) {
         final client = _ControlledDeepLinkResumeAgentClient();
         clients.add(client);
@@ -2342,7 +2296,6 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         config: config,
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         deepLinkWorkspaceValidator: validateDeepLinkWorkspaceSync,
       ),
@@ -2396,11 +2349,7 @@ void main() {
     });
 
     await tester.pumpWidget(
-      AcpClientApp(
-        config: config,
-        autoLoadWorkspaceSessions: false,
-        createAgentClient: (_) => fake,
-      ),
+      AcpClientApp(config: config, createAgentClient: (_) => fake),
     );
     await tester.pumpAndSettle();
     await sendDeepLink(
@@ -2443,11 +2392,7 @@ void main() {
           '${Uri.encodeQueryComponent(workspace.path)}&agent=Codex';
 
       await tester.pumpWidget(
-        AcpClientApp(
-          config: config,
-          autoLoadWorkspaceSessions: false,
-          createAgentClient: (_) => owned,
-        ),
+        AcpClientApp(config: config, createAgentClient: (_) => owned),
       );
       await tester.pumpAndSettle();
       await sendDeepLink(tester, firstLink);
@@ -2456,11 +2401,7 @@ void main() {
       expect(find.text('session-owned-1'), findsOneWidget);
 
       await tester.pumpWidget(
-        AcpClientApp(
-          controller: injected,
-          config: config,
-          autoLoadWorkspaceSessions: false,
-        ),
+        AcpClientApp(controller: injected, config: config),
       );
       await tester.pumpAndSettle();
 
@@ -2489,11 +2430,7 @@ void main() {
     });
 
     await tester.pumpWidget(
-      AcpClientApp(
-        config: config,
-        autoLoadWorkspaceSessions: false,
-        createAgentClient: (_) => fake,
-      ),
+      AcpClientApp(config: config, createAgentClient: (_) => fake),
     );
     await tester.pumpAndSettle();
 
@@ -2709,7 +2646,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller, autoLoadWorkspaceSessions: false),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -2742,7 +2679,7 @@ void main() {
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller, autoLoadWorkspaceSessions: false),
+      AcpClientApp(controller: controller),
       const Size(1400, 900),
     );
 
@@ -2792,7 +2729,6 @@ void main() {
           initialResumeSessionId: firstSession.id,
           initialResumeCwd: firstSession.cwd,
           initialResumeAgentName: 'Codex',
-          autoLoadWorkspaceSessions: false,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (_) {
             final client = _ConcurrentPromptAgentClient();
@@ -2937,7 +2873,6 @@ void main() {
           initialResumeSessionId: firstSession.id,
           initialResumeCwd: firstSession.cwd,
           initialResumeAgentName: 'Codex',
-          autoLoadWorkspaceSessions: false,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (_) {
             final client = _CountingResumeAgentClient();
@@ -3025,7 +2960,6 @@ void main() {
           initialResumeSessionId: 'legacy-session',
           initialResumeCwd: workspace,
           initialResumeAgentName: 'Codex',
-          autoLoadWorkspaceSessions: false,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (_) => client,
         ),
@@ -3104,7 +3038,13 @@ void main() {
       ),
       const Size(1400, 900),
     );
-    await _pumpUntil(tester, () => concurrent.connected);
+    await tester.runAsync(
+      () => tester
+          .widget<AppShell>(find.byType(AppShell))
+          .controller
+          .listSessions(),
+    );
+    expect(concurrent.connected, isTrue);
     await tester.tap(find.byTooltip('New Session'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Start'));
@@ -3186,7 +3126,6 @@ void main() {
           initialResumeSessionId: 'same-source-session',
           initialResumeCwd: workspace,
           initialResumeAgentName: 'Agent A',
-          autoLoadWorkspaceSessions: false,
           discoverAgentServers: (_) => const <AgentServerConfig>[],
           createAgentClient: (agentConfig) => clients.putIfAbsent(
             agentConfig.agentName,
@@ -3275,10 +3214,20 @@ void main() {
         unread: true,
       ),
     ]);
+    final workspaceStateStore = WorkspaceSidebarStateStore(path: null);
+    await workspaceStateStore.saveWorkspaceStates(const [
+      WorkspaceSidebarWorkspaceState(
+        path: '/workspace/other',
+        manuallyAdded: true,
+      ),
+    ]);
 
     await pumpWithWindowSize(
       tester,
-      AcpClientApp(controller: controller),
+      AcpClientApp(
+        controller: controller,
+        workspaceStateStore: workspaceStateStore,
+      ),
       const Size(1400, 900),
     );
 
@@ -3313,7 +3262,7 @@ void main() {
     );
   });
 
-  testWidgets('AcpClientApp serializes automatic session catalog refreshes', (
+  testWidgets('AcpClientApp does not scan configured agent sessions', (
     tester,
   ) async {
     final tracker = _CatalogConcurrencyTracker();
@@ -3341,17 +3290,11 @@ void main() {
       ),
       const Size(1400, 900),
     );
-    await _pumpUntil(
-      tester,
-      () =>
-          clients.values.fold<int>(
-            0,
-            (count, client) => count + client.listCalls,
-          ) >=
-          2,
-    );
+    await tester.pumpAndSettle();
 
-    expect(tracker.maxActive, 1);
+    expect(clients, hasLength(2));
+    expect(clients.values.every((client) => client.listCalls == 0), isTrue);
+    expect(tracker.maxActive, 0);
   });
 
   testWidgets(
@@ -3369,9 +3312,15 @@ void main() {
       final workspaceStateStore = WorkspaceSidebarStateStore(
         path: WorkspaceSidebarStateStore.defaultPath(configPath: configPath),
       );
-      await tester.runAsync(
-        () => workspaceStateStore.saveExpandedWorkspacePaths({'/workspace/pi'}),
-      );
+      await tester.runAsync(() async {
+        await workspaceStateStore.saveWorkspaceStates(const [
+          WorkspaceSidebarWorkspaceState(
+            path: '/workspace/pi',
+            manuallyAdded: true,
+          ),
+        ]);
+        await workspaceStateStore.saveExpandedWorkspacePaths({'/workspace/pi'});
+      });
       final config = AcpClientConfig.fromJson({
         'default_agent_server': 'Codex',
         'agent_servers': {
@@ -3402,13 +3351,17 @@ void main() {
           },
         ),
       );
+      await tester.pumpAndSettle();
+      expect(find.text('Remote Pi Session'), findsNothing);
+      final piFactoryCallsBeforeCancel = factoryCalls['pi ACP'] ?? 0;
+
+      await _openWorkspaceResume(tester, '/workspace/pi');
+      await _selectResumeAgent(tester, 'pi ACP');
       await _pumpUntil(
         tester,
         () => find.text('Remote Pi Session').evaluate().isNotEmpty,
       );
-      final piFactoryCallsBeforeCancel = factoryCalls['pi ACP'] ?? 0;
-
-      await tester.tap(find.text('Remote Pi Session'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await _pumpUntil(
         tester,
         () => find.text('Review Session Workspace').evaluate().isNotEmpty,
@@ -3440,7 +3393,9 @@ void main() {
         'Codex',
       );
 
-      await tester.tap(find.text('Remote Pi Session'));
+      await _openWorkspaceResume(tester, '/workspace/pi');
+      await _selectResumeAgent(tester, 'pi ACP');
+      await tester.tap(find.widgetWithText(FilledButton, 'Open Session'));
       await _pumpUntil(
         tester,
         () => find.text('Review Session Workspace').evaluate().isNotEmpty,
@@ -3506,10 +3461,20 @@ void main() {
           agentName: 'Codex',
         ),
       ]);
+      final workspaceStateStore = WorkspaceSidebarStateStore(path: null);
+      await workspaceStateStore.saveWorkspaceStates(const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/project-a',
+          manuallyAdded: true,
+        ),
+      ]);
 
       await pumpWithWindowSize(
         tester,
-        AcpClientApp(controller: controller, autoLoadWorkspaceSessions: false),
+        AcpClientApp(
+          controller: controller,
+          workspaceStateStore: workspaceStateStore,
+        ),
         const Size(1400, 900),
       );
 
@@ -3554,11 +3519,19 @@ void main() {
           'pi ACP': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
         },
       });
+      final workspaceStateStore = WorkspaceSidebarStateStore(path: null);
+      await workspaceStateStore.saveWorkspaceStates(const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/pi',
+          manuallyAdded: true,
+        ),
+      ]);
 
       await pumpWithWindowSize(
         tester,
         AcpClientApp(
           config: config,
+          workspaceStateStore: workspaceStateStore,
           initialResumeSessionId: 'remote-pi-session',
           initialResumeCwd: '/workspace/pi-active',
           initialResumeAgentName: 'pi ACP',
@@ -3637,11 +3610,19 @@ void main() {
           'pi ACP': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
         },
       });
+      final workspaceStateStore = WorkspaceSidebarStateStore(path: null);
+      await workspaceStateStore.saveWorkspaceStates(const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/pi',
+          manuallyAdded: true,
+        ),
+      ]);
 
       await pumpWithWindowSize(
         tester,
         AcpClientApp(
           config: config,
+          workspaceStateStore: workspaceStateStore,
           createAgentClient: (agentConfig) {
             factoryCalls.update(
               agentConfig.agentName,
@@ -3734,11 +3715,23 @@ void main() {
         'pi ACP': {'type': 'custom', 'command': '/usr/local/bin/pi-acp'},
       },
     });
+    final workspaceStateStore = WorkspaceSidebarStateStore(path: null);
+    await workspaceStateStore.saveWorkspaceStates(const [
+      WorkspaceSidebarWorkspaceState(
+        path: '/workspace/codex-catalog',
+        manuallyAdded: true,
+      ),
+      WorkspaceSidebarWorkspaceState(
+        path: '/workspace/pi',
+        manuallyAdded: true,
+      ),
+    ]);
 
     await pumpWithWindowSize(
       tester,
       AcpClientApp(
         config: config,
+        workspaceStateStore: workspaceStateStore,
         initialResumeSessionId: 'shared-session',
         initialResumeCwd: '/workspace/codex-bound',
         initialResumeAgentName: 'Codex',
@@ -4601,7 +4594,6 @@ void main() {
     final fake = FakeAgentClient();
     await tester.pumpWidget(
       AcpClientApp(
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         config: AcpClientConfig.fromJson({
           'default_agent_server': 'Cursor',
@@ -4643,7 +4635,6 @@ void main() {
     final fake = FakeAgentClient();
     await tester.pumpWidget(
       AcpClientApp(
-        autoLoadWorkspaceSessions: false,
         createAgentClient: (_) => fake,
         config: AcpClientConfig.fromJson({
           'default_agent_server': 'Codex',
@@ -5393,6 +5384,11 @@ void main() {
           createAgentClient: (_) =>
               FakeAgentClient(supportsListSessions: false),
         ),
+      );
+      await _pumpUntil(tester, () => store.saveAttempts == 1);
+      await tester.runAsync(
+        () =>
+            tester.widget<AppShell>(find.byType(AppShell)).controller.connect(),
       );
       await _pumpUntil(tester, () => store.saveAttempts >= 2);
 

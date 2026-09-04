@@ -28,7 +28,6 @@ class WorkspaceSidebar extends StatefulWidget {
     this.onRevealWorkspace,
     this.onCreateWorkspaceWorktree,
     this.onArchiveWorkspaceSessions,
-    this.onLoadWorkspaceSessions,
     this.pickWorkspaceDirectory,
     this.stateStore,
     this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
@@ -53,8 +52,6 @@ class WorkspaceSidebar extends StatefulWidget {
   onCreateWorkspaceWorktree;
   final FutureOr<void> Function(WorkspaceRecord workspace)?
   onArchiveWorkspaceSessions;
-  final Future<void> Function(WorkspaceRecord workspace)?
-  onLoadWorkspaceSessions;
   final Future<String?> Function()? pickWorkspaceDirectory;
   final WorkspaceSidebarStateStore? stateStore;
   final bool Function(String path) gitWorkspaceDetector;
@@ -64,24 +61,16 @@ class WorkspaceSidebar extends StatefulWidget {
 }
 
 class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
-  static const Duration _currentWorkspaceAutoLoadDelay = Duration(
-    milliseconds: 1,
-  );
   static const int _defaultVisibleSessionCount = 12;
 
   final Set<String> _expandedWorkspacePaths = <String>{};
   final Set<String> _showAllSessionWorkspacePaths = <String>{};
   final Set<String> _pinnedWorkspacePaths = <String>{};
   final Set<String> _hiddenWorkspacePaths = <String>{};
-  final Set<String> _loadingSessionWorkspacePaths = <String>{};
-  final Set<String> _autoLoadWorkspacePaths = <String>{};
-  final Set<String> _loadedSessionWorkspacePaths = <String>{};
   final Set<String> _manuallyAddedWorkspacePaths = <String>{};
   final Map<String, String> _workspaceDisplayNames = <String, String>{};
-  final Map<String, String> _sessionLoadErrors = <String, String>{};
   final Map<String, bool> _gitWorkspaceSupport = <String, bool>{};
   final TextEditingController _searchController = TextEditingController();
-  Timer? _currentWorkspaceAutoLoadTimer;
   String? _hoveredWorkspacePath;
   int _stateRestoreGeneration = 0;
 
@@ -89,7 +78,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   void initState() {
     super.initState();
     _expandedWorkspacePaths.add(widget.currentWorkspace.path);
-    _scheduleLoadCurrentWorkspaceSessions();
     _restoreSidebarState();
   }
 
@@ -98,7 +86,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.currentWorkspace.path != widget.currentWorkspace.path) {
       _expandedWorkspacePaths.add(widget.currentWorkspace.path);
-      _autoLoadWorkspacePaths.add(widget.currentWorkspace.path);
       _persistExpandedWorkspacePaths();
     }
 
@@ -111,24 +98,11 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     )) {
       _gitWorkspaceSupport.clear();
     }
-
-    final loaderBecameAvailable =
-        oldWidget.onLoadWorkspaceSessions == null &&
-        widget.onLoadWorkspaceSessions != null;
-    if (loaderBecameAvailable ||
-        oldWidget.currentWorkspace.path != widget.currentWorkspace.path) {
-      _scheduleLoadCurrentWorkspaceSessions();
-    }
-
-    if (loaderBecameAvailable) {
-      _scheduleLoadSessionsForAutoLoadWorkspaces();
-    }
   }
 
   @override
   void dispose() {
     _stateRestoreGeneration += 1;
-    _currentWorkspaceAutoLoadTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -188,9 +162,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                 final expanded = _expandedWorkspacePaths.contains(
                   workspace.path,
                 );
-                final sessionLoading = _loadingSessionWorkspacePaths.contains(
-                  workspace.path,
-                );
                 final supportsGitWorktrees = _gitWorkspaceSupport.putIfAbsent(
                   workspace.path,
                   () => widget.gitWorkspaceDetector(workspace.path),
@@ -219,13 +190,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   canForkSession: widget.canForkSession,
                   onSessionMenuAction: widget.onSessionMenuAction,
                   onNewSession: _newSessionCallbackFor(workspace, selected),
-                  sessionLoading: sessionLoading,
-                  sessionLoadError: _sessionLoadErrors[workspace.path],
-                  onRetryLoadSessions: widget.onLoadWorkspaceSessions == null
-                      ? null
-                      : () => unawaited(
-                          _loadWorkspaceSessions(workspace, force: true),
-                        ),
                   pinned: _isPinned(workspace),
                   canRevealInFinder: widget.onRevealWorkspace != null,
                   canCreatePermanentWorktree: supportsGitWorktrees,
@@ -275,20 +239,12 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   }
 
   void _toggleWorkspace(WorkspaceRecord workspace) {
-    var expanded = false;
     setState(() {
       if (!_expandedWorkspacePaths.remove(workspace.path)) {
         _expandedWorkspacePaths.add(workspace.path);
-        _autoLoadWorkspacePaths.add(workspace.path);
-        expanded = true;
-      } else {
-        _autoLoadWorkspacePaths.remove(workspace.path);
       }
     });
     _persistExpandedWorkspacePaths();
-    if (expanded) {
-      unawaited(_loadWorkspaceSessions(workspace));
-    }
   }
 
   void _restoreSidebarState() {
@@ -344,9 +300,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         _expandedWorkspacePaths
           ..clear()
           ..addAll(paths);
-        _autoLoadWorkspacePaths
-          ..clear()
-          ..addAll(paths);
         if (!hasSavedPaths) {
           _expandedWorkspacePaths.add(widget.currentWorkspace.path);
         }
@@ -358,30 +311,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     )) {
       return;
     }
-    _scheduleLoadSessionsForAutoLoadWorkspaces();
-  }
-
-  void _scheduleLoadSessionsForAutoLoadWorkspaces() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _loadSessionsForAutoLoadWorkspaces();
-    });
-  }
-
-  void _scheduleLoadCurrentWorkspaceSessions() {
-    if (widget.onLoadWorkspaceSessions == null) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || widget.onLoadWorkspaceSessions == null) return;
-      _currentWorkspaceAutoLoadTimer?.cancel();
-      _currentWorkspaceAutoLoadTimer = Timer(
-        _currentWorkspaceAutoLoadDelay,
-        () {
-          _currentWorkspaceAutoLoadTimer = null;
-          if (!mounted || widget.onLoadWorkspaceSessions == null) return;
-          unawaited(_loadWorkspaceSessions(widget.currentWorkspace));
-        },
-      );
-    });
   }
 
   void _persistExpandedWorkspacePaths() {
@@ -394,51 +323,17 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     );
   }
 
-  void _loadSessionsForAutoLoadWorkspaces() {
-    for (final workspace in _visibleWorkspaces()) {
-      if (!_autoLoadWorkspacePaths.contains(workspace.path)) continue;
-      if (!_expandedWorkspacePaths.contains(workspace.path)) continue;
-      unawaited(_loadWorkspaceSessions(workspace));
-    }
-  }
-
-  Future<void> _loadWorkspaceSessions(
-    WorkspaceRecord workspace, {
-    bool force = false,
-  }) async {
-    final loader = widget.onLoadWorkspaceSessions;
-    if (loader == null) return;
-    if (_loadedSessionWorkspacePaths.contains(workspace.path) && !force) {
-      return;
-    }
-    if (_loadingSessionWorkspacePaths.contains(workspace.path)) return;
-
-    setState(() {
-      _loadingSessionWorkspacePaths.add(workspace.path);
-      _sessionLoadErrors.remove(workspace.path);
-    });
-
-    try {
-      await loader(workspace);
-      if (!mounted) return;
-      setState(() {
-        _loadedSessionWorkspacePaths.add(workspace.path);
-        _loadingSessionWorkspacePaths.remove(workspace.path);
-        _sessionLoadErrors.remove(workspace.path);
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _loadingSessionWorkspacePaths.remove(workspace.path);
-        _sessionLoadErrors[workspace.path] = error.toString();
-      });
-    }
-  }
-
   List<WorkspaceRecord> _visibleWorkspaces() {
     final query = _searchController.text.trim().toLowerCase();
+    final configuredPaths = <String>{
+      widget.currentWorkspace.path,
+      ..._manuallyAddedWorkspacePaths,
+    };
     final workspacesByPath = <String, WorkspaceRecord>{
-      for (final workspace in widget.workspaces) workspace.path: workspace,
+      for (final workspace in widget.workspaces)
+        if (widget.stateStore == null ||
+            configuredPaths.contains(workspace.path))
+          workspace.path: workspace,
     };
     for (final path in _manuallyAddedWorkspacePaths) {
       workspacesByPath.putIfAbsent(
@@ -489,15 +384,9 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
       _manuallyAddedWorkspacePaths.add(path);
       _hiddenWorkspacePaths.remove(path);
       _expandedWorkspacePaths.add(path);
-      _autoLoadWorkspacePaths.add(path);
     });
     _persistExpandedWorkspacePaths();
     _persistWorkspaceStates();
-
-    final workspace = _visibleWorkspaces().where((item) => item.path == path);
-    if (workspace.isNotEmpty) {
-      unawaited(_loadWorkspaceSessions(workspace.first));
-    }
   }
 
   bool _matchesSearch(WorkspaceRecord workspace, String query) {
@@ -575,7 +464,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
         if (workspace.path == widget.currentWorkspace.path) return;
         final wasPinned = _pinnedWorkspacePaths.contains(workspace.path);
         final wasExpanded = _expandedWorkspacePaths.contains(workspace.path);
-        final wasAutoLoad = _autoLoadWorkspacePaths.contains(workspace.path);
         final wasShowingAllSessions = _showAllSessionWorkspacePaths.contains(
           workspace.path,
         );
@@ -583,7 +471,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
           _hiddenWorkspacePaths.add(workspace.path);
           _expandedWorkspacePaths.remove(workspace.path);
           _showAllSessionWorkspacePaths.remove(workspace.path);
-          _autoLoadWorkspacePaths.remove(workspace.path);
           _pinnedWorkspacePaths.remove(workspace.path);
         });
         _persistExpandedWorkspacePaths();
@@ -593,7 +480,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
           workspace,
           wasPinned: wasPinned,
           wasExpanded: wasExpanded,
-          wasAutoLoad: wasAutoLoad,
           wasShowingAllSessions: wasShowingAllSessions,
         );
     }
@@ -604,7 +490,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     WorkspaceRecord workspace, {
     required bool wasPinned,
     required bool wasExpanded,
-    required bool wasAutoLoad,
     required bool wasShowingAllSessions,
   }) {
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
@@ -621,7 +506,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
               if (wasShowingAllSessions) {
                 _showAllSessionWorkspacePaths.add(workspace.path);
               }
-              if (wasAutoLoad) _autoLoadWorkspacePaths.add(workspace.path);
             });
             _persistExpandedWorkspacePaths();
             _persistWorkspaceStates();
@@ -853,9 +737,6 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.canForkSession,
     required this.onSessionMenuAction,
     required this.onNewSession,
-    required this.sessionLoading,
-    required this.sessionLoadError,
-    required this.onRetryLoadSessions,
     required this.pinned,
     required this.canRevealInFinder,
     required this.canCreatePermanentWorktree,
@@ -887,9 +768,6 @@ class _WorkspaceGroup extends StatelessWidget {
   )?
   onSessionMenuAction;
   final VoidCallback? onNewSession;
-  final bool sessionLoading;
-  final String? sessionLoadError;
-  final VoidCallback? onRetryLoadSessions;
   final bool pinned;
   final bool canRevealInFinder;
   final bool canCreatePermanentWorktree;
@@ -931,17 +809,7 @@ class _WorkspaceGroup extends StatelessWidget {
               onNewSession: onNewSession,
               onMenuAction: onMenuAction,
             ),
-            if (expanded && sessionLoading && workspace.sessions.isEmpty)
-              _InlineSessionLoadStatus(workspaceName: displayName)
-            else if (expanded &&
-                sessionLoadError != null &&
-                workspace.sessions.isEmpty)
-              _InlineSessionLoadError(
-                workspaceName: displayName,
-                message: sessionLoadError!,
-                onRetry: onRetryLoadSessions,
-              )
-            else if (expanded && workspace.sessions.isEmpty)
+            if (expanded && workspace.sessions.isEmpty)
               _InlineEmptyWorkspaceSessions(
                 workspaceName: displayName,
                 active: selected,
@@ -2190,128 +2058,6 @@ PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem({
       ],
     ),
   );
-}
-
-class _InlineSessionLoadStatus extends StatelessWidget {
-  const _InlineSessionLoadStatus({required this.workspaceName});
-
-  final String workspaceName;
-
-  @override
-  Widget build(BuildContext context) {
-    return _InlineWorkspaceStatusFrame(
-      child: Row(
-        children: [
-          const SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Loading sessions in $workspaceName...',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                height: 1.25,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _InlineSessionLoadError extends StatelessWidget {
-  const _InlineSessionLoadError({
-    required this.workspaceName,
-    required this.message,
-    required this.onRetry,
-  });
-
-  final String workspaceName;
-  final String message;
-  final VoidCallback? onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return _InlineWorkspaceStatusFrame(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Could not load sessions in $workspaceName.',
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              height: 1.25,
-              letterSpacing: 0,
-            ),
-          ),
-          const SizedBox(height: 3),
-          Text(
-            message,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textTertiary,
-              fontSize: 10,
-              height: 1.2,
-            ),
-          ),
-          if (onRetry != null) ...[
-            const SizedBox(height: 6),
-            TextButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh_rounded, size: 14),
-              label: const Text('Retry'),
-              style: TextButton.styleFrom(
-                foregroundColor: AppColors.primaryDark,
-                minimumSize: const Size(70, 28),
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                textStyle: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0,
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _InlineWorkspaceStatusFrame extends StatelessWidget {
-  const _InlineWorkspaceStatusFrame({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(36, 0, 10, 10),
-      child: DecoratedBox(
-        decoration: const BoxDecoration(
-          border: Border(left: BorderSide(color: AppColors.borderSoft)),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(9, 3, 0, 0),
-          child: child,
-        ),
-      ),
-    );
-  }
 }
 
 class _InlineEmptyWorkspaceSessions extends StatelessWidget {

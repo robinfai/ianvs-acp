@@ -62,7 +62,6 @@ class AppShell extends StatelessWidget {
     this.startupError,
     this.onRetryStartup,
     this.canSwitchAgent = true,
-    this.autoLoadWorkspaceSessions = true,
     this.onSelectAgent,
     this.onSelectSession,
     this.onNewSession,
@@ -74,7 +73,6 @@ class AppShell extends StatelessWidget {
     this.onSaveConfig,
     this.onValidateAssistantAgent,
     this.onLoadAssistantAgentModels,
-    this.onLoadSessionCatalogs,
     this.sessionControllers = const <ChatController>[],
     this.supportsConcurrentSessions = false,
     this.processRunner,
@@ -102,7 +100,6 @@ class AppShell extends StatelessWidget {
   final String? startupError;
   final VoidCallback? onRetryStartup;
   final bool canSwitchAgent;
-  final bool autoLoadWorkspaceSessions;
   final ValueChanged<String>? onSelectAgent;
   final ValueChanged<AgentSession>? onSelectSession;
   final void Function(BuildContext context)? onNewSession;
@@ -128,7 +125,6 @@ class AppShell extends StatelessWidget {
   final AcpConfigSaveCallback? onSaveConfig;
   final AssistantAgentValidationCallback? onValidateAssistantAgent;
   final AssistantAgentModelsLoadCallback? onLoadAssistantAgentModels;
-  final Future<void> Function()? onLoadSessionCatalogs;
   final List<ChatController> sessionControllers;
   final bool supportsConcurrentSessions;
   final AppShellProcessRunner? processRunner;
@@ -187,18 +183,7 @@ class AppShell extends StatelessWidget {
           defaultAgentName: defaultAgentName ?? agentName,
         );
         final currentWorkspace = workspaceController.currentWorkspace;
-        final canOpenResumeDialog = sessionControllerList.any(
-          (candidate) =>
-              candidate.canResumeSessions ||
-              ((candidate.isStreaming || candidate.isSessionOperationRunning) &&
-                  candidate.supportsSessionList &&
-                  candidate.supportsSessionResume),
-        );
-        final canLoadWorkspaceSessions =
-            autoLoadWorkspaceSessions &&
-            sessionControllerList.any(
-              (controller) => controller.canListSessions,
-            );
+        final canOpenResumeDialog = _canOpenResumeDialog(sessionControllerList);
         final workspaceStateStore =
             this.workspaceStateStore ??
             WorkspaceSidebarStateStore(
@@ -368,18 +353,6 @@ class AppShell extends StatelessWidget {
                                     session,
                                     action,
                                   ),
-                            onLoadWorkspaceSessions: canLoadWorkspaceSessions
-                                ? (_) async {
-                                    final loader = onLoadSessionCatalogs;
-                                    if (loader != null) {
-                                      await loader();
-                                    } else {
-                                      await _loadSessionCatalogs(
-                                        sessionControllerList,
-                                      );
-                                    }
-                                  }
-                                : null,
                             onRevealWorkspace: (workspace) => unawaited(
                               _revealWorkspaceInFinder(context, workspace),
                             ),
@@ -792,29 +765,14 @@ class AppShell extends StatelessWidget {
     return controllers;
   }
 
-  Future<void> _loadSessionCatalogs(List<ChatController> controllers) async {
-    final loadable = controllers
-        .where(
-          (controller) =>
-              controller.canListSessions &&
-              !controller.isStreaming &&
-              !controller.isSessionOperationRunning,
-        )
-        .toList(growable: false);
-    if (loadable.isEmpty) return;
-
-    final errors = <Object>[];
-    await Future.wait(
-      loadable.map((controller) async {
-        try {
-          await controller.loadSessionCatalog();
-        } catch (error) {
-          errors.add(error);
-        }
-      }),
+  bool _canOpenResumeDialog(List<ChatController> controllers) {
+    return controllers.any(
+      (candidate) =>
+          candidate.canResumeSessions ||
+          ((candidate.isStreaming || candidate.isSessionOperationRunning) &&
+              candidate.supportsSessionList &&
+              candidate.supportsSessionResume),
     );
-
-    if (errors.length == loadable.length) throw errors.first;
   }
 
   List<_ResumeSessionAgentBinding> _resumeSessionAgentBindings(
@@ -971,6 +929,13 @@ class AppShell extends StatelessWidget {
     required String workspaceCwd,
   }) async {
     final sessionControllerList = _controllers();
+    if ((controller.status == ConnectionStatus.disconnected ||
+            controller.status == ConnectionStatus.error) &&
+        !controller.isSessionOperationRunning) {
+      await controller.connect();
+      if (!context.mounted) return;
+    }
+    if (!_canOpenResumeDialog(sessionControllerList)) return;
     final agentBindings = _resumeSessionAgentBindings(
       sessionControllerList,
       context,

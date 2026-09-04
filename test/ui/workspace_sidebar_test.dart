@@ -56,6 +56,50 @@ void main() {
     );
   });
 
+  testWidgets('WorkspaceSidebar hides unconfigured session workspaces', (
+    tester,
+  ) async {
+    final currentWorkspace = WorkspaceRecord(
+      path: '/workspace/current',
+      name: 'current',
+      sessions: const [],
+    );
+    final catalogWorkspace = WorkspaceRecord(
+      path: '/workspace/from-session-catalog',
+      name: 'from-session-catalog',
+      sessions: [
+        AgentSession(
+          id: 'catalog-session',
+          cwd: '/workspace/from-session-catalog',
+          createdAt: DateTime(2026, 9, 2),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 300,
+            height: 640,
+            child: WorkspaceSidebar(
+              workspaces: [currentWorkspace, catalogWorkspace],
+              currentWorkspace: currentWorkspace,
+              currentSession: null,
+              onNewSession: () {},
+              stateStore: _MemoryWorkspaceSidebarStateStore(<String>{}),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('current'), findsOneWidget);
+    expect(find.text('from-session-catalog'), findsNothing);
+    expect(find.text('catalog-session'), findsNothing);
+  });
+
   testWidgets('WorkspaceSidebar expands workspaces before selecting sessions', (
     tester,
   ) async {
@@ -457,7 +501,15 @@ void main() {
   testWidgets('WorkspaceSidebar restores and saves expanded workspaces', (
     tester,
   ) async {
-    final store = _MemoryWorkspaceSidebarStateStore({'/workspace/other'});
+    final store = _MemoryWorkspaceSidebarStateStore(
+      {'/workspace/other'},
+      initialWorkspaceStates: const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/other',
+          manuallyAdded: true,
+        ),
+      ],
+    );
 
     final currentWorkspace = WorkspaceRecord(
       path: '/workspace/current',
@@ -632,8 +684,13 @@ void main() {
           path: '/workspace/pinned',
           displayName: 'Pinned Alias',
           pinned: true,
+          manuallyAdded: true,
         ),
-        WorkspaceSidebarWorkspaceState(path: '/workspace/hidden', hidden: true),
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/hidden',
+          hidden: true,
+          manuallyAdded: true,
+        ),
       ],
     );
     final currentWorkspace = WorkspaceRecord(
@@ -689,6 +746,7 @@ void main() {
           path: '/workspace/b',
           displayName: 'Current Alias',
           pinned: true,
+          manuallyAdded: true,
         ),
       ],
     );
@@ -762,6 +820,7 @@ void main() {
           path: '/workspace/a',
           displayName: 'Stale Alias',
           pinned: true,
+          manuallyAdded: true,
         ),
       ],
     );
@@ -774,11 +833,8 @@ void main() {
   });
 
   testWidgets(
-    'WorkspaceSidebar auto-loads the current workspace on first render',
+    'WorkspaceSidebar does not scan sessions on first render or navigation',
     (tester) async {
-      final completer = Completer<void>();
-      var loadCount = 0;
-      WorkspaceRecord? loadedWorkspace;
       final currentWorkspace = WorkspaceRecord(
         path: '/workspace/current',
         name: 'current',
@@ -802,11 +858,6 @@ void main() {
                 currentWorkspace: currentWorkspace,
                 currentSession: null,
                 onNewSession: () {},
-                onLoadWorkspaceSessions: (workspace) {
-                  loadCount += 1;
-                  loadedWorkspace = workspace;
-                  return completer.future;
-                },
               ),
             ),
           ),
@@ -815,28 +866,18 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 1));
 
-      expect(loadCount, 1);
-      expect(loadedWorkspace, currentWorkspace);
-      expect(find.text('Loading sessions in current...'), findsOneWidget);
+      expect(find.text('No sessions yet'), findsOneWidget);
 
       await tester.tap(find.text('other'));
       await tester.pump();
-
-      expect(loadCount, 2);
-      expect(loadedWorkspace, otherWorkspace);
-      expect(find.text('Loading sessions in other...'), findsOneWidget);
-
-      completer.complete();
-      await tester.pumpAndSettle();
 
       expect(find.text('No sessions in other'), findsOneWidget);
     },
   );
 
-  testWidgets('WorkspaceSidebar auto-loads each workspace independently', (
+  testWidgets('WorkspaceSidebar expands workspaces without loading catalogs', (
     tester,
   ) async {
-    final loadedPaths = <String>[];
     final currentWorkspace = WorkspaceRecord(
       path: '/workspace/current',
       name: 'current',
@@ -865,9 +906,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onLoadWorkspaceSessions: (workspace) async {
-                loadedPaths.add(workspace.path);
-              },
             ),
           ),
         ),
@@ -881,11 +919,8 @@ void main() {
     await tester.tap(find.text('second'));
     await tester.pumpAndSettle();
 
-    expect(loadedPaths, [
-      '/workspace/current',
-      '/workspace/first',
-      '/workspace/second',
-    ]);
+    expect(find.text('No sessions in first'), findsOneWidget);
+    expect(find.text('No sessions in second'), findsOneWidget);
   });
 
   testWidgets('WorkspaceSidebar starts new sessions in expanded workspace', (
@@ -1073,11 +1108,18 @@ void main() {
     expect(find.text('Fork to New Worktree'), findsNothing);
   });
 
-  testWidgets('WorkspaceSidebar loads sessions when expanding a workspace', (
+  testWidgets('WorkspaceSidebar persists expansion without loading sessions', (
     tester,
   ) async {
-    final store = _MemoryWorkspaceSidebarStateStore(const <String>{});
-    final loadedPaths = <String>[];
+    final store = _MemoryWorkspaceSidebarStateStore(
+      const <String>{},
+      initialWorkspaceStates: const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/other',
+          manuallyAdded: true,
+        ),
+      ],
+    );
     final currentWorkspace = WorkspaceRecord(
       path: '/workspace/current',
       name: 'current',
@@ -1101,9 +1143,6 @@ void main() {
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
-              onLoadWorkspaceSessions: (workspace) async {
-                loadedPaths.add(workspace.path);
-              },
               stateStore: store,
             ),
           ),
@@ -1112,12 +1151,9 @@ void main() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1));
-    loadedPaths.clear();
-
     await tester.tap(find.text('other'));
     await tester.pumpAndSettle();
 
-    expect(loadedPaths, ['/workspace/other']);
     expect(store.expandedWorkspacePaths, contains('/workspace/other'));
     expect(find.text('No sessions in other'), findsOneWidget);
   });
@@ -2295,7 +2331,15 @@ void main() {
   });
 
   testWidgets('WorkspaceSidebar can undo removing a workspace', (tester) async {
-    final store = _MemoryWorkspaceSidebarStateStore(const <String>{});
+    final store = _MemoryWorkspaceSidebarStateStore(
+      const <String>{},
+      initialWorkspaceStates: const [
+        WorkspaceSidebarWorkspaceState(
+          path: '/workspace/other',
+          manuallyAdded: true,
+        ),
+      ],
+    );
     final currentWorkspace = WorkspaceRecord(
       path: '/workspace/current',
       name: 'current',
@@ -2325,6 +2369,7 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
     expect(find.text('other'), findsOneWidget);
 

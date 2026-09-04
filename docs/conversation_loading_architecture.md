@@ -34,6 +34,8 @@
 | `session/resume` | 重新连接一个已经存在的会话 | 否 |
 | `session/list` | 返回会话身份和目录元数据 | 否 |
 
+`session/list` 只在用户打开 `Resume Session` 后调用，用于手动选择要恢复的会话；应用启动、agent 配置变更、workspace 展开都不会触发全量会话扫描，也不会用扫描结果自动创建 workspace。
+
 ACP 当前没有 history cursor、offset、tail window 或 limit。`session/load` 发出的 `session/update` 是完整回放流，不是可由客户端任意分页的接口。因此本应用不能在不改变 agent/app-server 协议的前提下伪造“只拉最近 50 条”。
 
 Rust core 接收显式的 `replay_history`：

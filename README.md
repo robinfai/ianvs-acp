@@ -26,6 +26,12 @@ with the same exact runtime recipe share one authoritative ACP runtime; template
 that intentionally change MCP or client-provider boundaries use isolated
 runtimes so a broader recipe cannot leak capabilities into a restricted one.
 
+Workspaces are added explicitly from the sidebar and retained in
+`workspace_ui_state.json`. The app does not scan every Codex/ACP session to
+discover workspaces. Existing sessions are queried only after the user opens
+`Resume Session`; selecting one shows its workspace review before the app sends
+`session/resume` or falls back to `session/load` when required by the agent.
+
 ## Configuration
 
 Use `Agents` -> `Agent Configuration` to manage the saved configuration:
@@ -159,9 +165,10 @@ stores: the ACP session registry and the exact-revision transcript cache. Each
 store enforces the configured capacity independently, and expired payloads are
 removed automatically.
 
-The adjacent private `workspace_ui_state.json` file stores Workspace/sidebar
-preferences and a recovery index containing session IDs, workspace roots,
-display titles, agent association, and pin/archive/unread state. It is written
+The adjacent private `workspace_ui_state.json` file stores explicitly added
+Workspace/sidebar preferences and a recovery index for sessions the app has
+created or resumed, including session IDs, workspace roots, display titles,
+agent association, and pin/archive/unread state. It is written
 atomically, and concurrent app windows merge independent Workspace/session
 record fields plus expanded-Workspace additions and removals. It is not
 governed by `storage.max_size_gb` or `storage.retention_days`; those entries

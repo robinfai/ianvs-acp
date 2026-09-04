@@ -125,7 +125,6 @@ class AcpClientApp extends StatefulWidget {
     this.initialResumeSessionTemplateId,
     this.initialResumeSessionTemplateVersion,
     this.openSessionWindow,
-    this.autoLoadWorkspaceSessions = true,
     this.createAgentClient,
     this.agentClientFactoryKey,
     this.workspaceStateStore,
@@ -152,7 +151,6 @@ class AcpClientApp extends StatefulWidget {
   final String? initialResumeSessionTemplateId;
   final int? initialResumeSessionTemplateVersion;
   final SessionWindowOpener? openSessionWindow;
-  final bool autoLoadWorkspaceSessions;
   final AcpAgentClientFactory? createAgentClient;
 
   /// Change this key when [createAgentClient] changes behavior. Keep it stable
@@ -231,8 +229,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
   bool _sessionIndexPersistScheduled = false;
   List<AgentSession> _unresolvedSessionIndex = const <AgentSession>[];
   int _sessionIndexHydrationSerial = 0;
-  int _sessionCatalogLoadSerial = 0;
-  Future<void>? _sessionCatalogLoad;
   bool _sessionSelectionInProgress = false;
   WorkspaceSessionIndexPersistenceQueue? _sessionIndexPersistence;
   WorkspaceSidebarStateStore? _ownedWorkspaceStateStore;
@@ -368,7 +364,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   @override
   void dispose() {
-    _invalidateSessionCatalogLoad();
     for (final snapshot in _pendingUndoSnapshots.toList(growable: false)) {
       snapshot.discard();
     }
@@ -798,10 +793,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
         startupError: _combinedStartupError,
         onRetryStartup: widget.onRetryStartup,
         canSwitchAgent: widget.controller == null,
-        autoLoadWorkspaceSessions: _canAutoLoadWorkspaceSessions,
-        onLoadSessionCatalogs: widget.controller == null
-            ? _loadAllAgentSessionCatalogs
-            : null,
         sessionControllers: _sessionControllers,
         supportsConcurrentSessions:
             widget.controller == null &&
@@ -876,7 +867,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
           : await injectedWrite(_config, selected);
       if (!mounted) return;
       _replaceOwnedControllerConfiguration(nextConfig);
-      unawaited(_loadAllAgentSessionCatalogs());
       _showSnackBar('Added ${selected.length} discovered ACP agent(s).');
     } catch (error) {
       _showSnackBar('Could not add discovered agents: $error');
@@ -1140,14 +1130,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
         : config.withActiveAgentServer(agentName);
   }
 
-  bool get _canAutoLoadWorkspaceSessions {
-    if (!widget.autoLoadWorkspaceSessions) return false;
-    if (widget.controller != null) return true;
-    if (_config.activeAgentServer == null) return false;
-    final configPath = _config.configPath?.trim();
-    return configPath != null && configPath.isNotEmpty;
-  }
-
   List<ChatController> _takeCachedControllers({bool clearClientPools = false}) {
     final controllers = <ChatController>{
       ..._controllersByAgent.values,
@@ -1176,7 +1158,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
 
   Future<void> _hydrateSessionIndex() async {
     if (widget.controller != null) return;
-    _invalidateSessionCatalogLoad();
     final serial = ++_sessionIndexHydrationSerial;
     _sessionIndexHydrated = false;
     _sessionIndexPersistence = null;
@@ -1211,10 +1192,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _sessionIndexHydrated = true;
     _schedulePersistSessionIndex();
     if (mounted) setState(() {});
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || serial != _sessionIndexHydrationSerial) return;
-      unawaited(_loadAllAgentSessionCatalogs().catchError((_) {}));
-    });
   }
 
   void _beginSessionIndexHydration() {
@@ -1253,75 +1230,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
       return true;
     }
     return mounted;
-  }
-
-  Future<void> _loadAllAgentSessionCatalogs() {
-    final activeLoad = _sessionCatalogLoad;
-    if (activeLoad != null) return activeLoad;
-    final serial = ++_sessionCatalogLoadSerial;
-    late final Future<void> trackedLoad;
-    trackedLoad = () async {
-      try {
-        await _performAgentSessionCatalogLoad(serial);
-      } finally {
-        if (identical(_sessionCatalogLoad, trackedLoad)) {
-          _sessionCatalogLoad = null;
-        }
-      }
-    }();
-    _sessionCatalogLoad = trackedLoad;
-    return trackedLoad;
-  }
-
-  Future<void> _performAgentSessionCatalogLoad(int serial) async {
-    if (widget.controller != null || !_canAutoLoadWorkspaceSessions) return;
-    _ensureControllersForSelectableAgents(_config);
-    final controllers = <ChatController>[
-      _controller,
-      for (final controller in _controllersByAgent.values)
-        if (!identical(controller, _controller)) controller,
-    ];
-    final seenCatalogSources = <String>{};
-    final errors = <Object>[];
-    var attemptedLoads = 0;
-
-    for (final controller in controllers) {
-      if (serial != _sessionCatalogLoadSerial) return;
-      if (controller.isStreaming || controller.isSessionOperationRunning) {
-        continue;
-      }
-      if (!controller.canListSessions) continue;
-      if (widget.createAgentClient == null &&
-          !seenCatalogSources.add(_sessionCatalogSourceKey(controller))) {
-        continue;
-      }
-
-      attemptedLoads += 1;
-      try {
-        await controller.loadSessionCatalog();
-      } catch (error) {
-        // One agent may not support session/list or may be offline; keep
-        // loading the rest so workspace aggregation remains best-effort.
-        errors.add(error);
-      }
-    }
-    if (!mounted || serial != _sessionCatalogLoadSerial) return;
-    _schedulePersistSessionIndex();
-    setState(() {});
-    if (attemptedLoads > 0 && errors.length == attemptedLoads) {
-      throw errors.first;
-    }
-  }
-
-  void _invalidateSessionCatalogLoad() {
-    _sessionCatalogLoadSerial += 1;
-    _sessionCatalogLoad = null;
-  }
-
-  String _sessionCatalogSourceKey(ChatController controller) {
-    final config = _configForAgent(_config, controller.agentName);
-    if (config != null) return _sessionCatalogSourceKeyForConfig(config);
-    return 'controller:${identityHashCode(controller)}';
   }
 
   String _sessionCatalogSourceKeyForConfig(AcpClientConfig config) {
@@ -1534,7 +1442,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
     if (!mounted) return nextConfig;
     _replaceOwnedControllerConfiguration(nextConfig);
-    unawaited(_loadAllAgentSessionCatalogs());
     _showSnackBar(
       cleanupWarning
           ? 'Saved agent configuration, but some retired Keychain entries could not be removed.'

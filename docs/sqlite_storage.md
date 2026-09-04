@@ -1,6 +1,6 @@
 # Local recovery storage
 
-Updated: 2026-08-09
+Updated: 2026-09-02
 
 The application keeps two bounded recovery payload stores and one Workspace UI
 state file:
@@ -20,9 +20,11 @@ maintenance after writes. Each transcript file is additionally limited to
 48 MiB and 2,000 messages.
 
 `workspace_ui_state.json` is not governed by `storage.max_size_gb` or
-`storage.retention_days`. It stores expanded, pinned, hidden and manually added
-Workspace state together with session IDs, canonical and additional workspace
-roots, display titles, agent association, and pin/archive/unread status. A
+`storage.retention_days`. It stores expanded, pinned, hidden and explicitly
+added Workspace state together with metadata for sessions the app has created
+or resumed: session IDs, canonical and additional workspace roots, display
+titles, agent association, and pin/archive/unread status. It is not populated
+by a startup-wide agent session scan. A
 fallback display title can be derived from the beginning of a prompt, so this
 file may contain a short prompt-derived string. Entries remain until the
 corresponding UI state is updated or explicitly removed.

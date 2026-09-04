@@ -3720,12 +3720,6 @@ class ChatController extends ChangeNotifier {
     });
   }
 
-  Future<List<AcpProjectSessions>> loadSessionCatalog() async {
-    final projects = await listSessions();
-    _mergeSessionCatalog(projects);
-    return projects;
-  }
-
   void mergeSessionIndex(Iterable<AgentSession> indexedSessions) {
     var didChange = false;
     for (final session in indexedSessions) {
@@ -7798,60 +7792,6 @@ class ChatController extends ChangeNotifier {
     sessions.insert(0, session);
   }
 
-  void _mergeSessionCatalog(List<AcpProjectSessions> projects) {
-    final now = DateTime.now();
-    for (final project in projects) {
-      for (final entry in project.sessions) {
-        final sessionId = entry.id.trim();
-        if (sessionId.isEmpty) continue;
-
-        final boundSession = _boundSessionWithId(sessionId);
-        final existing = _sessionWithId(sessionId);
-        final workspaceCwd = entry.cwd.trim().isEmpty ? project.cwd : entry.cwd;
-        final boundAgentName = boundSession?.agentName?.trim();
-        final catalogAgentName = _agentNameFromSessionCatalog(entry);
-        final session = AgentSession(
-          id: sessionId,
-          cwd:
-              boundSession?.cwd ??
-              (workspaceCwd.trim().isEmpty ? cwd : workspaceCwd),
-          createdAt:
-              boundSession?.createdAt ??
-              existing?.createdAt ??
-              entry.updatedAt ??
-              now,
-          additionalDirectories:
-              boundSession?.additionalDirectories ??
-              entry.additionalDirectories,
-          title: normalizeSessionTitle(entry.title) ?? sessionId,
-          titleOverride: existing?.titleOverride,
-          updatedAt: entry.updatedAt ?? existing?.updatedAt,
-          agentName: boundAgentName != null && boundAgentName.isNotEmpty
-              ? boundSession!.agentName
-              : catalogAgentName ?? existing?.agentName,
-          sessionTemplateId:
-              boundSession?.sessionTemplateId ?? existing?.sessionTemplateId,
-          sessionTemplateVersion:
-              boundSession?.sessionTemplateVersion ??
-              existing?.sessionTemplateVersion,
-          initialEvents: existing?.initialEvents ?? const <AgentEvent>[],
-          pinned: existing?.pinned ?? false,
-          archived: existing?.archived ?? false,
-          unread: existing?.unread ?? false,
-          localUnstarted:
-              boundSession?.localUnstarted ?? existing?.localUnstarted ?? false,
-        );
-        _retiredSessionIds.remove(session.id);
-        if (boundSession == null) {
-          _removeLocalUnstartedSessionId(session.id);
-        }
-        if (currentSession?.id.trim() == sessionId) currentSession = session;
-        _upsertSession(session);
-      }
-    }
-    _notifyListeners();
-  }
-
   AgentSession? _sessionWithId(String id) {
     for (final session in sessions) {
       if (_sessionIdsMatch(session.id, id)) return session;
@@ -7976,16 +7916,6 @@ class ChatController extends ChangeNotifier {
     }
     _upsertSession(updated);
     _notifyListeners();
-  }
-
-  String? _agentNameFromSessionCatalog(AcpSessionEntry entry) {
-    final raw =
-        entry.meta['agentName'] ??
-        entry.meta['agent_name'] ??
-        entry.meta['agent'];
-    if (raw is! String) return null;
-    final trimmed = raw.trim();
-    return trimmed.isEmpty ? null : trimmed;
   }
 
   bool _sameSessionIndex(AgentSession a, AgentSession b) {

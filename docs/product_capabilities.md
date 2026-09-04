@@ -8,9 +8,11 @@ details live in [Runtime architecture](runtime_architecture.md) and
 
 ## Workspaces and sessions
 
-- Group local ACP sessions by canonical workspace.
-- Create, list, restore, close, delete, fork, pin, rename, archive, and open
-  sessions in another window.
+- Add and retain workspaces explicitly instead of deriving them by scanning all
+  agent sessions.
+- Create, manually list and restore, close, delete, fork, pin, rename, archive,
+  and open sessions in another window. Session catalogs are queried only from
+  the explicit Resume Session flow.
 - Stream text, plan, tool-call, status, usage, and terminal events into the
   conversation timeline.
 - Keep multiple conversations active in one app window, with independent
