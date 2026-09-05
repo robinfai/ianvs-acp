@@ -110,17 +110,19 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
   @override
   Widget build(BuildContext context) {
     final workspaces = _visibleWorkspaces();
+    final showSearch =
+        widget.workspaces.length >= 7 || _searchController.text.isNotEmpty;
     return Container(
       color: AppColors.bg,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(18, 18, 14, 10),
+            padding: EdgeInsets.fromLTRB(18, showSearch ? 14 : 10, 14, 8),
             child: Row(
               children: [
                 Text(
-                  'Workspaces',
+                  '项目',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                     color: AppColors.textSecondary,
@@ -129,11 +131,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   ),
                 ),
                 const Spacer(),
-                _CountPill(
-                  count: workspaces.length,
-                  semanticsLabel: '${workspaces.length} workspaces',
-                ),
-                const SizedBox(width: 4),
                 IconButton(
                   key: const Key('add-workspace-button'),
                   tooltip: 'Add workspace',
@@ -145,13 +142,14 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-            child: _WorkspaceSearchField(
-              controller: _searchController,
-              onChanged: (_) => setState(() {}),
+          if (showSearch)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+              child: _WorkspaceSearchField(
+                controller: _searchController,
+                onChanged: (_) => setState(() {}),
+              ),
             ),
-          ),
           Expanded(
             child: ListView.separated(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
@@ -652,7 +650,7 @@ class _WorkspaceSearchField extends StatelessWidget {
                 decoration: InputDecoration(
                   hint: const ExcludeSemantics(
                     child: Text(
-                      'Search workspaces...',
+                      '搜索项目…',
                       style: TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 12.5,
@@ -2110,10 +2108,9 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
 }
 
 class _CountPill extends StatelessWidget {
-  const _CountPill({required this.count, this.semanticsLabel});
+  const _CountPill({required this.count});
 
   final int count;
-  final String? semanticsLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -2137,8 +2134,6 @@ class _CountPill extends StatelessWidget {
         ),
       ),
     );
-    final label = semanticsLabel;
-    if (label == null) return ExcludeSemantics(child: pill);
-    return Semantics(label: label, excludeSemantics: true, child: pill);
+    return ExcludeSemantics(child: pill);
   }
 }

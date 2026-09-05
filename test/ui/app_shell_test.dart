@@ -113,7 +113,7 @@ void main() {
 
     expect(find.text('Codex'), findsWidgets);
     expect(find.text('disconnected'), findsOneWidget);
-    expect(find.text('New Session'), findsOneWidget);
+    expect(find.text('新会话'), findsOneWidget);
     expect(find.text('Resume'), findsNothing);
     expect(find.text('Reconnect'), findsOneWidget);
   });
@@ -383,7 +383,7 @@ void main() {
     final newSessionButton = find
         .ancestor(
           of: find.byIcon(Icons.add_rounded),
-          matching: find.byType(FilledButton),
+          matching: find.byType(TextButton),
         )
         .first;
     final newSessionSize = tester.getSize(newSessionButton);
@@ -570,7 +570,7 @@ void main() {
     final sidebarRect = tester.getRect(find.byType(WorkspaceSidebar));
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
 
-    expect(sidebarRect.width, moreOrLessEquals(320));
+    expect(sidebarRect.width, moreOrLessEquals(340));
     expect(promptRect.left, greaterThanOrEqualTo(sidebarRect.right));
     expect(promptRect.right, lessThan(inspectorRect.left));
   });
@@ -901,7 +901,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('ACP Client'), findsOneWidget);
-    expect(find.text('New Session'), findsNWidgets(2));
+    expect(find.text('新会话'), findsOneWidget);
+    expect(find.text('New Session'), findsOneWidget);
     expect(find.text('Resume'), findsNothing);
     expect(find.text('恢复会话'), findsNothing);
   });

@@ -2966,8 +2966,8 @@ foregroundDecoration: BoxDecoration(
     expect(find.text('Implementation plan'), findsOneWidget);
     expect(find.text('Render tool calls as cards'), findsOneWidget);
     expect(find.text('Verify resume flow'), findsOneWidget);
-    expect(find.text('High'), findsOneWidget);
-    expect(find.text('Medium'), findsOneWidget);
+    expect(find.text('High'), findsNothing);
+    expect(find.text('Medium'), findsNothing);
   });
 
   testWidgets('ChatTimeline keeps plan entries readable in narrow widths', (
@@ -3008,7 +3008,7 @@ foregroundDecoration: BoxDecoration(
       find.text('Check prompt composer states and review'),
       findsOneWidget,
     );
-    expect(find.text('High'), findsOneWidget);
+    expect(find.text('High'), findsNothing);
   });
 
   testWidgets('ChatTimeline normalizes plan entry status icons', (

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/acp_session_usage.dart';
+import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
@@ -22,6 +23,13 @@ void main() {
           createdAt: DateTime(2026, 5, 2, 10),
           title: 'Build workspace shell',
           agentName: 'Codex',
+          initialEvents: const [
+            AgentEvent(
+              type: AgentEventType.status,
+              text: 'Repository context',
+              metadata: {'git_branch': 'main'},
+            ),
+          ],
         ),
       ],
     );
@@ -38,6 +46,7 @@ void main() {
               workspace: workspace,
               agentName: 'Codex',
               currentSession: workspace.sessions.single,
+              environmentBranch: 'main',
               sessionSettings: const AcpSessionSettings(
                 configOptions: [
                   AcpConfigOption(
@@ -94,9 +103,12 @@ void main() {
       ),
     );
 
-    expect(find.text('会话'), findsOneWidget);
+    expect(find.text('会话信息'), findsOneWidget);
+    expect(find.text('环境'), findsOneWidget);
     expect(find.text('上下文'), findsOneWidget);
-    expect(find.text('Build workspace shell'), findsOneWidget);
+    expect(find.text('本地'), findsOneWidget);
+    expect(find.text('main'), findsOneWidget);
+    expect(find.text('Codex'), findsNothing);
     expect(find.text('app'), findsOneWidget);
     await tester.tap(find.text('查看全部'));
     await tester.pumpAndSettle();

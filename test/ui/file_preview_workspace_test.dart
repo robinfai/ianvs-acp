@@ -16,6 +16,7 @@ import 'package:ianvs_acp/ui/components/markdown_front_matter_card.dart';
 import 'package:ianvs_acp/ui/components/markdown_preview_image.dart';
 import 'package:ianvs_acp/ui/file_preview/file_preview_document.dart';
 import 'package:ianvs_acp/ui/image_decode_budget.dart';
+import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 
 void main() {
   Future<void> pumpAsyncUntil(WidgetTester tester, bool Function() done) async {
@@ -167,10 +168,8 @@ void main() {
       final surface = tester.widget<Container>(
         find.byKey(const Key('workspace-inspector-surface')),
       );
-      final decoration = surface.decoration! as BoxDecoration;
-      expect(decoration.borderRadius, isNull);
-      expect(decoration.border, isNotNull);
-      expect(decoration.boxShadow, isNull);
+      expect(surface.color, AppColors.surface);
+      expect(surface.decoration, isNull);
       expect(surface.foregroundDecoration, isNull);
 
       final canvasRect = tester.getRect(

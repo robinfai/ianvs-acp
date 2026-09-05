@@ -410,7 +410,7 @@ void main() {
       ),
     );
 
-    expect(find.text('Workspaces'), findsOneWidget);
+    expect(find.text('项目'), findsOneWidget);
     expect(find.text('No sessions yet'), findsOneWidget);
     expect(find.text('Sessions'), findsNothing);
     expect(find.widgetWithText(OutlinedButton, 'New Session'), findsNothing);
@@ -430,6 +430,14 @@ void main() {
       name: 'other',
       sessions: const <AgentSession>[],
     );
+    final extraWorkspaces = List<WorkspaceRecord>.generate(
+      5,
+      (index) => WorkspaceRecord(
+        path: '/workspace/extra-$index',
+        name: 'extra-$index',
+        sessions: const <AgentSession>[],
+      ),
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -439,7 +447,11 @@ void main() {
             height: 640,
             child: WorkspaceSidebar(
               agentName: 'Codex',
-              workspaces: [currentWorkspace, otherWorkspace],
+              workspaces: [
+                currentWorkspace,
+                otherWorkspace,
+                ...extraWorkspaces,
+              ],
               currentWorkspace: currentWorkspace,
               currentSession: null,
               onNewSession: () {},
@@ -449,17 +461,8 @@ void main() {
       ),
     );
 
-    expect(
-      find.widgetWithText(TextField, 'Search workspaces...'),
-      findsOneWidget,
-    );
-    expect(
-      tester
-          .getSize(find.widgetWithText(TextField, 'Search workspaces...'))
-          .height,
-      40,
-    );
-    expect(find.bySemanticsLabel('2 workspaces'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '搜索项目…'), findsOneWidget);
+    expect(tester.getSize(find.widgetWithText(TextField, '搜索项目…')).height, 40);
     expect(
       find.bySemanticsLabel(RegExp(r'current.*0 sessions')),
       findsOneWidget,
@@ -474,10 +477,7 @@ void main() {
       findsOne,
     );
 
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Search workspaces...'),
-      'other',
-    );
+    await tester.enterText(find.widgetWithText(TextField, '搜索项目…'), 'other');
     await tester.pump();
 
     expect(find.text('other'), findsNWidgets(2));

@@ -304,6 +304,9 @@ class AppShell extends StatelessWidget {
                           workspace: currentWorkspace,
                           agentName: agentName,
                           currentSession: controller.currentSession,
+                          environmentBranch: _branchFromMessages(
+                            controller.messages,
+                          ),
                           sessionSettings: controller.sessionSettings,
                           sessionUsage: controller.sessionUsage,
                           lastLatency: controller.lastLatency,
@@ -563,7 +566,7 @@ class AppShell extends StatelessWidget {
 
                         final sidebarWidth = constraints.maxWidth >= 1900
                             ? 360.0
-                            : 320.0;
+                            : 340.0;
                         return Row(
                           children: [
                             if (!hideSidebar) ...[
@@ -1531,4 +1534,24 @@ String _authMethodLabel(Map<String, Object?> method) {
 String _authMethodDescription(Map<String, Object?> method) {
   final description = method['description'];
   return description is String ? description.trim() : '';
+}
+
+String? _branchFromMessages(List<ChatMessage> messages) {
+  const candidateKeys = [
+    'branch',
+    'branchName',
+    'branch_name',
+    'gitBranch',
+    'git_branch',
+    'worktreeBranch',
+  ];
+  for (final message in messages.reversed.take(128)) {
+    for (final key in candidateKeys) {
+      final value = message.metadata[key];
+      if (value == null) continue;
+      final label = value.toString().trim().replaceAll(RegExp(r'\s+'), ' ');
+      if (label.isNotEmpty) return label;
+    }
+  }
+  return null;
 }

@@ -157,10 +157,7 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
               width: 320,
               child: Container(
                 key: const Key('workspace-inspector-surface'),
-                decoration: const BoxDecoration(
-                  color: AppColors.surface,
-                  border: Border(left: BorderSide(color: AppColors.border)),
-                ),
+                color: AppColors.surface,
                 child: widget.inspector,
               ),
             ),

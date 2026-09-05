@@ -101,7 +101,7 @@ class AgentToolbar extends StatelessWidget {
                 _AgentMenuButton(
                   agentName: agentName,
                   agentServers: agentServers,
-                  compact: compact,
+                  compact: true,
                   canSwitchAgent: canSwitchAgent,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
@@ -559,9 +559,9 @@ class _ToolbarButtonShell extends StatelessWidget {
             : const EdgeInsets.symmetric(horizontal: 8),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: AppColors.surfaceMuted,
+          color: label == null ? Colors.transparent : AppColors.surfaceMuted,
           borderRadius: BorderRadius.circular(AppRadius.pill),
-          border: Border.all(color: AppColors.borderSoft),
+          border: label == null ? null : Border.all(color: AppColors.borderSoft),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -641,7 +641,7 @@ class _BrandMark extends StatelessWidget {
     final label = Row(
       children: [
         const Icon(
-          Icons.work_outline_rounded,
+          Icons.folder_outlined,
           size: 17,
           color: AppColors.textSecondary,
         ),
@@ -981,36 +981,29 @@ class _PrimaryToolbarAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final style = FilledButton.styleFrom(
-      foregroundColor: AppColors.textPrimary,
+    final style = TextButton.styleFrom(
+      foregroundColor: AppColors.accent,
       disabledForegroundColor: AppColors.textTertiary,
-      backgroundColor: AppColors.surfaceMuted,
-      disabledBackgroundColor: AppColors.surfaceRaised,
-      elevation: 0,
-      minimumSize: Size(compact ? 34 : 108, 34),
+      minimumSize: Size(compact ? 34 : 72, 34),
       padding: compact
           ? EdgeInsets.zero
-          : const EdgeInsets.symmetric(horizontal: 12),
+          : const EdgeInsets.symmetric(horizontal: 8),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.standard,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        side: const BorderSide(color: AppColors.border),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
     );
 
     final button = compact
-        ? FilledButton(
+        ? TextButton(
             onPressed: onPressed,
             style: style,
             child: const Icon(Icons.add_rounded, size: 18),
           )
-        : FilledButton.icon(
+        : TextButton(
             onPressed: onPressed,
             style: style,
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: const Text(
-              'New Session',
+            child: const Text(
+              '新会话',
               style: TextStyle(
                 fontFamily: AppTypography.family,
                 fontFamilyFallback: AppTypography.familyFallback,

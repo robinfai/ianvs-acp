@@ -363,11 +363,11 @@ class _PromptInputState extends State<PromptInput> {
         .toDouble();
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 48),
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxWidth: 848,
+            maxWidth: 800,
             maxHeight: maximumContentHeight,
           ),
           child: SingleChildScrollView(
@@ -415,7 +415,7 @@ class _PromptInputState extends State<PromptInput> {
                     child: AnimatedContainer(
                       key: const Key('prompt-input-surface'),
                       duration: const Duration(milliseconds: 120),
-                      constraints: const BoxConstraints(minHeight: 114),
+                      constraints: const BoxConstraints(minHeight: 152),
                       decoration: BoxDecoration(
                         color: _isDraggingAttachments
                             ? AppColors.accentMist
@@ -511,7 +511,7 @@ class _PromptInputState extends State<PromptInput> {
                                 decoration: InputDecoration(
                                   hint: ExcludeSemantics(
                                     child: Text(
-                                      'Message ${widget.agentName}',
+                                      '发送消息给 ${widget.agentName}',
                                       style: const TextStyle(
                                         color: AppColors.textTertiary,
                                         fontSize: 15,
@@ -523,9 +523,9 @@ class _PromptInputState extends State<PromptInput> {
                                   isCollapsed: true,
                                   contentPadding: const EdgeInsets.fromLTRB(
                                     15,
-                                    16,
+                                    14,
                                     15,
-                                    32,
+                                    24,
                                   ),
                                   border: InputBorder.none,
                                   enabledBorder: InputBorder.none,

@@ -161,6 +161,7 @@ const List<AgentEvent> auditSeedEvents = [
   AgentEvent(
     type: AgentEventType.userMessage,
     text: 'Review the ACP client implementation and identify UI gaps.',
+    metadata: {'branch': 'main'},
   ),
   AgentEvent(
     type: AgentEventType.agentTextDelta,

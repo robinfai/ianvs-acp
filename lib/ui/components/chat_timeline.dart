@@ -40,7 +40,7 @@ const double _turnNavigationMarkerPitch = 16;
 const double _turnNavigationMarkerWidth = 38;
 const double _turnNavigationIdleBarWidth = 7;
 const double _turnNavigationHoverBarWidth = 34;
-const double _conversationContentWidth = 848;
+const double _conversationContentWidth = 800;
 
 class ChatTimeline extends StatefulWidget {
   const ChatTimeline({
@@ -4307,7 +4307,7 @@ class _PlanStatus extends StatelessWidget {
           SizedBox(
             height: _boundedNestedListHeight(
               itemCount: entryCount,
-              estimatedItemHeight: 54,
+              estimatedItemHeight: 44,
               maxHeight: _nestedDetailsMaxHeight,
             ),
             child: ListView.separated(
@@ -4341,7 +4341,6 @@ class _PlanEntryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = _stringMetadata(entry, 'status') ?? 'pending';
-    final priority = _stringMetadata(entry, 'priority') ?? 'medium';
     final content = _stringMetadata(entry, 'content') ?? '';
     final color = _statusColor(status);
     final icon = switch (_normalizedStatusToken(status)) {
@@ -4352,68 +4351,24 @@ class _PlanEntryRow extends StatelessWidget {
       _ => Icons.radio_button_unchecked_rounded,
     };
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final narrow = constraints.maxWidth < 220;
-        final contentRow = Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: color, size: 16),
-            const SizedBox(width: 7),
-            Expanded(
-              child: Text(
-                content,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  height: 1.35,
-                ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              content,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                height: 1.35,
               ),
             ),
-          ],
-        );
-
-        if (narrow) {
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                contentRow,
-                const SizedBox(height: 5),
-                Padding(
-                  padding: const EdgeInsets.only(left: 23),
-                  child: _StatusPill(
-                    label: priority,
-                    color: AppColors.primaryDark,
-                  ),
-                ),
-              ],
-            ),
-          );
-        }
-
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, color: color, size: 16),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  content,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    height: 1.35,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 7),
-              _StatusPill(label: priority, color: AppColors.primaryDark),
-            ],
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }

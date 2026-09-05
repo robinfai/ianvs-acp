@@ -201,7 +201,7 @@ void main() {
       input(agentName: 'Kimi Code Dev', isSending: false, onSend: (_, _) {}),
     );
 
-    expect(find.text('Message Kimi Code Dev'), findsOneWidget);
+    expect(find.text('发送消息给 Kimi Code Dev'), findsOneWidget);
   });
 
   testWidgets('PromptInput shows a stoppable idle warning', (tester) async {

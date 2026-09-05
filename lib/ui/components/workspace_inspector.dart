@@ -17,6 +17,7 @@ class WorkspaceInspector extends StatelessWidget {
     required this.mcpServers,
     required this.additionalDirectories,
     required this.clientProviders,
+    this.environmentBranch,
     this.configPath,
     this.sessionSettings = const AcpSessionSettings(),
     this.sessionUsage,
@@ -32,6 +33,7 @@ class WorkspaceInspector extends StatelessWidget {
   final List<McpServerConfig> mcpServers;
   final List<String> additionalDirectories;
   final AcpClientProviderConfig clientProviders;
+  final String? environmentBranch;
   final String? configPath;
   final AcpSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
@@ -42,57 +44,76 @@ class WorkspaceInspector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sourceTitle = currentSession?.displayTitle ?? workspace.name;
-    final sessionSummary = currentSession == null ? '尚未开始会话' : '会话设置与工作区上下文';
+    final branch = environmentBranch ?? _sessionBranch(currentSession);
     return Material(
       color: AppColors.surface,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 12, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _CompactInspectorHeader(
-              label: '会话',
-              actionIcon: Icons.tune_rounded,
-              actionTooltip: '会话设置',
-              onAction: onShowSessionSettings,
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(0, 4, 0, 12),
-              child: Text(
-                sessionSummary,
-                style: const TextStyle(
-                  color: AppColors.textTertiary,
-                  fontSize: 13,
-                  height: 1.35,
-                  fontWeight: FontWeight.w400,
-                ),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 38, 16, 16),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(AppRadius.xl),
+            border: Border.all(color: AppColors.border),
+            boxShadow: AppShadows.soft,
+          ),
+          padding: const EdgeInsets.fromLTRB(18, 20, 18, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _CompactInspectorHeader(
+                label: '会话信息',
+                actionIcon: Icons.tune_rounded,
+                actionTooltip: '会话设置',
+                onAction: onShowSessionSettings,
+                prominent: true,
               ),
-            ),
-            const Divider(height: 1, color: AppColors.borderSoft),
-            const SizedBox(height: 12),
-            _CompactInspectorHeader(
-              label: '上下文',
-              actionIcon: Icons.info_outline_rounded,
-              actionTooltip: '查看代理能力',
-              onAction: onShowCapabilities,
-            ),
-            const SizedBox(height: 4),
-            _CompactSourceRow(
-              icon: Icons.chat_bubble_outline_rounded,
-              label: sourceTitle,
-            ),
-            _CompactSourceRow(
-              icon: Icons.folder_outlined,
-              label: workspace.name,
-            ),
-            _CompactSourceRow(
-              icon: Icons.link_rounded,
-              label: '查看全部',
-              muted: true,
-              onTap: () => _showDetails(context),
-            ),
-          ],
+              const SizedBox(height: 14),
+              const Divider(height: 1, color: AppColors.borderSoft),
+              const SizedBox(height: 18),
+              _InspectorDisclosure(
+                label: '环境',
+                children: [
+                  const _CompactSourceRow(
+                    icon: Icons.computer_outlined,
+                    label: '本地',
+                  ),
+                  _CompactSourceRow(
+                    icon: Icons.account_tree_outlined,
+                    label: branch ?? 'Git 工作区',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              const Divider(height: 1, color: AppColors.borderSoft),
+              const SizedBox(height: 18),
+              _InspectorDisclosure(
+                label: '上下文',
+                children: [
+                  _CompactSourceRow(
+                    icon: Icons.folder_outlined,
+                    label: workspace.name,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              const Divider(height: 1, color: AppColors.borderSoft),
+              const SizedBox(height: 18),
+              const _CompactInspectorHeader(
+                label: '来源',
+                actionIcon: Icons.add_rounded,
+                actionTooltip: '添加来源',
+                onAction: null,
+              ),
+              const SizedBox(height: 8),
+              _CompactSourceRow(
+                icon: Icons.link_rounded,
+                label: '查看全部',
+                muted: true,
+                trailing: Icons.north_east_rounded,
+                onTap: () => _showDetails(context),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -207,34 +228,65 @@ class WorkspaceInspector extends StatelessWidget {
   }
 }
 
+String? _sessionBranch(AgentSession? session) {
+  if (session == null) return null;
+  const candidateKeys = [
+    'branch',
+    'branchName',
+    'branch_name',
+    'gitBranch',
+    'git_branch',
+    'worktreeBranch',
+  ];
+  final events = session.initialEvents;
+  final start = events.length > 128 ? events.length - 128 : 0;
+  for (var index = events.length - 1; index >= start; index -= 1) {
+    final metadata = events[index].metadata;
+    for (final key in candidateKeys) {
+      final value = metadata[key];
+      if (value == null) continue;
+      final label = value.toString().trim().replaceAll(RegExp(r'\s+'), ' ');
+      if (label.isNotEmpty) return label;
+    }
+  }
+  return null;
+}
+
 class _CompactInspectorHeader extends StatelessWidget {
   const _CompactInspectorHeader({
     required this.label,
     required this.actionIcon,
     required this.actionTooltip,
     required this.onAction,
+    this.prominent = false,
   });
 
   final String label;
   final IconData actionIcon;
   final String actionTooltip;
   final VoidCallback? onAction;
+  final bool prominent;
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 28,
+      height: 36,
       child: Row(
         children: [
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 13,
-                height: 1.3,
-                fontWeight: FontWeight.w500,
-              ),
+              style:
+                  const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13.5,
+                    height: 1.3,
+                    fontWeight: FontWeight.w600,
+                  ).copyWith(
+                    color: prominent
+                        ? AppColors.textPrimary
+                        : AppColors.textSecondary,
+                  ),
             ),
           ),
           if (onAction != null)
@@ -256,12 +308,14 @@ class _CompactSourceRow extends StatelessWidget {
     required this.icon,
     required this.label,
     this.muted = false,
+    this.trailing,
     this.onTap,
   });
 
   final IconData icon;
   final String label;
   final bool muted;
+  final IconData? trailing;
   final VoidCallback? onTap;
 
   @override
@@ -272,7 +326,7 @@ class _CompactSourceRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.sm),
         onTap: onTap,
         child: SizedBox(
-          height: 31,
+          height: 40,
           child: Row(
             children: [
               Icon(icon, size: 17, color: AppColors.textSecondary),
@@ -290,10 +344,67 @@ class _CompactSourceRow extends StatelessWidget {
                   ),
                 ),
               ),
+              if (trailing != null)
+                Icon(trailing, size: 15, color: AppColors.textTertiary),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _InspectorDisclosure extends StatefulWidget {
+  const _InspectorDisclosure({required this.label, required this.children});
+
+  final String label;
+  final List<Widget> children;
+
+  @override
+  State<_InspectorDisclosure> createState() => _InspectorDisclosureState();
+}
+
+class _InspectorDisclosureState extends State<_InspectorDisclosure> {
+  bool _expanded = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: SizedBox(
+              height: 40,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.label,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _expanded
+                        ? Icons.keyboard_arrow_down_rounded
+                        : Icons.chevron_right_rounded,
+                    size: 18,
+                    color: AppColors.textTertiary,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (_expanded) ...widget.children,
+      ],
     );
   }
 }
