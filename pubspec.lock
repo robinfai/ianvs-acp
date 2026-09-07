@@ -192,6 +192,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.1.2"
+  ianvs_agent_chat:
+    dependency: "direct main"
+    description:
+      path: "packages/ianvs_agent_chat"
+      relative: true
+    source: path
+    version: "0.1.0"
   ianvs_terminal_core:
     dependency: "direct main"
     description:

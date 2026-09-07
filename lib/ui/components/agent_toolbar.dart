@@ -20,6 +20,7 @@ class AgentToolbar extends StatelessWidget {
     this.windowControlsInset = 0,
     this.onSelectAgent,
     this.onShowAgentConfig,
+    this.onOpenLlmChat,
     this.onShowProtocolCoverage,
     this.onShowActivity,
     this.onShowRuntimeInventory,
@@ -48,6 +49,7 @@ class AgentToolbar extends StatelessWidget {
   final double windowControlsInset;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onOpenLlmChat;
   final VoidCallback? onShowProtocolCoverage;
   final VoidCallback? onShowActivity;
   final VoidCallback? onShowRuntimeInventory;
@@ -134,6 +136,7 @@ class AgentToolbar extends StatelessWidget {
                   canSwitchAgent: canSwitchAgent,
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
+                  onOpenLlmChat: onOpenLlmChat,
                   onShowProtocolCoverage: onShowProtocolCoverage,
                   onShowActivity: onShowActivity,
                   onShowRuntimeInventory: onShowRuntimeInventory,
@@ -198,6 +201,7 @@ class _AgentMenuButton extends StatelessWidget {
     required this.canSwitchAgent,
     required this.onSelectAgent,
     required this.onShowAgentConfig,
+    required this.onOpenLlmChat,
     required this.onShowProtocolCoverage,
     required this.onShowActivity,
     required this.onShowRuntimeInventory,
@@ -212,6 +216,7 @@ class _AgentMenuButton extends StatelessWidget {
   final bool canSwitchAgent;
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
+  final VoidCallback? onOpenLlmChat;
   final VoidCallback? onShowProtocolCoverage;
   final VoidCallback? onShowActivity;
   final VoidCallback? onShowRuntimeInventory;
@@ -222,6 +227,7 @@ class _AgentMenuButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasMenu =
+        onOpenLlmChat != null ||
         agentServers.isNotEmpty ||
         onShowAgentConfig != null ||
         onShowProtocolCoverage != null ||
@@ -269,6 +275,22 @@ class _AgentMenuButton extends StatelessWidget {
               ),
             ),
           ),
+          if (onOpenLlmChat != null)
+            PopupMenuItem<_AgentMenuSelection>(
+              onTap: onOpenLlmChat,
+              child: const Row(
+                children: [
+                  Icon(Icons.chat_bubble_outline_rounded, size: 17),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Open LLM API chat',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           for (final server in agentServers)
             PopupMenuItem<_AgentMenuSelection>(
               value: _AgentMenuSelection.agent(server.name),

@@ -1,3 +1,7 @@
+import 'package:ianvs_agent_chat/llm_chat_panel.dart';
+import 'package:ianvs_agent_chat/agent_chat_view.dart';
+import '../../chat/acp_chat_session.dart';
+import '../../platform/prompt_image_clipboard.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -5,7 +9,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../acp/acp_input_budget.dart';
-import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_prompt_capability_policy.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
@@ -23,7 +26,6 @@ import '../components/agent_config_dialog.dart';
 import '../components/agent_toolbar.dart';
 import '../components/bounded_image_preview.dart';
 import '../components/capabilities_dialog.dart';
-import '../components/chat_timeline.dart';
 import '../components/error_banner.dart';
 import '../components/file_preview_workspace.dart';
 import '../components/permission_history_dialog.dart';
@@ -204,65 +206,7 @@ class AppShell extends StatelessWidget {
         final activeAdditionalDirectories =
             activeSession?.additionalDirectories ??
             controller.additionalDirectories;
-        final promptWorkspaceRoots = <String>{
-          activeSession?.cwd ?? controller.cwd,
-          ...activeAdditionalDirectories,
-        }.where((path) => path.trim().isNotEmpty).toList(growable: false);
         final promptAttachmentController = PromptAttachmentController();
-        Widget promptDock() => PromptInput(
-          key: ValueKey((
-            agentName: agentName,
-            sessionId: activeSession?.id,
-            cwd: activeSession?.cwd ?? controller.cwd,
-          )),
-          inputBudget: inputBudget,
-          agentName: agentName,
-          enabled: !controller.isSessionOperationRunning,
-          isSending: controller.isStreaming,
-          promptAppearsStalled: controller.promptAppearsStalled,
-          availableCommands: controller.availableCommands,
-          availableCommandsRevision: controller.availableCommandsRevision,
-          promptCapabilities: promptCapabilities,
-          workspaceRoots: promptWorkspaceRoots,
-          imageAttachmentLimitation: promptCapabilityResolution.imageLimitation,
-          promptHistory: <String>[
-            for (final message in controller.messages)
-              if (message.role == ChatMessageRole.user &&
-                  message.text.trim().isNotEmpty)
-                message.text,
-          ],
-          queuedPrompts: controller.queuedPrompts,
-          onGuideQueuedPrompt: controller.guideQueuedPrompt,
-          onRemoveQueuedPrompt: controller.removeQueuedPrompt,
-          onClearQueuedPrompts: controller.clearQueuedPrompts,
-          onReorderQueuedPrompt: controller.reorderQueuedPrompt,
-          pendingPermissionRequest: controller.pendingPermissionRequest,
-          onAllowPermission: () => unawaited(
-            controller.resolvePermissionRequest(AcpPermissionDecision.allow),
-          ),
-          onDenyPermission: () => unawaited(
-            controller.resolvePermissionRequest(AcpPermissionDecision.deny),
-          ),
-          onCancelPermission: () => unawaited(
-            controller.resolvePermissionRequest(AcpPermissionDecision.cancel),
-          ),
-          onSelectPermissionOption: (optionId) =>
-              unawaited(controller.resolvePermissionOption(optionId)),
-          toolCallExecutionPolicy: controller.toolCallExecutionPolicy,
-          hasPermissionReviewer: controller.hasPermissionReviewer,
-          onToolCallExecutionPolicyChanged:
-              controller.setToolCallExecutionPolicy,
-          configOptions: controller.sessionSettings.configOptions,
-          onConfigOptionSelected:
-              controller.currentSession != null && sessionActionsEnabled
-              ? (configId, value) =>
-                    unawaited(controller.setConfigOption(configId, value))
-              : null,
-          onSend: (text, attachments) =>
-              controller.submitOrQueuePrompt(text, attachments: attachments),
-          onStop: controller.stop,
-          attachmentController: promptAttachmentController,
-        );
 
         return Scaffold(
           backgroundColor: AppColors.bg,
@@ -416,36 +360,15 @@ class AppShell extends StatelessWidget {
                           controller: promptAttachmentController,
                           enabled: !controller.isSessionOperationRunning,
                           promptCapabilities: promptCapabilities,
-                          child: Column(
-                            children: [
-                              Expanded(
-                                child: ChatTimeline(
-                                  key: ValueKey(
-                                    'chat-timeline-${controller.currentSession?.id ?? 'empty'}',
-                                  ),
-                                  inputBudget: inputBudget,
-                                  imageDecodeLedger: imageDecodeLedger,
-                                  boundedImageDecoder: boundedImageDecoder,
-                                  messages: controller.visibleMessages,
-                                  messageListRevision:
-                                      controller.messagesRevision,
-                                  agentName: agentName,
-                                  hasActiveSession:
-                                      controller.currentSession != null,
-                                  activeSessionLabel:
-                                      controller.currentSession?.displayTitle,
-                                  isLoadingSession:
-                                      controller.isSessionReplayLoading,
-                                  // The empty state owns an explicit primary
-                                  // action at every width. The toolbar remains a
-                                  // persistent shortcut for experienced users.
-                                  showNewSessionAction: true,
-                                  onNewSession: startNewSession,
-                                  onTapLink: onTapLink,
-                                ),
-                              ),
-                              promptDock(),
-                            ],
+                          child: AgentChatView(
+                            session: AcpChatSession(controller),
+                            onTapLink: onTapLink,
+                            onNewSession: startNewSession,
+                            attachmentController: promptAttachmentController,
+                            readClipboardImage: readPromptImageFromClipboard,
+                            imageDecodeLedger: imageDecodeLedger,
+                            boundedImageDecoder: boundedImageDecoder,
+                            showError: false,
                           ),
                         );
 
@@ -457,6 +380,19 @@ class AppShell extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   AgentToolbar(
+                                    onOpenLlmChat: () =>
+                                        Navigator.of(context).push<void>(
+                                          MaterialPageRoute(
+                                            builder: (_) => Scaffold(
+                                              appBar: AppBar(
+                                                title: const Text(
+                                                  'LLM API chat',
+                                                ),
+                                              ),
+                                              body: const LlmChatPanel(),
+                                            ),
+                                          ),
+                                        ),
                                     sidebarVisible: !hideSidebar,
                                     inspectorVisible: !hideInspector,
                                     onToggleSidebar: compactWindow

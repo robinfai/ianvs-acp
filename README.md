@@ -14,6 +14,16 @@ See [Product capabilities](docs/product_capabilities.md),
 [Runtime architecture](docs/runtime_architecture.md). Open decisions and manual
 release checks are tracked in [Manual follow-ups](docs/manual_followups.md).
 
+## Reusable Agent Chat UI
+
+The timeline and composer live in
+[`ianvs_agent_chat`](packages/ianvs_agent_chat/README.md), a standalone Flutter
+package. The app connects its ACP controller through `AcpChatSession`; hosts can
+also use the included OpenAI-compatible `LlmChatSession`. Open **Agents → Open
+LLM API chat** to try an API connection without replacing the current ACP session.
+The package includes a runnable macOS example and documents native integration
+requirements, theming, tools, approvals and lifecycle ownership.
+
 Starting a new session prompts for the session working directory, offers local
 directory path completions while typing, and can apply a versioned session
 template that selects the agent runtime, MCP set, workspace roots, permission

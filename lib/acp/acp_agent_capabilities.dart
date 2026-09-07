@@ -1,4 +1,8 @@
+import 'package:ianvs_agent_chat/models/chat_capabilities.dart';
+export 'package:ianvs_agent_chat/models/chat_capabilities.dart';
 import 'acp_input_budget.dart' show AcpInputBudget, copyBoundedInitializeInput;
+
+typedef AcpPromptCapabilities = ChatPromptCapabilities;
 
 class AcpAgentCapabilities {
   const AcpAgentCapabilities({
@@ -92,39 +96,6 @@ class AcpAuthCapabilities {
   }
 
   final bool logout;
-}
-
-class AcpPromptCapabilities {
-  const AcpPromptCapabilities({
-    required this.image,
-    required this.audio,
-    required this.embeddedContext,
-  });
-
-  factory AcpPromptCapabilities.fromRaw(Object? raw) {
-    final caps = raw is Map ? _objectMap(raw) : const <String, Object?>{};
-    return AcpPromptCapabilities(
-      image: caps['image'] == true,
-      audio: caps['audio'] == true,
-      embeddedContext: caps['embeddedContext'] == true,
-    );
-  }
-
-  final bool image;
-  final bool audio;
-  final bool embeddedContext;
-
-  AcpPromptCapabilities copyWith({
-    bool? image,
-    bool? audio,
-    bool? embeddedContext,
-  }) {
-    return AcpPromptCapabilities(
-      image: image ?? this.image,
-      audio: audio ?? this.audio,
-      embeddedContext: embeddedContext ?? this.embeddedContext,
-    );
-  }
 }
 
 class AcpMcpCapabilities {

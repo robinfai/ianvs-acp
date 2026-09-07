@@ -1,3 +1,6 @@
+import 'package:ianvs_agent_chat/models/chat_message.dart';
+export 'package:ianvs_agent_chat/models/chat_message.dart'
+    show ChatMessageRole, ChatQueuedPrompt;
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -23,8 +26,6 @@ import '../config/acp_client_config.dart' show SessionTemplateConfig;
 import '../storage/session_transcript_cache.dart';
 import 'connection_state.dart';
 import '../acp/permission_context.dart';
-
-enum ChatMessageRole { user, assistant, tool, error, status }
 
 enum ChatPermissionEventType { requested, resolved }
 
@@ -75,32 +76,6 @@ final class SessionLoadMetrics {
     'replayedHistory': replayedHistory,
     'replayEvents': replayEventCount,
   };
-}
-
-class ChatQueuedPrompt {
-  const ChatQueuedPrompt({
-    required this.id,
-    required this.text,
-    required this.attachments,
-    required this.createdAt,
-    this.guide = false,
-  });
-
-  final int id;
-  final String text;
-  final List<PromptAttachment> attachments;
-  final DateTime createdAt;
-  final bool guide;
-
-  ChatQueuedPrompt copyWith({bool? guide}) {
-    return ChatQueuedPrompt(
-      id: id,
-      text: text,
-      attachments: attachments,
-      createdAt: createdAt,
-      guide: guide ?? this.guide,
-    );
-  }
 }
 
 typedef ChatAgentEventObserver =
@@ -345,7 +320,7 @@ final class _GuardedChatMetadata {
   final List<acp.AcpInputOmission> localOmissions;
 }
 
-class ChatMessage {
+class ChatMessage implements ChatMessageView {
   factory ChatMessage({
     required ChatMessageRole role,
     required String text,
@@ -425,6 +400,7 @@ class ChatMessage {
     _previewTextTruncated = preview.truncated;
   }
 
+  @override
   final ChatMessageRole role;
   StringBuffer _textBuffer;
   String? _materializedText;
@@ -439,6 +415,7 @@ class ChatMessage {
   int? _turnId;
   Object? _ownerToken;
 
+  @override
   int? get turnId => _turnId;
 
   void _claimOwnership(Object ownerToken, int turnId) {
@@ -455,6 +432,7 @@ class ChatMessage {
     }
   }
 
+  @override
   String get text {
     final cached = _materializedText;
     if (cached != null) return cached;
@@ -466,6 +444,7 @@ class ChatMessage {
 
   /// A stable bounded prefix for compact UI projections that must not
   /// materialize a multi-megabyte streaming response on every text delta.
+  @override
   String get previewText =>
       _previewTextTruncated ? '$_previewText…' : _previewText;
 
@@ -490,6 +469,7 @@ class ChatMessage {
     _retainedBytes = null;
   }
 
+  @override
   int get revision => _revision;
 
   int get acceptedUtf8Bytes => _acceptedUtf8Bytes;
@@ -558,11 +538,14 @@ class ChatMessage {
     _retainedBytes = null;
   }
 
+  @override
   final DateTime timestamp;
+  @override
   final Map<String, Object?> metadata;
   List<acp.AcpInputOmission> _omissions;
   final int _maxOmissions;
 
+  @override
   List<acp.AcpInputOmission> get omissions => _omissions;
 
   bool addOmission(acp.AcpInputOmission omission) {

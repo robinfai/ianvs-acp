@@ -207,6 +207,11 @@ void main() {
   test(
     'maintenance evicts the oldest transcripts to meet its total cap',
     () async {
+      // Use the same clock for save-time and explicit maintenance.
+      cache = FileSessionTranscriptCache(
+        directoryPath: directory.path,
+        now: () => DateTime.utc(2026, 8, 9),
+      );
       final first = _identity(sessionId: 'session-oldest');
       final second = _identity(sessionId: 'session-newest');
       await cache.save(_snapshot(first, 'oldest transcript'));

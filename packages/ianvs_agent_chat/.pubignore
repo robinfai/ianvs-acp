@@ -1,0 +1,17 @@
+.dart_tool/
+build/
+coverage/
+.pub/
+.pub-cache/
+**/.DS_Store
+**/.idea/
+**/*.iml
+pubspec.lock
+example/build/
+example/.dart_tool/
+example/macos/Flutter/ephemeral/
+example/macos/Pods/
+example/macos/Podfile.lock
+example/macos/Runner.xcworkspace/xcuserdata/
+example/macos/Runner.xcodeproj/xcuserdata/
+test/deepseek_live_test.dart

@@ -28,6 +28,8 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  ianvs_agent_chat:
+    path: packages/ianvs_agent_chat
   flutter:
     sdk: flutter
 

@@ -137,12 +137,12 @@ void main() {
       ]);
       expect(
         inputLimit.toString(),
-        'AcpInputOmission(reason: input_limit, resource: message_text, '
+        'ChatInputOmission(reason: input_limit, resource: message_text, '
         'limit: 0, observedAtLeast: 1, truncated: true)',
       );
       expect(
         invalidImage.toString(),
-        'AcpInputOmission(reason: invalid_image, resource: embedded_image, '
+        'ChatInputOmission(reason: invalid_image, resource: embedded_image, '
         'truncated: false)',
       );
       expect(inputLimit.toJson().toString(), isNot(contains(canary)));

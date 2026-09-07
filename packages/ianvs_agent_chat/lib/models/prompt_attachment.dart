@@ -1,0 +1,267 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:mime/mime.dart' as mime;
+
+import 'chat_capabilities.dart';
+
+enum PromptAttachmentKind { file, image, audio }
+
+enum PromptAttachmentPromptMode { image, audio, embeddedResource, resourceLink }
+
+class PromptAttachment {
+  const PromptAttachment({
+    required this.path,
+    required this.name,
+    this.mimeType,
+    this.size,
+    this.data,
+    this.userApprovedOutsideWorkspace = false,
+    this.forceResourceLink = false,
+  });
+
+  factory PromptAttachment.fromPath({
+    required String path,
+    String? name,
+    String? mimeType,
+    int? size,
+    bool userApprovedOutsideWorkspace = false,
+    bool forceResourceLink = false,
+  }) {
+    final normalizedName = name?.trim();
+    return PromptAttachment(
+      path: path,
+      name: normalizedName == null || normalizedName.isEmpty
+          ? _basename(path)
+          : normalizedName,
+      mimeType: mimeType ?? mime.lookupMimeType(path),
+      size: size,
+      userApprovedOutsideWorkspace: userApprovedOutsideWorkspace,
+      forceResourceLink: forceResourceLink,
+    );
+  }
+
+  factory PromptAttachment.fromBytes({
+    required Uint8List bytes,
+    required String name,
+    required String mimeType,
+  }) {
+    return PromptAttachment(
+      path: '',
+      name: name,
+      mimeType: mimeType,
+      size: bytes.length,
+      data: base64Encode(bytes),
+    );
+  }
+
+  final String path;
+  final String name;
+  final String? mimeType;
+  final int? size;
+  final String? data;
+  final bool userApprovedOutsideWorkspace;
+  final bool forceResourceLink;
+
+  bool get isInline => data != null;
+
+  PromptAttachment copyWith({
+    String? path,
+    String? name,
+    String? mimeType,
+    int? size,
+    String? data,
+    bool? userApprovedOutsideWorkspace,
+    bool? forceResourceLink,
+  }) {
+    return PromptAttachment(
+      path: path ?? this.path,
+      name: name ?? this.name,
+      mimeType: mimeType ?? this.mimeType,
+      size: size ?? this.size,
+      data: data ?? this.data,
+      userApprovedOutsideWorkspace:
+          userApprovedOutsideWorkspace ?? this.userApprovedOutsideWorkspace,
+      forceResourceLink: forceResourceLink ?? this.forceResourceLink,
+    );
+  }
+
+  String get identity => isInline ? 'inline:$name:${data.hashCode}' : path;
+
+  Uri get uri => isInline
+      ? Uri(scheme: 'attachment', host: 'inline', path: '/$name')
+      : Uri.file(path);
+
+  Map<String, Object?> toResourceLink() {
+    if (isInline && isImage) {
+      return <String, Object?>{
+        'type': 'image',
+        'data': data,
+        if (mimeType != null && mimeType!.isNotEmpty) 'mimeType': mimeType,
+        'name': name,
+        if (size != null) 'size': size,
+      };
+    }
+    return <String, Object?>{
+      'type': 'resource_link',
+      'uri': uri.toString(),
+      'name': name,
+      if (mimeType != null && mimeType!.isNotEmpty) 'mimeType': mimeType,
+      if (size != null) 'size': size,
+    };
+  }
+
+  PromptAttachmentPromptMode promptMode(ChatPromptCapabilities? capabilities) {
+    if (isImage) {
+      return capabilities?.image == true
+          ? PromptAttachmentPromptMode.image
+          : PromptAttachmentPromptMode.resourceLink;
+    }
+    if (isAudio) {
+      return capabilities?.audio == true
+          ? PromptAttachmentPromptMode.audio
+          : PromptAttachmentPromptMode.resourceLink;
+    }
+    if (isText || isGenericBinary) {
+      return capabilities?.embeddedContext == true
+          ? PromptAttachmentPromptMode.embeddedResource
+          : PromptAttachmentPromptMode.resourceLink;
+    }
+    return PromptAttachmentPromptMode.resourceLink;
+  }
+
+  bool get isImage => imageMimeType != null;
+
+  bool get isAudio => audioMimeType != null;
+
+  bool get isGenericBinary => !isImage && !isAudio && !isText;
+
+  bool get isText {
+    final type = mimeType?.toLowerCase();
+    if (type != null) {
+      if (type.startsWith('text/')) return true;
+      if (const <String>{
+        'application/json',
+        'application/javascript',
+        'application/toml',
+        'application/xml',
+        'application/x-yaml',
+        'application/yaml',
+      }.contains(type)) {
+        return true;
+      }
+    }
+
+    final lowerName = name.toLowerCase();
+    return const <String>[
+      '.c',
+      '.cc',
+      '.cpp',
+      '.css',
+      '.csv',
+      '.dart',
+      '.go',
+      '.h',
+      '.html',
+      '.java',
+      '.js',
+      '.json',
+      '.kt',
+      '.log',
+      '.md',
+      '.php',
+      '.py',
+      '.rb',
+      '.rs',
+      '.sh',
+      '.sql',
+      '.swift',
+      '.toml',
+      '.ts',
+      '.txt',
+      '.xml',
+      '.yaml',
+      '.yml',
+      '.zsh',
+    ].any(lowerName.endsWith);
+  }
+
+  String? get imageMimeType {
+    final type = mimeType?.toLowerCase();
+    if (type != null && type.startsWith('image/')) return type;
+
+    final lowerName = name.toLowerCase();
+    if (lowerName.endsWith('.png')) return 'image/png';
+    if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lowerName.endsWith('.gif')) return 'image/gif';
+    if (lowerName.endsWith('.webp')) return 'image/webp';
+    if (lowerName.endsWith('.bmp')) return 'image/bmp';
+    return null;
+  }
+
+  String? get audioMimeType {
+    final type = mimeType?.toLowerCase();
+    if (type != null && type.startsWith('audio/')) return type;
+
+    final lowerName = name.toLowerCase();
+    if (lowerName.endsWith('.wav') || lowerName.endsWith('.wave')) {
+      return 'audio/wav';
+    }
+    if (lowerName.endsWith('.mp3')) return 'audio/mpeg';
+    if (lowerName.endsWith('.m4a')) return 'audio/mp4';
+    if (lowerName.endsWith('.aac')) return 'audio/aac';
+    if (lowerName.endsWith('.flac')) return 'audio/flac';
+    if (lowerName.endsWith('.ogg')) return 'audio/ogg';
+    if (lowerName.endsWith('.opus')) return 'audio/opus';
+    if (lowerName.endsWith('.webm')) return 'audio/webm';
+    if (lowerName.endsWith('.aiff') || lowerName.endsWith('.aif')) {
+      return 'audio/aiff';
+    }
+    return null;
+  }
+
+  String toPromptMention() => '@"${path.replaceAll('"', r'\"')}"';
+
+  String get displaySize {
+    final byteCount = size;
+    if (byteCount == null) return '';
+    if (byteCount < 1024) return '$byteCount B';
+    final kb = byteCount / 1024;
+    if (kb < 1024) return '${kb.toStringAsFixed(kb < 10 ? 1 : 0)} KB';
+    final mb = kb / 1024;
+    if (mb < 1024) return '${mb.toStringAsFixed(mb < 10 ? 1 : 0)} MB';
+    final gb = mb / 1024;
+    return '${gb.toStringAsFixed(gb < 10 ? 1 : 0)} GB';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is PromptAttachment &&
+        other.path == path &&
+        other.name == name &&
+        other.mimeType == mimeType &&
+        other.size == size &&
+        other.data == data &&
+        other.userApprovedOutsideWorkspace == userApprovedOutsideWorkspace &&
+        other.forceResourceLink == forceResourceLink;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    path,
+    name,
+    mimeType,
+    size,
+    data,
+    userApprovedOutsideWorkspace,
+    forceResourceLink,
+  );
+
+  static String _basename(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final parts = normalized.split('/');
+    return parts.isEmpty ? path : parts.last;
+  }
+}

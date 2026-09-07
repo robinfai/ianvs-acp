@@ -1,0 +1,19 @@
+name: agent_chat_demo
+description: Standalone host for the reusable Agent Chat UI and LLM adapter.
+publish_to: none
+version: 0.1.0+1
+environment:
+  sdk: ^3.12.0
+dependencies:
+  flutter:
+    sdk: flutter
+  ianvs_agent_chat:
+    path: ..
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  config:
+    enable-swift-package-manager: false
+  uses-material-design: true
