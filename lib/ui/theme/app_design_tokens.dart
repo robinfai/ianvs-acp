@@ -3,9 +3,8 @@ import 'package:flutter/material.dart';
 class AppColors {
   const AppColors._();
 
-  // Desktop Canvas mirrors the reference's quiet, neutral hierarchy: a soft
-  // navigation rail, a white reading plane, and near-black primary actions.
-  // Blue is intentionally reserved for focus and unread state.
+  // macOS separates window chrome, navigation, and document surfaces.
+  // Accent blue identifies selection, focus, and the default action.
   static const Color bg = Color(0xfff7f7f7);
   static const Color surface = Color(0xffffffff);
   static const Color surfaceMuted = Color(0xfff4f4f4);
@@ -27,10 +26,10 @@ class AppColors {
   static const Color accentBorder = Color(0xffa9c9f7);
   static const Color focusRing = Color(0x3d1677ff);
 
-  static const Color primary = textPrimary;
-  static const Color primaryDark = Color(0xff171717);
-  static const Color primarySoft = Color(0xffe9e9e9);
-  static const Color primaryMist = Color(0xfff5f5f5);
+  static const Color primary = accent;
+  static const Color primaryDark = accentDark;
+  static const Color primarySoft = accentSoft;
+  static const Color primaryMist = accentMist;
 
   static const Color disabled = Color(0xffd7ddda);
   static const Color success = Color(0xff218758);

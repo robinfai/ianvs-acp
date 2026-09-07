@@ -110,7 +110,7 @@ void main() {
     expect(find.text('main'), findsOneWidget);
     expect(find.text('Codex'), findsNothing);
     expect(find.text('app'), findsOneWidget);
-    await tester.tap(find.text('查看全部'));
+    await tester.tap(find.text('查看详细信息'));
     await tester.pumpAndSettle();
     expect(find.text('Workspace'), findsOneWidget);
     expect(find.text('Overview'), findsOneWidget);
@@ -189,7 +189,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('查看全部'));
+    await tester.tap(find.text('查看详细信息'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Overview'));
     await tester.pumpAndSettle();

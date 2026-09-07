@@ -4,10 +4,10 @@ import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
 import 'package:ianvs_acp/ui/theme/app_theme.dart';
 
 void main() {
-  test('primary actions stay neutral while focus uses restrained blue', () {
-    expect(AppColors.primary, AppColors.textPrimary);
-    expect(AppColors.primaryDark, const Color(0xff171717));
-    expect(AppColors.primarySoft, const Color(0xffe9e9e9));
+  test('primary actions and focus share the macOS accent', () {
+    expect(AppColors.primary, AppColors.accent);
+    expect(AppColors.primaryDark, AppColors.accentDark);
+    expect(AppColors.primarySoft, AppColors.accentSoft);
     expect(AppColors.accent, const Color(0xff0b57d0));
   });
 

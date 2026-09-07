@@ -38,6 +38,7 @@ import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
 import '../image_decode_budget.dart';
 import '../theme/app_design_tokens.dart';
+import 'macos_workspace_layout.dart';
 
 typedef AppShellProcessRunner =
     Future<ProcessResult> Function(String executable, List<String> arguments);
@@ -296,10 +297,14 @@ class AppShell extends StatelessWidget {
                 Expanded(
                   child: ColoredBox(
                     color: AppColors.surface,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final hideSidebar = constraints.maxWidth < 780;
-                        final hideInspector = constraints.maxWidth < 1280;
+                    child: MacosWorkspaceLayout(
+                      builder: (context, constraints, layout) {
+                        final compactWindow = constraints.maxWidth < 780;
+                        final hideSidebar =
+                            compactWindow || !layout.sidebarVisible;
+                        final hideInspector =
+                            constraints.maxWidth < 1280 ||
+                            !layout.inspectorVisible;
                         Widget buildInspector() => WorkspaceInspector(
                           workspace: currentWorkspace,
                           agentName: agentName,
@@ -328,7 +333,6 @@ class AppShell extends StatelessWidget {
                         );
                         Widget buildSidebar() => _ShellSidebar(
                           agentName: agentName,
-                          sessionTitle: controller.currentSession?.displayTitle,
                           onNewSession: startNewSession,
                           onShowAgentConfig: () =>
                               _showAgentConfigDialog(context),
@@ -382,10 +386,8 @@ class AppShell extends StatelessWidget {
                           required WidgetBuilder builder,
                         }) {
                           unawaited(
-                            showModalBottomSheet<void>(
+                            showDialog<void>(
                               context: context,
-                              isScrollControlled: true,
-                              backgroundColor: Colors.transparent,
                               builder: (sheetContext) => _CompactPanelSheet(
                                 title: title,
                                 child: builder(sheetContext),
@@ -393,6 +395,19 @@ class AppShell extends StatelessWidget {
                             ),
                           );
                         }
+
+                        layout.onSidebarMenu = compactWindow
+                            ? () => showCompactPanel(
+                                title: 'Workspaces',
+                                builder: (_) => buildSidebar(),
+                              )
+                            : layout.toggleSidebar;
+                        layout.onInspectorMenu = constraints.maxWidth < 1280
+                            ? () => showCompactPanel(
+                                title: 'Context',
+                                builder: (_) => buildInspector(),
+                              )
+                            : layout.toggleInspector;
 
                         Widget conversationColumn(
                           BuildContext context,
@@ -403,23 +418,6 @@ class AppShell extends StatelessWidget {
                           promptCapabilities: promptCapabilities,
                           child: Column(
                             children: [
-                              if (hideSidebar || hideInspector)
-                                _CompactShellNavigation(
-                                  showWorkspaces: hideSidebar,
-                                  showContext: hideInspector,
-                                  onShowWorkspaces: hideSidebar
-                                      ? () => showCompactPanel(
-                                          title: 'Workspaces',
-                                          builder: (_) => buildSidebar(),
-                                        )
-                                      : null,
-                                  onShowContext: hideInspector
-                                      ? () => showCompactPanel(
-                                          title: 'Context',
-                                          builder: (_) => buildInspector(),
-                                        )
-                                      : null,
-                                ),
                               Expanded(
                                 child: ChatTimeline(
                                   key: ValueKey(
@@ -459,6 +457,21 @@ class AppShell extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   AgentToolbar(
+                                    sidebarVisible: !hideSidebar,
+                                    inspectorVisible: !hideInspector,
+                                    onToggleSidebar: compactWindow
+                                        ? () => showCompactPanel(
+                                            title: 'Workspaces',
+                                            builder: (_) => buildSidebar(),
+                                          )
+                                        : layout.toggleSidebar,
+                                    onToggleInspector:
+                                        constraints.maxWidth < 1280
+                                        ? () => showCompactPanel(
+                                            title: 'Context',
+                                            builder: (_) => buildInspector(),
+                                          )
+                                        : layout.toggleInspector,
                                     title:
                                         controller
                                             .currentSession
@@ -562,11 +575,7 @@ class AppShell extends StatelessWidget {
                               ),
                         );
 
-                        if (hideSidebar) return previewWorkspace;
-
-                        final sidebarWidth = constraints.maxWidth >= 1900
-                            ? 360.0
-                            : 340.0;
+                        final sidebarWidth = layout.sidebarWidth;
                         return Row(
                           children: [
                             if (!hideSidebar) ...[
@@ -574,12 +583,12 @@ class AppShell extends StatelessWidget {
                                 width: sidebarWidth,
                                 child: buildSidebar(),
                               ),
-                              const VerticalDivider(
-                                width: 1,
-                                color: AppColors.border,
-                              ),
+                              layout.sidebarDivider,
                             ],
-                            Expanded(child: previewWorkspace),
+                            Expanded(
+                              key: const ValueKey('conversation-workspace'),
+                              child: previewWorkspace,
+                            ),
                           ],
                         );
                       },
@@ -1122,62 +1131,6 @@ final class _ResumeSessionAgentBinding {
   final ChatController controller;
 }
 
-class _CompactShellNavigation extends StatelessWidget {
-  const _CompactShellNavigation({
-    required this.showWorkspaces,
-    required this.showContext,
-    required this.onShowWorkspaces,
-    required this.onShowContext,
-  });
-
-  final bool showWorkspaces;
-  final bool showContext;
-  final VoidCallback? onShowWorkspaces;
-  final VoidCallback? onShowContext;
-
-  @override
-  Widget build(BuildContext context) {
-    final buttonStyle = TextButton.styleFrom(
-      foregroundColor: AppColors.textSecondary,
-      minimumSize: const Size(0, 44),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      textStyle: AppTypography.label.copyWith(fontSize: 12),
-      visualDensity: VisualDensity.standard,
-      tapTargetSize: MaterialTapTargetSize.padded,
-    );
-    return Container(
-      key: const Key('compact-shell-navigation'),
-      height: 45,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      decoration: const BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
-      ),
-      child: Row(
-        children: [
-          if (showWorkspaces)
-            TextButton.icon(
-              key: const Key('compact-workspaces-button'),
-              onPressed: onShowWorkspaces,
-              icon: const Icon(Icons.view_sidebar_outlined, size: 17),
-              label: const Text('Workspaces'),
-              style: buttonStyle,
-            ),
-          const Spacer(),
-          if (showContext)
-            TextButton.icon(
-              key: const Key('compact-context-button'),
-              onPressed: onShowContext,
-              icon: const Icon(Icons.menu_book_outlined, size: 17),
-              label: const Text('Context'),
-              style: buttonStyle,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 class _CompactPanelSheet extends StatelessWidget {
   const _CompactPanelSheet({required this.title, required this.child});
 
@@ -1187,55 +1140,55 @@ class _CompactPanelSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
-    final height = (size.height * 0.9).clamp(360.0, 760.0).toDouble();
+    final height = (size.height - 80).clamp(0.0, 720.0).toDouble();
     return SafeArea(
       top: false,
       child: Align(
-        alignment: Alignment.bottomCenter,
+        alignment: Alignment.center,
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 620),
-          child: Container(
-            height: height,
-            decoration: const BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.vertical(
-                top: Radius.circular(AppRadius.xl),
-              ),
-              boxShadow: AppShadows.floatingPanel,
-            ),
+          child: Dialog(
             clipBehavior: Clip.antiAlias,
-            child: Column(
-              children: [
-                SizedBox(
-                  height: 50,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 6, 8, 6),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            title,
-                            style: const TextStyle(
-                              color: AppColors.textPrimary,
-                              fontFamily: AppTypography.family,
-                              fontFamilyFallback: AppTypography.familyFallback,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 20,
+              vertical: 24,
+            ),
+            child: SizedBox(
+              height: height,
+              child: Column(
+                children: [
+                  SizedBox(
+                    height: 50,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 6, 8, 6),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              title,
+                              style: const TextStyle(
+                                color: AppColors.textPrimary,
+                                fontFamily: AppTypography.family,
+                                fontFamilyFallback:
+                                    AppTypography.familyFallback,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                        ),
-                        IconButton(
-                          tooltip: 'Close $title',
-                          onPressed: () => Navigator.of(context).pop(),
-                          icon: const Icon(Icons.close_rounded, size: 19),
-                        ),
-                      ],
+                          IconButton(
+                            tooltip: 'Close $title',
+                            onPressed: () => Navigator.of(context).pop(),
+                            icon: const Icon(Icons.close_rounded, size: 19),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                const Divider(height: 1, color: AppColors.border),
-                Expanded(child: child),
-              ],
+                  const Divider(height: 1, color: AppColors.border),
+                  Expanded(child: child),
+                ],
+              ),
             ),
           ),
         ),
@@ -1247,7 +1200,6 @@ class _CompactPanelSheet extends StatelessWidget {
 class _ShellSidebar extends StatelessWidget {
   const _ShellSidebar({
     required this.agentName,
-    required this.sessionTitle,
     required this.onNewSession,
     required this.onShowAgentConfig,
     required this.onShowPermissionHistory,
@@ -1255,7 +1207,6 @@ class _ShellSidebar extends StatelessWidget {
   });
 
   final String agentName;
-  final String? sessionTitle;
   final VoidCallback? onNewSession;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onShowPermissionHistory;
@@ -1269,7 +1220,6 @@ class _ShellSidebar extends StatelessWidget {
         children: [
           _SidebarBrandHeader(
             agentName: agentName,
-            sessionTitle: sessionTitle,
             windowControlsInset: Platform.isMacOS ? 28 : 0,
             onNewSession: onNewSession,
             onShowAgentConfig: onShowAgentConfig,
@@ -1286,7 +1236,6 @@ class _ShellSidebar extends StatelessWidget {
 class _SidebarBrandHeader extends StatelessWidget {
   const _SidebarBrandHeader({
     required this.agentName,
-    required this.sessionTitle,
     required this.windowControlsInset,
     required this.onNewSession,
     required this.onShowAgentConfig,
@@ -1294,7 +1243,6 @@ class _SidebarBrandHeader extends StatelessWidget {
   });
 
   final String agentName;
-  final String? sessionTitle;
   final double windowControlsInset;
   final VoidCallback? onNewSession;
   final VoidCallback? onShowAgentConfig;
@@ -1302,35 +1250,21 @@ class _SidebarBrandHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pinnedTitle = sessionTitle?.trim();
-    return Container(
-      padding: EdgeInsets.fromLTRB(14, 12 + windowControlsInset, 12, 10),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
-      ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SizedBox(
-            height: 38,
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'ACP Client',
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -0.25,
-                    ),
-                  ),
-                ),
-              ],
+            height: 52,
+            child: Padding(
+              padding: EdgeInsets.only(left: windowControlsInset > 0 ? 76 : 6),
+              child: const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('ACP Client', style: AppTypography.sectionTitle),
+              ),
             ),
           ),
-          const SizedBox(height: 7),
           _SidebarNavItem(
             icon: Icons.edit_square,
             label: '新对话',
@@ -1346,46 +1280,6 @@ class _SidebarBrandHeader extends StatelessWidget {
             label: '权限记录',
             onTap: onShowPermissionHistory,
           ),
-          const SizedBox(height: 10),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 6),
-            child: Text(
-              '当前会话',
-              style: TextStyle(
-                color: AppColors.textTertiary,
-                fontSize: 12,
-                height: 1.35,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-          if (pinnedTitle != null && pinnedTitle.isNotEmpty) ...[
-            const SizedBox(height: 5),
-            Container(
-              height: 34,
-              padding: const EdgeInsets.symmetric(horizontal: 7),
-              decoration: BoxDecoration(
-                color: AppColors.surfaceHover,
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      pinnedTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
         ],
       ),
     );

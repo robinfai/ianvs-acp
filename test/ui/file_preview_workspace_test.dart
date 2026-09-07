@@ -168,8 +168,12 @@ void main() {
       final surface = tester.widget<Container>(
         find.byKey(const Key('workspace-inspector-surface')),
       );
-      expect(surface.color, AppColors.surface);
-      expect(surface.decoration, isNull);
+      final inspectorDecoration = surface.decoration! as BoxDecoration;
+      expect(inspectorDecoration.color, AppColors.surface);
+      expect(
+        inspectorDecoration.border,
+        const Border(left: BorderSide(color: AppColors.borderSoft)),
+      );
       expect(surface.foregroundDecoration, isNull);
 
       final canvasRect = tester.getRect(

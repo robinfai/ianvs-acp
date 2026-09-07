@@ -31,6 +31,10 @@ class AgentToolbar extends StatelessWidget {
     this.supportsGitWorktrees = false,
     this.onSessionMenuAction,
     this.terminalPanelAction,
+    this.onToggleSidebar,
+    this.onToggleInspector,
+    this.sidebarVisible = true,
+    this.inspectorVisible = true,
   });
 
   final String title;
@@ -55,13 +59,17 @@ class AgentToolbar extends StatelessWidget {
   final bool supportsGitWorktrees;
   final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
   final Widget? terminalPanelAction;
+  final VoidCallback? onToggleSidebar;
+  final VoidCallback? onToggleInspector;
+  final bool sidebarVisible;
+  final bool inspectorVisible;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 54,
+      height: 52,
       decoration: const BoxDecoration(
-        color: AppColors.surface,
+        color: AppColors.surfaceRaised,
         border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
       ),
       child: LayoutBuilder(
@@ -69,11 +77,11 @@ class AgentToolbar extends StatelessWidget {
           final availableWidth = constraints.maxWidth.isFinite
               ? constraints.maxWidth
               : MediaQuery.sizeOf(context).width;
-          final compact = !forceFullActions && availableWidth < 1240;
+          final compact =
+              availableWidth < 720 ||
+              (!forceFullActions && availableWidth < 1240);
           final veryCompact = availableWidth < 620;
-          final horizontalPadding = veryCompact
-              ? 14.0
-              : (compact ? 18.0 : 20.0);
+          final horizontalPadding = veryCompact ? 8.0 : 12.0;
 
           return Padding(
             padding: EdgeInsets.fromLTRB(
@@ -84,6 +92,27 @@ class AgentToolbar extends StatelessWidget {
             ),
             child: Row(
               children: [
+                if (onToggleSidebar != null) ...[
+                  IconButton(
+                    key: const Key('compact-workspaces-button'),
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size(32, 32),
+                      visualDensity: VisualDensity.standard,
+                    ),
+                    tooltip: sidebarVisible
+                        ? 'Hide Sidebar (⌘⌃S)'
+                        : 'Show Sidebar (⌘⌃S)',
+                    onPressed: onToggleSidebar,
+                    icon: Icon(
+                      Icons.view_sidebar_outlined,
+                      size: 18,
+                      semanticLabel: sidebarVisible
+                          ? 'Hide Sidebar'
+                          : 'Show Sidebar',
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 Expanded(
                   child: _BrandMark(
                     title: title,
@@ -124,6 +153,28 @@ class AgentToolbar extends StatelessWidget {
                 if (terminalPanelAction != null) ...[
                   SizedBox(width: compact ? 5 : 8),
                   terminalPanelAction!,
+                ],
+                if (onToggleInspector != null) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: const Key('compact-context-button'),
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size(32, 32),
+                      visualDensity: VisualDensity.standard,
+                    ),
+                    tooltip: inspectorVisible
+                        ? 'Hide Context (⌘⌥I)'
+                        : 'Show Context (⌘⌥I)',
+                    isSelected: inspectorVisible,
+                    onPressed: onToggleInspector,
+                    icon: Icon(
+                      Icons.view_sidebar_outlined,
+                      size: 18,
+                      semanticLabel: inspectorVisible
+                          ? 'Hide Context'
+                          : 'Show Context',
+                    ),
+                  ),
                 ],
                 SizedBox(width: compact ? 6 : 10),
                 _PrimaryToolbarAction(
@@ -560,8 +611,10 @@ class _ToolbarButtonShell extends StatelessWidget {
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: label == null ? Colors.transparent : AppColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
-          border: label == null ? null : Border.all(color: AppColors.borderSoft),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: label == null
+              ? null
+              : Border.all(color: AppColors.borderSoft),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -653,7 +706,7 @@ class _BrandMark extends StatelessWidget {
             softWrap: false,
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: veryCompact ? 14.5 : 15.5,
+              fontSize: 13,
               fontWeight: FontWeight.w600,
               letterSpacing: -0.05,
             ),
@@ -886,7 +939,7 @@ class _AgentChip extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
         border: Border.all(color: AppColors.border),
       ),
       child: ConstrainedBox(
@@ -923,7 +976,7 @@ class _ToolbarAction extends StatelessWidget {
     final content = Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
         onTap: onPressed,
         child: Container(
           width: label == null ? 34 : null,
@@ -936,7 +989,7 @@ class _ToolbarAction extends StatelessWidget {
             color: onPressed == null
                 ? AppColors.surfaceRaised
                 : AppColors.surfaceMuted,
-            borderRadius: BorderRadius.circular(AppRadius.pill),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
             border: Border.all(color: AppColors.borderSoft),
           ),
           child: Row(
@@ -1052,7 +1105,7 @@ class _ConnectionBadge extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 5),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,

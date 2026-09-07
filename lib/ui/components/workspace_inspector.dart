@@ -48,15 +48,9 @@ class WorkspaceInspector extends StatelessWidget {
     return Material(
       color: AppColors.surface,
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 38, 16, 16),
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(AppRadius.xl),
-            border: Border.all(color: AppColors.border),
-            boxShadow: AppShadows.soft,
-          ),
-          padding: const EdgeInsets.fromLTRB(18, 20, 18, 20),
+        padding: const EdgeInsets.all(16),
+        child: Padding(
+          padding: EdgeInsets.zero,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -69,7 +63,7 @@ class WorkspaceInspector extends StatelessWidget {
               ),
               const SizedBox(height: 14),
               const Divider(height: 1, color: AppColors.borderSoft),
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               _InspectorDisclosure(
                 label: '环境',
                 children: [
@@ -83,9 +77,9 @@ class WorkspaceInspector extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               const Divider(height: 1, color: AppColors.borderSoft),
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               _InspectorDisclosure(
                 label: '上下文',
                 children: [
@@ -95,9 +89,9 @@ class WorkspaceInspector extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               const Divider(height: 1, color: AppColors.borderSoft),
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               const _CompactInspectorHeader(
                 label: '来源',
                 actionIcon: Icons.add_rounded,
@@ -107,7 +101,7 @@ class WorkspaceInspector extends StatelessWidget {
               const SizedBox(height: 8),
               _CompactSourceRow(
                 icon: Icons.link_rounded,
-                label: '查看全部',
+                label: '查看详细信息',
                 muted: true,
                 trailing: Icons.north_east_rounded,
                 onTap: () => _showDetails(context),

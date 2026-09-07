@@ -181,6 +181,7 @@ class MainFlutterWindow: NSWindow {
   )
 
   private var promptImageClipboardChannel: FlutterMethodChannel?
+  private var workspaceLayoutChannel: FlutterMethodChannel?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -225,6 +226,11 @@ class MainFlutterWindow: NSWindow {
 
     super.awakeFromNib()
     configureWindowChrome()
+    workspaceLayoutChannel = FlutterMethodChannel(
+      name: "com.ianvs.acp/workspace-layout",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    configureWorkspaceMenu()
   }
 
   func configureWindowChrome() {
@@ -251,6 +257,30 @@ class MainFlutterWindow: NSWindow {
       blue: 247.0 / 255.0,
       alpha: 1
     )
+  }
+
+  private func configureWorkspaceMenu() {
+    guard let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu else { return }
+    // Preserve the standard Edit, Window, and application menus from the nib.
+    guard viewMenu.item(withTag: 4101) == nil else { return }
+    let sidebar = NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleWorkspaceSidebar), keyEquivalent: "s")
+    sidebar.keyEquivalentModifierMask = [.command, .control]
+    sidebar.tag = 4101
+    let inspector = NSMenuItem(title: "Toggle Context", action: #selector(toggleWorkspaceInspector), keyEquivalent: "i")
+    inspector.keyEquivalentModifierMask = [.command, .option]
+    inspector.tag = 4102
+    // A nil target follows the responder chain to the active document window.
+    viewMenu.insertItem(sidebar, at: 0)
+    viewMenu.insertItem(inspector, at: 1)
+    viewMenu.insertItem(NSMenuItem.separator(), at: 2)
+  }
+
+  @objc private func toggleWorkspaceSidebar(_ sender: Any?) {
+    workspaceLayoutChannel?.invokeMethod("toggleSidebar", arguments: nil)
+  }
+
+  @objc private func toggleWorkspaceInspector(_ sender: Any?) {
+    workspaceLayoutChannel?.invokeMethod("toggleInspector", arguments: nil)
   }
 
   private static func readPromptImage() throws -> [String: Any]? {

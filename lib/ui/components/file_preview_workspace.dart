@@ -145,10 +145,7 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
             child: Container(
               key: const Key('conversation-canvas-surface'),
               clipBehavior: Clip.antiAlias,
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.xl),
-              ),
+              decoration: const BoxDecoration(color: AppColors.surface),
               child: conversation,
             ),
           ),
@@ -157,7 +154,10 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
               width: 320,
               child: Container(
                 key: const Key('workspace-inspector-surface'),
-                color: AppColors.surface,
+                decoration: const BoxDecoration(
+                  color: AppColors.surface,
+                  border: Border(left: BorderSide(color: AppColors.borderSoft)),
+                ),
                 child: widget.inspector,
               ),
             ),

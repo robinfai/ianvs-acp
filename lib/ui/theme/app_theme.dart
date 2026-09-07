@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'app_design_tokens.dart';
 
-/// The single assembly point for ACP's Conversation Canvas design language.
+/// Shared macOS desktop control styling for ACP.
 ///
 /// Widgets should prefer [ThemeData.colorScheme] and [ThemeData.textTheme].
 /// The embedded terminal resolves its paired defaults from this theme's
@@ -107,22 +107,22 @@ abstract final class AppTheme {
           vertical: 11,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
           borderSide: const BorderSide(color: AppColors.border),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
           borderSide: const BorderSide(color: AppColors.border),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
           borderSide: const BorderSide(color: AppColors.accent, width: 1.4),
         ),
       ),
       popupMenuTheme: PopupMenuThemeData(
         color: AppColors.surface,
-        elevation: 0,
-        shadowColor: Colors.transparent,
+        elevation: 8,
+        shadowColor: const Color(0x33000000),
         surfaceTintColor: Colors.transparent,
         menuPadding: const EdgeInsets.symmetric(vertical: 5),
         textStyle: AppTypography.label,
@@ -145,7 +145,7 @@ abstract final class AppTheme {
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: AppColors.primaryDark,
+          foregroundColor: AppColors.accent,
           minimumSize: const Size(32, 34),
           padding: const EdgeInsets.symmetric(
             horizontal: AppSpacing.md,
@@ -162,15 +162,15 @@ abstract final class AppTheme {
           backgroundColor: colorScheme.primary,
           disabledForegroundColor: AppColors.textTertiary,
           disabledBackgroundColor: AppColors.surfaceHover,
-          minimumSize: const Size(36, 36),
+          minimumSize: const Size(36, 30),
           padding: const EdgeInsets.symmetric(
             horizontal: AppSpacing.lg,
-            vertical: 9,
+            vertical: 6,
           ),
           elevation: 0,
           textStyle: AppTypography.label,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
           ),
           visualDensity: VisualDensity.compact,
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -179,7 +179,7 @@ abstract final class AppTheme {
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: AppColors.textPrimary,
-          minimumSize: const Size(36, 36),
+          minimumSize: const Size(36, 30),
           padding: const EdgeInsets.symmetric(
             horizontal: 13,
             vertical: AppSpacing.sm,
@@ -187,7 +187,7 @@ abstract final class AppTheme {
           side: const BorderSide(color: AppColors.border),
           textStyle: AppTypography.label,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
           ),
           visualDensity: VisualDensity.compact,
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -250,8 +250,8 @@ abstract final class AppTheme {
       dialogTheme: DialogThemeData(
         backgroundColor: AppColors.surface,
         surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        shadowColor: Colors.transparent,
+        elevation: 8,
+        shadowColor: const Color(0x33000000),
         insetPadding: const EdgeInsets.symmetric(
           horizontal: 28,
           vertical: AppSpacing.xl,
@@ -291,7 +291,7 @@ abstract final class AppTheme {
         ),
         actionTextColor: colorScheme.inversePrimary,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
         ),
       ),
       textSelectionTheme: TextSelectionThemeData(

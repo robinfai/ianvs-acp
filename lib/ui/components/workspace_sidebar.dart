@@ -1483,7 +1483,7 @@ class _SessionTileState extends State<_SessionTile> {
                 padding: const EdgeInsets.fromLTRB(3, 3, 4, 3),
                 decoration: BoxDecoration(
                   color: selected
-                      ? AppColors.surfaceSelected
+                      ? AppColors.accentSoft
                       : _hovered
                       ? AppColors.surfaceHover
                       : Colors.transparent,

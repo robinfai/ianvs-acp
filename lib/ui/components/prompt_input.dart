@@ -363,7 +363,7 @@ class _PromptInputState extends State<PromptInput> {
         .toDouble();
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 48),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 18),
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(

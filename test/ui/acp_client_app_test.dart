@@ -2757,10 +2757,10 @@ void main() {
       expect(firstController.isStreaming, isTrue);
       expect(
         tester
-            .widget<FilledButton>(
+            .widget<TextButton>(
               find.descendant(
                 of: find.byTooltip('New Session'),
-                matching: find.byType(FilledButton),
+                matching: find.byType(TextButton),
               ),
             )
             .onPressed,
@@ -2973,10 +2973,10 @@ void main() {
       expect(updatedShell.supportsConcurrentSessions, isFalse);
       expect(
         tester
-            .widget<FilledButton>(
+            .widget<TextButton>(
               find.descendant(
                 of: find.byTooltip('New Session'),
-                matching: find.byType(FilledButton),
+                matching: find.byType(TextButton),
               ),
             )
             .onPressed,
@@ -4422,17 +4422,17 @@ void main() {
     expect(find.byKey(const Key('compact-context-button')), findsOneWidget);
     expect(
       tester.getSize(find.byKey(const Key('compact-workspaces-button'))).height,
-      greaterThanOrEqualTo(44),
+      greaterThanOrEqualTo(28),
     );
     expect(
       tester.getSize(find.byKey(const Key('compact-context-button'))).height,
-      greaterThanOrEqualTo(44),
+      greaterThanOrEqualTo(28),
     );
 
     await tester.tap(find.byKey(const Key('compact-context-button')));
     await tester.pumpAndSettle();
     expect(find.byTooltip('Close Context'), findsOneWidget);
-    expect(find.text('会话'), findsWidgets);
+    expect(find.text('会话信息'), findsWidgets);
     await tester.tap(find.byTooltip('Close Context'));
     await tester.pumpAndSettle();
 
