@@ -14,13 +14,17 @@ See [Product capabilities](docs/product_capabilities.md),
 [Conversation loading architecture](docs/conversation_loading_architecture.md).
 Open decisions and manual release checks are tracked in
 [Manual follow-ups](docs/manual_followups.md).
+Cleanup decisions and retained compatibility are tracked in
+[Compatibility maintenance](docs/compatibility-maintenance.md).
 
 ## Reusable Agent Chat UI
 
 The timeline and composer live in
 [`ianvs_agent_chat`](packages/ianvs_agent_chat/README.md), a standalone Flutter
 package. The app connects its ACP controller through `AcpChatSession`; hosts can
-also use the included OpenAI-compatible `LlmChatSession`. Open **Agents → Advanced → Independent LLM chat** to try an API connection without replacing the current ACP session.
+also use the included OpenAI-compatible `LlmChatSession`. Open
+**Agents → 高级 → 独立 LLM 对话** to try an API connection without replacing the
+current ACP session.
 The package includes a runnable macOS example and documents native integration
 requirements, theming, tools, approvals and lifecycle ownership.
 
@@ -47,7 +51,8 @@ Rust ACP client does not implement `session/fork`.
 
 ## Configuration
 
-Use `Agents` -> `Agent Configuration` to manage the saved configuration:
+Open **设置** in the sidebar, **Agents → 管理 Agent…**, or press **⌘,**
+to manage the saved configuration:
 agent servers, the default agent, MCP servers, additional directories,
 filesystem/terminal provider switches, permission trust rules, the review
 agent, assistant-agent settings, and local recovery storage settings. The app
@@ -57,7 +62,7 @@ persists those GUI choices to:
 ~/.config/ianvs-acp/settings.json
 ```
 
-On macOS, Agent and MCP `env`/`headers` values entered in Agent Configuration
+On macOS, Agent and MCP `env`/`headers` values entered in Settings
 are stored in the login Keychain. The JSON file stores only opaque
 `env_refs`/`header_refs`; do not edit or copy those references between config
 files. Existing plaintext values are migrated to Keychain before the JSON is
@@ -80,8 +85,8 @@ them to `agent_servers`. The built-in detectors cover:
 
 Equivalent direct commands, aliases, and npx packages are treated as the same
 agent so discovery does not add duplicate profiles. Provider credentials remain
-user-managed through each CLI or the agent server `env` fields in Agent
-Configuration. Install and authenticate the Cursor CLI before using its ACP
+user-managed through each CLI or the agent server `env` fields in Settings.
+Install and authenticate the Cursor CLI before using its ACP
 profile; installing the Cursor desktop editor alone does not guarantee that the
 separate CLI is available.
 
@@ -162,12 +167,12 @@ Saved shape example for automation and debugging:
 Session dialog. Omitting `mcp_servers` inherits every configured MCP server;
 an empty array selects none. Template permission settings replace the global
 permission policy for that runtime, while omitted fields inherit the active
-configuration. Templates are currently edited in `settings.json`; Agent
-Configuration preserves them during unrelated GUI edits. The selected
+configuration. Templates are currently edited in `settings.json`; Settings
+preserves them during unrelated GUI edits. The selected
 template ID and version are retained in the local session index, so resumed
 sessions can report missing definitions or version drift.
 
-The `Agents` menu exposes `Activity & Diagnostics` for the active session. Its
+Open **活动与诊断** in the sidebar for the active session. Its
 `Events` page shows the chronological prompt/response, tool, status, permission,
 and error trajectory; `Permissions` shows and exports the bounded permission
 audit; and `Runtime` reports the exact recipe, MCP/providers, negotiated ACP
@@ -191,7 +196,7 @@ remain until the corresponding UI state is changed or removed. See the
 and maintenance behavior.
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
-`headers`; enter secret header values through Agent Configuration so they are
+`headers`; enter secret header values through Settings so they are
 stored in Keychain rather than plaintext JSON. This is MCP configuration sent
 through a local stdio ACP session. It does not make the ACP agent transport
 remote. Existing `type: "acp"` MCP entries can still be read from configuration,

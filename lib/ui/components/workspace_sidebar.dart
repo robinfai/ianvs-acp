@@ -24,7 +24,6 @@ class WorkspaceSidebar extends StatefulWidget {
     this.onNewSessionInWorkspace,
     this.onResumeSessionInWorkspace,
     this.onSelectSession,
-    this.canForkSession,
     this.sessionActionAvailability,
     this.onSessionMenuAction,
     this.onRevealWorkspace,
@@ -43,7 +42,6 @@ class WorkspaceSidebar extends StatefulWidget {
   final ValueChanged<WorkspaceRecord>? onNewSessionInWorkspace;
   final ValueChanged<WorkspaceRecord>? onResumeSessionInWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
-  final bool Function(AgentSession session)? canForkSession;
   final SessionActionAvailability Function(AgentSession session)?
   sessionActionAvailability;
   final FutureOr<void> Function(
@@ -189,7 +187,6 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   ),
                   onToggleWorkspace: () => _toggleWorkspace(workspace),
                   onSelectSession: widget.onSelectSession,
-                  canForkSession: widget.canForkSession,
                   sessionActionAvailability: widget.sessionActionAvailability,
                   onSessionMenuAction: widget.onSessionMenuAction,
                   onNewSession: _newSessionCallbackFor(workspace, selected),
@@ -737,7 +734,6 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.onWorkspacePressed,
     required this.onToggleWorkspace,
     required this.onSelectSession,
-    required this.canForkSession,
     required this.sessionActionAvailability,
     required this.onSessionMenuAction,
     required this.onNewSession,
@@ -765,7 +761,6 @@ class _WorkspaceGroup extends StatelessWidget {
   final VoidCallback? onWorkspacePressed;
   final VoidCallback? onToggleWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
-  final bool Function(AgentSession session)? canForkSession;
   final SessionActionAvailability Function(AgentSession session)?
   sessionActionAvailability;
   final FutureOr<void> Function(
@@ -831,7 +826,6 @@ class _WorkspaceGroup extends StatelessWidget {
                   onExpandSessions: onExpandSessions,
                   onCollapseSessions: onCollapseSessions,
                   onSelectSession: onSelectSession,
-                  canForkSession: canForkSession,
                   sessionActionAvailability: sessionActionAvailability,
                   supportsGitWorktrees: supportsGitWorktrees,
                   onSessionMenuAction: onSessionMenuAction,
@@ -853,7 +847,6 @@ class _NestedSessionList extends StatelessWidget {
     required this.onExpandSessions,
     required this.onCollapseSessions,
     required this.onSelectSession,
-    required this.canForkSession,
     required this.sessionActionAvailability,
     required this.supportsGitWorktrees,
     required this.onSessionMenuAction,
@@ -866,7 +859,6 @@ class _NestedSessionList extends StatelessWidget {
   final VoidCallback onExpandSessions;
   final VoidCallback onCollapseSessions;
   final ValueChanged<AgentSession>? onSelectSession;
-  final bool Function(AgentSession session)? canForkSession;
   final SessionActionAvailability Function(AgentSession session)?
   sessionActionAvailability;
   final bool supportsGitWorktrees;
@@ -894,9 +886,7 @@ class _NestedSessionList extends StatelessWidget {
       final selected = _isCurrentSession(session);
       final availability =
           sessionActionAvailability?.call(session) ??
-          SessionActionAvailability(
-            canFork: canForkSession?.call(session) ?? false,
-          );
+          const SessionActionAvailability();
       widgets.add(
         _SessionTile(
           session: session,

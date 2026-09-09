@@ -21,11 +21,9 @@ class AgentToolbar extends StatelessWidget {
     this.onSelectAgent,
     this.onShowAgentConfig,
     this.onOpenLlmChat,
-    this.onShowDiagnostics,
     this.onAuthenticate,
     this.onLogout,
     this.currentSession,
-    this.canForkSession = false,
     this.sessionActionAvailability = const SessionActionAvailability(),
     this.supportsGitWorktrees = false,
     this.onSessionMenuAction,
@@ -48,11 +46,9 @@ class AgentToolbar extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onOpenLlmChat;
-  final VoidCallback? onShowDiagnostics;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onLogout;
   final AgentSession? currentSession;
-  final bool canForkSession;
   final SessionActionAvailability sessionActionAvailability;
   final bool supportsGitWorktrees;
   final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
@@ -119,7 +115,6 @@ class AgentToolbar extends StatelessWidget {
                     compact: compact,
                     veryCompact: veryCompact,
                     currentSession: currentSession,
-                    canForkSession: canForkSession,
                     sessionActionAvailability: sessionActionAvailability,
                     supportsGitWorktrees: supportsGitWorktrees,
                     onSessionMenuAction: onSessionMenuAction,
@@ -134,7 +129,6 @@ class AgentToolbar extends StatelessWidget {
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
                   onOpenLlmChat: onOpenLlmChat,
-                  onShowDiagnostics: onShowDiagnostics,
                   onAuthenticate: onAuthenticate,
                   onLogout: onLogout,
                 ),
@@ -196,7 +190,6 @@ class _AgentMenuButton extends StatelessWidget {
     required this.onSelectAgent,
     required this.onShowAgentConfig,
     required this.onOpenLlmChat,
-    required this.onShowDiagnostics,
     required this.onAuthenticate,
     required this.onLogout,
   });
@@ -207,7 +200,6 @@ class _AgentMenuButton extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onOpenLlmChat;
-  final VoidCallback? onShowDiagnostics;
   final VoidCallback? onAuthenticate;
   final VoidCallback? onLogout;
 
@@ -241,8 +233,6 @@ class _AgentMenuButton extends StatelessWidget {
         switch (value) {
           case 'configure':
             onShowAgentConfig?.call();
-          case 'diagnostics':
-            onShowDiagnostics?.call();
           case 'authenticate':
             onAuthenticate?.call();
           case 'logout':
@@ -400,7 +390,6 @@ class _BrandMark extends StatelessWidget {
     required this.compact,
     required this.veryCompact,
     required this.currentSession,
-    required this.canForkSession,
     required this.sessionActionAvailability,
     required this.supportsGitWorktrees,
     required this.onSessionMenuAction,
@@ -412,7 +401,6 @@ class _BrandMark extends StatelessWidget {
   final bool compact;
   final bool veryCompact;
   final AgentSession? currentSession;
-  final bool canForkSession;
   final SessionActionAvailability sessionActionAvailability;
   final bool supportsGitWorktrees;
   final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
@@ -475,13 +463,7 @@ class _BrandMark extends StatelessWidget {
     return _ToolbarSessionActions(
       label: label,
       session: session,
-      availability: SessionActionAvailability(
-        canFork: sessionActionAvailability.canFork || canForkSession,
-        supportsClose: sessionActionAvailability.supportsClose,
-        canClose: sessionActionAvailability.canClose,
-        supportsDelete: sessionActionAvailability.supportsDelete,
-        canDelete: sessionActionAvailability.canDelete,
-      ),
+      availability: sessionActionAvailability,
       supportsGitWorktrees: supportsGitWorktrees,
       onSelected: onSelected,
     );

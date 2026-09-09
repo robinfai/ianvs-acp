@@ -82,7 +82,7 @@ packages:
     source: hosted
     version: "0.7.13"
   desktop_drop:
-    dependency: "direct main"
+    dependency: "direct dev"
     description:
       name: desktop_drop
       sha256: aa1e797255bfbc76f9eb5aa4f61e5b68dbf69962ab1be6495816d2f251bc0d1f

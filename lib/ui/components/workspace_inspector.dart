@@ -22,7 +22,6 @@ class WorkspaceInspector extends StatelessWidget {
     this.sessionSettings = const AcpSessionSettings(),
     this.sessionUsage,
     this.lastLatency,
-    this.onConfigOptionSelected,
     this.onShowSessionSettings,
     this.onShowCapabilities,
   });
@@ -38,8 +37,6 @@ class WorkspaceInspector extends StatelessWidget {
   final AcpSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final Duration? lastLatency;
-  // Transitional caller compatibility; the Inspector no longer invokes this.
-  final void Function(String configId, Object value)? onConfigOptionSelected;
   final VoidCallback? onShowSessionSettings;
   final VoidCallback? onShowCapabilities;
 

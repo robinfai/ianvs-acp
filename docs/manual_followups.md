@@ -90,11 +90,15 @@ Run before a release candidate:
 - verify compact-window keyboard focus, screen-reader labels, drag/drop, file
   pickers, and terminal presentation.
 
-Automated baseline:
+Automated baseline (app, chat package, and example):
 
 ```sh
-./tool/verify_rust_runtime.sh
-flutter analyze --no-pub
-flutter test --no-pub
-flutter build macos --release
+make bootstrap
+make verify
+make build
+make verify-macos
 ```
+
+`make verify` includes the Rust/FFI checks and runs all three Flutter projects
+with isolated test homes. Compatibility cleanup and its retirement criteria are
+tracked in [Compatibility maintenance](compatibility-maintenance.md).

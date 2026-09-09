@@ -5,7 +5,6 @@ typedef AcpBase64ScanResult = ChatBase64ScanResult;
 typedef AcpInputOmissionReason = ChatInputOmissionReason;
 typedef AcpInputOmission = ChatInputOmission;
 typedef AcpTextBudgetChunk = ChatTextBudgetChunk;
-typedef AcpUtf8LineBudgetCheckpoint = ChatUtf8LineBudgetCheckpoint;
 typedef AcpUtf8LineBudgetCounter = ChatUtf8LineBudgetCounter;
 typedef AcpInputBudget = ChatInputBudget;
 typedef AcpStructuredUpdateGuard = ChatStructuredUpdateGuard;

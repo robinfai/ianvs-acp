@@ -960,8 +960,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     }
     if (kind == 'mode_changed') {
       final payload = _objectMap(update['payload']);
-      final modeId =
-          payload?['modeId'] as String? ?? payload?['currentModeId'] as String?;
+      final modeId = payload?['modeId'] as String?;
       if (modeId != null) {
         _settings[sessionId] =
             (_settings[sessionId] ?? const AcpSessionSettings())

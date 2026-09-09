@@ -1,6 +1,7 @@
 # 第三批：本地隐私、远程连接与外部入口整改实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> 历史方案存档。下文任务和状态描述编制时的基线，不代表当前待办或本轮验收；不应据此重新执行整套计划。当前能力见[产品能力](../../product_capabilities.md)，边界见[运行时架构](../../runtime_architecture.md)，保留项及后续处理见[兼容维护方案](../../compatibility-maintenance.md)。
+
 
 **Goal:** 消除凭据和敏感任务数据明文保存、状态文件并发覆盖、远程明文认证、浮动 npm adapter 以及 deep link 无确认连接问题。
 

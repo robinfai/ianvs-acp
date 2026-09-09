@@ -1085,7 +1085,8 @@ void main() {
               currentSession: session,
               onNewSession: () {},
               onCreateWorkspaceWorktree: (_) {},
-              canForkSession: (_) => true,
+              sessionActionAvailability: (_) =>
+                  const SessionActionAvailability(canFork: true),
               onSessionMenuAction: (_, _) {},
               gitWorkspaceDetector: (_) => false,
             ),
@@ -1235,7 +1236,6 @@ void main() {
               currentWorkspace: workspace,
               currentSession: session,
               onNewSession: () {},
-              canForkSession: (_) => true,
               sessionActionAvailability: (_) => const SessionActionAvailability(
                 canFork: true,
                 supportsClose: true,
@@ -1815,7 +1815,8 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              canForkSession: (_) => true,
+              sessionActionAvailability: (_) =>
+                  const SessionActionAvailability(canFork: true),
               onSessionMenuAction: (_, _) {},
             ),
           ),
@@ -1952,7 +1953,8 @@ void main() {
                   currentWorkspace: workspace,
                   currentSession: currentSession,
                   onNewSession: () {},
-                  canForkSession: (_) => true,
+                  sessionActionAvailability: (_) =>
+                      const SessionActionAvailability(canFork: true),
                   onSessionMenuAction: (_, _) {},
                 ),
               ),
@@ -2151,7 +2153,8 @@ void main() {
               currentWorkspace: workspace,
               currentSession: currentSession,
               onNewSession: () {},
-              canForkSession: (_) => true,
+              sessionActionAvailability: (_) =>
+                  const SessionActionAvailability(canFork: true),
               onSessionMenuAction: (session, selectedAction) {
                 actionSession = session;
                 action = selectedAction;
@@ -2216,7 +2219,8 @@ void main() {
               currentWorkspace: workspace,
               currentSession: session,
               onNewSession: () {},
-              canForkSession: (_) => false,
+              sessionActionAvailability: (_) =>
+                  const SessionActionAvailability(canFork: false),
               onSessionMenuAction: (_, _) {},
               gitWorkspaceDetector: (_) => true,
             ),

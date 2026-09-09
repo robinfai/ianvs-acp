@@ -33,8 +33,6 @@ void main() {
         ),
       ],
     );
-    String? selectedConfigId;
-    Object? selectedConfigValue;
     var openedSessionSettings = false;
 
     await tester.pumpWidget(
@@ -71,10 +69,6 @@ void main() {
               ),
               sessionUsage: const AcpSessionUsage(used: 2000, size: 8000),
               lastLatency: const Duration(milliseconds: 42),
-              onConfigOptionSelected: (configId, value) {
-                selectedConfigId = configId;
-                selectedConfigValue = value;
-              },
               onShowSessionSettings: () => openedSessionSettings = true,
               mcpServers: const [
                 McpServerConfig(
@@ -140,8 +134,6 @@ void main() {
 
     await tester.tap(find.widgetWithText(Tab, '上下文'));
     await tester.pumpAndSettle();
-    expect(selectedConfigId, isNull);
-    expect(selectedConfigValue, isNull);
     await tester.ensureVisible(find.text('打开会话参数…'));
     await tester.tap(find.text('打开会话参数…'));
     expect(openedSessionSettings, isTrue);

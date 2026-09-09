@@ -41,7 +41,6 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onAuthenticate,
-    VoidCallback? onShowDiagnostics,
     VoidCallback? onLogout,
     VoidCallback? onReconnect,
   }) {
@@ -54,7 +53,6 @@ void main() {
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
           onAuthenticate: onAuthenticate,
-          onShowDiagnostics: onShowDiagnostics,
           onLogout: onLogout,
           onNewSession: () {},
           onReconnect: onReconnect,
@@ -72,7 +70,6 @@ void main() {
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
     VoidCallback? onAuthenticate,
-    VoidCallback? onShowDiagnostics,
     VoidCallback? onLogout,
     VoidCallback? onReconnect = _noop,
   }) async {
@@ -88,7 +85,6 @@ void main() {
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
         onAuthenticate: onAuthenticate,
-        onShowDiagnostics: onShowDiagnostics,
         onLogout: onLogout,
         onReconnect: onReconnect,
       ),
@@ -273,12 +269,10 @@ void main() {
   });
 
   testWidgets('AgentToolbar leaves diagnostics in the sidebar', (tester) async {
-    var opened = false;
     await pumpToolbar(
       tester,
       app_state.ConnectionStatus.connected,
       onShowAgentConfig: _noop,
-      onShowDiagnostics: () => opened = true,
     );
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
@@ -291,7 +285,6 @@ void main() {
     ]) {
       expect(find.text(retired), findsNothing);
     }
-    expect(opened, isFalse);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {

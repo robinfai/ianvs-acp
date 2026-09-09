@@ -807,7 +807,6 @@ class _AcpClientAppState extends State<AcpClientApp> {
         onNewSessionInWorkspace: (context, workspace) =>
             unawaited(_startNewSession(context, initialCwd: workspace.path)),
         onSelectSession: (session) => unawaited(_selectSession(session)),
-        canForkSession: _canForkSession,
         sessionActionAvailability: _sessionActionAvailability,
         onSessionMenuAction: (context, session, action) =>
             unawaited(_handleSessionMenuAction(context, session, action)),

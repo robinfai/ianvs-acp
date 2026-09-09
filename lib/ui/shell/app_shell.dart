@@ -67,7 +67,6 @@ class AppShell extends StatelessWidget {
     this.onSelectSession,
     this.onNewSession,
     this.onNewSessionInWorkspace,
-    this.canForkSession,
     this.sessionActionAvailability,
     this.settingsRuntimeBusy,
     this.settingsClientProviders,
@@ -109,7 +108,6 @@ class AppShell extends StatelessWidget {
   final void Function(BuildContext context)? onNewSession;
   final void Function(BuildContext context, WorkspaceRecord workspace)?
   onNewSessionInWorkspace;
-  final bool Function(AgentSession session)? canForkSession;
   final SessionActionAvailability Function(AgentSession session)?
   sessionActionAvailability;
   final ValueListenable<bool>? settingsRuntimeBusy;
@@ -267,13 +265,6 @@ class AppShell extends StatelessWidget {
                           sessionSettings: controller.sessionSettings,
                           sessionUsage: controller.sessionUsage,
                           lastLatency: controller.lastLatency,
-                          onConfigOptionSelected:
-                              controller.currentSession != null &&
-                                  sessionActionsEnabled
-                              ? (configId, value) => unawaited(
-                                  controller.setConfigOption(configId, value),
-                                )
-                              : null,
                           onShowSessionSettings: () =>
                               _showSessionSettingsDialog(context),
                           onShowCapabilities: () => _showDiagnostics(
@@ -304,7 +295,6 @@ class AppShell extends StatelessWidget {
                                   )
                                 : null,
                             onSelectSession: onSelectSession,
-                            canForkSession: canForkSession,
                             sessionActionAvailability:
                                 sessionActionAvailability,
                             onSessionMenuAction: onSessionMenuAction == null
@@ -425,14 +415,7 @@ class AppShell extends StatelessWidget {
                                         : (sessionActionAvailability?.call(
                                                 controller.currentSession!,
                                               ) ??
-                                              SessionActionAvailability(
-                                                canFork:
-                                                    canForkSession?.call(
-                                                      controller
-                                                          .currentSession!,
-                                                    ) ??
-                                                    false,
-                                              )),
+                                              const SessionActionAvailability()),
                                     onOpenLlmChat: () =>
                                         Navigator.of(context).push<void>(
                                           MaterialPageRoute(
@@ -489,8 +472,6 @@ class AppShell extends StatelessWidget {
                                             _showAuthenticateDialog(context),
                                           )
                                         : null,
-                                    onShowDiagnostics: () =>
-                                        _showDiagnostics(context),
                                     onLogout:
                                         controller.canLogout &&
                                             !agentLifecycleBusy
@@ -498,12 +479,6 @@ class AppShell extends StatelessWidget {
                                               unawaited(_confirmLogout(context))
                                         : null,
                                     currentSession: controller.currentSession,
-                                    canForkSession:
-                                        controller.currentSession != null &&
-                                        (canForkSession?.call(
-                                              controller.currentSession!,
-                                            ) ??
-                                            false),
                                     supportsGitWorktrees: gitWorkspaceDetector(
                                       currentWorkspace.path,
                                     ),
