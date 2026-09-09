@@ -103,8 +103,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final Map<String, ({String cwd, List<String> additionalDirectories})>
   _createContexts =
       <String, ({String cwd, List<String> additionalDirectories})>{};
-  final Map<String, Completer<List<AgentEvent>>> _pendingRestores =
-      <String, Completer<List<AgentEvent>>>{};
+  final Map<String, Completer<AcpSessionRestoreSummary>> _pendingRestores =
+      <String, Completer<AcpSessionRestoreSummary>>{};
   final Map<
     String,
     ({String sessionId, String cwd, List<String> additionalDirectories})
@@ -115,8 +115,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
         ({String sessionId, String cwd, List<String> additionalDirectories})
       >{};
   final Map<String, String> _restoreRequestBySession = <String, String>{};
-  final Map<String, List<AgentEvent>> _restoreEvents =
-      <String, List<AgentEvent>>{};
   final Map<String, int> _restoreNextSnapshotChunk = <String, int>{};
   final Map<String, AcpSessionRestoreEventObserver> _restoreStreamObservers =
       <String, AcpSessionRestoreEventObserver>{};
@@ -151,7 +149,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
   int _nextRequestId = 1;
   bool _connected = false;
   bool _disposed = false;
-  bool? _lastRestoreReplayedHistory;
 
   IanvsRustRuntime get _runtimeInstance {
     final existing = _runtime;
@@ -486,7 +483,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _pendingRestores.clear();
     _restoreContexts.clear();
     _restoreRequestBySession.clear();
-    _restoreEvents.clear();
     _restoreNextSnapshotChunk.clear();
     _restoreStreamObservers.clear();
     _restoreStreamEventCounts.clear();
@@ -508,7 +504,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     await _availableCommandsUpdates.close();
   }
 
-  Future<List<AgentEvent>> _resumeSessionWithHistoryPreference({
+  Future<AcpSessionRestoreSummary> _restoreSession({
     required String sessionId,
     required String cwd,
     required List<String> additionalDirectories,
@@ -517,20 +513,20 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _ensureConnected();
     if (_capabilities?.loadSession != true &&
         _capabilities?.session.resume != true) {
-      return Future<List<AgentEvent>>.error(
+      return Future<AcpSessionRestoreSummary>.error(
         StateError(
           'ACP agent does not support session/load or session/resume.',
         ),
       );
     }
     if (_restoreRequestBySession.containsKey(sessionId)) {
-      return Future<List<AgentEvent>>.error(
+      return Future<AcpSessionRestoreSummary>.error(
         StateError('Session $sessionId is already being restored.'),
       );
     }
     final directories = _additionalDirectoriesForRequest(additionalDirectories);
     final requestId = _requestId('restore');
-    final completer = Completer<List<AgentEvent>>();
+    final completer = Completer<AcpSessionRestoreSummary>();
     _pendingRestores[requestId] = completer;
     _restoreContexts[requestId] = (
       sessionId: sessionId,
@@ -538,9 +534,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       additionalDirectories: directories,
     );
     _restoreRequestBySession[sessionId] = requestId;
-    _restoreEvents[requestId] = <AgentEvent>[];
     _restoreNextSnapshotChunk[requestId] = 0;
-    _lastRestoreReplayedHistory = null;
     try {
       _runtimeInstance.restoreSession(
         requestId: requestId,
@@ -570,15 +564,11 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _restoreStreamObservers[sessionId] = onEvent;
     _restoreStreamEventCounts[sessionId] = 0;
     try {
-      await _resumeSessionWithHistoryPreference(
+      return await _restoreSession(
         sessionId: sessionId,
         cwd: cwd,
         additionalDirectories: additionalDirectories,
         replayHistory: replayHistory,
-      );
-      return AcpSessionRestoreSummary(
-        eventCount: _restoreStreamEventCounts[sessionId] ?? 0,
-        replayedHistory: _lastRestoreReplayedHistory,
       );
     } finally {
       _restoreStreamObservers.remove(sessionId);
@@ -893,7 +883,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
     if (kind == 'session_restored' && requestId != null) {
       final completer = _pendingRestores.remove(requestId);
       final context = _restoreContexts.remove(requestId);
-      final events = _restoreEvents.remove(requestId) ?? const <AgentEvent>[];
       _restoreNextSnapshotChunk.remove(requestId);
       if (context != null &&
           _restoreRequestBySession[context.sessionId] == requestId) {
@@ -917,15 +906,18 @@ final class RustAcpAgentClient implements AcpAgentClient {
         createdAt: now,
         updatedAt: now,
         agentName: agentName,
-        initialEvents: events,
       );
       _settings[sessionId] = _settingsFromSessionCreated(
         _objectMap(update['payload']),
       );
       _pruneOrphanedAvailableCommands();
       final payload = _objectMap(update['payload']);
-      _lastRestoreReplayedHistory = payload?['replayedHistory'] as bool?;
-      completer.complete(List<AgentEvent>.unmodifiable(events));
+      completer.complete(
+        AcpSessionRestoreSummary(
+          eventCount: _restoreStreamEventCounts[sessionId] ?? 0,
+          replayedHistory: payload?['replayedHistory'] as bool?,
+        ),
+      );
       return;
     }
     if (kind == 'session_restored' && requestId == null) {
@@ -1098,14 +1090,9 @@ final class RustAcpAgentClient implements AcpAgentClient {
     if (event == null) return;
     final restoreRequestId = _restoreRequestBySession[sessionId];
     if (restoreRequestId != null) {
-      final observer = _restoreStreamObservers[sessionId];
-      if (observer == null) {
-        _restoreEvents[restoreRequestId]?.add(event);
-      } else {
-        observer(event);
-        _restoreStreamEventCounts[sessionId] =
-            (_restoreStreamEventCounts[sessionId] ?? 0) + 1;
-      }
+      _restoreStreamObservers[sessionId]!(event);
+      _restoreStreamEventCounts[sessionId] =
+          (_restoreStreamEventCounts[sessionId] ?? 0) + 1;
       return;
     }
     final output = _promptStreams[sessionId];
@@ -1340,7 +1327,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
     _pendingRestores.clear();
     _restoreContexts.clear();
     _restoreRequestBySession.clear();
-    _restoreEvents.clear();
     _restoreStreamObservers.clear();
     _restoreStreamEventCounts.clear();
     _pendingCatalogs.clear();
@@ -1474,7 +1460,6 @@ final class RustAcpAgentClient implements AcpAgentClient {
         _restoreRequestBySession[context.sessionId] == requestId) {
       _restoreRequestBySession.remove(context.sessionId);
     }
-    _restoreEvents.remove(requestId);
     _restoreNextSnapshotChunk.remove(requestId);
   }
 

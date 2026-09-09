@@ -667,6 +667,45 @@ void main() {
     ]);
   });
 
+  test(
+    'concurrent restores keep replay summaries and events session-scoped',
+    () async {
+      final native = _ClientFakeNative();
+      final client = RustAcpAgentClient(
+        agentName: 'fixture',
+        agentCommand: 'fixture-agent',
+        runtime: IanvsRustRuntime(
+          native: native,
+          pollInterval: const Duration(milliseconds: 1),
+        ),
+      );
+      addTearDown(client.dispose);
+      await client.connect();
+
+      final replayedEvents = <AgentEvent>[];
+      final resumedEvents = <AgentEvent>[];
+      final replay = client.restoreSession(
+        sessionId: 'replayed-session',
+        cwd: '/tmp',
+        onEvent: replayedEvents.add,
+      );
+      final resume = client.restoreSession(
+        sessionId: 'resumed-session',
+        cwd: '/tmp',
+        replayHistory: false,
+        onEvent: resumedEvents.add,
+      );
+      final summaries = await Future.wait([replay, resume]);
+
+      expect(summaries.first.replayedHistory, isTrue);
+      expect(summaries.first.eventCount, 1);
+      expect(replayedEvents.single.text, 'restored history');
+      expect(summaries.last.replayedHistory, isFalse);
+      expect(summaries.last.eventCount, 0);
+      expect(resumedEvents, isEmpty);
+    },
+  );
+
   test('projects Rust session catalog, restore, close, and delete', () async {
     final native = _ClientFakeNative();
     final client = RustAcpAgentClient(
