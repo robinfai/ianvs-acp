@@ -13,5 +13,6 @@ typedef AcpPermissionRequest = ChatPermissionRequest;
 typedef AcpPermissionReviewResult = ChatPermissionReviewResult;
 typedef AcpPermissionAuditEntry = ChatPermissionAuditEntry;
 const sanitizeAcpPermissionReviewResult = sanitizeChatPermissionReviewResult;
-const acpPermissionAuditEntryEncodedBytes = chatPermissionAuditEntryEncodedBytes;
+const acpPermissionAuditEntryEncodedBytes =
+    chatPermissionAuditEntryEncodedBytes;
 const acpPermissionAuditEntriesToJson = chatPermissionAuditEntriesToJson;

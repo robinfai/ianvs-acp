@@ -7,7 +7,7 @@ import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import 'package:ianvs_acp/acp/session_scoped_agent_client.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/storage/session_transcript_cache.dart';

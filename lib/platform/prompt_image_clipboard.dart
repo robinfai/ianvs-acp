@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 
-import '../acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 
 const MethodChannel _promptImageClipboardChannel = MethodChannel(
   'com.ianvs.acp/prompt_image_clipboard',

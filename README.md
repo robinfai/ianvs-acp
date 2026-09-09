@@ -10,17 +10,17 @@ selected or dropped onto the composer; file, image, and audio content follows
 the negotiated prompt capabilities, with resource-link fallback where needed.
 
 See [Product capabilities](docs/product_capabilities.md),
-[ACP runtime coverage](docs/acp_runtime_coverage.md), and
-[Runtime architecture](docs/runtime_architecture.md). Open decisions and manual
-release checks are tracked in [Manual follow-ups](docs/manual_followups.md).
+[Runtime architecture](docs/runtime_architecture.md), and
+[Conversation loading architecture](docs/conversation_loading_architecture.md).
+Open decisions and manual release checks are tracked in
+[Manual follow-ups](docs/manual_followups.md).
 
 ## Reusable Agent Chat UI
 
 The timeline and composer live in
 [`ianvs_agent_chat`](packages/ianvs_agent_chat/README.md), a standalone Flutter
 package. The app connects its ACP controller through `AcpChatSession`; hosts can
-also use the included OpenAI-compatible `LlmChatSession`. Open **Agents → Open
-LLM API chat** to try an API connection without replacing the current ACP session.
+also use the included OpenAI-compatible `LlmChatSession`. Open **Agents → Advanced → Independent LLM chat** to try an API connection without replacing the current ACP session.
 The package includes a runnable macOS example and documents native integration
 requirements, theming, tools, approvals and lifecycle ownership.
 
@@ -41,6 +41,9 @@ Workspaces are added explicitly from the sidebar and retained in
 discover workspaces. Existing sessions are queried only after the user opens
 `Resume Session`; selecting one shows its workspace review before the app sends
 `session/resume` or falls back to `session/load` when required by the agent.
+For Git repositories, the workspace menu can create a worktree and start a new,
+empty ACP session there. This does not fork the source conversation: the local
+Rust ACP client does not implement `session/fork`.
 
 ## Configuration
 
@@ -164,10 +167,11 @@ Configuration preserves them during unrelated GUI edits. The selected
 template ID and version are retained in the local session index, so resumed
 sessions can report missing definitions or version drift.
 
-The `Agents` menu exposes `Session Activity`, a chronological prompt/response,
-tool, status, permission, and error trajectory for the active session, plus
-`Runtime Inventory`, which reports the exact template runtime, MCP/providers,
-negotiated ACP capabilities, credential-reference counts, and degradations.
+The `Agents` menu exposes `Activity & Diagnostics` for the active session. Its
+`Events` page shows the chronological prompt/response, tool, status, permission,
+and error trajectory; `Permissions` shows and exports the bounded permission
+audit; and `Runtime` reports the exact recipe, MCP/providers, negotiated ACP
+capabilities, compatibility degradations, and credential-reference counts.
 Credential values and URL credentials/query strings are never displayed.
 
 `storage.max_size_gb` and `storage.retention_days` bound two recovery payload
@@ -188,9 +192,10 @@ and maintenance behavior.
 
 Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
 `headers`; enter secret header values through Agent Configuration so they are
-stored in Keychain rather than plaintext JSON. ACP
-transport MCP servers use `type: "acp"` with an `id` provided by the component
-that owns the MCP server.
+stored in Keychain rather than plaintext JSON. This is MCP configuration sent
+through a local stdio ACP session. It does not make the ACP agent transport
+remote. Existing `type: "acp"` MCP entries can still be read from configuration,
+but the production runtime rejects them because MCP-over-ACP is unavailable.
 
 Stdio `agent_servers` can set `cwd` to choose the working directory used when
 launching the agent process. The aliases `working_directory` and
@@ -318,8 +323,19 @@ make test-rust
 That verification script covers the Rust workspace and the Flutter/Rust
 integration boundary used by the packaged macOS app.
 
-Remote ACP transports and unstable MCP-over-ACP are explicitly unavailable
-until their Rust transports are implemented; the production app never opens a
-parallel compatibility connection. The ownership contract, implemented scope,
-and remaining transport and runtime work are tracked in
+Available-command notifications are projected as bounded session state and
+drive slash-command suggestions in the composer. Session catalog entries retain
+their bounded `SessionInfo` directory metadata. Live session-info updates and
+usage updates are not projected by the local Rust runtime, so the UI does not
+invent values for them.
+
+The bottom terminal panel is a user-opened local shell tied to the selected UI
+session. ACP terminal reverse requests are instead owned by Rust and by the ACP
+session. They have independent handles and lifecycles; opening or closing the
+shell does not create, release, or kill an ACP terminal.
+
+Remote ACP transports, `session/fork`, MCP-over-ACP, generic extension requests,
+and experimental protocol operations are explicitly unavailable. The
+production app never opens a parallel compatibility connection. The ownership
+contract, implemented scope, and remaining runtime work are tracked in
 [Runtime architecture](docs/runtime_architecture.md).

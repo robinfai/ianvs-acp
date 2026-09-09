@@ -11,7 +11,7 @@ import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/no_redirect_mcp_http_transport.dart';
-import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 
 void main() {

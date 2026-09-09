@@ -6,9 +6,9 @@ import 'package:flutter/material.dart';
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_session_catalog.dart';
 import '../../workspace/workspace.dart';
-import '../theme/app_design_tokens.dart';
-import '../bounded_metadata_preview.dart';
-import 'accessible_text_field.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
+import 'package:ianvs_agent_chat/ui/components/accessible_text_field.dart';
 
 final class ResumeSessionAgentOption {
   const ResumeSessionAgentOption({
@@ -153,17 +153,6 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
             ),
             child: const Text('Cancel'),
           ),
-          TextButton.icon(
-            onPressed: _loading || !_isAgentEnabled(_selectedAgent)
-                ? null
-                : () => _loadAgent(_selectedAgent!, refresh: true),
-            style: TextButton.styleFrom(
-              minimumSize: const Size(0, 36),
-              visualDensity: VisualDensity.standard,
-            ),
-            icon: const Icon(Icons.refresh_rounded, size: 18),
-            label: const Text('Refresh'),
-          ),
           FilledButton(
             onPressed: !_canLoadSelection()
                 ? null
@@ -210,7 +199,10 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       children: [
         const Padding(
           padding: EdgeInsets.fromLTRB(28, 8, 16, 8),
-          child: Text('Select Agent', style: AppTypography.sectionTitle),
+          child: Text(
+            'Agent for this session',
+            style: AppTypography.sectionTitle,
+          ),
         ),
         Expanded(
           child: Padding(
@@ -229,8 +221,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
 
   Widget _sessionPane() {
     final selectedAgent = _selectedAgent;
-    final canRefresh =
-        _isAgentEnabled(selectedAgent) && !_loading && _error == null;
+    final canRefresh = _isAgentEnabled(selectedAgent) && !_loading;
     final authenticationAgent = _authenticationAgent();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -248,7 +239,19 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   key: const ValueKey('resume-session-pane-title'),
                   style: AppTypography.sectionTitle,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 4),
+                Text(
+                  _sessionScopeDescription(selectedAgent),
+                  key: const ValueKey('resume-session-scope'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textTertiary,
+                    fontSize: 11,
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
@@ -365,6 +368,15 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       if (agent.isCurrent) return agent;
     }
     return widget.agents.isEmpty ? null : widget.agents.first;
+  }
+
+  String _sessionScopeDescription(ResumeSessionAgentOption? agent) {
+    if (agent == null) return 'Choose an Agent to list resumable sessions.';
+    final workspaceCwd = widget.workspaceCwd?.trim();
+    if (workspaceCwd == null || workspaceCwd.isEmpty) {
+      return 'Showing every workspace returned by ${agent.name}.';
+    }
+    return 'Limited to sessions in $workspaceCwd returned by ${agent.name}.';
   }
 
   void _selectAgent(ResumeSessionAgentOption agent) {
@@ -489,13 +501,11 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   }
 
   ResumeSessionAgentOption? _authenticationAgent() {
-    for (final agent in widget.agents) {
-      if (_authenticatedAgentIds.contains(agent.id)) continue;
-      if (agent.description.toLowerCase().contains('authentication required')) {
-        return agent;
-      }
-    }
-    return null;
+    final agent = _selectedAgent;
+    if (agent == null || _authenticatedAgentIds.contains(agent.id)) return null;
+    return agent.description.toLowerCase().contains('authentication required')
+        ? agent
+        : null;
   }
 
   Future<void> _authenticateAgent(ResumeSessionAgentOption agent) async {
@@ -576,17 +586,34 @@ class _AgentSelectionList extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text(
-                      agent.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: isSelected
-                            ? AppColors.accent
-                            : AppColors.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            agent.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: isSelected
+                                  ? AppColors.accent
+                                  : AppColors.textPrimary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (agent.isCurrent) ...[
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Current Agent',
+                            style: TextStyle(
+                              color: AppColors.textTertiary,
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Row(

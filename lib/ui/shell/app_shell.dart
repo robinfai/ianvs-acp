@@ -1,3 +1,4 @@
+import '../components/activity_diagnostics_dialog.dart';
 import 'package:ianvs_agent_chat/llm_chat_panel.dart';
 import 'package:ianvs_agent_chat/agent_chat_view.dart';
 import '../../chat/acp_chat_session.dart';
@@ -23,23 +24,20 @@ import '../../terminal/acp_session_terminal_region.dart';
 import '../../workspace/workspace.dart';
 import '../../workspace/workspace_sidebar_state_store.dart';
 import '../components/agent_config_dialog.dart';
+import '../components/session_menu_actions.dart';
+import 'package:flutter/foundation.dart';
 import '../components/agent_toolbar.dart';
-import '../components/bounded_image_preview.dart';
-import '../components/capabilities_dialog.dart';
+import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import '../components/error_banner.dart';
 import '../components/file_preview_workspace.dart';
-import '../components/permission_history_dialog.dart';
-import '../components/prompt_input.dart';
-import '../components/protocol_feature_review_dialog.dart';
+import 'package:ianvs_agent_chat/ui/components/prompt_input.dart';
 import '../components/resume_session_dialog.dart';
-import '../components/runtime_inventory_dialog.dart';
-import '../components/session_activity_dialog.dart';
 import '../components/session_settings_dialog.dart';
 import '../components/session_workspace_review_dialog.dart';
 import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
 import '../image_decode_budget.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'macos_workspace_layout.dart';
 
 typedef AppShellProcessRunner =
@@ -70,6 +68,9 @@ class AppShell extends StatelessWidget {
     this.onNewSession,
     this.onNewSessionInWorkspace,
     this.canForkSession,
+    this.sessionActionAvailability,
+    this.settingsRuntimeBusy,
+    this.settingsClientProviders,
     this.onSessionMenuAction,
     this.onCreateWorkspaceWorktree,
     this.onArchiveWorkspaceSessions,
@@ -109,6 +110,10 @@ class AppShell extends StatelessWidget {
   final void Function(BuildContext context, WorkspaceRecord workspace)?
   onNewSessionInWorkspace;
   final bool Function(AgentSession session)? canForkSession;
+  final SessionActionAvailability Function(AgentSession session)?
+  sessionActionAvailability;
+  final ValueListenable<bool>? settingsRuntimeBusy;
+  final AcpClientProviderConfig? settingsClientProviders;
   final FutureOr<void> Function(
     BuildContext context,
     AgentSession session,
@@ -268,8 +273,10 @@ class AppShell extends StatelessWidget {
                               : null,
                           onShowSessionSettings: () =>
                               _showSessionSettingsDialog(context),
-                          onShowCapabilities: () =>
-                              _showCapabilitiesDialog(context),
+                          onShowCapabilities: () => _showDiagnostics(
+                            context,
+                            initialTab: DiagnosticsTab.runtime,
+                          ),
                           mcpServers: mcpServers,
                           additionalDirectories: additionalDirectories,
                           clientProviders: clientProviders,
@@ -280,8 +287,7 @@ class AppShell extends StatelessWidget {
                           onNewSession: startNewSession,
                           onShowAgentConfig: () =>
                               _showAgentConfigDialog(context),
-                          onShowPermissionHistory: () =>
-                              _showPermissionHistoryDialog(context),
+                          onShowDiagnostics: () => _showDiagnostics(context),
                           workspaceSidebar: WorkspaceSidebar(
                             agentName: agentName,
                             workspaces: workspaceController.workspaces,
@@ -297,6 +303,8 @@ class AppShell extends StatelessWidget {
                                 : null,
                             onSelectSession: onSelectSession,
                             canForkSession: canForkSession,
+                            sessionActionAvailability:
+                                sessionActionAvailability,
                             onSessionMenuAction: onSessionMenuAction == null
                                 ? null
                                 : (session, action) => onSessionMenuAction!(
@@ -380,13 +388,27 @@ class AppShell extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   AgentToolbar(
+                                    sessionActionAvailability:
+                                        controller.currentSession == null
+                                        ? const SessionActionAvailability()
+                                        : (sessionActionAvailability?.call(
+                                                controller.currentSession!,
+                                              ) ??
+                                              SessionActionAvailability(
+                                                canFork:
+                                                    canForkSession?.call(
+                                                      controller
+                                                          .currentSession!,
+                                                    ) ??
+                                                    false,
+                                              )),
                                     onOpenLlmChat: () =>
                                         Navigator.of(context).push<void>(
                                           MaterialPageRoute(
                                             builder: (_) => Scaffold(
                                               appBar: AppBar(
                                                 title: const Text(
-                                                  'LLM API chat',
+                                                  'Independent LLM chat',
                                                 ),
                                               ),
                                               body: const LlmChatPanel(),
@@ -430,18 +452,6 @@ class AppShell extends StatelessWidget {
                                     onSelectAgent: onSelectAgent,
                                     onShowAgentConfig: () =>
                                         _showAgentConfigDialog(context),
-                                    onShowProtocolCoverage: () =>
-                                        _showProtocolFeatureReviewDialog(
-                                          context,
-                                        ),
-                                    onShowActivity:
-                                        controller.currentSession == null
-                                        ? null
-                                        : () => _showSessionActivityDialog(
-                                            context,
-                                          ),
-                                    onShowRuntimeInventory: () =>
-                                        _showRuntimeInventoryDialog(context),
                                     onAuthenticate:
                                         controller.canAuthenticate &&
                                             !agentLifecycleBusy
@@ -449,8 +459,8 @@ class AppShell extends StatelessWidget {
                                             _showAuthenticateDialog(context),
                                           )
                                         : null,
-                                    onShowPermissionHistory: () =>
-                                        _showPermissionHistoryDialog(context),
+                                    onShowDiagnostics: () =>
+                                        _showDiagnostics(context),
                                     onLogout:
                                         controller.canLogout &&
                                             !agentLifecycleBusy
@@ -568,40 +578,16 @@ class AppShell extends StatelessWidget {
     ).showSnackBar(const SnackBar(content: Text('Diagnostics copied')));
   }
 
-  Future<void> _showCapabilitiesDialog(BuildContext context) async {
+  Future<void> _showDiagnostics(
+    BuildContext context, {
+    DiagnosticsTab initialTab = DiagnosticsTab.events,
+  }) async {
     await showDialog<void>(
       context: context,
-      builder: (context) {
-        return CapabilitiesDialog(
-          capabilities: controller.capabilities,
-          inputBudget: inputBudget,
-        );
-      },
-    );
-  }
-
-  Future<void> _showPermissionHistoryDialog(BuildContext context) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return PermissionHistoryDialog(entries: controller.permissionHistory);
-      },
-    );
-  }
-
-  Future<void> _showSessionActivityDialog(BuildContext context) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => SessionActivityDialog(controller: controller),
-    );
-  }
-
-  Future<void> _showRuntimeInventoryDialog(BuildContext context) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) => RuntimeInventoryDialog(
+      builder: (_) => ActivityDiagnosticsDialog(
         controller: controller,
         runtimeConfig: runtimeConfig ?? _fallbackRuntimeConfig(),
+        initialTab: initialTab,
       ),
     );
   }
@@ -820,15 +806,15 @@ class AppShell extends StatelessWidget {
   }
 
   Future<void> _showAgentConfigDialog(BuildContext context) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AgentConfigDialog(
+    final destination = await Navigator.of(context).push<SettingsExitAction>(
+      MaterialPageRoute(
+        settings: const RouteSettings(name: '/settings'),
+        builder: (context) => AgentConfigDialog(
           agentServers: agentServers,
           agentPresets: AcpAgentDiscovery.discover(),
           mcpServers: mcpServers,
           additionalDirectories: additionalDirectories,
-          clientProviders: clientProviders,
+          clientProviders: settingsClientProviders ?? clientProviders,
           storage: storage,
           assistantAgent: assistantAgent,
           sessionTemplates: sessionTemplates,
@@ -837,27 +823,26 @@ class AppShell extends StatelessWidget {
           configPath: configPath,
           defaultAgentName: defaultAgentName,
           onSaveConfig: onSaveConfig,
+          runtimeBusy: settingsRuntimeBusy,
+          allowAppNavigation: true,
           onValidateAssistantAgent: onValidateAssistantAgent,
           onLoadAssistantAgentModels: onLoadAssistantAgentModels,
-        );
-      },
+        ),
+      ),
     );
-  }
-
-  Future<void> _showProtocolFeatureReviewDialog(BuildContext context) async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return ProtocolFeatureReviewDialog(
-          controller: controller,
-          agentServers: agentServers,
-          mcpServers: mcpServers,
-          additionalDirectories: additionalDirectories,
-          clientProviders: clientProviders,
-          configPath: configPath,
-        );
-      },
-    );
+    if (!context.mounted || destination == null) return;
+    final currentShell =
+        context.findAncestorWidgetOfExactType<AppShell>() ?? this;
+    switch (destination) {
+      case SettingsExitAction.newSession:
+        if (currentShell.onNewSession != null) {
+          currentShell.onNewSession!(context);
+        } else {
+          await currentShell.controller.newSession();
+        }
+      case SettingsExitAction.diagnostics:
+        await currentShell._showDiagnostics(context);
+    }
   }
 
   Future<void> _showSessionSettingsDialog(BuildContext context) async {
@@ -1138,14 +1123,14 @@ class _ShellSidebar extends StatelessWidget {
     required this.agentName,
     required this.onNewSession,
     required this.onShowAgentConfig,
-    required this.onShowPermissionHistory,
+    required this.onShowDiagnostics,
     required this.workspaceSidebar,
   });
 
   final String agentName;
   final VoidCallback? onNewSession;
   final VoidCallback? onShowAgentConfig;
-  final VoidCallback? onShowPermissionHistory;
+  final VoidCallback? onShowDiagnostics;
   final Widget workspaceSidebar;
 
   @override
@@ -1159,7 +1144,7 @@ class _ShellSidebar extends StatelessWidget {
             windowControlsInset: Platform.isMacOS ? 28 : 0,
             onNewSession: onNewSession,
             onShowAgentConfig: onShowAgentConfig,
-            onShowPermissionHistory: onShowPermissionHistory,
+            onShowDiagnostics: onShowDiagnostics,
           ),
           Expanded(child: workspaceSidebar),
           _SidebarAccountFooter(agentName: agentName),
@@ -1175,14 +1160,14 @@ class _SidebarBrandHeader extends StatelessWidget {
     required this.windowControlsInset,
     required this.onNewSession,
     required this.onShowAgentConfig,
-    required this.onShowPermissionHistory,
+    required this.onShowDiagnostics,
   });
 
   final String agentName;
   final double windowControlsInset;
   final VoidCallback? onNewSession;
   final VoidCallback? onShowAgentConfig;
-  final VoidCallback? onShowPermissionHistory;
+  final VoidCallback? onShowDiagnostics;
 
   @override
   Widget build(BuildContext context) {
@@ -1208,13 +1193,13 @@ class _SidebarBrandHeader extends StatelessWidget {
           ),
           _SidebarNavItem(
             icon: Icons.manage_accounts_outlined,
-            label: '代理设置',
+            label: '设置',
             onTap: onShowAgentConfig,
           ),
           _SidebarNavItem(
             icon: Icons.manage_history_rounded,
-            label: '权限记录',
-            onTap: onShowPermissionHistory,
+            label: '活动与诊断',
+            onTap: onShowDiagnostics,
           ),
         ],
       ),

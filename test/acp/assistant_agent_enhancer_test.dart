@@ -3,7 +3,7 @@ import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/assistant_agent_enhancer.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 
 void main() {

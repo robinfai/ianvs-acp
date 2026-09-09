@@ -1,0 +1,26 @@
+{
+  "schema": "ianvs-acp.permission-history.v1",
+  "exportedAt": "2026-09-09T02:14:55.245001Z",
+  "entries": [
+    {
+      "status": "denied",
+      "recordedAt": "2026-09-09T02:14:08.339634Z",
+      "resolvedAt": "2026-09-09T02:14:08.353460Z",
+      "decisionSource": "manual",
+      "request": {
+        "id": "acceptance-read",
+        "title": "Read the test workspace",
+        "rationale": "Synthetic permission for export verification.",
+        "sessionId": "fake-session-1",
+        "toolName": "read_text_file",
+        "options": [
+          "Allow",
+          "Deny"
+        ],
+        "requestedAt": "2026-09-09T02:14:08.339634Z",
+        "generation": 1,
+        "contentFingerprint": "79a63db76416c39ee9d257dfb65c47e835bd9ffceeef2f6b2b91017bfaf8d071"
+      }
+    }
+  ]
+}

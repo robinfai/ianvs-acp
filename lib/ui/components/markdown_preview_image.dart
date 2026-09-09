@@ -12,8 +12,8 @@ import '../../platform/file_manager.dart';
 import '../../platform/secure_file_reader.dart';
 import '../image_decode_budget.dart';
 import '../file_preview/file_preview_document.dart';
-import '../theme/app_design_tokens.dart';
-import 'bounded_image_preview.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 
 const int _maxInlineMarkdownImageBytes = 16 * 1024 * 1024;
 const int _maxLocalMarkdownRasterBytes = filePreviewImageByteLimit;

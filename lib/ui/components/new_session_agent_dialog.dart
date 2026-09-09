@@ -3,7 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../config/acp_client_config.dart';
-import '../theme/app_design_tokens.dart';
+import '../../config/assistant_agent_config.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class NewSessionSelection {
   const NewSessionSelection({
@@ -25,6 +26,7 @@ class NewSessionAgentDialog extends StatefulWidget {
     this.sessionTemplates = const <SessionTemplateConfig>[],
     this.defaultSessionTemplateId,
     this.initialCwd = '',
+    this.baseConfig,
   });
 
   final List<AgentServerConfig> agentServers;
@@ -32,6 +34,7 @@ class NewSessionAgentDialog extends StatefulWidget {
   final List<SessionTemplateConfig> sessionTemplates;
   final String? defaultSessionTemplateId;
   final String initialCwd;
+  final AcpClientConfig? baseConfig;
 
   @override
   State<NewSessionAgentDialog> createState() => _NewSessionAgentDialogState();
@@ -70,6 +73,8 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const _SessionScopeNotice(),
+              const SizedBox(height: 16),
               if (widget.sessionTemplates.isNotEmpty) ...[
                 const _ChoiceSectionLabel('Session template'),
                 const SizedBox(height: 8),
@@ -85,18 +90,26 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
                   selected: _selectedTemplate == null,
                   onTap: () => setState(() => _selectedTemplate = null),
                 ),
-                const SizedBox(height: 16),
+                if (_selectedTemplate != null) ...[
+                  const SizedBox(height: 10),
+                  _TemplateSummary(
+                    template: _selectedTemplate!,
+                    baseConfig: widget.baseConfig,
+                    currentAgentName: widget.currentAgentName,
+                  ),
+                ],
+                const SizedBox(height: 18),
               ],
               if (_selectedTemplate == null &&
                   widget.agentServers.isNotEmpty) ...[
-                if (widget.sessionTemplates.isNotEmpty) ...[
-                  const _ChoiceSectionLabel('Agent'),
-                  const SizedBox(height: 8),
-                ],
+                const _ChoiceSectionLabel('Agent for this session'),
+                const SizedBox(height: 8),
                 for (final server in widget.agentServers) ...[
                   _AgentChoiceTile(
                     server: server,
                     selected: server.name == _selectedServer?.name,
+                    isCurrent: server.name == widget.currentAgentName,
+                    isStartupDefault: server.name == _startupDefaultAgentName(),
                     onTap: () => setState(() => _selectedServer = server),
                   ),
                   if (server != widget.agentServers.last)
@@ -148,6 +161,15 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
     return null;
   }
 
+  String? _startupDefaultAgentName() {
+    final config = widget.baseConfig;
+    if (config == null) return null;
+    final explicit = config.defaultAgentServerName?.trim();
+    if (explicit != null && explicit.isNotEmpty) return explicit;
+    final servers = config.selectableAgentServers;
+    return servers.isEmpty ? null : servers.first.name;
+  }
+
   void _handleCwdChanged(String value) {
     setState(() {
       _cwd = value;
@@ -174,6 +196,44 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
         cwd: cwd,
         agentServer: _selectedTemplate == null ? _selectedServer : null,
         sessionTemplate: _selectedTemplate,
+      ),
+    );
+  }
+}
+
+class _SessionScopeNotice extends StatelessWidget {
+  const _SessionScopeNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.primaryMist,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.borderSoft),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.play_circle_outline_rounded,
+            size: 18,
+            color: AppColors.primaryDark,
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'These choices apply to this new session. They do not change the startup default Agent.',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11.5,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -264,6 +324,186 @@ class _CustomSessionChoiceTile extends StatelessWidget {
           onTap: onTap,
         ),
       ),
+    );
+  }
+}
+
+class _TemplateSummary extends StatelessWidget {
+  const _TemplateSummary({
+    required this.template,
+    required this.baseConfig,
+    required this.currentAgentName,
+  });
+
+  final SessionTemplateConfig template;
+  final AcpClientConfig? baseConfig;
+  final String currentAgentName;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = <(String, String)>[
+      ('Agent', _agentSummary()),
+      ('MCP', _mcpSummary()),
+      ('Additional directories', _directorySummary()),
+      ('Permissions', _permissionSummary()),
+      ('Assistant', _assistantSummary()),
+      ('Session options', _sessionOptionSummary()),
+    ];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Template summary',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 7),
+          for (final row in rows) ...[
+            _TemplateSummaryRow(label: row.$1, value: row.$2),
+            if (row != rows.last) const SizedBox(height: 4),
+          ],
+          const SizedBox(height: 8),
+          const Text(
+            'Session option requests are applied after creation only when the selected Agent exposes matching capabilities.',
+            style: TextStyle(
+              color: AppColors.textTertiary,
+              fontSize: 10.5,
+              height: 1.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _agentSummary() {
+    final configured = template.agentServerName?.trim();
+    if (configured != null && configured.isNotEmpty) {
+      return '$configured (selected by template)';
+    }
+    final inherited = baseConfig?.activeAgentServer?.name.trim();
+    final name = inherited == null || inherited.isEmpty
+        ? currentAgentName
+        : inherited;
+    return 'Inherit current Agent · $name';
+  }
+
+  String _mcpSummary() {
+    final selected = template.mcpServerNames;
+    if (selected != null) {
+      return selected.isEmpty ? 'None' : selected.join(', ');
+    }
+    final inherited = baseConfig?.mcpServers ?? const <McpServerConfig>[];
+    if (baseConfig == null) return 'Inherit app defaults';
+    if (inherited.isEmpty) return 'Inherit app defaults · none configured';
+    return 'Inherit app defaults · ${inherited.map((server) => server.name).join(', ')}';
+  }
+
+  String _directorySummary() {
+    final inherited = baseConfig?.additionalDirectories ?? const <String>[];
+    final added = template.additionalDirectories;
+    if (inherited.isEmpty && added.isEmpty) {
+      return baseConfig == null ? 'Inherit app defaults' : 'None';
+    }
+    final parts = <String>[
+      if (inherited.isNotEmpty) 'App: ${inherited.join(', ')}',
+      if (added.isNotEmpty) 'Template adds: ${added.join(', ')}',
+    ];
+    return parts.join(' · ');
+  }
+
+  String _permissionSummary() {
+    final permissions = template.permissions;
+    if (permissions == null) return 'Inherit Agent and app settings';
+    final details = <String>[
+      if (permissions.trustRules.isNotEmpty)
+        '${permissions.trustRules.length} trust rule${permissions.trustRules.length == 1 ? '' : 's'}',
+      if (permissions.reviewAgent.enabled) 'reviewer enabled',
+    ];
+    return details.isEmpty
+        ? 'Template override · no trust rules or reviewer'
+        : 'Template override · ${details.join(', ')}';
+  }
+
+  String _assistantSummary() {
+    final assistant = template.assistantAgent;
+    if (assistant == null) {
+      final inherited = baseConfig?.assistantAgent;
+      if (inherited == null) return 'Inherit app settings';
+      if (!inherited.enabled) return 'Inherit app settings · disabled';
+      return 'Inherit app settings · ${_assistantTarget(inherited)}';
+    }
+    if (!assistant.enabled) return 'Disabled by template';
+    return 'Template · ${_assistantTarget(assistant)}';
+  }
+
+  String _assistantTarget(AssistantAgentConfig assistant) {
+    final details = <String>[
+      if (assistant.agentName?.trim().isNotEmpty == true)
+        assistant.agentName!.trim(),
+      if (assistant.model?.trim().isNotEmpty == true)
+        'model ${assistant.model!.trim()}',
+    ];
+    return details.isEmpty ? 'enabled; target incomplete' : details.join(' · ');
+  }
+
+  String _sessionOptionSummary() {
+    final requests = <String>[
+      if (template.model?.trim().isNotEmpty == true)
+        'model ${template.model!.trim()}',
+      if (template.mode?.trim().isNotEmpty == true)
+        'mode ${template.mode!.trim()}',
+      if (template.reasoningEffort?.trim().isNotEmpty == true)
+        'reasoning ${template.reasoningEffort!.trim()}',
+    ];
+    return requests.isEmpty ? 'No requests' : requests.join(' · ');
+  }
+}
+
+class _TemplateSummaryRow extends StatelessWidget {
+  const _TemplateSummaryRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 116,
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: AppColors.textTertiary,
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 10.5,
+              height: 1.25,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -374,7 +614,8 @@ class _PathAutocompleteField extends StatelessWidget {
           controller: controller,
           autofocus: true,
           decoration: InputDecoration(
-            labelText: 'Working Directory',
+            labelText: 'Session working directory',
+            helperText: 'Used as this session’s main workspace.',
             prefixIcon: const Icon(Icons.folder_open_outlined),
             errorText: errorText,
             isDense: true,
@@ -448,11 +689,15 @@ class _AgentChoiceTile extends StatelessWidget {
   const _AgentChoiceTile({
     required this.server,
     required this.selected,
+    required this.isCurrent,
+    required this.isStartupDefault,
     required this.onTap,
   });
 
   final AgentServerConfig server;
   final bool selected;
+  final bool isCurrent;
+  final bool isStartupDefault;
   final VoidCallback onTap;
 
   @override
@@ -519,6 +764,19 @@ class _AgentChoiceTile extends StatelessWidget {
                             ),
                           ),
                         ),
+                        if (isCurrent || isStartupDefault) ...[
+                          const SizedBox(height: 5),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: [
+                              if (isCurrent)
+                                const _AgentScopeLabel('Current Agent'),
+                              if (isStartupDefault)
+                                const _AgentScopeLabel('Startup default'),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -526,6 +784,31 @@ class _AgentChoiceTile extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentScopeLabel extends StatelessWidget {
+  const _AgentScopeLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: AppColors.primaryMist,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: AppColors.primaryDark,
+          fontSize: 9.5,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );

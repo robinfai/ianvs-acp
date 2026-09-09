@@ -6,7 +6,7 @@ import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../workspace/workspace.dart';
 import 'session_time_label.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class WorkspaceInspector extends StatelessWidget {
   const WorkspaceInspector({
@@ -38,6 +38,7 @@ class WorkspaceInspector extends StatelessWidget {
   final AcpSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final Duration? lastLatency;
+  // Transitional caller compatibility; the Inspector no longer invokes this.
   final void Function(String configId, Object value)? onConfigOptionSelected;
   final VoidCallback? onShowSessionSettings;
   final VoidCallback? onShowCapabilities;
@@ -45,6 +46,10 @@ class WorkspaceInspector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final branch = environmentBranch ?? _sessionBranch(currentSession);
+    final model = sessionSettings.modelOption?.currentChoiceLabel.trim();
+    final reasoning = sessionSettings.reasoningEffortOption?.currentChoiceLabel
+        .trim();
+    final mode = _sessionModeLabel(sessionSettings);
     return Material(
       color: AppColors.surface,
       child: SingleChildScrollView(
@@ -55,12 +60,36 @@ class WorkspaceInspector extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _CompactInspectorHeader(
-                label: '会话信息',
+                label: '当前会话',
                 actionIcon: Icons.tune_rounded,
-                actionTooltip: '会话设置',
+                actionTooltip: '打开会话参数',
                 onAction: onShowSessionSettings,
                 prominent: true,
               ),
+              if (currentSession == null)
+                const _CompactSourceRow(
+                  icon: Icons.chat_bubble_outline_rounded,
+                  label: '尚未开始会话',
+                  muted: true,
+                )
+              else ...[
+                _CompactSourceRow(
+                  icon: Icons.smart_toy_outlined,
+                  label: agentName,
+                ),
+                if (model != null && model.isNotEmpty)
+                  _CompactSourceRow(icon: Icons.memory_outlined, label: model),
+                if (reasoning != null && reasoning.isNotEmpty)
+                  _CompactSourceRow(
+                    icon: Icons.psychology_outlined,
+                    label: reasoning,
+                  ),
+                if (mode != null)
+                  _CompactSourceRow(
+                    icon: Icons.swap_horiz_rounded,
+                    label: mode,
+                  ),
+              ],
               const SizedBox(height: 14),
               const Divider(height: 1, color: AppColors.borderSoft),
               const SizedBox(height: 12),
@@ -93,7 +122,7 @@ class WorkspaceInspector extends StatelessWidget {
               const Divider(height: 1, color: AppColors.borderSoft),
               const SizedBox(height: 12),
               const _CompactInspectorHeader(
-                label: '来源',
+                label: '详细信息',
                 actionIcon: Icons.add_rounded,
                 actionTooltip: '添加来源',
                 onAction: null,
@@ -101,7 +130,7 @@ class WorkspaceInspector extends StatelessWidget {
               const SizedBox(height: 8),
               _CompactSourceRow(
                 icon: Icons.link_rounded,
-                label: '查看详细信息',
+                label: '查看会话详情',
                 muted: true,
                 trailing: Icons.north_east_rounded,
                 onTap: () => _showDetails(context),
@@ -148,7 +177,7 @@ class WorkspaceInspector extends StatelessWidget {
                   const SizedBox(width: 8),
                   const Expanded(
                     child: Text(
-                      'Workspace',
+                      '会话详情',
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: AppColors.textPrimary,
@@ -183,8 +212,8 @@ class WorkspaceInspector extends StatelessWidget {
                   letterSpacing: 0,
                 ),
                 tabs: const [
-                  Tab(text: 'Overview'),
-                  Tab(text: 'Context'),
+                  Tab(text: '概览'),
+                  Tab(text: '上下文'),
                 ],
               ),
             ),
@@ -204,7 +233,6 @@ class WorkspaceInspector extends StatelessWidget {
                     sessionSettings: sessionSettings,
                     sessionUsage: sessionUsage,
                     lastLatency: lastLatency,
-                    onConfigOptionSelected: onConfigOptionSelected,
                     onShowSessionSettings: onShowSessionSettings,
                     onShowCapabilities: onShowCapabilities,
                     mcpServers: mcpServers,
@@ -244,6 +272,16 @@ String? _sessionBranch(AgentSession? session) {
     }
   }
   return null;
+}
+
+String? _sessionModeLabel(AcpSessionSettings settings) {
+  if (!settings.shouldUseModeFallback) return null;
+  final currentId = settings.modes.currentModeId?.trim();
+  if (currentId == null || currentId.isEmpty) return null;
+  for (final mode in settings.modes.availableModes) {
+    if (mode.id == currentId) return mode.label;
+  }
+  return currentId;
 }
 
 class _CompactInspectorHeader extends StatelessWidget {
@@ -420,25 +458,22 @@ class _OverviewPane extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
       children: [
-        _SectionTitle(icon: Icons.folder_open_rounded, label: 'Directory'),
-        _InfoRow(label: 'Name', value: workspace.name),
-        _InfoRow(label: 'Path', value: workspace.path, maxLines: 3),
+        _SectionTitle(icon: Icons.folder_open_rounded, label: '目录'),
+        _InfoRow(label: '名称', value: workspace.name),
+        _InfoRow(label: '路径', value: workspace.path, maxLines: 3),
         _InfoRow(label: 'Agent', value: agentName),
-        _InfoRow(label: 'Sessions', value: workspace.sessionCount.toString()),
-        _InfoRow(
-          label: 'Last activity',
-          value: _formatDate(workspace.lastActivityAt),
-        ),
+        _InfoRow(label: '会话数', value: workspace.sessionCount.toString()),
+        _InfoRow(label: '最近活动', value: _formatDate(workspace.lastActivityAt)),
         if (currentSession != null)
           _InfoRow(
-            label: 'Current',
+            label: '当前会话',
             value: currentSession!.displayTitle,
             maxLines: 2,
           ),
         const _InspectorSectionDivider(),
-        _SectionTitle(icon: Icons.forum_outlined, label: 'Recent Sessions'),
+        _SectionTitle(icon: Icons.forum_outlined, label: '最近会话'),
         if (recentSessions.isEmpty)
-          const _EmptyLine(message: 'No sessions in this workspace yet.')
+          const _EmptyLine(message: '此工作区还没有会话。')
         else
           for (final session in recentSessions) _MiniSessionRow(session),
       ],
@@ -454,7 +489,6 @@ class _ContextPane extends StatelessWidget {
     required this.sessionSettings,
     required this.sessionUsage,
     required this.lastLatency,
-    required this.onConfigOptionSelected,
     required this.onShowSessionSettings,
     required this.onShowCapabilities,
     required this.mcpServers,
@@ -469,7 +503,6 @@ class _ContextPane extends StatelessWidget {
   final AcpSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final Duration? lastLatency;
-  final void Function(String configId, Object value)? onConfigOptionSelected;
   final VoidCallback? onShowSessionSettings;
   final VoidCallback? onShowCapabilities;
   final List<McpServerConfig> mcpServers;
@@ -482,226 +515,61 @@ class _ContextPane extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
       children: [
-        _SectionTitle(
-          icon: Icons.chat_bubble_outline_rounded,
-          label: 'Session',
-        ),
+        _SectionTitle(icon: Icons.chat_bubble_outline_rounded, label: '当前会话'),
         _InfoRow(label: 'Agent', value: agentName),
         if (currentSession == null)
-          const _EmptyLine(message: 'Start a session to see its context.')
+          const _EmptyLine(message: '开始会话后可查看上下文。')
         else ...[
-          for (final option in sessionSettings.configOptions)
-            _SessionConfigRow(
-              option: option,
-              enabled: onConfigOptionSelected != null,
-              onSelected: onConfigOptionSelected,
-            ),
-          _InfoRow(label: 'Session ID', value: currentSession!.id, maxLines: 2),
+          if (sessionSettings.modelOption case final option?)
+            _InfoRow(label: '模型', value: option.currentChoiceLabel),
+          if (sessionSettings.reasoningEffortOption case final option?)
+            _InfoRow(label: '推理', value: option.currentChoiceLabel),
+          if (_sessionModeLabel(sessionSettings) case final mode?)
+            _InfoRow(label: '模式', value: mode),
+          _InfoRow(label: '会话 ID', value: currentSession!.id, maxLines: 2),
           if (sessionUsage != null) _UsageRow(usage: sessionUsage!),
-          _InfoRow(
-            label: 'Working dir',
-            value: currentSession!.cwd,
-            maxLines: 3,
-          ),
+          _InfoRow(label: '工作目录', value: currentSession!.cwd, maxLines: 3),
+          if (onShowSessionSettings != null)
+            _InspectorActionRow(
+              icon: Icons.tune_rounded,
+              label: '打开会话参数…',
+              onTap: onShowSessionSettings!,
+            ),
         ],
         const SizedBox(height: 3),
         _DiagnosticsSection(
           lastLatency: lastLatency,
-          onShowSessionSettings: onShowSessionSettings,
           onShowCapabilities: onShowCapabilities,
         ),
         const _InspectorSectionDivider(),
-        _SectionTitle(icon: Icons.account_tree_outlined, label: 'Paths'),
+        _SectionTitle(icon: Icons.account_tree_outlined, label: '路径'),
         if (currentSession == null)
-          _InfoRow(label: 'Workspace cwd', value: workspace.path, maxLines: 3),
+          _InfoRow(label: '工作区', value: workspace.path, maxLines: 3),
         if (additionalDirectories.isEmpty)
-          const _InfoRow(label: 'Additional dirs', value: 'None')
+          const _InfoRow(label: '额外目录', value: '无')
         else
           for (final directory in additionalDirectories)
-            _InfoRow(label: 'Additional dir', value: directory, maxLines: 3),
-        _InfoRow(label: 'Config', value: _fallback(configPath), maxLines: 3),
+            _InfoRow(label: '额外目录', value: directory, maxLines: 3),
+        _InfoRow(label: '配置文件', value: _fallback(configPath), maxLines: 3),
         const _InspectorSectionDivider(),
         _SectionTitle(icon: Icons.hub_outlined, label: 'MCP'),
         if (mcpServers.isEmpty)
-          const _EmptyLine(message: 'No MCP servers configured.')
+          const _EmptyLine(message: '未配置 MCP 服务。')
         else
           for (final server in mcpServers) _McpServerRow(server),
         const _InspectorSectionDivider(),
-        _SectionTitle(icon: Icons.shield_outlined, label: 'Providers'),
+        _SectionTitle(icon: Icons.shield_outlined, label: '客户端能力'),
         _InfoRow(
-          label: 'Filesystem',
+          label: '文件系统',
           value: _filesystemProviderLabel(clientProviders.filesystem),
         ),
         _InfoRow(
-          label: 'Terminal',
-          value: clientProviders.terminal.enabled ? 'Enabled' : 'Disabled',
+          label: '终端',
+          value: clientProviders.terminal.enabled ? '已启用' : '已停用',
         ),
         _InfoRow(
-          label: 'Trust rules',
+          label: '信任规则',
           value: clientProviders.permissions.trustRules.length.toString(),
-        ),
-      ],
-    );
-  }
-}
-
-class _SessionConfigRow extends StatelessWidget {
-  const _SessionConfigRow({
-    required this.option,
-    required this.enabled,
-    required this.onSelected,
-  });
-
-  final AcpConfigOption option;
-  final bool enabled;
-  final void Function(String configId, Object value)? onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final canChange =
-        enabled && (option.isBooleanOption || option.options.length > 1);
-    final label = option.name.trim().isEmpty ? option.id : option.name;
-    if (!canChange) {
-      return _InfoRow(label: label, value: option.currentChoiceLabel);
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 72,
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textTertiary,
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: PopupMenuButton<_InspectorConfigSelection>(
-              tooltip: 'Change $label',
-              onSelected: (selection) =>
-                  onSelected?.call(selection.configId, selection.value),
-              itemBuilder: (context) => _choices(),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      option.currentChoiceLabel,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  const Icon(
-                    Icons.keyboard_arrow_down_rounded,
-                    size: 15,
-                    color: AppColors.textSecondary,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  List<PopupMenuEntry<_InspectorConfigSelection>> _choices() {
-    if (option.isBooleanOption) {
-      return [
-        for (final value in const [false, true])
-          PopupMenuItem<_InspectorConfigSelection>(
-            value: _InspectorConfigSelection(option.id, value),
-            child: _InspectorChoiceRow(
-              selected: option.currentBoolValue == value,
-              label: value ? 'On' : 'Off',
-              description: value ? option.description : null,
-            ),
-          ),
-      ];
-    }
-    return [
-      for (final choice in option.options)
-        PopupMenuItem<_InspectorConfigSelection>(
-          value: _InspectorConfigSelection(option.id, choice.value),
-          child: _InspectorChoiceRow(
-            selected: choice.value == option.currentValue,
-            label: choice.groupName == null
-                ? choice.label
-                : '${choice.groupName} · ${choice.label}',
-            description: choice.description,
-          ),
-        ),
-    ];
-  }
-}
-
-class _InspectorConfigSelection {
-  const _InspectorConfigSelection(this.configId, this.value);
-
-  final String configId;
-  final Object value;
-}
-
-class _InspectorChoiceRow extends StatelessWidget {
-  const _InspectorChoiceRow({
-    required this.selected,
-    required this.label,
-    required this.description,
-  });
-
-  final bool selected;
-  final String label;
-  final String? description;
-
-  @override
-  Widget build(BuildContext context) {
-    final detail = description?.trim();
-    return Row(
-      children: [
-        Icon(
-          selected ? Icons.check_rounded : Icons.circle_outlined,
-          size: 16,
-          color: selected ? AppColors.textPrimary : AppColors.textTertiary,
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                label,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              if (detail != null && detail.isNotEmpty)
-                Text(
-                  detail,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 10.5,
-                    height: 1.3,
-                  ),
-                ),
-            ],
-          ),
         ),
       ],
     );
@@ -726,7 +594,7 @@ class _UsageRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _InfoRow(label: 'Context', value: label),
+          _InfoRow(label: '上下文', value: label),
           Padding(
             padding: const EdgeInsets.only(left: 80),
             child: ClipRRect(
@@ -755,12 +623,10 @@ class _UsageRow extends StatelessWidget {
 class _DiagnosticsSection extends StatelessWidget {
   const _DiagnosticsSection({
     required this.lastLatency,
-    required this.onShowSessionSettings,
     required this.onShowCapabilities,
   });
 
   final Duration? lastLatency;
-  final VoidCallback? onShowSessionSettings;
   final VoidCallback? onShowCapabilities;
 
   @override
@@ -781,7 +647,7 @@ class _DiagnosticsSection extends StatelessWidget {
             color: AppColors.textSecondary,
           ),
           title: const Text(
-            'Diagnostics',
+            '诊断',
             style: TextStyle(
               color: AppColors.textSecondary,
               fontSize: 12,
@@ -790,21 +656,15 @@ class _DiagnosticsSection extends StatelessWidget {
           ),
           children: [
             _InfoRow(
-              label: 'Latency',
+              label: '延迟',
               value: lastLatency == null
-                  ? 'Not measured'
+                  ? '尚未测量'
                   : '${lastLatency!.inMilliseconds} ms',
             ),
-            if (onShowSessionSettings != null)
-              _InspectorActionRow(
-                icon: Icons.settings_outlined,
-                label: 'Session settings',
-                onTap: onShowSessionSettings!,
-              ),
             if (onShowCapabilities != null)
               _InspectorActionRow(
                 icon: Icons.fact_check_outlined,
-                label: 'ACP compatibility',
+                label: '打开运行诊断…',
                 onTap: onShowCapabilities!,
               ),
           ],
@@ -1100,14 +960,14 @@ String _trimCompact(double value) {
 
 String _filesystemProviderLabel(AcpFilesystemProviderConfig config) {
   final enabled = <String>[
-    if (config.readTextFile) 'read',
-    if (config.writeTextFile) 'write',
-    if (config.allowReadOutsideWorkspace) 'outside workspace',
+    if (config.readTextFile) '读取',
+    if (config.writeTextFile) '写入',
+    if (config.allowReadOutsideWorkspace) '工作区外读取',
   ];
-  return enabled.isEmpty ? 'Disabled' : enabled.join(', ');
+  return enabled.isEmpty ? '已停用' : enabled.join('、');
 }
 
 String _fallback(String? value) {
   final trimmed = value?.trim();
-  return trimmed == null || trimmed.isEmpty ? 'None' : trimmed;
+  return trimmed == null || trimmed.isEmpty ? '无' : trimmed;
 }

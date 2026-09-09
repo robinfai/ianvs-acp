@@ -1,11 +1,19 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../acp/acp_permission_request.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../config/acp_client_config.dart';
+import '../../config/config_reference_updates.dart';
 import '../../config/assistant_agent_config.dart';
 import '../../storage/sqlite_storage_config.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+
+part 'settings_connection_editors.dart';
+part 'settings_page_layout.dart';
 
 typedef AcpConfigSaveCallback =
     Future<AcpClientConfig> Function(AcpClientConfig config);
@@ -30,6 +38,8 @@ class AgentConfigDialog extends StatefulWidget {
     this.configPath,
     this.defaultAgentName,
     this.onSaveConfig,
+    this.runtimeBusy,
+    this.allowAppNavigation = false,
     this.onValidateAssistantAgent,
     this.onLoadAssistantAgentModels,
   });
@@ -47,6 +57,8 @@ class AgentConfigDialog extends StatefulWidget {
   final String? configPath;
   final String? defaultAgentName;
   final AcpConfigSaveCallback? onSaveConfig;
+  final ValueListenable<bool>? runtimeBusy;
+  final bool allowAppNavigation;
   final AssistantAgentValidationCallback? onValidateAssistantAgent;
   final AssistantAgentModelsLoadCallback? onLoadAssistantAgentModels;
 
@@ -55,7 +67,6 @@ class AgentConfigDialog extends StatefulWidget {
 }
 
 class _AgentConfigDialogState extends State<AgentConfigDialog> {
-  final ScrollController _contentScrollController = ScrollController();
   late final List<AgentServerConfig> _agentServers = List.of(
     widget.agentServers,
   );
@@ -106,6 +117,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       );
   late McpServerConfig? _reviewInlineMcpServer =
       widget.clientProviders.permissions.reviewAgent.mcpServer;
+  late String _reviewTargetKind = _reviewInlineMcpServer != null
+      ? 'inline'
+      : _reviewServerNameController.text.isNotEmpty
+      ? 'mcp'
+      : 'agent';
   late bool _assistantEnabled = widget.assistantAgent.enabled;
   late String? _assistantAgentName = widget.assistantAgent.agentName;
   late bool _assistantGenerateTitles =
@@ -133,15 +149,109 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   bool _saving = false;
   String? _error;
 
-  bool get _canSave {
-    return widget.onSaveConfig != null &&
-        widget.configPath?.trim().isNotEmpty == true &&
-        !_saving;
+  _SettingsSection _section = _SettingsSection.agents;
+  AgentServerConfig? _selectedAgent;
+  McpServerConfig? _selectedMcp;
+  final Map<AgentServerConfig, GlobalKey<_AgentServerEditorDialogState>>
+  _agentEditors = {};
+  final Map<McpServerConfig, GlobalKey<_McpServerEditorDialogState>>
+  _mcpEditors = {};
+  late AcpClientConfig _savedConfig;
+  late String _baselineSignature;
+  late String _activeAgentName = widget.activeAgentName;
+  bool _allowPop = false;
+  bool _confirmingExit = false;
+  bool _restoring = false;
+  String? _saveStatus;
+
+  bool get _readOnly =>
+      widget.onSaveConfig == null ||
+      widget.configPath?.trim().isNotEmpty != true;
+  bool get _runtimeBusy => widget.runtimeBusy?.value ?? false;
+  bool get _hasChanges =>
+      _generalSignature != _baselineSignature ||
+      _agentEditors.values.any(
+        (key) => key.currentState?.hasChanges ?? false,
+      ) ||
+      _mcpEditors.values.any((key) => key.currentState?.hasChanges ?? false);
+  bool get _canSave => !_readOnly && !_saving && !_runtimeBusy && _hasChanges;
+
+  Iterable<TextEditingController> get _generalFields => [
+    _reviewAgentServerNameController,
+    _reviewServerNameController,
+    _reviewToolNameController,
+    _reviewModelController,
+    _reviewTimeoutController,
+    _assistantFallbackTitleController,
+    _storageMaxSizeController,
+    _storageRetentionController,
+  ];
+
+  String get _generalSignature => jsonEncode([
+    _defaultAgentName,
+    _additionalDirectories,
+    for (final agent in _agentServers) [agent.name, agent.toJson()],
+    for (final server in _mcpServers) server.toJson(),
+    _filesystemRead,
+    _filesystemWrite,
+    _filesystemOutside,
+    _terminalEnabled,
+    for (final rule in _trustRules)
+      [rule.toolName, rule.toolKind, rule.decision.name],
+    _reviewAgentEnabled,
+    _reviewInlineMcpServer?.toJson(),
+    _assistantEnabled,
+    _assistantAgentName,
+    _assistantModel,
+    _assistantGenerateTitles,
+    _assistantSummarizeTurns,
+    _assistantCollapseProcess,
+    _reviewTargetKind,
+    for (final field in _generalFields) field.text,
+  ]);
+
+  void _change(VoidCallback fn) => setState(fn);
+  void _draftChanged() {
+    if (mounted && !_restoring) {
+      setState(() {
+        _saveStatus = null;
+      });
+    }
   }
+
+  AcpClientConfig _widgetConfig() => AcpClientConfig(
+    activeAgentServer: widget.agentServers
+        .where((a) => a.name == widget.activeAgentName)
+        .firstOrNull,
+    agentServers: widget.agentServers,
+    mcpServers: widget.mcpServers,
+    additionalDirectories: widget.additionalDirectories,
+    clientProviders: widget.clientProviders,
+    storage: widget.storage,
+    assistantAgent: widget.assistantAgent,
+    sessionTemplates: widget.sessionTemplates,
+    defaultSessionTemplateId: widget.defaultSessionTemplateId,
+    configPath: widget.configPath,
+    defaultAgentServerName: widget.defaultAgentName,
+  );
 
   @override
   void initState() {
     super.initState();
+    _savedConfig = _widgetConfig();
+    _selectedAgent =
+        _agentServers
+            .where((a) => a.name == widget.activeAgentName)
+            .firstOrNull ??
+        _agentServers.firstOrNull;
+    if (_selectedAgent != null) {
+      _agentEditors[_selectedAgent!] =
+          GlobalKey<_AgentServerEditorDialogState>();
+    }
+    _baselineSignature = _generalSignature;
+    for (final field in _generalFields) {
+      field.addListener(_draftChanged);
+    }
     if (_assistantEnabled && _assistantAgentName?.trim().isNotEmpty == true) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _loadAssistantAgentModels(_assistantAgentName);
@@ -151,7 +261,6 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
 
   @override
   void dispose() {
-    _contentScrollController.dispose();
     _reviewAgentServerNameController.dispose();
     _reviewServerNameController.dispose();
     _reviewToolNameController.dispose();
@@ -164,282 +273,310 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Agent Configuration'),
-      content: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.68,
-        ),
-        child: SizedBox(
-          width: 640,
-          child: RawScrollbar(
-            key: const Key('agent-config-scrollbar'),
-            controller: _contentScrollController,
-            thumbVisibility: true,
-            trackVisibility: true,
-            thumbColor: AppColors.textTertiary,
-            trackColor: AppColors.surfaceMuted,
-            trackBorderColor: AppColors.border,
-            thickness: 5,
-            minThumbLength: 48,
-            radius: const Radius.circular(4),
-            child: SingleChildScrollView(
-              key: const Key('agent-config-scroll-view'),
-              controller: _contentScrollController,
-              padding: const EdgeInsets.only(right: 12),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _ConfigPathPanel(path: widget.configPath),
-                  if (_error != null) ...[
-                    const SizedBox(height: 10),
-                    _ErrorPanel(message: _error!),
-                  ],
-                  const SizedBox(height: 10),
-                  _buildDirectoriesSection(),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'MCP Servers',
-                          style: TextStyle(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0,
-                          ),
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: _saving ? null : _addMcpServer,
-                        icon: const Icon(Icons.add_rounded),
-                        label: const Text('Add MCP Server'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  if (_mcpServers.isNotEmpty)
-                    _McpServersPanel(
-                      servers: _mcpServers,
-                      onEdit: _saving ? null : _editMcpServer,
-                      onDelete: _saving ? null : _deleteMcpServer,
-                    ),
-                  const SizedBox(height: 10),
-                  _buildAssistantAgentSection(),
-                  const SizedBox(height: 10),
-                  _buildClientProvidersSection(),
-                  const SizedBox(height: 10),
-                  _buildStorageSection(),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'Agents',
-                          style: TextStyle(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0,
-                          ),
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: _saving ? null : _addAgent,
-                        icon: const Icon(Icons.add_rounded),
-                        label: const Text('Add Agent'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  if (_agentServers.isEmpty)
-                    const _EmptyState()
-                  else
-                    Column(
-                      children: [
-                        for (final server in _agentServers) ...[
-                          _AgentServerPanel(
-                            server: server,
-                            selected: server.name == widget.activeAgentName,
-                            isDefault: server.name == _defaultAgentName,
-                            onSetDefault:
-                                server.name == _defaultAgentName || _saving
-                                ? null
-                                : () => setState(() {
-                                    _defaultAgentName = server.name;
-                                    _error = null;
-                                  }),
-                            onEdit: _saving ? null : () => _editAgent(server),
-                            onDelete:
-                                server.name == widget.activeAgentName || _saving
-                                ? null
-                                : () => _deleteAgent(server),
-                          ),
-                          if (server != _agentServers.last)
-                            const SizedBox(height: 8),
-                        ],
-                      ],
-                    ),
-                ],
-              ),
-            ),
+  Widget build(BuildContext context) => _buildSettingsPage(context);
+
+  void _adoptConfig(AcpClientConfig config) {
+    _restoring = true;
+    _savedConfig = config;
+    _agentServers
+      ..clear()
+      ..addAll(config.agentServers);
+    _mcpServers
+      ..clear()
+      ..addAll(config.mcpServers);
+    _additionalDirectories
+      ..clear()
+      ..addAll(config.additionalDirectories);
+    _defaultAgentName = config.defaultAgentServerName;
+    _agentEditors.clear();
+    _mcpEditors.clear();
+    _selectedAgent =
+        _agentServers.where((a) => a.name == _activeAgentName).firstOrNull ??
+        _agentServers.firstOrNull;
+    _selectedMcp = null;
+    if (_selectedAgent != null) {
+      _agentEditors[_selectedAgent!] =
+          GlobalKey<_AgentServerEditorDialogState>();
+    }
+    final providers = config.clientProviders;
+    _filesystemRead = providers.filesystem.readTextFile;
+    _filesystemWrite = providers.filesystem.writeTextFile;
+    _filesystemOutside = providers.filesystem.allowReadOutsideWorkspace;
+    _terminalEnabled = providers.terminal.enabled;
+    _trustRules
+      ..clear()
+      ..addAll(providers.permissions.trustRules);
+    final review = providers.permissions.reviewAgent;
+    _reviewAgentEnabled = review.enabled;
+    _reviewInlineMcpServer = review.mcpServer;
+    _reviewTargetKind = review.mcpServer != null
+        ? 'inline'
+        : review.mcpServerName != null
+        ? 'mcp'
+        : 'agent';
+    _reviewAgentServerNameController.text = review.agentServerName ?? '';
+    _reviewServerNameController.text = review.mcpServerName ?? '';
+    _reviewToolNameController.text = review.toolName;
+    _reviewModelController.text = review.model ?? '';
+    _reviewTimeoutController.text =
+        review.timeout == const Duration(seconds: 10)
+        ? ''
+        : review.timeout.inMilliseconds.toString();
+    final assistant = config.assistantAgent;
+    _assistantEnabled = assistant.enabled;
+    _assistantAgentName = assistant.agentName;
+    _assistantModel = assistant.model;
+    _assistantGenerateTitles = assistant.generateSessionTitles;
+    _assistantSummarizeTurns = assistant.summarizeTurns;
+    _assistantCollapseProcess = assistant.collapseExecutionProcess;
+    _assistantFallbackTitleController.text = assistant.fallbackTitleCharacters
+        .toString();
+    _storageMaxSizeController.text = config.storage.maxSizeGb.toString();
+    _storageRetentionController.text = config.storage.retentionDays.toString();
+    _assistantModelLoadGeneration += 1;
+    _assistantModelsLoading = false;
+    _assistantModelOption = null;
+    _assistantModelsError = null;
+    _assistantValidationStatus = null;
+    _error = null;
+    _baselineSignature = _generalSignature;
+    _restoring = false;
+  }
+
+  Future<bool> _confirmDiscard() async {
+    if (!_hasChanges) return true;
+    if (_saving || _confirmingExit) return false;
+    _confirmingExit = true;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('放弃未保存的更改？'),
+        content: const Text('连接和各分类中的编辑都尚未写入配置文件。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('继续编辑'),
           ),
-        ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('放弃更改'),
+          ),
+        ],
       ),
-      actions: [
-        if (widget.onSaveConfig != null)
-          FilledButton.icon(
-            onPressed: _canSave ? () => _save(context) : null,
-            icon: _saving
-                ? const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.save_outlined),
-            label: const Text('Save'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
-        ),
-      ],
     );
+    _confirmingExit = false;
+    return discard == true;
+  }
+
+  Future<void> _requestClose([SettingsExitAction? destination]) async {
+    if (_saving || !await _confirmDiscard() || !mounted) return;
+    setState(() => _allowPop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.of(context).pop(destination);
+    });
+  }
+
+  Future<void> _discardChanges() async {
+    if (_saving || !await _confirmDiscard() || !mounted) return;
+    setState(() {
+      _adoptConfig(_savedConfig);
+      _saveStatus = '已放弃更改';
+    });
   }
 
   Future<void> _save(BuildContext context) async {
-    final save = widget.onSaveConfig;
-    if (save == null) return;
-    setState(() {
-      _saving = true;
-      _error = null;
-    });
+    if (!_canSave) return;
+    var failingSection = _section;
     try {
-      final saved = await save(
+      final agents = <AgentServerConfig>[];
+      final agentNames = <String, String>{};
+      final mcpNames = <String, String>{};
+      for (final original in _agentServers) {
+        final editor = _agentEditors[original]?.currentState;
+        final edited = editor == null ? original : editor.validatedServer();
+        if (edited == null) {
+          setState(() {
+            _section = _SettingsSection.agents;
+            _selectedAgent = original;
+            _error = '请修正此 Agent 的启动配置。';
+          });
+          return;
+        }
+        if (original.name != edited.name) {
+          agentNames[original.name] = edited.name;
+        }
+        agents.add(edited);
+      }
+      final mcps = <McpServerConfig>[];
+      for (final original in _mcpServers) {
+        final editor = _mcpEditors[original]?.currentState;
+        final edited = editor == null ? original : editor.validatedServer();
+        if (edited == null) {
+          setState(() {
+            _section = _SettingsSection.tools;
+            _selectedMcp = original;
+            _error = '请修正此 MCP 连接配置。';
+          });
+          return;
+        }
+        if (original.name != edited.name) mcpNames[original.name] = edited.name;
+        mcps.add(edited);
+      }
+      failingSection = _SettingsSection.agents;
+      if (agents.map((a) => a.name).toSet().length != agents.length) {
+        throw const FormatException('Agent 名称不能重复。');
+      }
+      failingSection = _SettingsSection.tools;
+      if (mcps.map((a) => a.name).toSet().length != mcps.length) {
+        throw const FormatException('MCP 名称不能重复。');
+      }
+      failingSection = _SettingsSection.permissions;
+      final providers = _clientProvidersConfig();
+      failingSection = _SettingsSection.assistant;
+      final assistant = _assistantAgentConfig();
+      failingSection = _SettingsSection.storage;
+      final storage = _storageConfig();
+      final referenced = remapConfigurationReferences(
         AcpClientConfig(
-          activeAgentServer: _agentServerNamed(_defaultAgentName),
-          agentServers: List.unmodifiable(_agentServers),
-          mcpServers: List.unmodifiable(_mcpServers),
+          agentServers: List.unmodifiable(agents),
+          mcpServers: List.unmodifiable(mcps),
           additionalDirectories: List.unmodifiable(_additionalDirectories),
-          clientProviders: _clientProvidersConfig(),
-          storage: _storageConfig(),
-          assistantAgent: _assistantAgentConfig(),
-          sessionTemplates: widget.sessionTemplates,
+          clientProviders: providers,
+          storage: storage,
+          assistantAgent: assistant,
+          sessionTemplates: _savedConfig.sessionTemplates,
           configPath: widget.configPath,
           defaultAgentServerName: _defaultAgentName,
-          defaultSessionTemplateId: widget.defaultSessionTemplateId,
+          defaultSessionTemplateId: _savedConfig.defaultSessionTemplateId,
         ),
+        agentNames: agentNames,
+        mcpNames: mcpNames,
       );
+      final candidate = referenced.agentServers.isEmpty
+          ? referenced
+          : referenced.withActiveAgentServer(
+              referenced.defaultAgentServerName ??
+                  referenced.agentServers.first.name,
+            );
+      failingSection = _section;
+      // Validate typed UI output too; injected writers must not bypass config contracts.
+      final validated = AcpClientConfig.fromJson({
+        if (candidate.defaultAgentServerName != null)
+          'default_agent_server': candidate.defaultAgentServerName,
+        'agent_servers': {
+          for (final agent in candidate.agentServers)
+            agent.name: agent.toJson(),
+        },
+        'mcp_servers': [for (final server in mcps) server.toJson()],
+        'additional_directories': _additionalDirectories,
+        'client_providers': candidate.clientProviders.toJson(),
+        'storage': {
+          'max_size_gb': storage.maxSizeGb,
+          'retention_days': storage.retentionDays,
+        },
+        'assistant_agent': candidate.assistantAgent.toJson(),
+        'session_templates': {
+          for (final template in candidate.sessionTemplates)
+            template.id: template.toJson(),
+        },
+        if (candidate.defaultSessionTemplateId != null)
+          'default_session_template': candidate.defaultSessionTemplateId,
+      });
+      for (final template in validated.sessionTemplates) {
+        validated.forSessionTemplate(template);
+      }
+      if (_runtimeBusy) {
+        setState(() => _error = '会话仍在运行或切换，请完成操作后保存。');
+        return;
+      }
+      setState(() {
+        _saving = true;
+        _error = null;
+        _saveStatus = null;
+      });
+      final saved = await widget.onSaveConfig!(candidate);
       if (!context.mounted) return;
       setState(() {
         _saving = false;
-        _agentServers
-          ..clear()
-          ..addAll(saved.agentServers);
-        _mcpServers
-          ..clear()
-          ..addAll(saved.mcpServers);
-        _defaultAgentName = saved.defaultAgentServerName;
-        _reviewInlineMcpServer =
-            saved.clientProviders.permissions.reviewAgent.mcpServer;
-        _assistantEnabled = saved.assistantAgent.enabled;
-        _assistantAgentName = saved.assistantAgent.agentName;
-        _assistantGenerateTitles = saved.assistantAgent.generateSessionTitles;
-        _assistantSummarizeTurns = saved.assistantAgent.summarizeTurns;
-        _assistantCollapseProcess =
-            saved.assistantAgent.collapseExecutionProcess;
-        _assistantModel = saved.assistantAgent.model;
-        _assistantFallbackTitleController.text = saved
-            .assistantAgent
-            .fallbackTitleCharacters
-            .toString();
+        _activeAgentName = saved.agentName;
+        _adoptConfig(saved);
+        _saveStatus = '更改已保存';
       });
     } catch (error) {
       if (!context.mounted) return;
       setState(() {
         _saving = false;
-        _error = '$error';
+        _section = failingSection;
+        _error = error.toString().replaceFirst('FormatException: ', '');
       });
     }
   }
 
-  AgentServerConfig? _agentServerNamed(String? name) {
-    final trimmed = name?.trim();
-    if (trimmed == null || trimmed.isEmpty) return null;
-    for (final server in _agentServers) {
-      if (server.name == trimmed) return server;
-    }
-    return null;
-  }
-
-  Widget _buildDirectoriesSection() {
-    return _Panel(
-      icon: Icons.folder_copy_outlined,
-      title: 'Additional Directories',
-      accent: AppColors.primary,
-      trailing: TextButton.icon(
-        onPressed: _saving ? null : _addDirectory,
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('Add Directory'),
-      ),
-      child: _additionalDirectories.isEmpty
-          ? const Text(
-              'No additional directories.',
-              style: TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0,
-              ),
-            )
-          : Column(
+  Widget _buildDirectoriesSection() => _Panel(
+    icon: Icons.folder_copy_outlined,
+    title: '默认附加目录',
+    trailing: TextButton.icon(
+      onPressed: _saving ? null : _addDirectory,
+      icon: const Icon(Icons.add_rounded),
+      label: const Text('添加目录'),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SettingsHelp('提供给新会话的额外目录。会话模板可以覆盖此默认值；它们与 Agent 进程工作目录分别设置。'),
+        const SizedBox(height: 24),
+        if (_additionalDirectories.isEmpty) const _SettingsHelp('尚未添加目录。'),
+        for (final directory in _additionalDirectories)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(
               children: [
-                for (final directory in _additionalDirectories)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: _DetailRow(
-                            label: 'Directory',
-                            value: directory,
-                          ),
-                        ),
-                        _PanelActionButton(
-                          tooltip: 'Delete directory $directory',
-                          icon: Icons.delete_outline_rounded,
-                          onPressed: _saving
-                              ? null
-                              : () => _deleteDirectory(directory),
-                        ),
-                      ],
-                    ),
+                const Icon(
+                  Icons.folder_outlined,
+                  size: 20,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SelectableText(
+                    directory,
+                    style: const TextStyle(fontSize: 14),
                   ),
+                ),
+                _PanelActionButton(
+                  tooltip: '移除目录 $directory',
+                  icon: Icons.delete_outline_rounded,
+                  onPressed: _saving ? null : () => _deleteDirectory(directory),
+                ),
               ],
             ),
-    );
-  }
+          ),
+      ],
+    ),
+  );
+
+  bool get _connectionsHaveChanges =>
+      !listEquals(_agentServers, _savedConfig.agentServers) ||
+      _agentEditors.values.any((key) => key.currentState?.hasChanges ?? false);
 
   Widget _buildAssistantAgentSection() {
-    final configuredAgents = _agentServers
+    final names = _agentServers
         .map((server) => server.name)
         .toList(growable: false);
-    final selectedAgent =
-        _assistantAgentName != null &&
-            configuredAgents.contains(_assistantAgentName)
+    final selected = names.contains(_assistantAgentName)
         ? _assistantAgentName
         : null;
     return _Panel(
       icon: Icons.auto_awesome_outlined,
-      title: 'Assistant Agent',
-      accent: AppColors.textPrimary,
+      title: 'AI 辅助',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const _SettingsHelp('使用独立的只读 Agent 生成会话标题和已完成轮次的摘要。'),
+          const SizedBox(height: 16),
           _ConfigSwitch(
             key: const Key('assistant-agent-enabled-switch'),
-            title: 'Enable Assistant Agent',
+            title: '启用 AI 辅助',
             value: _assistantEnabled,
             onChanged: (value) {
               setState(() {
@@ -450,183 +587,109 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   _assistantModelsLoading = false;
                 }
               });
-              if (value) {
-                _loadAssistantAgentModels(_assistantAgentName);
-              }
+              if (value) _loadAssistantAgentModels(_assistantAgentName);
             },
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'Uses a separate, read-only agent to improve session titles and '
-            'summarize completed work. It never participates in the active session.',
-            style: TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 12,
-              height: 1.4,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0,
+          if (_assistantEnabled) ...[
+            const SizedBox(height: 20),
+            DropdownButtonFormField<String>(
+              key: const Key('assistant-agent-name-field'),
+              initialValue: selected,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: '辅助 Agent'),
+              items: [
+                for (final name in names)
+                  DropdownMenuItem(value: name, child: Text(name)),
+              ],
+              onChanged: (value) {
+                setState(() {
+                  _assistantAgentName = value;
+                  _assistantModel = null;
+                  _assistantModelOption = null;
+                  _assistantModelsError = null;
+                  _assistantValidationStatus = null;
+                });
+                _loadAssistantAgentModels(value);
+              },
             ),
-          ),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<String>(
-            key: const Key('assistant-agent-name-field'),
-            initialValue: selectedAgent,
-            decoration: const InputDecoration(
-              labelText: 'Agent',
-              prefixIcon: Icon(Icons.smart_toy_outlined),
+            const SizedBox(height: 20),
+            _buildAssistantModelField(selected),
+            const SizedBox(height: 16),
+            if (_connectionsHaveChanges)
+              const _SettingsHelp('Agent 连接有未保存的更改。请先保存，再加载模型或验证连接。'),
+            OutlinedButton.icon(
+              key: const Key('assistant-agent-validate-button'),
+              onPressed:
+                  _assistantValidating ||
+                      _assistantModelsLoading ||
+                      _connectionsHaveChanges ||
+                      _runtimeBusy ||
+                      widget.onValidateAssistantAgent == null
+                  ? null
+                  : _validateAssistantConfiguration,
+              icon: _assistantValidating
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.check_circle_outline_rounded, size: 18),
+              label: Text(_assistantValidating ? '正在验证…' : '验证连接与模型'),
             ),
-            items: [
-              for (final name in configuredAgents)
-                DropdownMenuItem(value: name, child: Text(name)),
-            ],
-            onChanged: !_assistantEnabled
-                ? null
-                : (value) {
-                    setState(() {
-                      _assistantAgentName = value;
-                      _assistantModel = null;
-                      _assistantModelOption = null;
-                      _assistantModelsError = null;
-                      _assistantValidationStatus = null;
-                    });
-                    _loadAssistantAgentModels(value);
-                  },
-          ),
-          const SizedBox(height: 8),
-          _buildAssistantModelField(selectedAgent),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              OutlinedButton.icon(
-                key: const Key('assistant-agent-validate-button'),
-                onPressed:
-                    !_assistantEnabled ||
-                        _assistantValidating ||
-                        _assistantModelsLoading
-                    ? null
-                    : _validateAssistantConfiguration,
-                icon: _assistantValidating
-                    ? const SizedBox.square(
-                        dimension: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.check_circle_outline_rounded, size: 17),
-                label: Text(
-                  _assistantValidating
-                      ? 'Validating...'
-                      : 'Validate configuration',
-                ),
-              ),
-              if (_assistantValidationStatus case final status?) ...[
-                Icon(
-                  _assistantValidationSucceeded
-                      ? Icons.check_circle_rounded
-                      : Icons.error_outline_rounded,
-                  size: 16,
-                  color: _assistantValidationSucceeded
-                      ? AppColors.success
-                      : AppColors.warning,
-                ),
-                Text(
+            if (_assistantValidationStatus case final status?)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
                   status,
                   style: TextStyle(
+                    fontSize: 13,
                     color: _assistantValidationSucceeded
                         ? AppColors.success
                         : AppColors.warning,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
                   ),
                 ),
-              ],
-            ],
-          ),
-          const Divider(height: 22, color: AppColors.border),
-          const Text(
-            'Enhancements',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0,
+              ),
+            const Divider(height: 40, color: AppColors.border),
+            _ConfigSwitch(
+              key: const Key('assistant-session-title-switch'),
+              title: '生成会话标题',
+              value: _assistantGenerateTitles,
+              onChanged: (value) =>
+                  setState(() => _assistantGenerateTitles = value),
             ),
+            _ConfigSwitch(
+              key: const Key('assistant-turn-summary-switch'),
+              title: '生成已完成轮次的摘要',
+              value: _assistantSummarizeTurns,
+              onChanged: (value) =>
+                  setState(() => _assistantSummarizeTurns = value),
+            ),
+            _ConfigSwitch(
+              key: const Key('assistant-collapse-process-switch'),
+              title: '默认折叠已总结的执行过程',
+              value: _assistantCollapseProcess,
+              onChanged: !_assistantSummarizeTurns
+                  ? null
+                  : (value) =>
+                        setState(() => _assistantCollapseProcess = value),
+            ),
+            const SizedBox(height: 16),
+            const _SettingsHelp(
+              '辅助 Agent 会收到首条提示和已完成轮次的内容，没有文件、终端或 MCP 工具权限。失败或超时时仍保留原始内容。',
+            ),
+          ],
+          const Divider(height: 40, color: AppColors.border),
+          const Text(
+            '备用标题',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           ),
-          const SizedBox(height: 4),
-          _ConfigSwitch(
-            key: const Key('assistant-session-title-switch'),
-            title: 'Smart session titles',
-            value: _assistantGenerateTitles,
-            onChanged: !_assistantEnabled
-                ? null
-                : (value) => setState(() => _assistantGenerateTitles = value),
-          ),
-          Row(
-            children: [
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Without an assistant, use the first prompt as the title.',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: 112,
-                child: _DialogTextField(
-                  key: const Key('assistant-title-character-limit-field'),
-                  controller: _assistantFallbackTitleController,
-                  label: 'Characters',
-                  icon: Icons.short_text_rounded,
-                ),
-              ),
-            ],
-          ),
-          _ConfigSwitch(
-            key: const Key('assistant-turn-summary-switch'),
-            title: 'Completed turn summaries',
-            value: _assistantSummarizeTurns,
-            onChanged: !_assistantEnabled
-                ? null
-                : (value) => setState(() => _assistantSummarizeTurns = value),
-          ),
-          _ConfigSwitch(
-            key: const Key('assistant-collapse-process-switch'),
-            title: 'Collapse execution process by default',
-            value: _assistantCollapseProcess,
-            onChanged: !_assistantEnabled || !_assistantSummarizeTurns
-                ? null
-                : (value) => setState(() => _assistantCollapseProcess = value),
-          ),
-          const SizedBox(height: 8),
-          const _AssistantAgentPreview(),
-          const SizedBox(height: 8),
-          const Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(
-                Icons.shield_outlined,
-                size: 16,
-                color: AppColors.textTertiary,
-              ),
-              SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  'The assistant receives the first prompt and completed-turn '
-                  'content. It has no filesystem, terminal, or MCP tools. If it '
-                  'fails or times out, the original content remains visible.',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    height: 1.4,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
+          const SizedBox(height: 10),
+          const _SettingsHelp('未启用 AI 辅助或生成失败时，从首条提示截取标题。'),
+          const SizedBox(height: 20),
+          _SettingsField(
+            key: const Key('assistant-title-character-limit-field'),
+            controller: _assistantFallbackTitleController,
+            label: '标题字数',
+            hint: '8–128',
           ),
         ],
       ),
@@ -650,21 +713,23 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         _assistantEnabled &&
         selectedAgent != null &&
         !_assistantModelsLoading &&
+        !_connectionsHaveChanges &&
+        !_runtimeBusy &&
         widget.onLoadAssistantAgentModels != null &&
         choices.isNotEmpty;
     final defaultModelLabel = option?.currentChoiceLabel.trim();
     final defaultLabel = defaultModelLabel == null || defaultModelLabel.isEmpty
-        ? 'Use agent default'
-        : 'Use agent default ($defaultModelLabel)';
+        ? '使用 Agent 默认模型'
+        : '使用默认模型（$defaultModelLabel）';
     String? helperText;
     if (_assistantModelsLoading && selectedAgent != null) {
-      helperText = 'Loading models from $selectedAgent through ACP…';
+      helperText = '正在读取 $selectedAgent 提供的模型…';
     } else if (selectedAgent == null) {
-      helperText = 'Choose an agent to load its models.';
+      helperText = '选择辅助 Agent 后读取模型。';
     } else if (widget.onLoadAssistantAgentModels == null) {
-      helperText = 'ACP model discovery is unavailable.';
+      helperText = '当前无法读取 Agent 模型。';
     } else if (option == null && _assistantModelsError == null) {
-      helperText = 'This agent does not expose a model selector through ACP.';
+      helperText = '此 Agent 未提供可选模型，将使用默认模型。';
     }
 
     return KeyedSubtree(
@@ -674,7 +739,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         initialValue: selectedValue,
         isExpanded: true,
         decoration: InputDecoration(
-          labelText: 'Model (optional)',
+          labelText: '模型（可选）',
           prefixIcon: const Icon(Icons.memory_outlined),
           helperText: helperText,
           errorText: _assistantModelsError,
@@ -702,7 +767,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           if (configuredModel != null && !hasConfiguredChoice)
             DropdownMenuItem(
               value: configuredModel,
-              child: Text('$configuredModel (configured)'),
+              child: Text('$configuredModel（已配置）'),
             ),
           for (final choice in choices)
             DropdownMenuItem(value: choice.value, child: Text(choice.label)),
@@ -723,7 +788,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     final normalizedAgentName = _trimmedOrNull(agentName);
     final loader = widget.onLoadAssistantAgentModels;
     final generation = ++_assistantModelLoadGeneration;
-    if (!_assistantEnabled || normalizedAgentName == null || loader == null) {
+    if (!_assistantEnabled ||
+        _connectionsHaveChanges ||
+        _runtimeBusy ||
+        normalizedAgentName == null ||
+        loader == null) {
       if (!mounted) return;
       setState(() {
         _assistantModelsLoading = false;
@@ -744,22 +813,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           normalizedAgentName != _assistantAgentName?.trim()) {
         return;
       }
-      final configuredModel = _trimmedOrNull(_assistantModel);
-      String? resolvedModel = configuredModel;
-      if (configuredModel != null && option != null) {
-        final normalizedModel = configuredModel.toLowerCase();
-        for (final choice in option.options) {
-          if (choice.value.trim().toLowerCase() == normalizedModel ||
-              choice.label.trim().toLowerCase() == normalizedModel) {
-            resolvedModel = choice.value;
-            break;
-          }
-        }
-      }
       setState(() {
         _assistantModelsLoading = false;
         _assistantModelOption = option;
-        _assistantModel = resolvedModel;
       });
     } on Object catch (error) {
       if (!mounted || generation != _assistantModelLoadGeneration) return;
@@ -774,145 +830,159 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     }
   }
 
-  Widget _buildClientProvidersSection() {
-    return _Panel(
-      icon: Icons.security_rounded,
-      title: 'Client Providers',
-      accent: AppColors.warning,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _ConfigSwitch(
-            key: const Key('filesystem-read-switch'),
-            title: 'FS read',
-            value: _filesystemRead,
-            onChanged: (value) => setState(() => _filesystemRead = value),
-          ),
-          _ConfigSwitch(
-            key: const Key('filesystem-write-switch'),
-            title: 'FS write',
-            value: _filesystemWrite,
-            onChanged: (value) => setState(() => _filesystemWrite = value),
-          ),
-          _ConfigSwitch(
-            key: const Key('filesystem-outside-switch'),
-            title: 'Outside',
-            value: _filesystemOutside,
-            onChanged: (value) => setState(() => _filesystemOutside = value),
-          ),
-          _ConfigSwitch(
-            key: const Key('terminal-enabled-switch'),
-            title: 'Terminal',
-            value: _terminalEnabled,
-            onChanged: (value) => setState(() => _terminalEnabled = value),
-          ),
-          const Divider(height: 18, color: AppColors.border),
+  Widget _buildClientProvidersSection() => _Panel(
+    icon: Icons.security_outlined,
+    title: '权限与审查',
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SettingsHelp(
+          '应用向 Agent 提供的能力默认值。模板可覆盖这些设置；每次操作是否审批由当前会话的执行策略决定。',
+        ),
+        const SizedBox(height: 20),
+        _ConfigSwitch(
+          key: const Key('filesystem-read-switch'),
+          title: '允许读取文本文件',
+          value: _filesystemRead,
+          onChanged: (value) => setState(() => _filesystemRead = value),
+        ),
+        _ConfigSwitch(
+          key: const Key('filesystem-write-switch'),
+          title: '允许写入文本文件',
+          value: _filesystemWrite,
+          onChanged: (value) => setState(() => _filesystemWrite = value),
+        ),
+        _ConfigSwitch(
+          key: const Key('filesystem-outside-switch'),
+          title: '允许读取工作区外的文件',
+          value: _filesystemOutside,
+          onChanged: (value) => setState(() => _filesystemOutside = value),
+        ),
+        _ConfigSwitch(
+          key: const Key('terminal-enabled-switch'),
+          title: '允许使用终端',
+          value: _terminalEnabled,
+          onChanged: (value) => setState(() => _terminalEnabled = value),
+        ),
+        const Divider(height: 40, color: AppColors.border),
+        Wrap(
+          spacing: 16,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              '信任规则 · ${_trustRules.length}',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            TextButton.icon(
+              onPressed: _saving ? null : _addTrustRule,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('添加规则'),
+            ),
+          ],
+        ),
+        const _SettingsHelp('匹配工具名称和类型的请求可按规则直接允许或拒绝。'),
+        for (final rule in _trustRules)
           Row(
             children: [
               Expanded(
-                child: Row(
-                  children: [
-                    const Text(
-                      'Trust rules',
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                    if (_trustRules.isNotEmpty) ...[
-                      const SizedBox(width: 6),
-                      _TinyPill('${_trustRules.length}', AppColors.warning),
-                    ],
-                  ],
+                child: Text(
+                  _permissionTrustRuleLabel(rule),
+                  style: const TextStyle(fontSize: 14),
                 ),
               ),
-              TextButton.icon(
-                onPressed: _saving ? null : _addTrustRule,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Add Trust Rule'),
+              _PanelActionButton(
+                tooltip: '移除规则 ${rule.toolName}',
+                icon: Icons.delete_outline_rounded,
+                onPressed: _saving ? null : () => _deleteTrustRule(rule),
               ),
             ],
           ),
-          for (final rule in _trustRules)
-            Row(
-              children: [
-                const SizedBox(
-                  width: 82,
-                  child: Text(
-                    'Rule',
-                    style: TextStyle(
-                      color: AppColors.textTertiary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0,
-                    ),
-                  ),
+        const Divider(height: 40, color: AppColors.border),
+        const Text(
+          '自动审查来源',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 12),
+        const _SettingsHelp(
+          '当输入区的执行策略设为 Auto Review 时使用。默认由当前 Agent 的独立审查会话处理。',
+        ),
+        _ConfigSwitch(
+          key: const Key('review-agent-enabled-switch'),
+          title: '使用指定审查来源',
+          value: _reviewAgentEnabled,
+          onChanged: (value) => setState(() => _reviewAgentEnabled = value),
+        ),
+        if (_reviewAgentEnabled) ...[
+          const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            key: const Key('review-target-kind'),
+            initialValue: _reviewTargetKind,
+            decoration: const InputDecoration(labelText: '来源类型'),
+            items: [
+              const DropdownMenuItem(
+                value: 'agent',
+                child: Text('已配置的 ACP Agent'),
+              ),
+              const DropdownMenuItem(value: 'mcp', child: Text('已配置的 MCP 服务器')),
+              if (_reviewInlineMcpServer != null)
+                const DropdownMenuItem(
+                  value: 'inline',
+                  child: Text('配置文件中的内嵌 MCP'),
                 ),
-                Expanded(
-                  child: Text(
-                    _permissionTrustRuleLabel(rule),
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0,
-                    ),
-                  ),
-                ),
-                _PanelActionButton(
-                  tooltip: 'Delete rule ${rule.toolName}',
-                  icon: Icons.delete_outline_rounded,
-                  onPressed: _saving ? null : () => _deleteTrustRule(rule),
-                ),
-              ],
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() {
+                _reviewTargetKind = value;
+                if (value != 'agent') _reviewAgentServerNameController.clear();
+                if (value != 'mcp') _reviewServerNameController.clear();
+              });
+            },
+          ),
+          const SizedBox(height: 20),
+          if (_reviewTargetKind == 'agent')
+            _SettingsField(
+              key: const Key('review-agent-server-name-field'),
+              controller: _reviewAgentServerNameController,
+              label: 'Agent 名称',
             ),
-          const Divider(height: 18, color: AppColors.border),
-          _ConfigSwitch(
-            key: const Key('review-agent-enabled-switch'),
-            title: 'Review agent',
-            value: _reviewAgentEnabled,
-            onChanged: (value) => setState(() => _reviewAgentEnabled = value),
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('review-agent-server-name-field'),
-            controller: _reviewAgentServerNameController,
-            label: 'Review ACP agent name',
-            icon: Icons.smart_toy_outlined,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('review-mcp-server-name-field'),
-            controller: _reviewServerNameController,
-            label: 'Review MCP server name',
-            icon: Icons.extension_outlined,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('review-tool-name-field'),
-            controller: _reviewToolNameController,
-            label: 'Review tool',
-            icon: Icons.build_circle_outlined,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
+          if (_reviewTargetKind == 'mcp')
+            _SettingsField(
+              key: const Key('review-mcp-server-name-field'),
+              controller: _reviewServerNameController,
+              label: 'MCP 名称',
+            ),
+          if (_reviewTargetKind == 'inline')
+            _SettingsHelp(
+              '保留已有内嵌 MCP：${_reviewInlineMcpServer?.name ?? ""}。选择其他来源后保存会替换它。',
+            ),
+          if (_reviewTargetKind != 'agent') ...[
+            const SizedBox(height: 20),
+            _SettingsField(
+              key: const Key('review-tool-name-field'),
+              controller: _reviewToolNameController,
+              label: '审查工具',
+            ),
+          ],
+          const SizedBox(height: 20),
+          _SettingsField(
             key: const Key('review-model-field'),
             controller: _reviewModelController,
-            label: 'Review model',
-            icon: Icons.memory_rounded,
+            label: '审查模型',
+            hint: '可选',
           ),
-          const SizedBox(height: 8),
-          _DialogTextField(
+          const SizedBox(height: 20),
+          _SettingsField(
             key: const Key('review-timeout-field'),
             controller: _reviewTimeoutController,
-            label: 'Review timeout ms',
-            icon: Icons.timer_outlined,
+            label: '超时（毫秒）',
+            hint: '默认 10000',
           ),
         ],
-      ),
-    );
-  }
+      ],
+    ),
+  );
 
   AcpClientProviderConfig _clientProvidersConfig() {
     return AcpClientProviderConfig(
@@ -929,44 +999,30 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     );
   }
 
-  Widget _buildStorageSection() {
-    return _Panel(
-      icon: Icons.storage_rounded,
-      title: 'Local Recovery Storage',
-      accent: AppColors.primary,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'The limit and retention period apply independently to the '
-            'session-recovery database and transcript cache. Expired local '
-            'recovery data is removed automatically.',
-            style: TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              height: 1.45,
-              letterSpacing: 0,
-            ),
-          ),
-          const SizedBox(height: 10),
-          _DialogTextField(
-            key: const Key('storage-max-size-gb-field'),
-            controller: _storageMaxSizeController,
-            label: 'Per-store limit (GB)',
-            icon: Icons.data_usage_rounded,
-          ),
-          const SizedBox(height: 8),
-          _DialogTextField(
-            key: const Key('storage-retention-days-field'),
-            controller: _storageRetentionController,
-            label: 'Per-store retention (days)',
-            icon: Icons.history_rounded,
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildStorageSection() => _Panel(
+    icon: Icons.storage_outlined,
+    title: '本地恢复存储',
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SettingsHelp('以下上限和保留期分别应用于会话恢复数据库、对话缓存。到期的本地恢复数据会自动清理。'),
+        const SizedBox(height: 28),
+        _SettingsField(
+          key: const Key('storage-max-size-gb-field'),
+          controller: _storageMaxSizeController,
+          label: '每库上限（GB）',
+        ),
+        const SizedBox(height: 24),
+        _SettingsField(
+          key: const Key('storage-retention-days-field'),
+          controller: _storageRetentionController,
+          label: '保留天数',
+        ),
+        const SizedBox(height: 24),
+        const _SettingsHelp('此处不是整个应用的磁盘占用上限，也不会删除 Agent 服务端的会话。'),
+      ],
+    ),
+  );
 
   SqliteStorageConfig _storageConfig() {
     final maxSize = _positiveIntValue(
@@ -1024,6 +1080,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   }
 
   Future<void> _validateAssistantConfiguration() async {
+    if (_connectionsHaveChanges || _runtimeBusy) return;
     AssistantAgentConfig config;
     try {
       config = _assistantAgentConfig();
@@ -1041,7 +1098,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     if (validator == null) {
       setState(() {
         _assistantValidationSucceeded = false;
-        _assistantValidationStatus = 'Runtime validation is unavailable';
+        _assistantValidationStatus = '当前无法验证连接';
       });
       return;
     }
@@ -1050,15 +1107,23 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       _assistantValidationSucceeded = false;
       _assistantValidationStatus = null;
     });
+    final validationSignature = jsonEncode(config.toJson());
+    final validationGeneration = _assistantModelLoadGeneration;
+    bool isCurrent() =>
+        mounted &&
+        validationGeneration == _assistantModelLoadGeneration &&
+        validationSignature == jsonEncode(_assistantAgentConfig().toJson());
     try {
       await validator(config);
-      if (!mounted) return;
+      if (!isCurrent()) return;
       setState(() {
         _assistantValidationSucceeded = true;
-        _assistantValidationStatus = 'Connection and model verified';
+        _assistantValidationStatus = '连接与模型验证通过';
       });
     } on Object catch (error) {
-      if (!mounted) return;
+      if (!mounted || validationGeneration != _assistantModelLoadGeneration) {
+        return;
+      }
       setState(() {
         _assistantValidationSucceeded = false;
         _assistantValidationStatus = error.toString().replaceFirst(
@@ -1083,7 +1148,10 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     }
     return AcpPermissionReviewAgentConfig(
       enabled: _reviewAgentEnabled,
-      mcpServer: mcpServerName == null && agentServerName == null
+      mcpServer:
+          mcpServerName == null &&
+              agentServerName == null &&
+              (!_reviewAgentEnabled || _reviewTargetKind == 'inline')
           ? _reviewInlineMcpServer
           : null,
       mcpServerName: mcpServerName,
@@ -1150,97 +1218,95 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     });
   }
 
-  Future<void> _addAgent() async {
-    final server = await showDialog<AgentServerConfig>(
-      context: context,
-      builder: (context) => _AgentServerEditorDialog(
-        presets: widget.agentPresets
-            .where(
-              (preset) =>
-                  !_agentServers.any((server) => server.name == preset.name),
-            )
-            .toList(growable: false),
-      ),
-    );
-    if (server == null || !mounted) return;
+  void _selectAgent(AgentServerConfig server) {
     setState(() {
-      _agentServers.removeWhere((candidate) => candidate.name == server.name);
-      _agentServers.add(server);
-      _defaultAgentName ??= server.name;
-      _error = null;
+      _selectedAgent = server;
+      _agentEditors.putIfAbsent(
+        server,
+        () => GlobalKey<_AgentServerEditorDialogState>(),
+      );
     });
   }
 
-  Future<void> _editAgent(AgentServerConfig server) async {
-    final edited = await showDialog<AgentServerConfig>(
-      context: context,
-      builder: (context) => _AgentServerEditorDialog(
-        initialServer: server,
-        presets: widget.agentPresets,
-      ),
+  void _addAgent() {
+    final preset = widget.agentPresets
+        .where((p) => !_agentServers.any((a) => a.name == p.name))
+        .firstOrNull;
+    var name = preset?.name ?? '新 Agent';
+    var suffix = 2;
+    while (_agentServers.any((a) => a.name == name)) {
+      name = '新 Agent ${suffix++}';
+    }
+    final server = AgentServerConfig(
+      name: name,
+      type: preset?.type ?? 'custom',
+      command: preset?.command ?? '',
+      args: preset?.args ?? const [],
+      cwd: preset?.cwd,
+      env: preset?.env ?? const {},
     );
-    if (edited == null || !mounted) return;
     setState(() {
-      final index = _agentServers.indexWhere(
-        (candidate) => candidate.name == server.name,
-      );
-      if (index == -1) {
-        _agentServers.add(edited);
-      } else {
-        _agentServers[index] = edited;
-      }
-      if (_defaultAgentName == server.name) _defaultAgentName = edited.name;
+      _agentServers.add(server);
+      _defaultAgentName ??= server.name;
+      _selectedAgent = server;
+      _agentEditors[server] = GlobalKey<_AgentServerEditorDialogState>();
       _error = null;
+      _saveStatus = null;
     });
   }
 
   void _deleteAgent(AgentServerConfig server) {
+    if (server.name == _activeAgentName) return;
     setState(() {
-      _agentServers.removeWhere((candidate) => candidate.name == server.name);
+      _agentServers.remove(server);
+      _agentEditors.remove(server);
       if (_defaultAgentName == server.name) {
-        _defaultAgentName = _agentServers.isEmpty
-            ? null
-            : _agentServers.first.name;
+        _defaultAgentName = _agentServers.firstOrNull?.name;
+      }
+      _selectedAgent = _agentServers.firstOrNull;
+      if (_selectedAgent != null) {
+        _agentEditors.putIfAbsent(
+          _selectedAgent!,
+          () => GlobalKey<_AgentServerEditorDialogState>(),
+        );
       }
       _error = null;
     });
   }
 
-  Future<void> _addMcpServer() async {
-    final server = await showDialog<McpServerConfig>(
-      context: context,
-      builder: (context) => const _McpServerEditorDialog(),
-    );
-    if (server == null || !mounted) return;
+  void _selectMcp(McpServerConfig server) {
     setState(() {
-      _mcpServers.removeWhere((candidate) => candidate.name == server.name);
-      _mcpServers.add(server);
-      _error = null;
-    });
-  }
-
-  Future<void> _editMcpServer(McpServerConfig server) async {
-    final edited = await showDialog<McpServerConfig>(
-      context: context,
-      builder: (context) => _McpServerEditorDialog(initialServer: server),
-    );
-    if (edited == null || !mounted) return;
-    setState(() {
-      final index = _mcpServers.indexWhere(
-        (candidate) => candidate.name == server.name,
+      _selectedMcp = server;
+      _mcpEditors.putIfAbsent(
+        server,
+        () => GlobalKey<_McpServerEditorDialogState>(),
       );
-      if (index == -1) {
-        _mcpServers.add(edited);
-      } else {
-        _mcpServers[index] = edited;
-      }
+    });
+  }
+
+  void _addMcpServer() {
+    var name = '新 MCP';
+    var suffix = 2;
+    while (_mcpServers.any((m) => m.name == name)) {
+      name = '新 MCP ${suffix++}';
+    }
+    final server = McpServerConfig(
+      raw: {'name': name, 'type': 'stdio', 'command': ''},
+    );
+    setState(() {
+      _mcpServers.add(server);
+      _selectedMcp = server;
+      _mcpEditors[server] = GlobalKey<_McpServerEditorDialogState>();
       _error = null;
+      _saveStatus = null;
     });
   }
 
   void _deleteMcpServer(McpServerConfig server) {
     setState(() {
-      _mcpServers.removeWhere((candidate) => candidate.name == server.name);
+      _mcpServers.remove(server);
+      _mcpEditors.remove(server);
+      _selectedMcp = null;
       _error = null;
     });
   }
@@ -1331,16 +1397,16 @@ class _ConfigSwitch extends StatelessWidget {
           title,
           style: const TextStyle(
             color: AppColors.textPrimary,
-            fontSize: 12,
+            fontSize: 14,
             fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
         ),
         subtitle: Text(
-          value ? 'Enabled' : 'Disabled',
+          value ? '已开启' : '已关闭',
           style: const TextStyle(
             color: AppColors.textSecondary,
-            fontSize: 11,
+            fontSize: 12,
             fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
@@ -1372,7 +1438,7 @@ class _DirectoryEditorDialogState extends State<_DirectoryEditorDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Additional Directory'),
+      title: const Text('添加附加目录'),
       content: SizedBox(
         width: 480,
         child: Column(
@@ -1395,9 +1461,9 @@ class _DirectoryEditorDialogState extends State<_DirectoryEditorDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: const Text('取消'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('Save Directory')),
+        FilledButton(onPressed: _submit, child: const Text('添加到草稿')),
       ],
     );
   }
@@ -1405,7 +1471,7 @@ class _DirectoryEditorDialogState extends State<_DirectoryEditorDialog> {
   void _submit() {
     final path = _pathController.text.trim();
     if (path.isEmpty || !path.startsWith('/')) {
-      setState(() => _error = 'Enter an absolute directory path.');
+      setState(() => _error = '请输入绝对目录路径。');
       return;
     }
     Navigator.of(context).pop(path);
@@ -1435,7 +1501,7 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Trust Rule'),
+      title: const Text('添加信任规则'),
       content: SizedBox(
         width: 480,
         child: Column(
@@ -1445,14 +1511,14 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
             _DialogTextField(
               key: const Key('trust-tool-name-field'),
               controller: _toolNameController,
-              label: 'Tool name',
+              label: '工具名称',
               icon: Icons.build_outlined,
             ),
             const SizedBox(height: 10),
             _DialogTextField(
               key: const Key('trust-tool-kind-field'),
               controller: _toolKindController,
-              label: 'Tool kind',
+              label: '工具类型（可选）',
               icon: Icons.category_outlined,
             ),
             const SizedBox(height: 10),
@@ -1460,7 +1526,7 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
               key: const Key('trust-decision-field'),
               initialValue: _decision,
               decoration: _fieldDecoration(
-                label: 'Decision',
+                label: '规则结果',
                 icon: Icons.rule_rounded,
               ),
               items: const [
@@ -1488,9 +1554,9 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: const Text('取消'),
         ),
-        FilledButton(onPressed: _submit, child: const Text('Save Rule')),
+        FilledButton(onPressed: _submit, child: const Text('添加到草稿')),
       ],
     );
   }
@@ -1508,826 +1574,6 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
         decision: _decision,
       ),
     );
-  }
-}
-
-class _AgentServerEditorDialog extends StatefulWidget {
-  const _AgentServerEditorDialog({
-    this.initialServer,
-    this.presets = const <AgentServerConfig>[],
-  });
-
-  final AgentServerConfig? initialServer;
-  final List<AgentServerConfig> presets;
-
-  @override
-  State<_AgentServerEditorDialog> createState() =>
-      _AgentServerEditorDialogState();
-}
-
-class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
-  static const String _customPreset = '__custom__';
-
-  late String _type = widget.initialServer?.type ?? 'custom';
-  late final TextEditingController _nameController = TextEditingController(
-    text: widget.initialServer?.name ?? '',
-  );
-  late final TextEditingController _commandController = TextEditingController(
-    text: widget.initialServer?.command ?? '',
-  );
-  late final TextEditingController _cwdController = TextEditingController(
-    text: widget.initialServer?.cwd ?? '',
-  );
-  late final TextEditingController _urlController = TextEditingController(
-    text: widget.initialServer?.url ?? '',
-  );
-  final List<TextEditingController> _argControllers = [];
-  final List<_NameValueControllers> _envControllers = [];
-  final List<_NameValueControllers> _headerControllers = [];
-  late String _selectedPreset = _initialPresetName();
-  String? _error;
-
-  bool get _isRemote =>
-      _type == 'websocket' || _type == 'http' || _type == 'sse';
-
-  @override
-  void initState() {
-    super.initState();
-    final server = widget.initialServer;
-    if (server == null) {
-      if (widget.presets.isNotEmpty) _applyPreset(widget.presets.first);
-      return;
-    }
-    _argControllers.addAll(
-      server.args.map((arg) => TextEditingController(text: arg)),
-    );
-    _envControllers.addAll(
-      server.env.entries.map(
-        (entry) => _NameValueControllers(
-          name: entry.key,
-          value: entry.value,
-          initiallyDirty: server.explicitEnvKeys.contains(entry.key),
-        ),
-      ),
-    );
-    _headerControllers.addAll(
-      server.headers.entries.map(
-        (entry) => _NameValueControllers(
-          name: entry.key,
-          value: entry.value,
-          initiallyDirty: server.explicitHeaderKeys.contains(entry.key),
-        ),
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _commandController.dispose();
-    _cwdController.dispose();
-    _urlController.dispose();
-    for (final controller in _argControllers) {
-      controller.dispose();
-    }
-    for (final controllers in _envControllers) {
-      controllers.dispose();
-    }
-    for (final controllers in _headerControllers) {
-      controllers.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final hasPresets = widget.presets.isNotEmpty;
-    return AlertDialog(
-      title: const Text('Agent Server'),
-      content: SizedBox(
-        width: 520,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (hasPresets) ...[
-                DropdownButtonFormField<String>(
-                  key: const Key('agent-preset-field'),
-                  initialValue: _selectedPreset,
-                  decoration: _fieldDecoration(
-                    label: 'Agent',
-                    icon: Icons.smart_toy_outlined,
-                  ),
-                  items: [
-                    for (final preset in widget.presets)
-                      DropdownMenuItem(
-                        value: preset.name,
-                        child: Text(preset.name),
-                      ),
-                    const DropdownMenuItem(
-                      value: _customPreset,
-                      child: Text('Custom agent'),
-                    ),
-                  ],
-                  onChanged: (value) {
-                    if (value == null) return;
-                    setState(() {
-                      _selectedPreset = value;
-                      final preset = _presetNamed(value);
-                      if (preset != null) _applyPreset(preset);
-                      _error = null;
-                    });
-                  },
-                ),
-                const SizedBox(height: 10),
-                _ReadyAgentPanel(
-                  name: _nameController.text,
-                  target: _agentTarget(),
-                ),
-                const SizedBox(height: 8),
-              ],
-              ExpansionTile(
-                key: const Key('agent-advanced-settings'),
-                initiallyExpanded: !hasPresets,
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: const EdgeInsets.only(bottom: 4),
-                title: const Text(
-                  'Advanced settings',
-                  style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0,
-                  ),
-                ),
-                subtitle: const Text(
-                  'Change transport, command, arguments, or environment.',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0,
-                  ),
-                ),
-                children: [_buildAdvancedSettings()],
-              ),
-              if (_error != null) ...[
-                const SizedBox(height: 10),
-                _InlineError(message: _error!),
-              ],
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('Save Agent')),
-      ],
-    );
-  }
-
-  Widget _buildAdvancedSettings() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _DialogTextField(
-          key: const Key('agent-name-field'),
-          controller: _nameController,
-          label: 'Name',
-          icon: Icons.badge_outlined,
-        ),
-        const SizedBox(height: 10),
-        DropdownButtonFormField<String>(
-          key: const Key('agent-type-field'),
-          initialValue: _type,
-          decoration: _fieldDecoration(
-            label: 'Type',
-            icon: Icons.cable_rounded,
-          ),
-          items: const [
-            DropdownMenuItem(value: 'custom', child: Text('custom')),
-            DropdownMenuItem(value: 'stdio', child: Text('stdio')),
-            DropdownMenuItem(value: 'websocket', child: Text('websocket')),
-            DropdownMenuItem(value: 'http', child: Text('http')),
-            DropdownMenuItem(value: 'sse', child: Text('sse')),
-          ],
-          onChanged: (value) {
-            if (value == null) return;
-            setState(() {
-              _type = value;
-              _selectedPreset = _customPreset;
-              _error = null;
-            });
-          },
-        ),
-        const SizedBox(height: 10),
-        if (_isRemote) ...[
-          _DialogTextField(
-            key: const Key('agent-url-field'),
-            controller: _urlController,
-            label: 'URL',
-            icon: Icons.link_rounded,
-          ),
-          const SizedBox(height: 10),
-          _NameValueListEditor(
-            title: 'Headers',
-            addLabel: 'Add Header',
-            itemPrefix: 'agent-header',
-            controllers: _headerControllers,
-            onAdd: () => setState(() {
-              _headerControllers.add(
-                _NameValueControllers(initiallyDirty: true),
-              );
-            }),
-            onRemove: (index) => setState(() {
-              _headerControllers.removeAt(index).dispose();
-            }),
-          ),
-        ] else ...[
-          _DialogTextField(
-            key: const Key('agent-command-field'),
-            controller: _commandController,
-            label: 'Command',
-            icon: Icons.terminal_rounded,
-          ),
-          const SizedBox(height: 10),
-          _DialogTextField(
-            key: const Key('agent-cwd-field'),
-            controller: _cwdController,
-            label: 'CWD',
-            icon: Icons.folder_open_outlined,
-          ),
-          const SizedBox(height: 10),
-          _StringListEditor(
-            title: 'Args',
-            addLabel: 'Add Arg',
-            itemPrefix: 'agent-arg',
-            controllers: _argControllers,
-            onAdd: () => setState(() {
-              _argControllers.add(TextEditingController());
-            }),
-            onRemove: (index) => setState(() {
-              _argControllers.removeAt(index).dispose();
-            }),
-          ),
-          const SizedBox(height: 10),
-          _NameValueListEditor(
-            title: 'Env',
-            addLabel: 'Add Env',
-            itemPrefix: 'agent-env',
-            controllers: _envControllers,
-            onAdd: () => setState(() {
-              _envControllers.add(_NameValueControllers(initiallyDirty: true));
-            }),
-            onRemove: (index) => setState(() {
-              _envControllers.removeAt(index).dispose();
-            }),
-          ),
-        ],
-      ],
-    );
-  }
-
-  String _initialPresetName() {
-    final initial = widget.initialServer;
-    if (initial != null) {
-      for (final preset in widget.presets) {
-        if (_sameAgentTarget(initial, preset)) return preset.name;
-      }
-      return _customPreset;
-    }
-    return widget.presets.isEmpty ? _customPreset : widget.presets.first.name;
-  }
-
-  AgentServerConfig? _presetNamed(String name) {
-    for (final preset in widget.presets) {
-      if (preset.name == name) return preset;
-    }
-    return null;
-  }
-
-  void _applyPreset(AgentServerConfig preset) {
-    _type = preset.type;
-    _nameController.text = preset.name;
-    _commandController.text = preset.command;
-    _cwdController.text = preset.cwd ?? '';
-    _urlController.text = preset.url;
-    for (final controller in _argControllers) {
-      controller.dispose();
-    }
-    _argControllers
-      ..clear()
-      ..addAll(preset.args.map((arg) => TextEditingController(text: arg)));
-    for (final controllers in _envControllers) {
-      controllers.dispose();
-    }
-    _envControllers
-      ..clear()
-      ..addAll(
-        preset.env.entries.map(
-          (entry) => _NameValueControllers(name: entry.key, value: entry.value),
-        ),
-      );
-    for (final controllers in _headerControllers) {
-      controllers.dispose();
-    }
-    _headerControllers
-      ..clear()
-      ..addAll(
-        preset.headers.entries.map(
-          (entry) => _NameValueControllers(name: entry.key, value: entry.value),
-        ),
-      );
-  }
-
-  String _agentTarget() {
-    if (_isRemote) return _urlController.text.trim();
-    final args = _stringValues(_argControllers);
-    return <String>[
-      _commandController.text.trim(),
-      ...args,
-    ].where((value) => value.isNotEmpty).join(' ');
-  }
-
-  void _submit() {
-    try {
-      final json = <String, dynamic>{
-        ...?widget.initialServer?.additionalProperties,
-        'type': _type,
-      };
-      if (_isRemote) {
-        json['url'] = _urlController.text;
-        final headers = _nameValueMap(_headerControllers);
-        if (headers.isNotEmpty) json['headers'] = headers;
-      } else {
-        json['command'] = _commandController.text;
-        if (_cwdController.text.trim().isNotEmpty) {
-          json['cwd'] = _cwdController.text;
-        }
-        final args = _stringValues(_argControllers);
-        if (args.isNotEmpty) json['args'] = args;
-        final env = _nameValueMap(_envControllers);
-        if (env.isNotEmpty) json['env'] = env;
-      }
-      final server = AgentServerConfig.fromJson(
-        name: _nameController.text.trim(),
-        json: json,
-      );
-      final initial = widget.initialServer;
-      if (initial == null) {
-        Navigator.of(context).pop(server);
-        return;
-      }
-      final sameIdentity = initial.name == server.name;
-      final initialReview = initial.permissionReviewAgent;
-      final inlineReviewServer = initialReview.mcpServer;
-      final review = sameIdentity || inlineReviewServer == null
-          ? initialReview
-          : AcpPermissionReviewAgentConfig(
-              enabled: initialReview.enabled,
-              mcpServer: inlineReviewServer.withSecrets(
-                env: inlineReviewServer.env,
-                headers: inlineReviewServer.headers,
-                envRefs: const <String, String>{},
-                headerRefs: const <String, String>{},
-              ),
-              mcpServerName: initialReview.mcpServerName,
-              agentServerName: initialReview.agentServerName,
-              toolName: initialReview.toolName,
-              model: initialReview.model,
-              timeout: initialReview.timeout,
-            );
-      Navigator.of(context).pop(
-        server.withSecrets(
-          env: server.env,
-          headers: server.headers,
-          envRefs: sameIdentity
-              ? {
-                  for (final key in server.env.keys)
-                    if (initial.envRefs[key] != null)
-                      key: initial.envRefs[key]!,
-                }
-              : const <String, String>{},
-          headerRefs: sameIdentity
-              ? {
-                  for (final key in server.headers.keys)
-                    if (initial.headerRefs[key] != null)
-                      key: initial.headerRefs[key]!,
-                }
-              : const <String, String>{},
-          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
-          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
-          permissionReviewAgent: review,
-        ),
-      );
-    } catch (error) {
-      setState(() => _error = '$error');
-    }
-  }
-}
-
-class _McpServerEditorDialog extends StatefulWidget {
-  const _McpServerEditorDialog({this.initialServer});
-
-  final McpServerConfig? initialServer;
-
-  @override
-  State<_McpServerEditorDialog> createState() => _McpServerEditorDialogState();
-}
-
-class _ReadyAgentPanel extends StatelessWidget {
-  const _ReadyAgentPanel({required this.name, required this.target});
-
-  final String name;
-  final String target;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.success.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.success.withValues(alpha: 0.22)),
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.check_circle_outline_rounded,
-            color: AppColors.success,
-            size: 20,
-          ),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '${name.trim()} is ready to add',
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0,
-                  ),
-                ),
-                if (target.trim().isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    target,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-bool _sameAgentTarget(AgentServerConfig left, AgentServerConfig right) {
-  if (left.type != right.type) return false;
-  if (left.command.trim() != right.command.trim()) return false;
-  if (left.url.trim() != right.url.trim()) return false;
-  if (left.args.length != right.args.length) return false;
-  for (var index = 0; index < left.args.length; index += 1) {
-    if (left.args[index] != right.args[index]) return false;
-  }
-  return true;
-}
-
-class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
-  late String _type = widget.initialServer?.type ?? 'stdio';
-  late final TextEditingController _nameController = TextEditingController(
-    text: widget.initialServer?.name == 'MCP server'
-        ? ''
-        : widget.initialServer?.name ?? '',
-  );
-  late final TextEditingController _commandController = TextEditingController(
-    text: widget.initialServer?.command ?? '',
-  );
-  late final TextEditingController _urlController = TextEditingController(
-    text: widget.initialServer?.url ?? '',
-  );
-  late final TextEditingController _idController = TextEditingController(
-    text: widget.initialServer?.id ?? '',
-  );
-  final List<TextEditingController> _argControllers = [];
-  final List<_NameValueControllers> _envControllers = [];
-  final List<_NameValueControllers> _headerControllers = [];
-  String? _error;
-
-  bool get _isRemote => _type == 'http' || _type == 'sse';
-
-  @override
-  void initState() {
-    super.initState();
-    final raw = widget.initialServer?.raw;
-    if (raw == null) return;
-    final args = raw['args'];
-    if (args is List) {
-      _argControllers.addAll(
-        args.whereType<String>().map((arg) => TextEditingController(text: arg)),
-      );
-    }
-    final env = raw['env'];
-    if (env is List) {
-      _envControllers.addAll(
-        _nameValueControllersFromList(
-          env,
-          initiallyDirtyKeys:
-              widget.initialServer?.explicitEnvKeys ?? const <String>{},
-        ),
-      );
-    }
-    final headers = raw['headers'];
-    if (headers is Map) {
-      _headerControllers.addAll(
-        headers.entries
-            .where((entry) {
-              return entry.key is String && entry.value is String;
-            })
-            .map(
-              (entry) => _NameValueControllers(
-                name: entry.key as String,
-                value: entry.value as String,
-                initiallyDirty:
-                    widget.initialServer?.explicitHeaderKeys.contains(
-                      entry.key,
-                    ) ??
-                    false,
-              ),
-            ),
-      );
-    } else if (headers is List) {
-      _headerControllers.addAll(
-        _nameValueControllersFromList(
-          headers,
-          initiallyDirtyKeys:
-              widget.initialServer?.explicitHeaderKeys ?? const <String>{},
-        ),
-      );
-    }
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _commandController.dispose();
-    _urlController.dispose();
-    _idController.dispose();
-    for (final controller in _argControllers) {
-      controller.dispose();
-    }
-    for (final controllers in _envControllers) {
-      controllers.dispose();
-    }
-    for (final controllers in _headerControllers) {
-      controllers.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('MCP Server'),
-      content: SizedBox(
-        width: 520,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _DialogTextField(
-                key: const Key('mcp-name-field'),
-                controller: _nameController,
-                label: 'Name',
-                icon: Icons.extension_outlined,
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<String>(
-                key: const Key('mcp-type-field'),
-                initialValue: _type,
-                decoration: _fieldDecoration(
-                  label: 'Type',
-                  icon: Icons.cable_rounded,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'stdio', child: Text('stdio')),
-                  DropdownMenuItem(value: 'http', child: Text('http')),
-                  DropdownMenuItem(value: 'sse', child: Text('sse')),
-                  DropdownMenuItem(value: 'acp', child: Text('acp')),
-                ],
-                onChanged: (value) {
-                  if (value == null) return;
-                  setState(() {
-                    _type = value;
-                    _error = null;
-                  });
-                },
-              ),
-              const SizedBox(height: 10),
-              if (_type == 'acp') ...[
-                _DialogTextField(
-                  key: const Key('mcp-id-field'),
-                  controller: _idController,
-                  label: 'Server ID',
-                  icon: Icons.fingerprint_rounded,
-                ),
-              ] else if (_isRemote) ...[
-                _DialogTextField(
-                  key: const Key('mcp-url-field'),
-                  controller: _urlController,
-                  label: 'URL',
-                  icon: Icons.link_rounded,
-                ),
-                const SizedBox(height: 10),
-                _NameValueListEditor(
-                  title: 'Headers',
-                  addLabel: 'Add Header',
-                  itemPrefix: 'mcp-header',
-                  controllers: _headerControllers,
-                  onAdd: () => setState(() {
-                    _headerControllers.add(
-                      _NameValueControllers(initiallyDirty: true),
-                    );
-                  }),
-                  onRemove: (index) => setState(() {
-                    _headerControllers.removeAt(index).dispose();
-                  }),
-                ),
-              ] else ...[
-                _DialogTextField(
-                  key: const Key('mcp-command-field'),
-                  controller: _commandController,
-                  label: 'Command',
-                  icon: Icons.terminal_rounded,
-                ),
-                const SizedBox(height: 10),
-                _StringListEditor(
-                  title: 'Args',
-                  addLabel: 'Add Arg',
-                  itemPrefix: 'mcp-arg',
-                  controllers: _argControllers,
-                  onAdd: () => setState(() {
-                    _argControllers.add(TextEditingController());
-                  }),
-                  onRemove: (index) => setState(() {
-                    _argControllers.removeAt(index).dispose();
-                  }),
-                ),
-                const SizedBox(height: 10),
-                _NameValueListEditor(
-                  title: 'Env',
-                  addLabel: 'Add Env',
-                  itemPrefix: 'mcp-env',
-                  controllers: _envControllers,
-                  onAdd: () => setState(() {
-                    _envControllers.add(
-                      _NameValueControllers(initiallyDirty: true),
-                    );
-                  }),
-                  onRemove: (index) => setState(() {
-                    _envControllers.removeAt(index).dispose();
-                  }),
-                ),
-              ],
-              if (_error != null) ...[
-                const SizedBox(height: 10),
-                _InlineError(message: _error!),
-              ],
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('Save MCP Server')),
-      ],
-    );
-  }
-
-  void _submit() {
-    try {
-      final raw = <String, dynamic>{
-        for (final entry
-            in widget.initialServer?.raw.entries ??
-                const <MapEntry<String, dynamic>>[])
-          if (!_mcpEditorManagedKeys.contains(entry.key))
-            entry.key: entry.value,
-        'name': _nameController.text,
-        'type': _type,
-      };
-      if (_type == 'acp') {
-        raw['serverId'] = _idController.text;
-      } else if (_isRemote) {
-        raw['url'] = _urlController.text;
-        final headers = _nameValueEntries(_headerControllers);
-        if (headers.isNotEmpty) raw['headers'] = headers;
-      } else {
-        raw['command'] = _commandController.text;
-        final args = _stringValues(_argControllers);
-        if (args.isNotEmpty) raw['args'] = args;
-        final env = _nameValueEntries(_envControllers);
-        if (env.isNotEmpty) raw['env'] = env;
-      }
-      final server = McpServerConfig.fromJson(index: 0, json: raw);
-      final initial = widget.initialServer;
-      if (initial == null) {
-        Navigator.of(context).pop(server);
-        return;
-      }
-      final sameIdentity = initial.name == server.name;
-      final env = <String, String>{
-        for (final item in _nameValueEntries(_envControllers))
-          item['name']!: item['value']!,
-      };
-      final headers = <String, String>{
-        for (final item in _nameValueEntries(_headerControllers))
-          item['name']!: item['value']!,
-      };
-      Navigator.of(context).pop(
-        server.withSecrets(
-          env: env,
-          headers: headers,
-          envRefs: {
-            for (final key in env.keys)
-              if (sameIdentity && initial.envRefs[key] != null)
-                key: initial.envRefs[key]!,
-          },
-          headerRefs: {
-            for (final key in headers.keys)
-              if (sameIdentity && initial.headerRefs[key] != null)
-                key: initial.headerRefs[key]!,
-          },
-          explicitEnvKeys: _dirtyNameValueKeys(_envControllers),
-          explicitHeaderKeys: _dirtyNameValueKeys(_headerControllers),
-        ),
-      );
-    } catch (error) {
-      setState(() => _error = '$error');
-    }
-  }
-}
-
-const Set<String> _mcpEditorManagedKeys = <String>{
-  'name',
-  'type',
-  'command',
-  'url',
-  'id',
-  'args',
-  'env',
-  'headers',
-  'env_refs',
-  'envRefs',
-  'header_refs',
-  'headerRefs',
-};
-
-class _NameValueControllers {
-  _NameValueControllers({
-    String name = '',
-    String value = '',
-    bool initiallyDirty = false,
-  }) : nameController = TextEditingController(text: name),
-       valueController = TextEditingController(text: value),
-       _dirty = initiallyDirty {
-    _dirtyListener = () => _dirty = true;
-    nameController.addListener(_dirtyListener);
-    valueController.addListener(_dirtyListener);
-  }
-
-  final TextEditingController nameController;
-  final TextEditingController valueController;
-  late final VoidCallback _dirtyListener;
-  bool _dirty;
-
-  bool get isDirty => _dirty;
-
-  void dispose() {
-    nameController.removeListener(_dirtyListener);
-    valueController.removeListener(_dirtyListener);
-    nameController.dispose();
-    valueController.dispose();
   }
 }
 
@@ -2355,76 +1601,6 @@ class _DialogTextField extends StatelessWidget {
   }
 }
 
-class _AssistantAgentPreview extends StatelessWidget {
-  const _AssistantAgentPreview();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceMuted,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: const Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.expand_more_rounded,
-                size: 18,
-                color: AppColors.textTertiary,
-              ),
-              SizedBox(width: 6),
-              Text(
-                'Processed 1m 10s',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              Spacer(),
-              Text(
-                'Summary ready',
-                style: TextStyle(
-                  color: AppColors.success,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          Divider(height: 18, color: AppColors.border),
-          Text(
-            'Committed the requested changes and verified the workspace.',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 12,
-              height: 1.45,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          SizedBox(height: 5),
-          Text(
-            'The original execution process stays available behind the '
-            'processed header.',
-            style: TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 11,
-              height: 1.4,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _StringListEditor extends StatelessWidget {
   const _StringListEditor({
     required this.title,
@@ -2434,46 +1610,76 @@ class _StringListEditor extends StatelessWidget {
     required this.onAdd,
     required this.onRemove,
   });
-
-  final String title;
-  final String addLabel;
-  final String itemPrefix;
+  final String title, addLabel, itemPrefix;
   final List<TextEditingController> controllers;
   final VoidCallback onAdd;
   final ValueChanged<int> onRemove;
-
   @override
-  Widget build(BuildContext context) {
-    return _ListEditorFrame(
-      title: title,
-      addLabel: addLabel,
-      onAdd: onAdd,
-      children: [
-        for (var index = 0; index < controllers.length; index += 1)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _DialogTextField(
-                    key: Key('$itemPrefix-$index-field'),
-                    controller: controllers[index],
-                    label: '$title ${index + 1}',
-                    icon: Icons.notes_rounded,
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, bounds) {
+      final fields = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var index = 0; index < controllers.length; index++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Semantics(
+                      label: '$title ${index + 1}',
+                      child: TextField(
+                        key: Key('$itemPrefix-$index-field'),
+                        controller: controllers[index],
+                        style: const TextStyle(fontSize: 14),
+                        decoration: const InputDecoration(
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 13,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                _PanelActionButton(
-                  tooltip: 'Remove $title ${index + 1}',
-                  icon: Icons.remove_circle_outline_rounded,
-                  onPressed: () => onRemove(index),
-                ),
-              ],
+                  const SizedBox(width: 6),
+                  _PanelActionButton(
+                    tooltip: '移除$title ${index + 1}',
+                    icon: Icons.close_rounded,
+                    onPressed: () => onRemove(index),
+                  ),
+                ],
+              ),
             ),
+          TextButton.icon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: Text(addLabel),
           ),
-      ],
-    );
-  }
+        ],
+      );
+      final label = Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: Text(
+          title,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        ),
+      );
+      if (bounds.maxWidth < 440) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [label, const SizedBox(height: 10), fields],
+        );
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 94, child: label),
+          const SizedBox(width: 16),
+          Expanded(child: fields),
+        ],
+      );
+    },
+  );
 }
 
 class _NameValueListEditor extends StatelessWidget {
@@ -2544,49 +1750,32 @@ class _ListEditorFrame extends StatelessWidget {
     required this.onAdd,
     required this.children,
   });
-
-  final String title;
-  final String addLabel;
+  final String title, addLabel;
   final VoidCallback onAdd;
   final List<Widget> children;
-
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0,
-                  ),
-                ),
-              ),
-              TextButton.icon(
-                onPressed: onAdd,
-                icon: const Icon(Icons.add_rounded),
-                label: Text(addLabel),
-              ),
-            ],
+          SizedBox(
+            width: 110,
+            child: Text(
+              title,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+            ),
           ),
-          if (children.isNotEmpty) ...[const SizedBox(height: 8), ...children],
+          TextButton.icon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: Text(addLabel),
+          ),
         ],
       ),
-    );
-  }
+      if (children.isNotEmpty) ...[const SizedBox(height: 10), ...children],
+    ],
+  );
 }
 
 class _InlineError extends StatelessWidget {
@@ -2698,113 +1887,6 @@ String _permissionTrustRuleLabel(AcpPermissionTrustRule rule) {
   return '$target -> ${rule.displayDecision}';
 }
 
-String _reviewAgentTargetLabel(AcpPermissionReviewAgentConfig reviewAgent) {
-  return reviewAgent.hasExplicitTarget
-      ? reviewAgent.displayTarget
-      : 'Same agent';
-}
-
-class _McpServersPanel extends StatelessWidget {
-  const _McpServersPanel({required this.servers, this.onEdit, this.onDelete});
-
-  final List<McpServerConfig> servers;
-  final ValueChanged<McpServerConfig>? onEdit;
-  final ValueChanged<McpServerConfig>? onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    return _Panel(
-      icon: Icons.extension_rounded,
-      title: 'Configured MCP Servers',
-      accent: AppColors.success,
-      trailing: _TinyPill('${servers.length}', AppColors.success),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          for (var index = 0; index < servers.length; index += 1)
-            _McpServerDetails(
-              server: servers[index],
-              isLast: index == servers.length - 1,
-              onEdit: onEdit == null ? null : () => onEdit!(servers[index]),
-              onDelete: onDelete == null
-                  ? null
-                  : () => onDelete!(servers[index]),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _McpServerDetails extends StatelessWidget {
-  const _McpServerDetails({
-    required this.server,
-    required this.isLast,
-    this.onEdit,
-    this.onDelete,
-  });
-
-  final McpServerConfig server;
-  final bool isLast;
-  final VoidCallback? onEdit;
-  final VoidCallback? onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final headerKeys = server.headerKeys;
-    final targetLabel = server.type == 'acp' && server.id.isNotEmpty
-        ? 'ID'
-        : server.command.isNotEmpty
-        ? 'Command'
-        : 'URL';
-    final targetValue = server.type == 'acp' && server.id.isNotEmpty
-        ? server.id
-        : server.command.isNotEmpty
-        ? server.command
-        : server.url;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: _DetailRow(label: 'Name', value: server.name),
-            ),
-            _PanelActionButton(
-              tooltip: 'Edit ${server.name}',
-              icon: Icons.edit_outlined,
-              onPressed: onEdit,
-            ),
-            _PanelActionButton(
-              tooltip: 'Delete ${server.name}',
-              icon: Icons.delete_outline_rounded,
-              onPressed: onDelete,
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        _DetailRow(label: 'Type', value: server.type),
-        const SizedBox(height: 6),
-        _DetailRow(label: targetLabel, value: targetValue),
-        if (server.url.isNotEmpty) ...[
-          const SizedBox(height: 6),
-          _DetailRow(
-            label: 'Headers',
-            value: headerKeys.isEmpty
-                ? 'No header keys'
-                : headerKeys.join(', '),
-          ),
-        ],
-        if (!isLast) ...[
-          const SizedBox(height: 8),
-          const Divider(height: 1, color: AppColors.border),
-          const SizedBox(height: 8),
-        ],
-      ],
-    );
-  }
-}
-
 class _ConfigPathPanel extends StatelessWidget {
   const _ConfigPathPanel({required this.path});
 
@@ -2814,9 +1896,9 @@ class _ConfigPathPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return _Panel(
       icon: Icons.description_outlined,
-      title: 'User Config',
+      title: '配置文件',
       child: SelectableText(
-        path == null || path!.isEmpty ? 'Not resolved' : path!,
+        path == null || path!.isEmpty ? '未提供可写配置路径' : path!,
         style: const TextStyle(
           color: AppColors.textSecondary,
           fontSize: 12,
@@ -2828,256 +1910,59 @@ class _ConfigPathPanel extends StatelessWidget {
   }
 }
 
-class _AgentServerPanel extends StatelessWidget {
-  const _AgentServerPanel({
-    required this.server,
-    required this.selected,
-    required this.isDefault,
-    this.onSetDefault,
-    this.onEdit,
-    this.onDelete,
-  });
-
-  final AgentServerConfig server;
-  final bool selected;
-  final bool isDefault;
-  final VoidCallback? onSetDefault;
-  final VoidCallback? onEdit;
-  final VoidCallback? onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final args = server.args.isEmpty ? 'No args' : server.args.join(' ');
-    final envKeys = server.env.keys.toList()..sort();
-    final headerKeys = server.headers.keys.toList()..sort();
-    final reviewAgent = server.permissionReviewAgent;
-
-    return _Panel(
-      icon: selected ? Icons.check_circle_rounded : Icons.hub_outlined,
-      title: server.name,
-      accent: selected ? AppColors.success : AppColors.primaryDark,
-      trailing: Wrap(
-        spacing: 5,
-        runSpacing: 5,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          if (selected) const _TinyPill('Current', AppColors.success),
-          if (isDefault) const _TinyPill('Default', AppColors.primaryDark),
-          if (!isDefault)
-            _PanelActionButton(
-              tooltip: 'Set ${server.name} as default',
-              icon: Icons.star_outline_rounded,
-              onPressed: onSetDefault,
-            ),
-          _PanelActionButton(
-            tooltip: 'Edit ${server.name}',
-            icon: Icons.edit_outlined,
-            onPressed: onEdit,
-          ),
-          _PanelActionButton(
-            tooltip: 'Delete ${server.name}',
-            icon: Icons.delete_outline_rounded,
-            onPressed: onDelete,
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _DetailRow(label: 'Type', value: server.type),
-          const SizedBox(height: 6),
-          if (!server.isStdio) ...[
-            _DetailRow(label: 'URL', value: server.url),
-            const SizedBox(height: 6),
-            _DetailRow(
-              label: 'Headers',
-              value: headerKeys.isEmpty
-                  ? 'No header keys'
-                  : headerKeys.join(', '),
-            ),
-          ] else ...[
-            _DetailRow(label: 'Command', value: server.command),
-            if (server.cwd != null) ...[
-              const SizedBox(height: 6),
-              _DetailRow(label: 'CWD', value: server.cwd!),
-            ],
-            const SizedBox(height: 6),
-            _DetailRow(label: 'Args', value: args),
-            const SizedBox(height: 6),
-            _DetailRow(
-              label: 'Env',
-              value: envKeys.isEmpty ? 'No env keys' : envKeys.join(', '),
-            ),
-          ],
-          if (reviewAgent.isConfigured) ...[
-            const SizedBox(height: 6),
-            _DetailRow(
-              label: 'Review',
-              value: _reviewAgentTargetLabel(reviewAgent),
-            ),
-            const SizedBox(height: 6),
-            _DetailRow(
-              label: 'Review model',
-              value: reviewAgent.model ?? 'Current model',
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 82,
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.textTertiary,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0,
-            ),
-          ),
-        ),
-        Expanded(
-          child: SelectableText(
-            value,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _Panel extends StatelessWidget {
   const _Panel({
     required this.icon,
     required this.title,
     required this.child,
-    this.accent = AppColors.primaryDark,
     this.trailing,
   });
-
   final IconData icon;
   final String title;
   final Widget child;
-  final Color accent;
   final Widget? trailing;
-
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Wrap(
+        spacing: 16,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 17, color: accent),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  title,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0,
-                  ),
+              Icon(icon, size: 24, color: AppColors.textSecondary),
+              const SizedBox(width: 12),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-              if (trailing != null) ...[const SizedBox(width: 8), trailing!],
             ],
           ),
-          const SizedBox(height: 8),
-          child,
+          ?trailing,
         ],
       ),
-    );
-  }
+      const SizedBox(height: 26),
+      child,
+    ],
+  );
 }
 
-class _TinyPill extends StatelessWidget {
-  const _TinyPill(this.label, this.color);
-
-  final String label;
-  final Color color;
-
+class _SettingsHelp extends StatelessWidget {
+  const _SettingsHelp(this.text);
+  final String text;
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.09),
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0,
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      height: 130,
-      alignment: Alignment.center,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: const Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.info_outline_rounded, color: AppColors.primaryDark),
-          SizedBox(height: 8),
-          Text(
-            'No user-configured agent servers.',
-            style: TextStyle(
-              color: AppColors.textSecondary,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Text(
+    text,
+    style: const TextStyle(
+      color: AppColors.textSecondary,
+      fontSize: 13,
+      height: 1.6,
+    ),
+  );
 }

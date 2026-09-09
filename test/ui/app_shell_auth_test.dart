@@ -42,7 +42,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Authenticate'));
+    await tester.tap(find.text('认证'));
     await tester.pumpAndSettle();
 
     expect(fake.lastAuthenticatedMethodId, 'browser');

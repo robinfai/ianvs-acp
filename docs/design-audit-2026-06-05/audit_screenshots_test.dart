@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
-import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 import 'audit_fixture.dart';
 

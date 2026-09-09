@@ -8,15 +8,15 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_input_budget.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
-import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
-import 'package:ianvs_acp/ui/components/chat_timeline.dart';
+import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
+import 'package:ianvs_agent_chat/ui/components/chat_timeline.dart';
 import 'package:ianvs_acp/ui/components/file_preview_workspace.dart';
-import 'package:ianvs_acp/ui/components/markdown_code_block.dart';
+import 'package:ianvs_agent_chat/ui/components/markdown_code_block.dart';
 import 'package:ianvs_acp/ui/components/markdown_front_matter_card.dart';
 import 'package:ianvs_acp/ui/components/markdown_preview_image.dart';
 import 'package:ianvs_acp/ui/file_preview/file_preview_document.dart';
 import 'package:ianvs_acp/ui/image_decode_budget.dart';
-import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 void main() {
   Future<void> pumpAsyncUntil(WidgetTester tester, bool Function() done) async {

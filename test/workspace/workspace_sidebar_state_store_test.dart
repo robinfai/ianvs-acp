@@ -4,7 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
-import 'package:ianvs_acp/platform/bounded_file_snapshot.dart';
+import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
 
 void main() {

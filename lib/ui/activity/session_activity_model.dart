@@ -1,8 +1,8 @@
 import 'dart:collection';
 
 import '../../state/chat_controller.dart';
-import '../tool_presentation/tool_presentation_registry.dart';
-import '../user_message_projection.dart';
+import 'package:ianvs_agent_chat/ui/tool_presentation/tool_presentation_registry.dart';
+import 'package:ianvs_agent_chat/ui/user_message_projection.dart';
 
 enum SessionActivityKind { prompt, response, tool, status, permission, error }
 

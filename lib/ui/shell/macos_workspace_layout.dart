@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 /// Owns window layout preferences independently of streaming session updates.
 class MacosWorkspaceLayout extends StatefulWidget {

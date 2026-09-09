@@ -35,6 +35,7 @@ void main() {
     );
     String? selectedConfigId;
     Object? selectedConfigValue;
+    var openedSessionSettings = false;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -74,6 +75,7 @@ void main() {
                 selectedConfigId = configId;
                 selectedConfigValue = value;
               },
+              onShowSessionSettings: () => openedSessionSettings = true,
               mcpServers: const [
                 McpServerConfig(
                   raw: {
@@ -103,20 +105,22 @@ void main() {
       ),
     );
 
-    expect(find.text('会话信息'), findsOneWidget);
+    expect(find.text('当前会话'), findsOneWidget);
     expect(find.text('环境'), findsOneWidget);
     expect(find.text('上下文'), findsOneWidget);
     expect(find.text('本地'), findsOneWidget);
     expect(find.text('main'), findsOneWidget);
-    expect(find.text('Codex'), findsNothing);
+    expect(find.text('Codex'), findsOneWidget);
     expect(find.text('app'), findsOneWidget);
-    await tester.tap(find.text('查看详细信息'));
+    await tester.tap(find.text('查看会话详情'));
     await tester.pumpAndSettle();
-    expect(find.text('Workspace'), findsOneWidget);
-    expect(find.text('Overview'), findsOneWidget);
-    // Active sessions open directly on Context, matching the selected design.
-    expect(find.text('5.6 Sol'), findsOneWidget);
-    expect(find.text('On'), findsOneWidget);
+    expect(find.text('会话详情'), findsOneWidget);
+    expect(find.widgetWithText(Tab, '概览'), findsOneWidget);
+    // 有当前会话时直接打开上下文页，符合所选设计。
+    expect(find.text('5.6 Sol'), findsWidgets);
+    expect(find.text('Fast'), findsNothing);
+    expect(find.text('On'), findsNothing);
+    expect(find.text('打开会话参数…'), findsOneWidget);
     expect(find.text('25%  2K / 8K'), findsOneWidget);
     expect(find.text('/workspace/shared'), findsOneWidget);
     expect(find.text('Filesystem MCP'), findsOneWidget);
@@ -127,26 +131,26 @@ void main() {
     expect(find.textContaining('query-canary'), findsNothing);
     await tester.drag(find.byType(ListView).last, const Offset(0, -260));
     await tester.pumpAndSettle();
-    expect(find.text('read'), findsOneWidget);
-    expect(find.text('Enabled'), findsOneWidget);
+    expect(find.text('读取'), findsOneWidget);
+    expect(find.text('已启用'), findsOneWidget);
 
-    await tester.tap(find.text('Overview'));
+    await tester.tap(find.widgetWithText(Tab, '概览'));
     await tester.pumpAndSettle();
     expect(find.text('Build workspace shell'), findsWidgets);
 
-    await tester.tap(find.text('Context'));
+    await tester.tap(find.widgetWithText(Tab, '上下文'));
     await tester.pumpAndSettle();
+    expect(selectedConfigId, isNull);
+    expect(selectedConfigValue, isNull);
+    await tester.ensureVisible(find.text('打开会话参数…'));
+    await tester.tap(find.text('打开会话参数…'));
+    expect(openedSessionSettings, isTrue);
 
-    await tester.tap(find.text('On'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Off'));
-    await tester.pumpAndSettle();
-    expect(selectedConfigId, 'fast_mode');
-    expect(selectedConfigValue, isFalse);
-
-    await tester.tap(find.text('Diagnostics'));
+    await tester.ensureVisible(find.text('诊断'));
+    await tester.tap(find.text('诊断'));
     await tester.pumpAndSettle();
     expect(find.text('42 ms'), findsOneWidget);
+    expect(find.text('Session settings'), findsNothing);
   });
 
   testWidgets('WorkspaceInspector shows relative recent session times', (
@@ -189,9 +193,9 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('查看详细信息'));
+    await tester.tap(find.text('查看会话详情'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Overview'));
+    await tester.tap(find.widgetWithText(Tab, '概览'));
     await tester.pumpAndSettle();
     expect(find.text('Codex - 4h ago'), findsOneWidget);
   });

@@ -31,14 +31,15 @@ import 'storage/app_state_path.dart';
 import 'state/chat_controller.dart';
 import 'state/workspace_controller.dart';
 import 'ui/components/agent_discovery_dialog.dart';
-import 'ui/components/bounded_image_preview.dart';
+import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import 'ui/components/deep_link_confirmation_dialog.dart';
 import 'ui/components/new_session_agent_dialog.dart';
+import 'ui/components/session_menu_actions.dart';
 import 'ui/components/session_workspace_review_dialog.dart';
-import 'ui/components/workspace_sidebar.dart';
 import 'ui/image_decode_budget.dart';
 import 'ui/shell/app_shell.dart';
-import 'ui/theme/app_theme.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_theme.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'workspace/workspace.dart';
 import 'workspace/workspace_sidebar_state_store.dart';
 
@@ -181,6 +182,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
   static Object? _deepLinkHandlerOwner;
 
   late AcpClientConfig _config;
+  final ValueNotifier<bool> _settingsRuntimeBusy = ValueNotifier(false);
+  bool _configurationSaveInProgress = false;
+  bool _configurationApplyScheduled = false;
+  AcpClientConfig? _configurationAwaitingApply;
   late String _widgetConfigSignature;
   late ChatController _controller;
   late AcpInputBudget _inputBudget;
@@ -372,6 +377,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     if (widget.controller == null) {
       _disposeControllerList(_takeCachedControllers(clearClientPools: true));
     }
+    _settingsRuntimeBusy.dispose();
     super.dispose();
   }
 
@@ -802,6 +808,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
             unawaited(_startNewSession(context, initialCwd: workspace.path)),
         onSelectSession: (session) => unawaited(_selectSession(session)),
         canForkSession: _canForkSession,
+        sessionActionAvailability: _sessionActionAvailability,
         onSessionMenuAction: (context, session, action) =>
             unawaited(_handleSessionMenuAction(context, session, action)),
         onCreateWorkspaceWorktree: (context, workspace) =>
@@ -813,6 +820,8 @@ class _AcpClientAppState extends State<AcpClientApp> {
         onSelectAgent: widget.controller == null
             ? (agentName) => unawaited(_selectAgent(agentName))
             : null,
+        settingsRuntimeBusy: _settingsRuntimeBusy,
+        settingsClientProviders: _config.clientProviders,
         onSaveConfig: widget.controller == null && widget.configurationWritable
             ? (config) => _saveConfig(config)
             : null,
@@ -1315,7 +1324,11 @@ class _AcpClientAppState extends State<AcpClientApp> {
   void _attachSessionIndexPersistence(ChatController controller) {
     if (widget.controller != null) return;
     if (_sessionIndexListeners.containsKey(controller)) return;
-    void listener() => _schedulePersistSessionIndex();
+    void listener() {
+      _configurationRuntimeChanged();
+      _schedulePersistSessionIndex();
+    }
+
     _sessionIndexListeners[controller] = listener;
     controller.addListener(listener);
   }
@@ -1420,34 +1433,85 @@ class _AcpClientAppState extends State<AcpClientApp> {
     _activateAgent(nextConfig);
   }
 
+  bool get _hasBusyConfigurationRuntime => _sessionControllers.any(
+    (controller) =>
+        controller.isStreaming || controller.isSessionOperationRunning,
+  );
+
+  void _configurationRuntimeChanged() {
+    if (!mounted) return;
+    final busy = _hasBusyConfigurationRuntime;
+    _settingsRuntimeBusy.value = busy;
+    if (busy ||
+        _configurationSaveInProgress ||
+        _configurationAwaitingApply == null ||
+        _configurationApplyScheduled) {
+      return;
+    }
+    _configurationApplyScheduled = true;
+    scheduleMicrotask(() {
+      _configurationApplyScheduled = false;
+      if (!mounted ||
+          _hasBusyConfigurationRuntime ||
+          _configurationSaveInProgress) {
+        return;
+      }
+      final pending = _configurationAwaitingApply;
+      if (pending == null) return;
+      _configurationAwaitingApply = null;
+      _replaceOwnedControllerConfiguration(pending);
+      _showSnackBar('已应用保存的配置；可从侧栏恢复会话。');
+    });
+  }
+
   Future<AcpClientConfig> _saveConfig(AcpClientConfig config) async {
     if (!widget.configurationWritable) {
-      throw StateError(
-        'ACP configuration is read-only because startup loading failed.',
-      );
+      throw StateError('配置为只读，请先解决启动时的配置加载错误。');
     }
-    final write = widget.writeConfig;
-    late final AcpClientConfig nextConfig;
-    var cleanupWarning = false;
+    if (_configurationSaveInProgress) {
+      throw StateError('配置正在保存，请等待完成。');
+    }
+    if (_hasBusyConfigurationRuntime) {
+      throw StateError('会话仍在运行或切换，请完成操作后保存配置。');
+    }
+    _configurationSaveInProgress = true;
     try {
-      nextConfig = write == null
-          ? await AcpConfigStore.writeConfig(
-              config: config,
-              secretStore: widget.secretStore,
-            )
-          : await write(config);
-    } on AcpConfigPostCommitCleanupException catch (error) {
-      nextConfig = error.committedConfig;
-      cleanupWarning = true;
+      final write = widget.writeConfig;
+      late final AcpClientConfig nextConfig;
+      var cleanupWarning = false;
+      try {
+        nextConfig = write == null
+            ? await AcpConfigStore.writeConfig(
+                config: config,
+                secretStore: widget.secretStore,
+              )
+            : await write(config);
+      } on AcpConfigPostCommitCleanupException catch (error) {
+        nextConfig = error.committedConfig;
+        cleanupWarning = true;
+      }
+      if (!mounted) return nextConfig;
+      // An external resume can begin while the atomic writer is awaiting I/O.
+      // Never dispose that operation: apply the committed config once idle.
+      final deferred = _hasBusyConfigurationRuntime;
+      if (deferred) {
+        _configurationAwaitingApply = nextConfig;
+      } else {
+        _configurationAwaitingApply = null;
+        _replaceOwnedControllerConfiguration(nextConfig);
+      }
+      _showSnackBar(
+        cleanupWarning
+            ? '配置已保存，但部分旧 Keychain 项未能清理。${deferred ? '当前操作结束后应用配置。' : ''}'
+            : deferred
+            ? '配置已保存，将在当前操作结束后应用。'
+            : '配置已保存并重新加载；可从侧栏恢复会话。',
+      );
+      return nextConfig;
+    } finally {
+      _configurationSaveInProgress = false;
+      _configurationRuntimeChanged();
     }
-    if (!mounted) return nextConfig;
-    _replaceOwnedControllerConfiguration(nextConfig);
-    _showSnackBar(
-      cleanupWarning
-          ? 'Saved agent configuration, but some retired Keychain entries could not be removed.'
-          : 'Saved agent configuration.',
-    );
-    return nextConfig;
   }
 
   Future<void> _startNewSession(
@@ -1467,6 +1531,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     final selection = await showDialog<NewSessionSelection>(
       context: dialogContext,
       builder: (context) => NewSessionAgentDialog(
+        baseConfig: _config,
         agentServers: widget.controller == null
             ? agentServers
             : const <AgentServerConfig>[],
@@ -1847,6 +1912,17 @@ class _AcpClientAppState extends State<AcpClientApp> {
         !controller.isSessionOperationRunning;
   }
 
+  SessionActionAvailability _sessionActionAvailability(AgentSession session) {
+    final controller = _controllerForSession(session);
+    return SessionActionAvailability(
+      canFork: _canForkSession(session),
+      supportsClose: controller.supportsSessionClose,
+      canClose: controller.canCloseSession(session),
+      supportsDelete: controller.supportsSessionDelete,
+      canDelete: controller.canDeleteSession(session),
+    );
+  }
+
   Future<void> _handleSessionMenuAction(
     BuildContext context,
     AgentSession session,
@@ -1899,7 +1975,75 @@ class _AcpClientAppState extends State<AcpClientApp> {
         await _forkSessionToNewWorktree(context, session);
       case WorkspaceSessionMenuAction.openInNewWindow:
         await _openSessionInNewWindow(session);
+      case WorkspaceSessionMenuAction.close:
+        if (!controller.canCloseSession(session)) return;
+        if (!await _confirmCloseSession(context, session)) return;
+        await controller.closeSession(session);
+        if (mounted) setState(() {});
+      case WorkspaceSessionMenuAction.delete:
+        if (!controller.canDeleteSession(session)) return;
+        if (!await _confirmDeleteSession(context, session)) return;
+        await controller.deleteSession(session);
+        if (mounted) setState(() {});
     }
+  }
+
+  Future<bool> _confirmCloseSession(
+    BuildContext context,
+    AgentSession session,
+  ) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('关闭会话？'),
+            content: Text(
+              '关闭“${session.displayTitle}”并释放 Agent 资源。'
+              '会话历史会保留，可以稍后恢复。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('关闭会话'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<bool> _confirmDeleteSession(
+    BuildContext context,
+    AgentSession session,
+  ) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('删除 Agent 历史？'),
+            content: Text(
+              '永久删除“${session.displayTitle}”在 Agent 中的会话历史。'
+              '此操作无法撤销。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: AppColors.danger,
+                ),
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('删除 Agent 历史'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   void _archiveWorkspaceSessions(WorkspaceRecord workspace) {

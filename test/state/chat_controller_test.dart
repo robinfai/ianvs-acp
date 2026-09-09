@@ -14,7 +14,7 @@ import 'package:ianvs_acp/acp/assistant_agent_enhancer.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/storage/session_transcript_cache.dart';
@@ -12018,7 +12018,9 @@ void main() {
 
     expect(fake.lastClosedSessionId, 'fake-session-1');
     expect(controller.currentSession, isNull);
-    expect(controller.sessions, isEmpty);
+    expect(controller.sessions.map((session) => session.id), [
+      'fake-session-1',
+    ]);
     expect(controller.messages, isEmpty);
     expect(controller.status, app_state.ConnectionStatus.connected);
   });
@@ -12122,7 +12124,9 @@ void main() {
 
       expect(fake.locallyClosedSessionIds, <String>[session.id]);
       expect(controller.currentSession, isNull);
-      expect(controller.sessions, isEmpty);
+      expect(controller.sessions.map((candidate) => candidate.id), [
+        session.id,
+      ]);
       expect(controller.messages, isEmpty);
       expect(controller.availableCommands, isEmpty);
       expect(controller.sessionSettings.modes.availableModes, isEmpty);
@@ -12137,6 +12141,125 @@ void main() {
 
       await controller.resumeSession(session.id, cwd: session.cwd);
       expect(fake.remotelyResumedSessionIds, <String>[session.id]);
+    },
+  );
+
+  test(
+    'targeted close preserves history and does not disturb the active session',
+    () async {
+      final fake = FakeAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        sessionPersistenceIdentity: 'agent-persistence-id',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      final background = controller.currentSession!;
+      await controller.newSession();
+      final active = controller.currentSession!;
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'active response'),
+      );
+
+      expect(controller.canCloseSession(background), isTrue);
+      await controller.closeSession(background);
+
+      expect(fake.lastClosedSessionId, background.id);
+      expect(controller.currentSession, same(active));
+      expect(controller.messages.single.text, 'active response');
+      expect(
+        controller.sessions.map((session) => session.id),
+        containsAll(<String>[active.id, background.id]),
+      );
+
+      fake.emitAvailableCommands(active.id, const <Map<String, Object?>>[
+        <String, Object?>{'name': 'still-connected'},
+      ]);
+      await pumpEventQueue();
+      expect(controller.currentSession, same(active));
+      expect(controller.availableCommands.single['name'], 'still-connected');
+    },
+  );
+
+  test(
+    'targeted actions reject mismatched workspace or agent identity',
+    () async {
+      final controller = ChatController(
+        client: FakeAgentClient(supportsDelete: true),
+        cwd: '/workspace',
+        sessionPersistenceIdentity: 'agent-persistence-id',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      final session = controller.currentSession!;
+
+      expect(
+        controller.canCloseSession(session.copyWith(cwd: '/other-workspace')),
+        isFalse,
+      );
+      expect(
+        controller.canDeleteSession(
+          session.copyWith(agentName: 'different-agent'),
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'targeted close is disabled while the active session is responding',
+    () async {
+      final fake = _ControlledPromptAgentClient();
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        sessionPersistenceIdentity: 'agent-persistence-id',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      final background = controller.currentSession!;
+      await controller.newSession();
+      final prompt = controller.sendPrompt('keep responding');
+      await pumpEventQueue();
+
+      expect(controller.isStreaming, isTrue);
+      expect(controller.canCloseSession(background), isFalse);
+
+      await fake.finishPrompt();
+      await prompt;
+    },
+  );
+
+  test(
+    'targeted delete removes only the selected background session',
+    () async {
+      final fake = FakeAgentClient(supportsDelete: true);
+      final controller = ChatController(
+        client: fake,
+        cwd: '/workspace',
+        sessionPersistenceIdentity: 'agent-persistence-id',
+      );
+      addTearDown(controller.dispose);
+
+      await controller.newSession();
+      final background = controller.currentSession!;
+      await controller.newSession();
+      final active = controller.currentSession!;
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.assistant, text: 'active response'),
+      );
+
+      expect(controller.canDeleteSession(background), isTrue);
+      await controller.deleteSession(background);
+
+      expect(fake.lastDeletedSessionId, background.id);
+      expect(controller.currentSession, same(active));
+      expect(controller.messages.single.text, 'active response');
+      expect(controller.sessions.map((session) => session.id), [active.id]);
     },
   );
 

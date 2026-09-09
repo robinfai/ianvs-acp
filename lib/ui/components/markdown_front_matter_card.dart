@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../file_preview/markdown_front_matter.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 const int _collapsedMetadataItems = 6;
 

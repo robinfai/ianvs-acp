@@ -55,7 +55,10 @@ jobs:
             = "$FLUTTER_FRAMEWORK_REVISION"
 
       - name: Resolve Dart dependencies
-        run: flutter pub get
+        run: make bootstrap
+
+      - name: Check app, chat package and example formatting
+        run: make format-check
 
       - name: Prepare generated macOS build inputs
         run: flutter build macos --config-only --no-pub
@@ -64,7 +67,7 @@ jobs:
         run: pod install --deployment --project-directory=macos
 
       - name: Analyze
-        run: flutter analyze --no-pub
+        run: make analyze
 
       - name: Test release script safety contracts
         run: ./tool/release_scripts_test.sh
@@ -72,8 +75,12 @@ jobs:
       - name: Verify Rust runtime and FFI integration
         run: ./tool/verify_rust_runtime.sh
 
-      - name: Test Flutter code with isolated HOME
-        run: ./tool/flutter_test_isolated.sh
+      - name: Test app, chat package and example offline with isolated HOME
+        run: make test
+
+      - name: Build standalone chat example
+        working-directory: packages/ianvs_agent_chat/example
+        run: flutter build macos --debug --no-pub
 
       - name: Test native macOS host
         run: >-

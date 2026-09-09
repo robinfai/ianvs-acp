@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
-import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import 'package:ianvs_acp/acp/rust_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/session_title.dart';
 import 'package:ianvs_acp/rust/ianvs_acp_native.dart';

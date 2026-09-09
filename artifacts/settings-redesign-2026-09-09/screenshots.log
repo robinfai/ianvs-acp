@@ -1,0 +1,7 @@
+
+[app] test
+00:00 +0: loading /Users/robinfai/flutter_projects/ianvs-acp/docs/settings-redesign-2026-09-09/capture_after_test.dart
+00:00 +0: (setUpAll)
+00:00 +0: capture implemented settings journey
+00:03 +1: (tearDownAll)
+00:03 +1: All tests passed!

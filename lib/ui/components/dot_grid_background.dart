@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class DotGridBackground extends StatelessWidget {
   const DotGridBackground({super.key, required this.child});

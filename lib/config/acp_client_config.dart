@@ -6,7 +6,7 @@ import 'package:crypto/crypto.dart';
 import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
 import '../acp/acp_permission_request.dart';
-import '../platform/bounded_file_snapshot.dart';
+import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 import '../storage/sqlite_storage_config.dart';
 import 'assistant_agent_config.dart';
 import 'secret_field_policy.dart';

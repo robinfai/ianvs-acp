@@ -47,6 +47,16 @@ void main() {
       ),
       findsOne,
     );
+    expect(
+      find.byKey(const ValueKey('resume-session-refresh')),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(TextButton, 'Refresh'), findsNothing);
+    expect(find.text('Current Agent'), findsOneWidget);
+    expect(
+      find.text('Showing every workspace returned by Codex.'),
+      findsOneWidget,
+    );
     semantics.dispose();
   });
 
@@ -166,6 +176,10 @@ void main() {
 
     expect(find.text('Codex target'), findsWidgets);
     expect(find.text('Codex other'), findsNothing);
+    expect(
+      find.text('Limited to sessions in /workspace/target/ returned by Codex.'),
+      findsOneWidget,
+    );
 
     final agentList = find.byKey(const ValueKey('resume-agent-list'));
     await tester.tap(
@@ -240,6 +254,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(
+      find.text('pi ACP needs new credentials to list sessions.'),
+      findsNothing,
+    );
+    final agentList = find.byKey(const ValueKey('resume-agent-list'));
+    await tester.tap(
+      find.descendant(of: agentList, matching: find.text('pi ACP')),
+    );
+    await tester.pumpAndSettle();
     expect(
       find.text('pi ACP needs new credentials to list sessions.'),
       findsOneWidget,
@@ -367,7 +390,7 @@ void main() {
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Select Agent'), findsOneWidget);
+    expect(find.text('Agent for this session'), findsOneWidget);
     expect(find.text('Sessions for Codex'), findsOneWidget);
     expect(find.text('project-a'), findsOneWidget);
     expect(find.text('Resume this project conversation'), findsOneWidget);
@@ -782,12 +805,20 @@ void main() {
 
     expect(_loadButton(tester).onPressed, isNotNull);
 
-    await tester.tap(find.widgetWithText(TextButton, 'Refresh'));
+    await tester.tap(find.byKey(const ValueKey('resume-session-refresh')));
     await tester.pumpAndSettle();
 
     expect(find.text('Could not list Codex sessions'), findsOneWidget);
     expect(find.textContaining('refresh failed'), findsOneWidget);
     expect(_loadButton(tester).onPressed, isNull);
+    expect(
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('resume-session-refresh')),
+          )
+          .onPressed,
+      isNotNull,
+    );
   });
 
   testWidgets(
@@ -829,7 +860,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 1));
       expect(find.text('No sessions from Codex'), findsOneWidget);
 
-      await tester.tap(find.widgetWithText(TextButton, 'Refresh'));
+      await tester.tap(find.byKey(const ValueKey('resume-session-refresh')));
       await tester.pump(const Duration(milliseconds: 1));
       expect(find.text('Loading sessions from Codex...'), findsWidgets);
 

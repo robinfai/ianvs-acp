@@ -12,11 +12,11 @@ import '../../platform/file_manager.dart';
 import '../file_preview/file_preview_document.dart';
 import '../file_preview/markdown_front_matter.dart';
 import '../image_decode_budget.dart';
-import '../theme/app_design_tokens.dart';
-import 'bounded_image_preview.dart';
-import 'markdown_code_block.dart';
+import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
+import 'package:ianvs_agent_chat/ui/components/markdown_code_block.dart';
+import 'package:ianvs_agent_chat/ui/components/markdown_inline_link.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'markdown_front_matter_card.dart';
-import 'markdown_inline_link.dart';
 import 'markdown_preview_image.dart';
 
 typedef FilePreviewLinkHandler =

@@ -19,13 +19,13 @@ import '../acp/acp_session_settings.dart';
 import '../acp/acp_session_usage.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
-import '../acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import '../acp/session_title.dart';
 import '../config/assistant_agent_config.dart';
 import '../config/acp_client_config.dart' show SessionTemplateConfig;
 import '../storage/session_transcript_cache.dart';
 import 'connection_state.dart';
-import '../acp/permission_context.dart';
+import 'package:ianvs_agent_chat/models/permission_context.dart';
 
 enum ChatPermissionEventType { requested, resolved }
 
@@ -2891,17 +2891,27 @@ class ChatController extends ChangeNotifier {
   }
 
   bool get canCloseCurrentSession {
-    return currentSession != null &&
-        supportsSessionClose &&
-        !isStreaming &&
-        !isSessionOperationRunning;
+    final session = currentSession;
+    return session != null && canCloseSession(session);
   }
 
   bool get canDeleteCurrentSession {
-    return currentSession != null &&
-        supportsSessionDelete &&
+    final session = currentSession;
+    return session != null && canDeleteSession(session);
+  }
+
+  bool canCloseSession(AgentSession session) {
+    return supportsSessionClose &&
         !isStreaming &&
-        !isSessionOperationRunning;
+        !isSessionOperationRunning &&
+        _sessionForTargetedAction(session) != null;
+  }
+
+  bool canDeleteSession(AgentSession session) {
+    return supportsSessionDelete &&
+        !isStreaming &&
+        !isSessionOperationRunning &&
+        _sessionForTargetedAction(session) != null;
   }
 
   bool get canListSessions {
@@ -4861,20 +4871,33 @@ class ChatController extends ChangeNotifier {
 
   Future<void> closeCurrentSession() async {
     final session = currentSession;
-    if (session == null || !supportsSessionClose) return;
-    if (isStreaming || isSessionOperationRunning) return;
-    _finishTurnBudget();
+    if (session == null) return;
+    await closeSession(session);
+  }
 
-    final operationGeneration = _beginSessionOperationGeneration();
+  Future<void> closeSession(AgentSession target) async {
+    final session = _sessionForTargetedAction(target);
+    if (session == null || !canCloseSession(session)) return;
+    final wasCurrent = _sameTargetedSession(currentSession, session);
+    if (wasCurrent) _finishTurnBudget();
+
+    final operationGeneration = wasCurrent
+        ? _beginSessionOperationGeneration()
+        : null;
+    bool operationIsCurrent() => operationGeneration == null
+        ? !_isDisposed
+        : _isCurrentSessionOperationGeneration(operationGeneration);
     await _runSessionOperation(() async {
-      try {
-        await _promptSubscription?.cancel();
-        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
-        _promptSubscription = null;
-      } catch (error) {
-        if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
-        _setActionError(error);
-        return;
+      if (wasCurrent) {
+        try {
+          await _promptSubscription?.cancel();
+          if (!operationIsCurrent()) return;
+          _promptSubscription = null;
+        } catch (error) {
+          if (!operationIsCurrent()) return;
+          _setActionError(error);
+          return;
+        }
       }
 
       Object? closeError;
@@ -4883,7 +4906,7 @@ class ChatController extends ChangeNotifier {
       } catch (error) {
         closeError = error;
       }
-      if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+      if (!operationIsCurrent()) return;
 
       final ownership = client;
       if (ownership is AcpLocalSessionViewOwnership) {
@@ -4895,21 +4918,22 @@ class ChatController extends ChangeNotifier {
       _retireSessionId(session.id);
       _removeLocalUnstartedSessionId(session.id);
       _removeSessionViewSnapshot(session.id);
-      currentSession = null;
-      _timelineHistoryWasTruncated = false;
-      sessions.removeWhere((item) => _sessionIdsMatch(item.id, session.id));
-      _clearMessages();
-      availableCommands = const <Map<String, Object?>>[];
-      lastLatency = null;
-      lastError = null;
-      sessionSettings = const AcpSessionSettings();
-      sessionUsage = null;
-      sessionSettingsLoading = false;
-      _activeSessionSettingsLoadId = null;
-      await _cancelPendingPermissionRequest(reportErrors: false);
-      if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
-      _removePermissionHistoryForSession(session.id);
-      status = ConnectionStatus.connected;
+      if (wasCurrent) {
+        currentSession = null;
+        _timelineHistoryWasTruncated = false;
+        _clearMessages();
+        availableCommands = const <Map<String, Object?>>[];
+        lastLatency = null;
+        lastError = null;
+        sessionSettings = const AcpSessionSettings();
+        sessionUsage = null;
+        sessionSettingsLoading = false;
+        _activeSessionSettingsLoadId = null;
+        await _cancelPendingPermissionRequest(reportErrors: false);
+        if (!operationIsCurrent()) return;
+        _removePermissionHistoryForSession(session.id);
+        status = ConnectionStatus.connected;
+      }
       if (closeError != null) {
         _setActionError(closeError);
       } else {
@@ -4920,30 +4944,40 @@ class ChatController extends ChangeNotifier {
 
   Future<void> deleteCurrentSession() async {
     final session = currentSession;
-    if (session == null || !supportsSessionDelete) return;
-    if (isStreaming || isSessionOperationRunning) return;
+    if (session == null) return;
+    await deleteSession(session);
+  }
 
+  Future<void> deleteSession(AgentSession target) async {
+    final session = _sessionForTargetedAction(target);
+    if (session == null || !canDeleteSession(session)) return;
+    final wasCurrent = _sameTargetedSession(currentSession, session);
     await _runSessionOperation(() async {
       try {
-        await _promptSubscription?.cancel();
-        _promptSubscription = null;
+        if (wasCurrent) {
+          await _promptSubscription?.cancel();
+          _promptSubscription = null;
+        }
         await client.deleteSession(sessionId: session.id);
         _retireSessionId(session.id);
         _localUnstartedSessionIds.remove(session.id);
-        _sessionViewSnapshots.remove(session.id);
-        currentSession = null;
-        _timelineHistoryWasTruncated = false;
-        sessions.removeWhere((item) => item.id == session.id);
-        messages.clear();
-        availableCommands = const <Map<String, Object?>>[];
-        lastLatency = null;
-        lastError = null;
-        sessionSettings = const AcpSessionSettings();
-        sessionUsage = null;
-        sessionSettingsLoading = false;
-        await _cancelPendingPermissionRequest(reportErrors: false);
+        _removeSessionViewSnapshot(session.id);
+        sessions.removeWhere((item) => _sameTargetedSession(item, session));
+        if (wasCurrent) {
+          currentSession = null;
+          _timelineHistoryWasTruncated = false;
+          _clearMessages();
+          availableCommands = const <Map<String, Object?>>[];
+          lastLatency = null;
+          lastError = null;
+          sessionSettings = const AcpSessionSettings();
+          sessionUsage = null;
+          sessionSettingsLoading = false;
+          _activeSessionSettingsLoadId = null;
+          await _cancelPendingPermissionRequest(reportErrors: false);
+          status = ConnectionStatus.connected;
+        }
         _removePermissionHistoryForSession(session.id);
-        status = ConnectionStatus.connected;
         _notifyListeners();
       } catch (error) {
         _setActionError(error);
@@ -7780,6 +7814,22 @@ class ChatController extends ChangeNotifier {
       if (_sessionIdsMatch(session.id, id)) return session;
     }
     return null;
+  }
+
+  AgentSession? _sessionForTargetedAction(AgentSession target) {
+    final active = currentSession;
+    if (_sameTargetedSession(active, target)) return active;
+    for (final session in sessions) {
+      if (_sameTargetedSession(session, target)) return session;
+    }
+    return null;
+  }
+
+  bool _sameTargetedSession(AgentSession? left, AgentSession right) {
+    if (left == null || !sameSessionWorkspaceIdentity(left, right)) {
+      return false;
+    }
+    return (left.agentName?.trim() ?? '') == (right.agentName?.trim() ?? '');
   }
 
   bool _sessionIdsMatch(String? left, String right) {

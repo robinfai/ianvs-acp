@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../acp/agent_session.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 Future<bool> showSessionWorkspaceReviewDialog(
   BuildContext context,

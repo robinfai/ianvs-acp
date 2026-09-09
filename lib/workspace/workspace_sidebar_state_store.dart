@@ -4,7 +4,7 @@ import 'dart:io';
 
 import '../acp/agent_session.dart';
 import '../acp/session_title.dart';
-import '../platform/bounded_file_snapshot.dart';
+import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 import '../platform/secure_atomic_file.dart';
 import '../storage/app_state_path.dart';
 

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
+import 'package:ianvs_acp/ui/components/session_menu_actions.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/workspace/workspace.dart';
@@ -1104,8 +1105,8 @@ void main() {
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
-    expect(find.text('Fork Locally'), findsOneWidget);
-    expect(find.text('Fork to New Worktree'), findsNothing);
+    expect(find.text('继续到新会话'), findsOneWidget);
+    expect(find.text('继续到新工作树'), findsNothing);
   });
 
   testWidgets('WorkspaceSidebar persists expansion without loading sessions', (
@@ -1235,6 +1236,13 @@ void main() {
               currentSession: session,
               onNewSession: () {},
               canForkSession: (_) => true,
+              sessionActionAvailability: (_) => const SessionActionAvailability(
+                canFork: true,
+                supportsClose: true,
+                canClose: true,
+                supportsDelete: true,
+                canDelete: true,
+              ),
               onSessionMenuAction: (session, selectedAction) {
                 actionSession = session;
                 action = selectedAction;
@@ -1252,19 +1260,21 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Pin Conversation'), findsOneWidget);
-    expect(find.text('Rename Conversation'), findsOneWidget);
-    expect(find.text('Archive Conversation'), findsOneWidget);
-    expect(find.text('Mark as Unread'), findsOneWidget);
-    expect(find.text('Open Side Session'), findsOneWidget);
-    expect(find.text('Copy Session ID'), findsOneWidget);
-    expect(find.text('Copy Deep Link'), findsOneWidget);
-    expect(find.text('Copy as Markdown'), findsOneWidget);
-    expect(find.text('Fork Locally'), findsOneWidget);
-    expect(find.text('Fork to New Worktree'), findsOneWidget);
-    expect(find.text('Open in New Window'), findsOneWidget);
+    expect(find.text('固定会话'), findsOneWidget);
+    expect(find.text('重命名会话'), findsOneWidget);
+    expect(find.text('归档会话'), findsOneWidget);
+    expect(find.text('标为未读'), findsOneWidget);
+    expect(find.text('在侧边打开'), findsOneWidget);
+    expect(find.text('复制会话 ID'), findsOneWidget);
+    expect(find.text('复制会话链接'), findsOneWidget);
+    expect(find.text('复制为 Markdown'), findsOneWidget);
+    expect(find.text('继续到新会话'), findsOneWidget);
+    expect(find.text('继续到新工作树'), findsOneWidget);
+    expect(find.text('在新窗口打开'), findsOneWidget);
+    expect(find.text('关闭会话'), findsOneWidget);
+    expect(find.text('删除 Agent 历史'), findsOneWidget);
 
-    await tester.tap(find.text('Copy Session ID'));
+    await tester.tap(find.text('复制会话 ID'));
     await tester.pumpAndSettle();
 
     expect(actionSession, session);
@@ -1813,8 +1823,8 @@ void main() {
       ),
     );
 
-    expect(find.byTooltip('Pin Conversation'), findsNothing);
-    expect(find.byTooltip('Archive Conversation'), findsNothing);
+    expect(find.byTooltip('固定会话'), findsNothing);
+    expect(find.byTooltip('归档会话'), findsNothing);
 
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: Offset.zero);
@@ -1822,14 +1832,14 @@ void main() {
     await mouse.moveTo(tester.getCenter(find.text('Other work')));
     await tester.pump();
 
-    expect(find.byTooltip('Pin Conversation'), findsOneWidget);
-    expect(find.byTooltip('Archive Conversation'), findsOneWidget);
+    expect(find.byTooltip('固定会话'), findsOneWidget);
+    expect(find.byTooltip('归档会话'), findsOneWidget);
 
     await mouse.moveTo(Offset.zero);
     await tester.pump();
 
-    expect(find.byTooltip('Pin Conversation'), findsNothing);
-    expect(find.byTooltip('Archive Conversation'), findsNothing);
+    expect(find.byTooltip('固定会话'), findsNothing);
+    expect(find.byTooltip('归档会话'), findsNothing);
   });
 
   testWidgets('WorkspaceSidebar exposes session actions on keyboard focus', (
@@ -1872,14 +1882,14 @@ void main() {
 
     for (
       var index = 0;
-      index < 12 && find.byTooltip('Pin Conversation').evaluate().isEmpty;
+      index < 12 && find.byTooltip('固定会话').evaluate().isEmpty;
       index += 1
     ) {
       await tester.sendKeyEvent(LogicalKeyboardKey.tab);
       await tester.pump();
     }
-    expect(find.byTooltip('Pin Conversation'), findsOneWidget);
-    expect(find.byTooltip('Archive Conversation'), findsOneWidget);
+    expect(find.byTooltip('固定会话'), findsOneWidget);
+    expect(find.byTooltip('归档会话'), findsOneWidget);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.tab);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -2096,9 +2106,9 @@ void main() {
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
-    await mouse.moveTo(tester.getCenter(find.text('Copy Session ID')));
+    await mouse.moveTo(tester.getCenter(find.text('复制会话 ID')));
     await tester.pump();
-    await tester.tap(find.text('Copy Session ID'));
+    await tester.tap(find.text('复制会话 ID'));
     await tester.pumpAndSettle();
 
     expect(selectedAction, WorkspaceSessionMenuAction.copySessionId);
@@ -2159,19 +2169,19 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Pin Conversation'), findsOneWidget);
-    expect(find.text('Rename Conversation'), findsOneWidget);
-    expect(find.text('Archive Conversation'), findsOneWidget);
-    expect(find.text('Mark as Unread'), findsOneWidget);
-    expect(find.text('Show in Finder'), findsOneWidget);
-    expect(find.text('Copy Working Directory'), findsOneWidget);
-    expect(find.text('Copy Session ID'), findsOneWidget);
-    expect(find.text('Copy Deep Link'), findsOneWidget);
-    expect(find.text('Fork Locally'), findsOneWidget);
-    expect(find.text('Fork to New Worktree'), findsOneWidget);
-    expect(find.text('Open in New Window'), findsOneWidget);
+    expect(find.text('固定会话'), findsOneWidget);
+    expect(find.text('重命名会话'), findsOneWidget);
+    expect(find.text('归档会话'), findsOneWidget);
+    expect(find.text('标为未读'), findsOneWidget);
+    expect(find.text('在 Finder 中显示'), findsOneWidget);
+    expect(find.text('复制工作目录'), findsOneWidget);
+    expect(find.text('复制会话 ID'), findsOneWidget);
+    expect(find.text('复制会话链接'), findsOneWidget);
+    expect(find.text('继续到新会话'), findsOneWidget);
+    expect(find.text('继续到新工作树'), findsOneWidget);
+    expect(find.text('在新窗口打开'), findsOneWidget);
 
-    await tester.tap(find.text('Archive Conversation'));
+    await tester.tap(find.text('归档会话'));
     await tester.pumpAndSettle();
 
     expect(actionSession, otherSession);
@@ -2224,14 +2234,14 @@ void main() {
     final forkLocallyItem = tester
         .widget<PopupMenuItem<WorkspaceSessionMenuAction>>(
           find.ancestor(
-            of: find.text('Fork Locally'),
+            of: find.text('继续到新会话'),
             matching: find.byType(PopupMenuItem<WorkspaceSessionMenuAction>),
           ),
         );
     final forkWorktreeItem = tester
         .widget<PopupMenuItem<WorkspaceSessionMenuAction>>(
           find.ancestor(
-            of: find.text('Fork to New Worktree'),
+            of: find.text('继续到新工作树'),
             matching: find.byType(PopupMenuItem<WorkspaceSessionMenuAction>),
           ),
         );

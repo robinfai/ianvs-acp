@@ -1,8 +1,10 @@
 # 会话加载架构
 
+Updated: 2026-09-09
+
 ## 范围与行为基线
 
-本轮以 `main@db57d2c` 和真实会话“拉取最新代码并运行”为基准。此前未提交的虚拟历史窗口、占位高度、滚动触发加载、锚点恢复，以及“先显示最近消息预览”的方案均已移除。时间线继续沿用基线渲染模型。
+当前行为以 `6091b82` 源码为准。文末 2026-08-04 至 2026-08-10 的性能数据是当时构建的历史验收记录，不替代当前版本的桌面验收。此前未提交的虚拟历史窗口、占位高度、滚动触发加载、锚点恢复，以及“先显示最近消息预览”的方案均已移除。时间线继续沿用基线渲染模型。
 
 用户可见语义只有以下几种：
 
@@ -52,11 +54,18 @@ Rust core 接收显式的 `replay_history`：
 FFI ABI v10 不再把 ACP `session/update` 的通用 payload 交给 Dart
 解释。Rust 将协议事件分成两类：
 
-- `session_update`：仅保留会话生命周期、模式、配置和权限失效等小型控制状态；
+- `session_update`：仅保留会话生命周期、模式、配置、可用命令和权限失效等小型控制状态；
 - `render_update`：只包含时间线真正消费的 user、assistant、thought、tool、plan 和 turn-completed 投影。
 
-ACP `_meta`、`annotations` 和没有 UI 消费者的 available-commands、session-info、usage
-通知不会跨 FFI。Tool 投影只允许 `toolCallId/title/kind/status/content/locations/rawInput/rawOutput`；
+`available_commands_update` 会由 Rust 约束为 `CommandsChanged`，Dart 按会话缓存后通过
+`AcpChatSession` 交给共享 composer，作为 slash-command 建议的数据源。`session/list`
+返回的 `SessionInfo` 也会投影为有界目录条目，保留 session ID、cwd、additional
+directories、title、`updatedAt` 和有界 metadata。
+
+这两条路径不能与实时通知混为一谈：当前 Rust runtime 不投影 live session-info 或
+usage update。ACP `_meta`、`annotations`、这些未消费通知以及其他未接入的实验事件不会跨
+FFI；缺失 usage 保持缺失，不用零值代替。Tool 投影只允许
+`toolCallId/title/kind/status/content/locations/rawInput/rawOutput`；
 单个 raw input/output/location 字段超过 128 KiB、content 超过 512 KiB 时由 Rust 替换为有类型的
 omission，而不是先传到 Dart 再扫描丢弃。
 
@@ -133,7 +142,7 @@ controller 保留一个权威消息容器 `_messages`。`visibleMessages` 在无
 7. 清除 loading；无缓存 load 在此时一次显示完整转录，缓存命中则不替换时间线；
 8. 完整 load 成功时，在 UI 获得绘制机会后按 4 ms 时间片生成缓存快照，再交给 isolate 编码并原子写入，避免完成加载后又出现一段同步停顿。
 
-切换会话或 dispose 后，迟到事件会被 generation 丢弃。恢复失败时，session、messages、settings、usage、commands、快照和指标作为一个事务恢复到进入前状态。
+切换会话或 dispose 后，迟到事件会被 generation 丢弃。恢复失败时，session、messages、settings、commands、快照和指标作为一个事务恢复到进入前状态。controller 仍保留可选 usage 状态的事务边界，但当前本地 Rust runtime 不会产生该状态。
 
 连续 assistant text delta、分片 user content 和 tool update 已在 Rust replay projector 中合并；Dart controller 不再包含 ACP replay projector，也不再识别 `_acpUserChunk` 或 `agent_message_delta` 等协议形态。Dart 只做 ChatMessage 的最终输入预算准入和原子可见状态切换。大工具详情当前没有按 tool-call id 重新读取内容的 resolver，因此在 Rust 侧执行字段级上限和 omission 投影，而不是无界跨 FFI。
 

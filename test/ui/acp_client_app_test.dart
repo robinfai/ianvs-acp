@@ -16,12 +16,14 @@ import 'package:ianvs_acp/acp/acp_permission_reviewer.dart'
     show AcpAgentPermissionReviewer;
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_acp/acp/prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/startup/deep_link_request.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
+import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
-import 'package:ianvs_acp/ui/components/bounded_image_preview.dart';
+import 'package:ianvs_acp/ui/components/session_menu_actions.dart';
+import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/image_decode_budget.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
@@ -441,7 +443,7 @@ void main() {
     expect(shell.controller.currentSession?.sessionTemplateVersion, 2);
 
     await _openSidebarSessionMenu(tester, shell.controller);
-    await tester.tap(find.text('Fork Locally'));
+    await tester.tap(find.text('继续到新会话'));
     await tester.pumpAndSettle();
     expect(resumed.client.lastForkedSessionId, 'template-resume');
     expect(shell.controller.currentSession?.sessionTemplateId, 'review');
@@ -449,7 +451,7 @@ void main() {
 
     final forkedSessionId = shell.controller.currentSession!.id;
     await _openSidebarSessionMenu(tester, shell.controller);
-    await tester.tap(find.text('Open Side Session'));
+    await tester.tap(find.text('在侧边打开'));
     await tester.pumpAndSettle();
     expect(shell.controller.currentSession?.id, isNot(forkedSessionId));
     expect(shell.controller.currentSession?.sessionTemplateId, 'review');
@@ -852,28 +854,30 @@ void main() {
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Agent Configuration'), warnIfMissed: false);
+    await tester.tap(find.text('管理 Agent…'), warnIfMissed: false);
     await tester.pumpAndSettle();
-    expect(find.text('Agent Configuration'), findsOneWidget);
+    expect(find.text('设置'), findsWidgets);
 
-    expect(find.byTooltip('Set Codex as default'), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const Key('Set Codex as default')));
+    await tester.tap(find.byKey(const Key('settings-agent-Codex')));
     await tester.pump();
-    await tester.tap(find.byKey(const Key('Set Codex as default')));
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(find.byTooltip('Set Kimi Code Dev as default'), findsOneWidget);
+    await tester.tap(find.byTooltip('Agent 操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设为启动默认 Agent'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('settings-save')), findsOneWidget);
     final saveButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Save'),
+      find.byKey(const Key('settings-save')),
     );
     expect(saveButton.onPressed, isNotNull);
-    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.tap(find.byKey(const Key('settings-save')));
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(savedConfig?.defaultAgentServerName, 'Codex');
-    expect(find.textContaining('Saved agent configuration'), findsOneWidget);
+    expect(find.byKey(const Key('settings-save')), findsOneWidget);
+    expect(find.text('更改已保存'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(TextButton, 'Close'));
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('settings-back')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('New Session'));
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -2516,7 +2520,7 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Copy Deep Link'));
+    await tester.tap(find.text('复制会话链接'));
     await tester.pump();
 
     final uri = Uri.parse(clipboardText!);
@@ -2574,20 +2578,20 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Copy Working Directory'));
+    await tester.tap(find.text('复制工作目录'));
     await tester.pump();
 
     expect(clipboardText, '/workspace/current');
     expect(find.text('Working directory copied.'), findsOneWidget);
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Copy Session ID'));
+    await tester.tap(find.text('复制会话 ID'));
     await tester.pump();
 
     expect(clipboardText, sessionId);
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Copy as Markdown'));
+    await tester.tap(find.text('复制为 Markdown'));
     await tester.pump();
 
     expect(clipboardText, contains('# fake-ses'));
@@ -2595,7 +2599,7 @@ void main() {
     expect(clipboardText, contains('## Agent\n\nReview complete'));
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Mark as Unread'));
+    await tester.tap(find.text('标为未读'));
     await tester.pumpAndSettle();
 
     expect(
@@ -2606,8 +2610,8 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    expect(find.text('Mark as Read'), findsOneWidget);
-    await tester.tap(find.text('Mark as Read'));
+    expect(find.text('标为已读'), findsOneWidget);
+    await tester.tap(find.text('标为已读'));
     await tester.pumpAndSettle();
 
     expect(
@@ -2651,7 +2655,7 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Copy Session ID'));
+    await tester.tap(find.text('复制会话 ID'));
     await tester.pump();
 
     expect(find.textContaining('Could not copy Session ID'), findsOneWidget);
@@ -3185,7 +3189,7 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Open in New Window'));
+    await tester.tap(find.text('在新窗口打开'));
     await tester.pumpAndSettle();
 
     expect(openedArgs, [
@@ -3889,7 +3893,7 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Fork Locally'));
+    await tester.tap(find.text('继续到新会话'));
     await tester.pumpAndSettle();
 
     expect(fake.lastForkedSessionId, sourceSessionId);
@@ -3918,9 +3922,9 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.tap(find.byTooltip('会话操作').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Open Side Session'));
+    await tester.tap(find.text('在侧边打开'));
     await tester.pumpAndSettle();
 
     expect(controller.currentSession?.id, isNot(sourceSessionId));
@@ -3945,11 +3949,9 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.tap(find.byTooltip('会话操作').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Continue in...'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Continue in New Worktree'));
+    await tester.tap(find.text('继续到新工作树'));
     await tester.pumpAndSettle();
 
     expect(find.byType(AlertDialog), findsOneWidget);
@@ -3986,11 +3988,9 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.tap(find.byTooltip('会话操作').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Continue in...'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Continue in New Worktree'));
+    await tester.tap(find.text('继续到新工作树'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextFormField), worktreePath);
     await tester.tap(find.widgetWithText(FilledButton, 'Create'));
@@ -4034,14 +4034,11 @@ void main() {
       const Size(1400, 900),
     );
 
-    await tester.tap(find.byTooltip('Session actions').first);
+    await tester.tap(find.byTooltip('会话操作').first);
     await tester.pumpAndSettle();
 
-    expect(find.text('Continue in...'), findsOneWidget);
-    await tester.tap(find.text('Continue in...'));
-    await tester.pumpAndSettle();
-    expect(find.text('Continue in New Session'), findsOneWidget);
-    expect(find.text('Continue in New Worktree'), findsNothing);
+    expect(find.text('继续到新会话'), findsOneWidget);
+    expect(find.text('继续到新工作树'), findsNothing);
   });
 
   testWidgets('AcpClientApp pins and renames sessions from the session menu', (
@@ -4060,7 +4057,7 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Pin Conversation'));
+    await tester.tap(find.text('固定会话'));
     await tester.pumpAndSettle();
 
     expect(
@@ -4071,8 +4068,8 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    expect(find.text('Unpin Conversation'), findsOneWidget);
-    await tester.tap(find.text('Rename Conversation'));
+    expect(find.text('取消固定'), findsOneWidget);
+    await tester.tap(find.text('重命名会话'));
     await tester.pumpAndSettle();
 
     await tester.enterText(
@@ -4112,7 +4109,7 @@ void main() {
     );
 
     await _openSidebarSessionMenu(tester, controller);
-    await tester.tap(find.text('Archive Conversation'));
+    await tester.tap(find.text('归档会话'));
     await tester.pump();
 
     expect(
@@ -4147,6 +4144,66 @@ void main() {
       isTrue,
     );
     expect(controller.currentSession?.id, sessionId);
+  });
+
+  testWidgets('AcpClientApp closes a session and retains its history', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient();
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final session = controller.currentSession!;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await _openSidebarSessionMenu(tester, controller);
+    expect(find.text('关闭会话'), findsOneWidget);
+    expect(find.text('删除 Agent 历史'), findsNothing);
+    await tester.tap(find.text('关闭会话'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('关闭会话？'), findsOneWidget);
+    expect(find.textContaining('会话历史会保留'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '关闭会话'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastClosedSessionId, session.id);
+    expect(controller.currentSession, isNull);
+    expect(controller.sessions.single.id, session.id);
+  });
+
+  testWidgets('AcpClientApp confirms deletion from Agent history', (
+    tester,
+  ) async {
+    final fake = FakeAgentClient(supportsDelete: true);
+    final controller = ChatController(client: fake, cwd: '/workspace/current');
+    addTearDown(controller.dispose);
+    await controller.newSession(cwd: '/workspace/current');
+    final sessionId = controller.currentSession!.id;
+
+    await pumpWithWindowSize(
+      tester,
+      AcpClientApp(controller: controller),
+      const Size(1400, 900),
+    );
+
+    await _openSidebarSessionMenu(tester, controller);
+    await tester.tap(find.text('删除 Agent 历史'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('删除 Agent 历史？'), findsOneWidget);
+    expect(find.textContaining('无法撤销'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '删除 Agent 历史'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastDeletedSessionId, sessionId);
+    expect(controller.currentSession, isNull);
+    expect(controller.sessions, isEmpty);
   });
 
   testWidgets('AcpClientApp offers undo after archiving workspace sessions', (
@@ -4257,7 +4314,7 @@ void main() {
         const Size(1400, 900),
       );
       await _openSidebarSessionMenu(tester, controller);
-      await tester.tap(find.text('Archive Conversation'));
+      await tester.tap(find.text('归档会话'));
       await tester.pumpAndSettle();
       expect(controller.debugActiveUiStateRetainedBytes, 0);
       expect(controller.debugUiStateRetainedBytes, greaterThan(0));
@@ -4432,7 +4489,7 @@ void main() {
     await tester.tap(find.byKey(const Key('compact-context-button')));
     await tester.pumpAndSettle();
     expect(find.byTooltip('Close Context'), findsOneWidget);
-    expect(find.text('会话信息'), findsWidgets);
+    expect(find.text('当前会话'), findsWidgets);
     await tester.tap(find.byTooltip('Close Context'));
     await tester.pumpAndSettle();
 
@@ -4507,22 +4564,28 @@ void main() {
     },
   );
 
-  testWidgets('AcpClientApp opens protocol coverage dialog', (tester) async {
-    final fake = FakeAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace');
+  testWidgets('AcpClientApp opens independent LLM chat from advanced menu', (
+    tester,
+  ) async {
+    final controller = ChatController(
+      client: FakeAgentClient(),
+      cwd: '/workspace',
+    );
     addTearDown(controller.dispose);
-    await controller.connect();
-
+    await controller.newSession();
+    final sessionId = controller.currentSession!.id;
     await tester.pumpWidget(AcpClientApp(controller: controller));
-
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Protocol Coverage'));
+    expect(find.text('高级'), findsOneWidget);
+    await tester.tap(find.text('独立 LLM 对话'));
     await tester.pumpAndSettle();
-
-    expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('Protocol Coverage'), findsOneWidget);
-    expect(find.text('ACP Registry'), findsOneWidget);
+    expect(find.text('Independent LLM chat'), findsOneWidget);
+    expect(controller.currentSession!.id, sessionId);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Independent LLM chat'), findsNothing);
+    expect(controller.currentSession!.id, sessionId);
   });
 
   testWidgets('AcpClientApp keeps empty permission history discoverable', (
@@ -4535,12 +4598,12 @@ void main() {
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
 
-    await tester.tap(find.byTooltip('Agents'));
+    await tester.tap(find.text('活动与诊断'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Permission History'));
+    await tester.tap(find.text('Permissions'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.byType(Dialog), findsOneWidget);
     expect(find.text('No permission requests yet.'), findsOneWidget);
   });
 
@@ -4580,12 +4643,28 @@ void main() {
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Agent Configuration'));
+    await tester.tap(find.text('管理 Agent…'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Agent Configuration'), findsOneWidget);
-    expect(find.text('permission-reviewer'), findsNWidgets(2));
-    expect(find.text('agent-review-model'), findsWidgets);
+    expect(find.text('设置'), findsWidgets);
+    final settings = tester.widget<AgentConfigDialog>(
+      find.byType(AgentConfigDialog),
+    );
+    expect(
+      settings.agentServers.single.permissionReviewAgent.model,
+      'agent-review-model',
+    );
+    expect(
+      settings.clientProviders.permissions.reviewAgent.displayTarget,
+      'permission-reviewer',
+    );
+
+    await tester.tap(find.byKey(const Key('settings-section-picker')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('权限').last);
+    await tester.pumpAndSettle();
+    expect(find.text('permission-reviewer'), findsWidgets);
+    expect(find.text('global-review-model'), findsWidgets);
   });
 
   testWidgets('AcpClientApp uses an independent configured ACP reviewer', (
@@ -4808,13 +4887,13 @@ void main() {
     expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
     expect(find.text('Read file'), findsNothing);
 
-    await tester.tap(find.byTooltip('Agents'));
+    await tester.tap(find.text('活动与诊断'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Permission History'));
+    await tester.tap(find.text('Permissions'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('Permission History'), findsOneWidget);
+    expect(find.byType(Dialog), findsOneWidget);
+    expect(find.text('Activity & Diagnostics'), findsOneWidget);
     expect(find.text('Read file'), findsOneWidget);
     expect(find.text('Allowed'), findsOneWidget);
   });
@@ -5201,7 +5280,7 @@ void main() {
           .toList(growable: false);
 
       await _openSidebarSessionMenuForTitle(tester, 'Shared alias session');
-      await tester.tap(find.text('Pin Conversation'));
+      await tester.tap(find.text('固定会话'));
       await tester.pumpAndSettle();
       await _pumpUntil(
         tester,
@@ -5211,7 +5290,7 @@ void main() {
       );
 
       await _openSidebarSessionMenuForTitle(tester, 'Shared alias session');
-      await tester.tap(find.text('Rename Conversation'));
+      await tester.tap(find.text('重命名会话'));
       await tester.pumpAndSettle();
       await tester.enterText(
         find.descendant(
@@ -5231,7 +5310,7 @@ void main() {
       );
 
       await _openSidebarSessionMenuForTitle(tester, 'Canonical session title');
-      await tester.tap(find.text('Mark as Unread'));
+      await tester.tap(find.text('标为未读'));
       await tester.pumpAndSettle();
       await _pumpUntil(
         tester,
@@ -5241,7 +5320,7 @@ void main() {
       );
 
       await _openSidebarSessionMenuForTitle(tester, 'Canonical session title');
-      await tester.tap(find.text('Archive Conversation'));
+      await tester.tap(find.text('归档会话'));
       await tester.pumpAndSettle();
       await _pumpUntil(
         tester,

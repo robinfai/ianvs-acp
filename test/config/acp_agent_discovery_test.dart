@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/config/acp_agent_discovery.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
-import 'package:ianvs_acp/platform/bounded_file_snapshot.dart';
+import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 
 void main() {
   test('uses reviewed package invocations for npx-backed agents', () {

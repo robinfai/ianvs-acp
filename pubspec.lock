@@ -352,7 +352,7 @@ packages:
     source: hosted
     version: "2.2.0"
   re_highlight:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: re_highlight
       sha256: "6c4ac3f76f939fb7ca9df013df98526634e17d8f7460e028bd23a035870024f2"
@@ -493,7 +493,7 @@ packages:
     source: hosted
     version: "5.15.0"
   xml:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: xml
       sha256: "67f0aff7be013d107995e9b75bf4e7f2c3ef2dfdb2c8e68024bba0a7fd5756a4"

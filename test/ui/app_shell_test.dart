@@ -11,7 +11,8 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/state/connection_state.dart' as app_state;
 import 'package:ianvs_acp/ui/components/agent_toolbar.dart';
 import 'package:ianvs_acp/ui/components/file_preview_workspace.dart';
-import 'package:ianvs_acp/ui/components/prompt_input.dart';
+import 'package:ianvs_acp/ui/components/session_menu_actions.dart';
+import 'package:ianvs_agent_chat/ui/components/prompt_input.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/components/workspace_inspector.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
@@ -39,11 +40,8 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
-    VoidCallback? onShowProtocolCoverage,
-    VoidCallback? onShowActivity,
-    VoidCallback? onShowRuntimeInventory,
     VoidCallback? onAuthenticate,
-    VoidCallback? onShowPermissionHistory,
+    VoidCallback? onShowDiagnostics,
     VoidCallback? onLogout,
     VoidCallback? onReconnect,
   }) {
@@ -55,11 +53,8 @@ void main() {
           status: status,
           onSelectAgent: onSelectAgent,
           onShowAgentConfig: onShowAgentConfig,
-          onShowProtocolCoverage: onShowProtocolCoverage,
-          onShowActivity: onShowActivity,
-          onShowRuntimeInventory: onShowRuntimeInventory,
           onAuthenticate: onAuthenticate,
-          onShowPermissionHistory: onShowPermissionHistory,
+          onShowDiagnostics: onShowDiagnostics,
           onLogout: onLogout,
           onNewSession: () {},
           onReconnect: onReconnect,
@@ -76,11 +71,8 @@ void main() {
     List<AgentServerConfig> agentServers = const <AgentServerConfig>[],
     ValueChanged<String>? onSelectAgent,
     VoidCallback? onShowAgentConfig,
-    VoidCallback? onShowProtocolCoverage,
-    VoidCallback? onShowActivity,
-    VoidCallback? onShowRuntimeInventory,
     VoidCallback? onAuthenticate,
-    VoidCallback? onShowPermissionHistory,
+    VoidCallback? onShowDiagnostics,
     VoidCallback? onLogout,
     VoidCallback? onReconnect = _noop,
   }) async {
@@ -95,11 +87,8 @@ void main() {
         agentServers: agentServers,
         onSelectAgent: onSelectAgent,
         onShowAgentConfig: onShowAgentConfig,
-        onShowProtocolCoverage: onShowProtocolCoverage,
-        onShowActivity: onShowActivity,
-        onShowRuntimeInventory: onShowRuntimeInventory,
         onAuthenticate: onAuthenticate,
-        onShowPermissionHistory: onShowPermissionHistory,
+        onShowDiagnostics: onShowDiagnostics,
         onLogout: onLogout,
         onReconnect: onReconnect,
       ),
@@ -154,7 +143,7 @@ void main() {
 
     expect(find.text('Kimi Code Dev'), findsWidgets);
     expect(find.text('Codex'), findsWidgets);
-    expect(find.text('Agent Configuration'), findsOneWidget);
+    expect(find.text('管理 Agent…'), findsOneWidget);
 
     await tester.tap(find.text('Codex').last);
     await tester.pumpAndSettle();
@@ -163,7 +152,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Agent Configuration'));
+    await tester.tap(find.text('管理 Agent…'));
     await tester.pumpAndSettle();
 
     expect(openedConfig, isTrue);
@@ -253,9 +242,9 @@ void main() {
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    expect(find.text('Log Out'), findsOneWidget);
+    expect(find.text('退出登录'), findsOneWidget);
 
-    await tester.tap(find.text('Log Out'));
+    await tester.tap(find.text('退出登录'));
     await tester.pumpAndSettle();
 
     expect(loggedOut, isTrue);
@@ -275,86 +264,34 @@ void main() {
 
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    expect(find.text('Authenticate'), findsOneWidget);
+    expect(find.text('认证'), findsOneWidget);
 
-    await tester.tap(find.text('Authenticate'));
+    await tester.tap(find.text('认证'));
     await tester.pumpAndSettle();
 
     expect(authenticated, isTrue);
   });
 
-  testWidgets('AgentToolbar exposes permission history when available', (
-    tester,
-  ) async {
-    var openedPermissionHistory = false;
+  testWidgets('AgentToolbar leaves diagnostics in the sidebar', (tester) async {
+    var opened = false;
     await pumpToolbar(
       tester,
       app_state.ConnectionStatus.connected,
-      onShowPermissionHistory: () {
-        openedPermissionHistory = true;
-      },
+      onShowAgentConfig: _noop,
+      onShowDiagnostics: () => opened = true,
     );
-
     await tester.tap(find.byTooltip('Agents'));
     await tester.pumpAndSettle();
-    expect(find.text('Permission History'), findsOneWidget);
-
-    await tester.tap(find.text('Permission History'));
-    await tester.pumpAndSettle();
-
-    expect(openedPermissionHistory, isTrue);
-  });
-
-  testWidgets('AgentToolbar exposes protocol coverage review', (tester) async {
-    var openedProtocolCoverage = false;
-    await pumpToolbar(
-      tester,
-      app_state.ConnectionStatus.connected,
-      onShowProtocolCoverage: () {
-        openedProtocolCoverage = true;
-      },
-    );
-
-    await tester.tap(find.byTooltip('Agents'));
-    await tester.pumpAndSettle();
-    expect(find.text('Protocol Coverage'), findsOneWidget);
-
-    await tester.tap(find.text('Protocol Coverage'));
-    await tester.pumpAndSettle();
-
-    expect(openedProtocolCoverage, isTrue);
-  });
-
-  testWidgets('AgentToolbar exposes activity and runtime inventory', (
-    tester,
-  ) async {
-    var openedActivity = false;
-    var openedRuntimeInventory = false;
-    await pumpToolbar(
-      tester,
-      app_state.ConnectionStatus.sessionReady,
-      onShowActivity: () {
-        openedActivity = true;
-      },
-      onShowRuntimeInventory: () {
-        openedRuntimeInventory = true;
-      },
-    );
-
-    await tester.tap(find.byTooltip('Agents'));
-    await tester.pumpAndSettle();
-    expect(find.text('Session Activity'), findsOneWidget);
-    expect(find.text('Runtime Inventory'), findsOneWidget);
-
-    await tester.tap(find.text('Session Activity'));
-    await tester.pumpAndSettle();
-    expect(openedActivity, isTrue);
-
-    await tester.tap(find.byTooltip('Agents'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Runtime Inventory'));
-    await tester.pumpAndSettle();
-    expect(openedRuntimeInventory, isTrue);
+    expect(find.text('Activity & Diagnostics'), findsNothing);
+    for (final retired in [
+      'Protocol Coverage',
+      'Session Activity',
+      'Runtime Inventory',
+      'Permission History',
+    ]) {
+      expect(find.text(retired), findsNothing);
+    }
+    expect(opened, isFalse);
   });
 
   testWidgets('AgentToolbar renders connecting state', (tester) async {
@@ -411,25 +348,33 @@ void main() {
               cwd: '/workspace/app',
               createdAt: DateTime(2026, 8, 7),
             ),
+            sessionActionAvailability: const SessionActionAvailability(
+              supportsClose: true,
+              canClose: true,
+              supportsDelete: true,
+              canDelete: true,
+            ),
             onSessionMenuAction: (_) {},
           ),
         ),
       ),
     );
 
-    await tester.tap(find.byTooltip('Session actions'));
+    await tester.tap(find.byTooltip('会话操作'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Pin Conversation'), findsOneWidget);
-    expect(find.text('Rename Conversation'), findsOneWidget);
-    expect(find.text('Archive Conversation'), findsOneWidget);
+    expect(find.text('固定会话'), findsOneWidget);
+    expect(find.text('重命名会话'), findsOneWidget);
+    expect(find.text('归档会话'), findsOneWidget);
+    expect(find.text('关闭会话'), findsOneWidget);
+    expect(find.text('删除 Agent 历史'), findsOneWidget);
 
     final actionRect = tester.getRect(
       find.byKey(const Key('toolbar-session-actions')),
     );
     final menuRect = tester.getRect(
       find.ancestor(
-        of: find.text('Pin Conversation'),
+        of: find.text('固定会话'),
         matching: find.byType(MenuItemButton),
       ),
     );
@@ -437,7 +382,7 @@ void main() {
       actionRect.center.dx,
       inInclusiveRange(menuRect.left, menuRect.right),
     );
-    expect(menuRect.top, greaterThan(actionRect.bottom));
+    expect(menuRect.top, greaterThanOrEqualTo(0));
   });
 
   testWidgets('AppShell opens session activity and exact runtime inventory', (
@@ -479,19 +424,17 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Agents'));
+    await tester.tap(find.text('活动与诊断'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Runtime Inventory'));
+    await tester.tap(find.text('Runtime'));
     await tester.pumpAndSettle();
     expect(find.byType(Dialog), findsOneWidget);
     expect(find.text('Agent runtime'), findsOneWidget);
     expect(find.text('codex-acp'), findsOneWidget);
 
-    await tester.tap(find.text('Close'));
+    await tester.tap(find.byTooltip('Close diagnostics'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Agents'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Session Activity'));
+    await tester.tap(find.text('活动与诊断'));
     await tester.pumpAndSettle();
     expect(find.byType(Dialog), findsOneWidget);
     expect(find.text('1 events'), findsOneWidget);

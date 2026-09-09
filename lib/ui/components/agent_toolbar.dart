@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/connection_state.dart' as app_state;
-import '../theme/app_design_tokens.dart';
-import 'workspace_sidebar.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+import 'session_menu_actions.dart';
 
 class AgentToolbar extends StatelessWidget {
   const AgentToolbar({
@@ -21,14 +21,12 @@ class AgentToolbar extends StatelessWidget {
     this.onSelectAgent,
     this.onShowAgentConfig,
     this.onOpenLlmChat,
-    this.onShowProtocolCoverage,
-    this.onShowActivity,
-    this.onShowRuntimeInventory,
+    this.onShowDiagnostics,
     this.onAuthenticate,
-    this.onShowPermissionHistory,
     this.onLogout,
     this.currentSession,
     this.canForkSession = false,
+    this.sessionActionAvailability = const SessionActionAvailability(),
     this.supportsGitWorktrees = false,
     this.onSessionMenuAction,
     this.terminalPanelAction,
@@ -50,14 +48,12 @@ class AgentToolbar extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onOpenLlmChat;
-  final VoidCallback? onShowProtocolCoverage;
-  final VoidCallback? onShowActivity;
-  final VoidCallback? onShowRuntimeInventory;
+  final VoidCallback? onShowDiagnostics;
   final VoidCallback? onAuthenticate;
-  final VoidCallback? onShowPermissionHistory;
   final VoidCallback? onLogout;
   final AgentSession? currentSession;
   final bool canForkSession;
+  final SessionActionAvailability sessionActionAvailability;
   final bool supportsGitWorktrees;
   final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
   final Widget? terminalPanelAction;
@@ -124,6 +120,7 @@ class AgentToolbar extends StatelessWidget {
                     veryCompact: veryCompact,
                     currentSession: currentSession,
                     canForkSession: canForkSession,
+                    sessionActionAvailability: sessionActionAvailability,
                     supportsGitWorktrees: supportsGitWorktrees,
                     onSessionMenuAction: onSessionMenuAction,
                   ),
@@ -137,11 +134,8 @@ class AgentToolbar extends StatelessWidget {
                   onSelectAgent: onSelectAgent,
                   onShowAgentConfig: onShowAgentConfig,
                   onOpenLlmChat: onOpenLlmChat,
-                  onShowProtocolCoverage: onShowProtocolCoverage,
-                  onShowActivity: onShowActivity,
-                  onShowRuntimeInventory: onShowRuntimeInventory,
+                  onShowDiagnostics: onShowDiagnostics,
                   onAuthenticate: onAuthenticate,
-                  onShowPermissionHistory: onShowPermissionHistory,
                   onLogout: onLogout,
                 ),
                 if (onReconnect != null) ...[
@@ -202,14 +196,10 @@ class _AgentMenuButton extends StatelessWidget {
     required this.onSelectAgent,
     required this.onShowAgentConfig,
     required this.onOpenLlmChat,
-    required this.onShowProtocolCoverage,
-    required this.onShowActivity,
-    required this.onShowRuntimeInventory,
+    required this.onShowDiagnostics,
     required this.onAuthenticate,
-    required this.onShowPermissionHistory,
     required this.onLogout,
   });
-
   final String agentName;
   final List<AgentServerConfig> agentServers;
   final bool compact;
@@ -217,291 +207,79 @@ class _AgentMenuButton extends StatelessWidget {
   final ValueChanged<String>? onSelectAgent;
   final VoidCallback? onShowAgentConfig;
   final VoidCallback? onOpenLlmChat;
-  final VoidCallback? onShowProtocolCoverage;
-  final VoidCallback? onShowActivity;
-  final VoidCallback? onShowRuntimeInventory;
+  final VoidCallback? onShowDiagnostics;
   final VoidCallback? onAuthenticate;
-  final VoidCallback? onShowPermissionHistory;
   final VoidCallback? onLogout;
 
   @override
   Widget build(BuildContext context) {
     final hasMenu =
-        onOpenLlmChat != null ||
         agentServers.isNotEmpty ||
         onShowAgentConfig != null ||
-        onShowProtocolCoverage != null ||
-        onShowActivity != null ||
-        onShowRuntimeInventory != null ||
+        onOpenLlmChat != null ||
         onAuthenticate != null ||
-        onShowPermissionHistory != null ||
         onLogout != null;
-    return PopupMenuButton<_AgentMenuSelection>(
+    PopupMenuItem<String> action(String value, String label, IconData icon) =>
+        PopupMenuItem(
+          value: value,
+          child: Row(
+            children: [
+              Icon(icon, size: 17),
+              const SizedBox(width: 8),
+              Expanded(child: Text(label, overflow: TextOverflow.ellipsis)),
+            ],
+          ),
+        );
+    return PopupMenuButton<String>(
       tooltip: 'Agents',
       enabled: hasMenu,
-      onSelected: (selection) {
-        switch (selection.type) {
-          case _AgentMenuSelectionType.agent:
-            final agentName = selection.agentName;
-            if (agentName != null) onSelectAgent?.call(agentName);
-          case _AgentMenuSelectionType.configure:
+      onSelected: (value) {
+        if (value.startsWith('agent:')) {
+          onSelectAgent?.call(value.substring(6));
+          return;
+        }
+        switch (value) {
+          case 'configure':
             onShowAgentConfig?.call();
-          case _AgentMenuSelectionType.protocolCoverage:
-            onShowProtocolCoverage?.call();
-          case _AgentMenuSelectionType.activity:
-            onShowActivity?.call();
-          case _AgentMenuSelectionType.runtimeInventory:
-            onShowRuntimeInventory?.call();
-          case _AgentMenuSelectionType.authenticate:
+          case 'diagnostics':
+            onShowDiagnostics?.call();
+          case 'authenticate':
             onAuthenticate?.call();
-          case _AgentMenuSelectionType.permissionHistory:
-            onShowPermissionHistory?.call();
-          case _AgentMenuSelectionType.logout:
+          case 'logout':
             onLogout?.call();
+          case 'llm':
+            onOpenLlmChat?.call();
         }
       },
-      itemBuilder: (context) {
-        return [
-          const PopupMenuItem<_AgentMenuSelection>(
-            enabled: false,
-            height: 32,
-            child: Text(
-              'Agents',
-              style: TextStyle(
-                color: AppColors.textTertiary,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0,
-              ),
+      itemBuilder: (_) => [
+        for (final server in agentServers)
+          PopupMenuItem(
+            value: 'agent:${server.name}',
+            enabled:
+                canSwitchAgent &&
+                onSelectAgent != null &&
+                server.name != agentName,
+            child: _AgentMenuItem(
+              server: server,
+              selected: server.name == agentName,
             ),
           ),
-          if (onOpenLlmChat != null)
-            PopupMenuItem<_AgentMenuSelection>(
-              onTap: onOpenLlmChat,
-              child: const Row(
-                children: [
-                  Icon(Icons.chat_bubble_outline_rounded, size: 17),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Open LLM API chat',
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          for (final server in agentServers)
-            PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.agent(server.name),
-              enabled:
-                  canSwitchAgent &&
-                  onSelectAgent != null &&
-                  server.name != agentName,
-              child: _AgentMenuItem(
-                server: server,
-                selected: server.name == agentName,
-              ),
-            ),
-          if (agentServers.isNotEmpty && onShowAgentConfig != null)
-            const PopupMenuDivider(),
-          if (onShowAgentConfig != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.configure(),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.tune_rounded,
-                    size: 17,
-                    color: AppColors.primaryDark,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Agent Configuration',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (onShowProtocolCoverage != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.protocolCoverage(),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.fact_check_outlined,
-                    size: 17,
-                    color: AppColors.primaryDark,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Protocol Coverage',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (onShowActivity != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.activity(),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.timeline_rounded,
-                    size: 17,
-                    color: AppColors.primaryDark,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Session Activity',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (onShowRuntimeInventory != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.runtimeInventory(),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.account_tree_outlined,
-                    size: 17,
-                    color: AppColors.primaryDark,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Runtime Inventory',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (onShowPermissionHistory != null &&
-              (agentServers.isNotEmpty ||
-                  onShowAgentConfig != null ||
-                  onShowProtocolCoverage != null ||
-                  onShowActivity != null ||
-                  onShowRuntimeInventory != null))
-            const PopupMenuDivider(),
-          if (onShowPermissionHistory != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.permissionHistory(),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.manage_history_rounded,
-                    size: 17,
-                    color: AppColors.primaryDark,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Permission History',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (onAuthenticate != null &&
-              (agentServers.isNotEmpty ||
-                  onShowAgentConfig != null ||
-                  onShowProtocolCoverage != null ||
-                  onShowActivity != null ||
-                  onShowRuntimeInventory != null ||
-                  onShowPermissionHistory != null))
-            const PopupMenuDivider(),
-          if (onAuthenticate != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.authenticate(),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.login_rounded,
-                    size: 17,
-                    color: AppColors.primaryDark,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Authenticate',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (onLogout != null &&
-              (agentServers.isNotEmpty ||
-                  onShowAgentConfig != null ||
-                  onShowProtocolCoverage != null ||
-                  onShowActivity != null ||
-                  onShowRuntimeInventory != null ||
-                  onShowPermissionHistory != null ||
-                  onAuthenticate != null))
-            const PopupMenuDivider(),
-          if (onLogout != null)
-            const PopupMenuItem<_AgentMenuSelection>(
-              value: _AgentMenuSelection.logout(),
-              child: Row(
-                children: [
-                  Icon(Icons.logout_rounded, size: 17, color: AppColors.danger),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Log Out',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.danger,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ];
-      },
+        if (agentServers.isNotEmpty) const PopupMenuDivider(),
+        if (onShowAgentConfig != null)
+          action('configure', '管理 Agent…', Icons.tune_rounded),
+        if (onAuthenticate != null)
+          action('authenticate', '认证', Icons.login_rounded),
+        if (onLogout != null) action('logout', '退出登录', Icons.logout_rounded),
+        if (onOpenLlmChat != null) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem<String>(
+            enabled: false,
+            height: 28,
+            child: Text('高级'),
+          ),
+          action('llm', '独立 LLM 对话', Icons.chat_bubble_outline_rounded),
+        ],
+      ],
       child: _ToolbarButtonShell(
         icon: Icons.manage_accounts_outlined,
         label: compact ? null : 'Agents',
@@ -509,53 +287,6 @@ class _AgentMenuButton extends StatelessWidget {
       ),
     );
   }
-}
-
-enum _AgentMenuSelectionType {
-  agent,
-  configure,
-  protocolCoverage,
-  activity,
-  runtimeInventory,
-  authenticate,
-  permissionHistory,
-  logout,
-}
-
-class _AgentMenuSelection {
-  const _AgentMenuSelection.agent(this.agentName)
-    : type = _AgentMenuSelectionType.agent;
-
-  const _AgentMenuSelection.configure()
-    : type = _AgentMenuSelectionType.configure,
-      agentName = null;
-
-  const _AgentMenuSelection.protocolCoverage()
-    : type = _AgentMenuSelectionType.protocolCoverage,
-      agentName = null;
-
-  const _AgentMenuSelection.activity()
-    : type = _AgentMenuSelectionType.activity,
-      agentName = null;
-
-  const _AgentMenuSelection.runtimeInventory()
-    : type = _AgentMenuSelectionType.runtimeInventory,
-      agentName = null;
-
-  const _AgentMenuSelection.authenticate()
-    : type = _AgentMenuSelectionType.authenticate,
-      agentName = null;
-
-  const _AgentMenuSelection.permissionHistory()
-    : type = _AgentMenuSelectionType.permissionHistory,
-      agentName = null;
-
-  const _AgentMenuSelection.logout()
-    : type = _AgentMenuSelectionType.logout,
-      agentName = null;
-
-  final _AgentMenuSelectionType type;
-  final String? agentName;
 }
 
 class _AgentMenuItem extends StatelessWidget {
@@ -670,6 +401,7 @@ class _BrandMark extends StatelessWidget {
     required this.veryCompact,
     required this.currentSession,
     required this.canForkSession,
+    required this.sessionActionAvailability,
     required this.supportsGitWorktrees,
     required this.onSessionMenuAction,
   });
@@ -681,6 +413,7 @@ class _BrandMark extends StatelessWidget {
   final bool veryCompact;
   final AgentSession? currentSession;
   final bool canForkSession;
+  final SessionActionAvailability sessionActionAvailability;
   final bool supportsGitWorktrees;
   final ValueChanged<WorkspaceSessionMenuAction>? onSessionMenuAction;
 
@@ -742,7 +475,13 @@ class _BrandMark extends StatelessWidget {
     return _ToolbarSessionActions(
       label: label,
       session: session,
-      canFork: canForkSession,
+      availability: SessionActionAvailability(
+        canFork: sessionActionAvailability.canFork || canForkSession,
+        supportsClose: sessionActionAvailability.supportsClose,
+        canClose: sessionActionAvailability.canClose,
+        supportsDelete: sessionActionAvailability.supportsDelete,
+        canDelete: sessionActionAvailability.canDelete,
+      ),
       supportsGitWorktrees: supportsGitWorktrees,
       onSelected: onSelected,
     );
@@ -753,14 +492,14 @@ class _ToolbarSessionActions extends StatelessWidget {
   const _ToolbarSessionActions({
     required this.label,
     required this.session,
-    required this.canFork,
+    required this.availability,
     required this.supportsGitWorktrees,
     required this.onSelected,
   });
 
   final Widget label;
   final AgentSession session;
-  final bool canFork;
+  final SessionActionAvailability availability;
   final bool supportsGitWorktrees;
   final ValueChanged<WorkspaceSessionMenuAction> onSelected;
 
@@ -774,104 +513,15 @@ class _ToolbarSessionActions extends StatelessWidget {
           alignmentOffset: const Offset(0, 7),
           consumeOutsideTap: true,
           style: _toolbarMenuStyle(),
-          menuChildren: [
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.togglePinned,
-              session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-              session.pinned ? 'Unpin Conversation' : 'Pin Conversation',
-              onSelected,
-            ),
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.rename,
-              Icons.edit_outlined,
-              'Rename Conversation',
-              onSelected,
-            ),
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.toggleUnread,
-              session.unread
-                  ? Icons.mark_email_read_outlined
-                  : Icons.mark_chat_unread_outlined,
-              session.unread ? 'Mark as Read' : 'Mark as Unread',
-              onSelected,
-            ),
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.archive,
-              Icons.archive_outlined,
-              'Archive Conversation',
-              onSelected,
-            ),
-            const Divider(height: 9),
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.openSideSession,
-              Icons.add_circle_outline_rounded,
-              'Open Side Session',
-              onSelected,
-            ),
-            SubmenuButton(
-              menuStyle: _toolbarMenuStyle(),
-              leadingIcon: const Icon(Icons.copy_all_outlined, size: 17),
-              menuChildren: [
-                _toolbarMenuItem(
-                  WorkspaceSessionMenuAction.copyWorkingDirectory,
-                  Icons.folder_copy_outlined,
-                  'Copy Working Directory',
-                  onSelected,
-                ),
-                _toolbarMenuItem(
-                  WorkspaceSessionMenuAction.copySessionId,
-                  Icons.tag_rounded,
-                  'Copy Session ID',
-                  onSelected,
-                ),
-                _toolbarMenuItem(
-                  WorkspaceSessionMenuAction.copyDeepLink,
-                  Icons.link_rounded,
-                  'Copy Deep Link',
-                  onSelected,
-                ),
-                _toolbarMenuItem(
-                  WorkspaceSessionMenuAction.copyMarkdown,
-                  Icons.description_outlined,
-                  'Copy as Markdown',
-                  onSelected,
-                ),
-              ],
-              child: const Text('Copy'),
-            ),
-            SubmenuButton(
-              menuStyle: _toolbarMenuStyle(),
-              leadingIcon: const Icon(Icons.account_tree_outlined, size: 17),
-              menuChildren: [
-                _toolbarMenuItem(
-                  WorkspaceSessionMenuAction.forkLocally,
-                  Icons.call_split_rounded,
-                  'Continue in New Session',
-                  onSelected,
-                  enabled: canFork,
-                ),
-                if (supportsGitWorktrees)
-                  _toolbarMenuItem(
-                    WorkspaceSessionMenuAction.forkToNewWorktree,
-                    Icons.account_tree_outlined,
-                    'Continue in New Worktree',
-                    onSelected,
-                    enabled: canFork,
-                  ),
-              ],
-              child: const Text('Continue in...'),
-            ),
-            const Divider(height: 9),
-            _toolbarMenuItem(
-              WorkspaceSessionMenuAction.openInNewWindow,
-              Icons.open_in_new_rounded,
-              'Open in New Window',
-              onSelected,
-            ),
-          ],
+          menuChildren: _toolbarSessionMenuItems(
+            session: session,
+            availability: availability,
+            supportsGitWorktrees: supportsGitWorktrees,
+            onSelected: onSelected,
+          ),
           builder: (context, controller, child) {
             return Tooltip(
-              message: 'Session actions',
+              message: '会话操作',
               child: InkWell(
                 key: const Key('toolbar-session-actions'),
                 borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -907,6 +557,37 @@ class _ToolbarSessionActions extends StatelessWidget {
   }
 }
 
+List<Widget> _toolbarSessionMenuItems({
+  required AgentSession session,
+  required SessionActionAvailability availability,
+  required bool supportsGitWorktrees,
+  required ValueChanged<WorkspaceSessionMenuAction> onSelected,
+}) {
+  final actions = visibleWorkspaceSessionMenuActions(
+    availability: availability,
+    supportsGitWorktrees: supportsGitWorktrees,
+  );
+  final items = <Widget>[];
+  SessionMenuActionSection? previousSection;
+  for (final action in actions) {
+    if (previousSection != null && action.section != previousSection) {
+      items.add(const Divider(height: 9));
+    }
+    items.add(
+      _toolbarMenuItem(
+        action,
+        action.iconFor(session),
+        action.labelFor(session),
+        onSelected,
+        enabled: availability.isEnabled(action),
+        destructive: action.isDestructive,
+      ),
+    );
+    previousSection = action.section;
+  }
+  return items;
+}
+
 MenuStyle _toolbarMenuStyle() {
   return MenuStyle(
     backgroundColor: const WidgetStatePropertyAll(AppColors.surface),
@@ -928,8 +609,13 @@ MenuItemButton _toolbarMenuItem(
   String label,
   ValueChanged<WorkspaceSessionMenuAction> onSelected, {
   bool enabled = true,
+  bool destructive = false,
 }) {
-  final color = enabled ? AppColors.textPrimary : AppColors.textTertiary;
+  final color = enabled
+      ? destructive
+            ? AppColors.danger
+            : AppColors.textPrimary
+      : AppColors.textTertiary;
   return MenuItemButton(
     onPressed: enabled ? () => onSelected(value) : null,
     leadingIcon: Icon(icon, size: 17, color: color),

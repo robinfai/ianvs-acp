@@ -8,9 +8,10 @@ import '../../acp/agent_event.dart';
 import '../../acp/agent_session.dart';
 import '../../workspace/workspace.dart';
 import '../../workspace/workspace_sidebar_state_store.dart';
-import 'accessible_text_field.dart';
+import 'package:ianvs_agent_chat/ui/components/accessible_text_field.dart';
+import 'session_menu_actions.dart';
 import 'session_time_label.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class WorkspaceSidebar extends StatefulWidget {
   const WorkspaceSidebar({
@@ -24,6 +25,7 @@ class WorkspaceSidebar extends StatefulWidget {
     this.onResumeSessionInWorkspace,
     this.onSelectSession,
     this.canForkSession,
+    this.sessionActionAvailability,
     this.onSessionMenuAction,
     this.onRevealWorkspace,
     this.onCreateWorkspaceWorktree,
@@ -42,6 +44,8 @@ class WorkspaceSidebar extends StatefulWidget {
   final ValueChanged<WorkspaceRecord>? onResumeSessionInWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
   final bool Function(AgentSession session)? canForkSession;
+  final SessionActionAvailability Function(AgentSession session)?
+  sessionActionAvailability;
   final FutureOr<void> Function(
     AgentSession session,
     WorkspaceSessionMenuAction action,
@@ -186,6 +190,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   onToggleWorkspace: () => _toggleWorkspace(workspace),
                   onSelectSession: widget.onSelectSession,
                   canForkSession: widget.canForkSession,
+                  sessionActionAvailability: widget.sessionActionAvailability,
                   onSessionMenuAction: widget.onSessionMenuAction,
                   onNewSession: _newSessionCallbackFor(workspace, selected),
                   pinned: _isPinned(workspace),
@@ -733,6 +738,7 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.onToggleWorkspace,
     required this.onSelectSession,
     required this.canForkSession,
+    required this.sessionActionAvailability,
     required this.onSessionMenuAction,
     required this.onNewSession,
     required this.pinned,
@@ -760,6 +766,8 @@ class _WorkspaceGroup extends StatelessWidget {
   final VoidCallback? onToggleWorkspace;
   final ValueChanged<AgentSession>? onSelectSession;
   final bool Function(AgentSession session)? canForkSession;
+  final SessionActionAvailability Function(AgentSession session)?
+  sessionActionAvailability;
   final FutureOr<void> Function(
     AgentSession session,
     WorkspaceSessionMenuAction action,
@@ -824,6 +832,7 @@ class _WorkspaceGroup extends StatelessWidget {
                   onCollapseSessions: onCollapseSessions,
                   onSelectSession: onSelectSession,
                   canForkSession: canForkSession,
+                  sessionActionAvailability: sessionActionAvailability,
                   supportsGitWorktrees: supportsGitWorktrees,
                   onSessionMenuAction: onSessionMenuAction,
                 ),
@@ -845,6 +854,7 @@ class _NestedSessionList extends StatelessWidget {
     required this.onCollapseSessions,
     required this.onSelectSession,
     required this.canForkSession,
+    required this.sessionActionAvailability,
     required this.supportsGitWorktrees,
     required this.onSessionMenuAction,
   });
@@ -857,6 +867,8 @@ class _NestedSessionList extends StatelessWidget {
   final VoidCallback onCollapseSessions;
   final ValueChanged<AgentSession>? onSelectSession;
   final bool Function(AgentSession session)? canForkSession;
+  final SessionActionAvailability Function(AgentSession session)?
+  sessionActionAvailability;
   final bool supportsGitWorktrees;
   final FutureOr<void> Function(
     AgentSession session,
@@ -880,6 +892,11 @@ class _NestedSessionList extends StatelessWidget {
         : workspace.sessions;
     for (final session in sessions) {
       final selected = _isCurrentSession(session);
+      final availability =
+          sessionActionAvailability?.call(session) ??
+          SessionActionAvailability(
+            canFork: canForkSession?.call(session) ?? false,
+          );
       widgets.add(
         _SessionTile(
           session: session,
@@ -887,7 +904,7 @@ class _NestedSessionList extends StatelessWidget {
           onPressed: onSelectSession == null || selected
               ? null
               : () => onSelectSession!(session),
-          canFork: canForkSession?.call(session) ?? false,
+          availability: availability,
           supportsGitWorktrees: supportsGitWorktrees,
           onMenuAction: onSessionMenuAction,
         ),
@@ -1353,28 +1370,12 @@ enum _WorkspaceMenuAction {
   remove,
 }
 
-enum WorkspaceSessionMenuAction {
-  togglePinned,
-  rename,
-  archive,
-  toggleUnread,
-  openSideSession,
-  revealInFinder,
-  copyWorkingDirectory,
-  copySessionId,
-  copyDeepLink,
-  copyMarkdown,
-  forkLocally,
-  forkToNewWorktree,
-  openInNewWindow,
-}
-
 class _SessionTile extends StatefulWidget {
   const _SessionTile({
     required this.session,
     required this.selected,
     required this.onPressed,
-    required this.canFork,
+    required this.availability,
     required this.supportsGitWorktrees,
     required this.onMenuAction,
   });
@@ -1382,7 +1383,7 @@ class _SessionTile extends StatefulWidget {
   final AgentSession session;
   final bool selected;
   final VoidCallback? onPressed;
-  final bool canFork;
+  final SessionActionAvailability availability;
   final bool supportsGitWorktrees;
   final FutureOr<void> Function(
     AgentSession session,
@@ -1451,12 +1452,14 @@ class _SessionTileState extends State<_SessionTile> {
           ? null
           : <CustomSemanticsAction, VoidCallback>{
               CustomSemanticsAction(
-                label: session.pinned
-                    ? 'Unpin Conversation'
-                    : 'Pin Conversation',
+                label: WorkspaceSessionMenuAction.togglePinned.labelFor(
+                  session,
+                ),
               ): () =>
                   _runMenuAction(WorkspaceSessionMenuAction.togglePinned),
-              const CustomSemanticsAction(label: 'Archive Conversation'): () =>
+              CustomSemanticsAction(
+                label: WorkspaceSessionMenuAction.archive.labelFor(session),
+              ): () =>
                   _runMenuAction(WorkspaceSessionMenuAction.archive),
             },
       child: Material(
@@ -1532,11 +1535,11 @@ class _SessionTileState extends State<_SessionTile> {
             ),
           ),
         ),
-        if (onMenuAction != null || widget.canFork) ...[
+        if (onMenuAction != null || widget.availability.canFork) ...[
           const SizedBox(width: 4),
           _SessionActionSlot(
             visible: showActions,
-            fallback: !selected && widget.canFork
+            fallback: !selected && widget.availability.canFork
                 ? const Icon(
                     Icons.call_split_rounded,
                     size: 15,
@@ -1663,7 +1666,7 @@ class _SessionTileState extends State<_SessionTile> {
       ),
       items: _sessionMenuItems(
         session: widget.session,
-        canFork: widget.canFork,
+        availability: widget.availability,
         supportsGitWorktrees: widget.supportsGitWorktrees,
       ),
     );
@@ -1712,12 +1715,12 @@ class _SessionInlineActions extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         _SessionInlineActionButton(
-          tooltip: session.pinned ? 'Unpin Conversation' : 'Pin Conversation',
+          tooltip: WorkspaceSessionMenuAction.togglePinned.labelFor(session),
           icon: session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
           onPressed: onTogglePinned,
         ),
         _SessionInlineActionButton(
-          tooltip: 'Archive Conversation',
+          tooltip: WorkspaceSessionMenuAction.archive.labelFor(session),
           icon: Icons.archive_outlined,
           onPressed: onArchive,
         ),
@@ -1946,84 +1949,31 @@ String _singleLineSessionPreview(String value) {
 
 List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
   required AgentSession session,
-  required bool canFork,
+  required SessionActionAvailability availability,
   required bool supportsGitWorktrees,
 }) {
-  return [
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.togglePinned,
-      icon: session.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-      label: session.pinned ? 'Unpin Conversation' : 'Pin Conversation',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.rename,
-      icon: Icons.edit_outlined,
-      label: 'Rename Conversation',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.archive,
-      icon: Icons.archive_outlined,
-      label: 'Archive Conversation',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.toggleUnread,
-      icon: session.unread
-          ? Icons.mark_chat_read_outlined
-          : Icons.mark_chat_unread_outlined,
-      label: session.unread ? 'Mark as Read' : 'Mark as Unread',
-    ),
-    const PopupMenuDivider(height: 8),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.openSideSession,
-      icon: Icons.add_circle_outline_rounded,
-      label: 'Open Side Session',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.revealInFinder,
-      icon: Icons.folder_open_outlined,
-      label: 'Show in Finder',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.copyWorkingDirectory,
-      icon: Icons.content_copy_rounded,
-      label: 'Copy Working Directory',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.copySessionId,
-      icon: Icons.tag_rounded,
-      label: 'Copy Session ID',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.copyDeepLink,
-      icon: Icons.link_rounded,
-      label: 'Copy Deep Link',
-    ),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.copyMarkdown,
-      icon: Icons.description_outlined,
-      label: 'Copy as Markdown',
-    ),
-    const PopupMenuDivider(height: 8),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.forkLocally,
-      icon: Icons.call_split_rounded,
-      label: 'Fork Locally',
-      enabled: canFork,
-    ),
-    if (supportsGitWorktrees)
+  final actions = visibleWorkspaceSessionMenuActions(
+    availability: availability,
+    supportsGitWorktrees: supportsGitWorktrees,
+  );
+  final items = <PopupMenuEntry<WorkspaceSessionMenuAction>>[];
+  SessionMenuActionSection? previousSection;
+  for (final action in actions) {
+    if (previousSection != null && action.section != previousSection) {
+      items.add(const PopupMenuDivider(height: 8));
+    }
+    items.add(
       _sessionMenuItem(
-        value: WorkspaceSessionMenuAction.forkToNewWorktree,
-        icon: Icons.account_tree_outlined,
-        label: 'Fork to New Worktree',
-        enabled: canFork,
+        value: action,
+        icon: action.iconFor(session),
+        label: action.labelFor(session),
+        enabled: availability.isEnabled(action),
+        destructive: action.isDestructive,
       ),
-    const PopupMenuDivider(height: 8),
-    _sessionMenuItem(
-      value: WorkspaceSessionMenuAction.openInNewWindow,
-      icon: Icons.open_in_new_rounded,
-      label: 'Open in New Window',
-    ),
-  ];
+    );
+    previousSection = action.section;
+  }
+  return items;
 }
 
 PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem({
@@ -2031,8 +1981,13 @@ PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem({
   required IconData icon,
   required String label,
   bool enabled = true,
+  bool destructive = false,
 }) {
-  final color = enabled ? AppColors.textPrimary : AppColors.textTertiary;
+  final color = enabled
+      ? destructive
+            ? AppColors.danger
+            : AppColors.textPrimary
+      : AppColors.textTertiary;
   return PopupMenuItem<WorkspaceSessionMenuAction>(
     value: value,
     enabled: enabled,

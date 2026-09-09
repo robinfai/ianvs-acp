@@ -71,14 +71,27 @@ candidate_list=$(mktemp "${TMPDIR:-/tmp}/ianvs-acp-verify-candidates.XXXXXX")
 dependency_list=$(mktemp "${TMPDIR:-/tmp}/ianvs-acp-verify-dependencies.XXXXXX")
 expected_rust_symbols=$(mktemp "${TMPDIR:-/tmp}/ianvs-acp-verify-expected-symbols.XXXXXX")
 actual_rust_symbols=$(mktemp "${TMPDIR:-/tmp}/ianvs-acp-verify-actual-symbols.XXXXXX")
+app_entitlements=$(mktemp "${TMPDIR:-/tmp}/ianvs-acp-verify-entitlements.XXXXXX")
 cleanup() {
   rm -f -- \
     "${candidate_list}" "${dependency_list}" \
-    "${expected_rust_symbols}" "${actual_rust_symbols}"
+    "${expected_rust_symbols}" "${actual_rust_symbols}" "${app_entitlements}"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# file_picker checks this entitlement even for a non-sandboxed host. Verify
+# the signed artifact so native JSON export cannot silently regress at release.
+/usr/bin/codesign --display --entitlements :- "${executable}" \
+  >"${app_entitlements}" 2>/dev/null \
+  || fail 'could not read signed app entitlements'
+export_write=$(/usr/libexec/PlistBuddy \
+  -c 'Print :com.apple.security.files.user-selected.read-write' \
+  "${app_entitlements}" 2>/dev/null) \
+  || fail 'missing user-selected file write entitlement for JSON export'
+[ "${export_write}" = true ] \
+  || fail 'JSON export requires the user-selected file write entitlement'
 
 merman_reference_found=0
 /usr/bin/find "${app}/Contents" -type f -print0 >"${candidate_list}"

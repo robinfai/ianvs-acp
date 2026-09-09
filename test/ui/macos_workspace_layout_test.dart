@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
-import 'package:ianvs_acp/ui/components/accessible_text_field.dart';
+import 'package:ianvs_agent_chat/ui/components/accessible_text_field.dart';
 import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 

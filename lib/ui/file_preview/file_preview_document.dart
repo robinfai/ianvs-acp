@@ -10,7 +10,7 @@ import 'package:mime/mime.dart' as mime;
 import 'package:path/path.dart' as p;
 
 import '../../acp/acp_input_budget.dart';
-import '../../platform/bounded_file_snapshot.dart';
+import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 import '../../platform/secure_file_reader.dart';
 
 typedef FilePreviewProcessRunner =

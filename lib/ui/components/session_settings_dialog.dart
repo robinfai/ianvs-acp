@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../state/chat_controller.dart';
-import '../bounded_metadata_preview.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 const int _inlineChoicePreviewItems = 5;
 
@@ -27,7 +27,7 @@ class SessionSettingsDialog extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         return AlertDialog(
-          title: const Text('Session Settings'),
+          title: const Text('当前会话参数'),
           content: ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.sizeOf(context).height * 0.62,
@@ -35,35 +35,6 @@ class SessionSettingsDialog extends StatelessWidget {
             child: SizedBox(width: 600, child: _buildContent()),
           ),
           actions: [
-            if (controller.currentSession != null &&
-                controller.capabilities?.session.fork == true)
-              TextButton.icon(
-                onPressed: controller.canForkCurrentSession
-                    ? () => unawaited(controller.forkCurrentSession())
-                    : null,
-                icon: const Icon(Icons.call_split_rounded),
-                label: const Text('Fork Session'),
-              ),
-            if (controller.currentSession != null &&
-                controller.capabilities?.session.close == true)
-              TextButton.icon(
-                onPressed: controller.canCloseCurrentSession
-                    ? () => unawaited(_confirmCloseSession(context))
-                    : null,
-                icon: const Icon(Icons.close_rounded),
-                label: const Text('Close Session'),
-                style: TextButton.styleFrom(foregroundColor: AppColors.danger),
-              ),
-            if (controller.currentSession != null &&
-                controller.capabilities?.session.delete == true)
-              TextButton.icon(
-                onPressed: controller.canDeleteCurrentSession
-                    ? () => unawaited(_confirmDeleteSession(context))
-                    : null,
-                icon: const Icon(Icons.delete_outline_rounded),
-                label: const Text('Delete Session'),
-                style: TextButton.styleFrom(foregroundColor: AppColors.danger),
-              ),
             TextButton.icon(
               onPressed:
                   controller.currentSession != null &&
@@ -73,11 +44,11 @@ class SessionSettingsDialog extends StatelessWidget {
                   ? () => unawaited(controller.refreshSessionSettings())
                   : null,
               icon: const Icon(Icons.refresh_rounded),
-              label: const Text('Refresh'),
+              label: const Text('刷新'),
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Close'),
+              child: const Text('完成'),
             ),
           ],
         );
@@ -90,14 +61,15 @@ class SessionSettingsDialog extends StatelessWidget {
     if (session == null) {
       return const _EmptyState(
         icon: Icons.tune_rounded,
-        title: 'No active session',
-        message: 'Create or resume a session to inspect settings.',
+        title: '没有当前会话',
+        message: '新建或恢复会话后可查看参数。',
       );
     }
 
     return _SessionSettingsScroll(
       sessionId: session.shortId,
       cwd: session.cwd,
+      agentName: controller.agentName,
       loading: controller.sessionSettingsLoading,
       settings: controller.sessionSettings,
       enabled:
@@ -119,84 +91,13 @@ class SessionSettingsDialog extends StatelessWidget {
       },
     );
   }
-
-  Future<void> _confirmCloseSession(BuildContext context) async {
-    final session = controller.currentSession;
-    if (session == null) return;
-    final shouldClose = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Close Session?'),
-          content: Text(
-            'Close "${session.displayTitle}" and release agent resources. '
-            'This does not delete persisted conversation history.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              style: FilledButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: AppColors.danger,
-              ),
-              child: const Text('Close Session'),
-            ),
-          ],
-        );
-      },
-    );
-    if (shouldClose != true) return;
-    final closingSessionId = session.id;
-    await controller.closeCurrentSession();
-    if (controller.currentSession?.id == closingSessionId) return;
-    if (context.mounted) {
-      Navigator.of(context).pop();
-    }
-  }
-
-  Future<void> _confirmDeleteSession(BuildContext context) async {
-    final session = controller.currentSession;
-    if (session == null) return;
-    final shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Session?'),
-        content: Text(
-          'Permanently delete "${session.displayTitle}" from the agent\'s '
-          'session history. This cannot be undone.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: AppColors.danger,
-            ),
-            child: const Text('Delete Session'),
-          ),
-        ],
-      ),
-    );
-    if (shouldDelete != true) return;
-    final deletingSessionId = session.id;
-    await controller.deleteCurrentSession();
-    if (controller.currentSession?.id == deletingSessionId) return;
-    if (context.mounted) Navigator.of(context).pop();
-  }
 }
 
 class _SessionSettingsScroll extends StatefulWidget {
   const _SessionSettingsScroll({
     required this.sessionId,
     required this.cwd,
+    required this.agentName,
     required this.loading,
     required this.settings,
     required this.enabled,
@@ -209,6 +110,7 @@ class _SessionSettingsScroll extends StatefulWidget {
 
   final String sessionId;
   final String cwd;
+  final String agentName;
   final bool loading;
   final AcpSessionSettings settings;
   final bool enabled;
@@ -246,15 +148,17 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
     final hasConfiguration = modelOption != null || reasoningOption != null;
     final hasModes = settings.shouldUseModeFallback;
     final optionIndexes = _projection.nonModelOptionIndexes;
-    final configBodyCount = optionIndexes.isEmpty ? 1 : optionIndexes.length;
+    final hasOtherOptions = optionIndexes.isNotEmpty;
+    final hasCapabilitySummary =
+        hasConfiguration || hasModes || settings.hasConfigOptions;
     final hasIncompleteNotice =
         settings.truncated || settings.omissions.isNotEmpty;
     final itemCount =
         1 +
         (hasConfiguration ? 1 : 0) +
         (hasModes ? 1 : 0) +
-        1 +
-        configBodyCount +
+        (hasOtherOptions ? 1 + optionIndexes.length : 0) +
+        (hasCapabilitySummary ? 1 : 0) +
         (hasIncompleteNotice ? 1 : 0);
 
     return CustomScrollView(
@@ -267,6 +171,7 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
               return _SessionHeader(
                 sessionId: widget.sessionId,
                 cwd: widget.cwd,
+                agentName: widget.agentName,
                 loading: widget.loading,
               );
             }
@@ -277,7 +182,6 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
                   child: _SessionConfigurationSection(
                     modelOption: modelOption,
                     reasoningEffortOption: reasoningOption,
-                    configOptionsActive: settings.hasConfigOptions,
                     enabled: widget.enabled,
                     inputBudget: widget.inputBudget,
                     onModelChanged: widget.onModelChanged,
@@ -300,20 +204,15 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
               }
               cursor -= 1;
             }
-            if (cursor == 0) {
-              return const _SettingsSliverItem(child: _ConfigSectionHeading());
-            }
-            cursor -= 1;
-            if (cursor < configBodyCount) {
-              if (optionIndexes.isEmpty) {
+            if (hasOtherOptions) {
+              if (cursor == 0) {
                 return const _SettingsSliverItem(
-                  compact: true,
-                  child: _EmptyState.inline(
-                    icon: Icons.rule_folder_outlined,
-                    message: 'No config options exposed by this session.',
-                  ),
+                  child: _ConfigSectionHeading(),
                 );
               }
+              cursor -= 1;
+            }
+            if (cursor < optionIndexes.length) {
               final option = settings.configOptions[optionIndexes[cursor]];
               return _SettingsSliverItem(
                 compact: true,
@@ -325,6 +224,22 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
                       widget.onConfigChanged(option.id, value),
                 ),
               );
+            }
+            cursor -= optionIndexes.length;
+            if (hasCapabilitySummary) {
+              if (cursor == 0) {
+                return _SettingsSliverItem(
+                  compact: true,
+                  child: _CapabilitySummary(
+                    hasModel: modelOption != null,
+                    hasReasoningEffort: reasoningOption != null,
+                    hasModes: hasModes,
+                    configOptionsActive: settings.hasConfigOptions,
+                    reasoningEffortConfigId: reasoningOption?.id,
+                  ),
+                );
+              }
+              cursor -= 1;
             }
             return _SettingsSliverItem(
               compact: true,
@@ -406,7 +321,7 @@ class _ConfigSectionHeading extends StatelessWidget {
           Icon(Icons.tune_rounded, size: 17, color: AppColors.primaryDark),
           SizedBox(width: 7),
           Text(
-            'Config Options',
+            '其他 Agent 参数',
             style: TextStyle(
               color: AppColors.textPrimary,
               fontWeight: FontWeight.w600,
@@ -423,11 +338,13 @@ class _SessionHeader extends StatelessWidget {
   const _SessionHeader({
     required this.sessionId,
     required this.cwd,
+    required this.agentName,
     required this.loading,
   });
 
   final String sessionId;
   final String cwd;
+  final String agentName;
   final bool loading;
 
   @override
@@ -461,7 +378,7 @@ class _SessionHeader extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Session $sessionId',
+                  '当前会话 · 选择后即时应用',
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
@@ -471,7 +388,7 @@ class _SessionHeader extends StatelessWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  cwd,
+                  '$agentName · $sessionId · $cwd',
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textSecondary,
@@ -501,7 +418,6 @@ class _SessionConfigurationSection extends StatelessWidget {
   const _SessionConfigurationSection({
     required this.modelOption,
     required this.reasoningEffortOption,
-    required this.configOptionsActive,
     required this.enabled,
     required this.inputBudget,
     required this.onModelChanged,
@@ -510,7 +426,6 @@ class _SessionConfigurationSection extends StatelessWidget {
 
   final AcpConfigOption? modelOption;
   final AcpConfigOption? reasoningEffortOption;
-  final bool configOptionsActive;
   final bool enabled;
   final AcpInputBudget inputBudget;
   final ValueChanged<String> onModelChanged;
@@ -522,7 +437,7 @@ class _SessionConfigurationSection extends StatelessWidget {
     final reasoningEffortOption = this.reasoningEffortOption;
     return _Panel(
       icon: Icons.tune_rounded,
-      title: 'Session Configuration',
+      title: '模型与推理',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -544,13 +459,6 @@ class _SessionConfigurationSection extends StatelessWidget {
               onChanged: onReasoningEffortChanged,
             ),
           ],
-          const SizedBox(height: 10),
-          _CapabilitySummary(
-            hasModel: modelOption != null,
-            hasReasoningEffort: reasoningEffortOption != null,
-            configOptionsActive: configOptionsActive,
-            reasoningEffortConfigId: reasoningEffortOption?.id,
-          ),
         ],
       ),
     );
@@ -574,7 +482,7 @@ class _ModelDropdown extends StatelessWidget {
   Widget build(BuildContext context) {
     if (option.options.length > _inlineChoicePreviewItems) {
       return _LargeChoiceControl(
-        label: 'Active model',
+        label: '模型',
         sourceIdentity: option.options,
         currentValue: option.currentValue,
         enabled: enabled,
@@ -594,7 +502,7 @@ class _ModelDropdown extends StatelessWidget {
     return DropdownButtonFormField<String>(
       isExpanded: true,
       initialValue: selectedValue,
-      decoration: _inputDecoration('Active model'),
+      decoration: _inputDecoration('模型'),
       items: option.options
           .map(
             (choice) => DropdownMenuItem<String>(
@@ -632,7 +540,7 @@ class _ReasoningEffortControl extends StatelessWidget {
   Widget build(BuildContext context) {
     if (option.options.length > _inlineChoicePreviewItems) {
       return _LargeChoiceControl(
-        label: 'Reasoning effort',
+        label: '推理强度',
         sourceIdentity: option.options,
         currentValue: option.currentValue,
         enabled: enabled,
@@ -648,7 +556,7 @@ class _ReasoningEffortControl extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'Reasoning effort',
+          '推理强度',
           style: TextStyle(
             color: AppColors.textPrimary,
             fontSize: 13,
@@ -697,18 +605,21 @@ class _CapabilitySummary extends StatelessWidget {
   const _CapabilitySummary({
     required this.hasModel,
     required this.hasReasoningEffort,
+    required this.hasModes,
     required this.configOptionsActive,
     required this.reasoningEffortConfigId,
   });
 
   final bool hasModel;
   final bool hasReasoningEffort;
+  final bool hasModes;
   final bool configOptionsActive;
   final String? reasoningEffortConfigId;
 
   @override
   Widget build(BuildContext context) {
     return Container(
+      key: const ValueKey('session-capability-summary'),
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
@@ -716,16 +627,31 @@ class _CapabilitySummary extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.sm),
         border: Border.all(color: AppColors.borderSoft),
       ),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 6,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (hasModel) const _TinyPill('Model switching supported'),
-          if (hasReasoningEffort) const _TinyPill('Reasoning effort supported'),
-          if (reasoningEffortConfigId != null &&
-              reasoningEffortConfigId!.isNotEmpty)
-            _TinyPill('ACP config option: $reasoningEffortConfigId'),
-          if (configOptionsActive) const _TinyPill('Config options active'),
+          const Text(
+            'Agent 协议能力',
+            style: TextStyle(
+              color: AppColors.textTertiary,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 7),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              if (hasModel) const _TinyPill('模型切换'),
+              if (hasReasoningEffort) const _TinyPill('推理强度'),
+              if (hasModes) const _TinyPill('会话模式'),
+              if (reasoningEffortConfigId != null &&
+                  reasoningEffortConfigId!.isNotEmpty)
+                _TinyPill('ACP 参数：$reasoningEffortConfigId'),
+              if (configOptionsActive) const _TinyPill('动态参数'),
+            ],
+          ),
         ],
       ),
     );
@@ -755,17 +681,17 @@ class _ModeSection extends StatelessWidget {
 
     return _Panel(
       icon: Icons.swap_horiz_rounded,
-      title: 'Mode',
+      title: '模式',
       child: modes.isEmpty
           ? _EmptyState.inline(
               icon: Icons.info_outline_rounded,
               message: currentModeId == null || currentModeId.isEmpty
-                  ? 'No modes exposed by this session.'
-                  : 'Current mode is "$currentModeId", but no mode list was exposed.',
+                  ? '当前会话没有提供模式选项。'
+                  : '当前模式为“$currentModeId”，但 Agent 没有提供可选列表。',
             )
           : modes.length > _inlineChoicePreviewItems
           ? _LargeChoiceControl(
-              label: 'Current mode',
+              label: '当前模式',
               sourceIdentity: modes,
               currentValue: currentModeId ?? '',
               enabled: enabled,
@@ -779,7 +705,7 @@ class _ModeSection extends StatelessWidget {
           : DropdownButtonFormField<String>(
               isExpanded: true,
               initialValue: selectedValue,
-              decoration: _inputDecoration('Current mode'),
+              decoration: _inputDecoration('当前模式'),
               items: modes
                   .map(
                     (mode) => DropdownMenuItem<String>(
@@ -890,7 +816,7 @@ class _ConfigOptionTile extends StatelessWidget {
                 ? _ReadOnlyValue(value: option.currentValue)
                 : option.options.length > _inlineChoicePreviewItems
                 ? _LargeChoiceControl(
-                    label: 'Value',
+                    label: '值',
                     sourceIdentity: option.options,
                     currentValue: option.currentValue,
                     enabled: enabled,
@@ -904,7 +830,7 @@ class _ConfigOptionTile extends StatelessWidget {
                 : DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue: selectedValue,
-                    decoration: _inputDecoration('Value'),
+                    decoration: _inputDecoration('值'),
                     items: option.options
                         .map(
                           (choice) => DropdownMenuItem<String>(
@@ -1169,14 +1095,14 @@ class _SearchableChoiceDialogState extends State<_SearchableChoiceDialog> {
               controller: _searchController,
               autofocus: true,
               onChanged: _filter,
-              decoration: _inputDecoration('Search choices'),
+              decoration: _inputDecoration('搜索选项'),
             ),
             const SizedBox(height: 8),
             Expanded(
               child: visibleCount == 0
                   ? const _EmptyState.inline(
                       icon: Icons.search_off_rounded,
-                      message: 'No matching choices.',
+                      message: '没有匹配的选项。',
                     )
                   : ListView.builder(
                       key: const ValueKey('settings-choice-list'),
@@ -1202,7 +1128,7 @@ class _SearchableChoiceDialogState extends State<_SearchableChoiceDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
+          child: const Text('关闭'),
         ),
       ],
     );
@@ -1262,7 +1188,7 @@ class _ChoiceListTile extends StatelessWidget {
                 ),
                 if (preview.omission != null)
                   Text(
-                    'Details omitted · ${preview.omission!.resource}',
+                    '部分详情已省略 · ${preview.omission!.resource}',
                     style: const TextStyle(
                       color: AppColors.warning,
                       fontSize: 11,
@@ -1300,7 +1226,7 @@ class _SettingsIncompleteNotice extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Settings incomplete',
+            '参数信息不完整',
             style: TextStyle(
               color: AppColors.warning,
               fontWeight: FontWeight.w600,
@@ -1308,12 +1234,12 @@ class _SettingsIncompleteNotice extends StatelessWidget {
           ),
           if (truncated)
             const Text(
-              'Some choices or options were omitted.',
+              '部分选项未加载。',
               style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
             ),
           for (final omission in omissions)
             Text(
-              'Details omitted · ${omission.resource}',
+              '部分详情已省略 · ${omission.resource}',
               style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 12,
@@ -1384,7 +1310,7 @@ class _ReadOnlyValue extends StatelessWidget {
         border: Border.all(color: AppColors.border),
       ),
       child: Text(
-        value.isEmpty ? 'Unset' : value,
+        value.isEmpty ? '未设置' : value,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(
           color: AppColors.textSecondary,

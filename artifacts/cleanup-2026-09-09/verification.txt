@@ -1,0 +1,60 @@
+Command: make verify
+Date: 2026-09-09
+Exit: 0
+
+[app] format-check
+Formatted 139 files (0 changed) in 1.02 seconds.
+[chat] format-check
+Formatted 66 files (0 changed) in 0.32 seconds.
+[example] format-check
+Formatted 2 files (0 changed) in 0.01 seconds.
+[app] analyze
+No issues found! (ran in 4.7s)
+[chat] analyze
+No issues found! (ran in 1.0s)
+[example] analyze
+No issues found! (ran in 0.9s)
+release script contract tests passed
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+00:00 +46: All tests passed!
+[app] test
+00:21 +1368: All tests passed!
+[chat] test
+00:07 +283 ~2: All tests passed!
+[example] test
+00:01 +2: All tests passed!
+
+Native macOS host tests:
+Test case 'RunnerTests.testAccessibleTextFieldCoordinatorPreservesSemanticRootLifecycle()' passed on 'My Mac - ACP Client (31500)' (0.002 seconds)
+Test case 'RunnerTests.testAccessibleTextFieldProxyExposesStableNativeAttributes()' passed on 'My Mac - ACP Client (31500)' (0.001 seconds)
+Test case 'RunnerTests.testAccountSeparatesNamespaceAndKeyComponents()' passed on 'My Mac - ACP Client (31500)' (0.009 seconds)
+Test case 'RunnerTests.testBundleIdentifierIsProductionIdentifier()' passed on 'My Mac - ACP Client (31500)' (0.001 seconds)
+Test case 'RunnerTests.testExplicitReadMayAllowKeychainInteraction()' passed on 'My Mac - ACP Client (31500)' (0.001 seconds)
+Test case 'RunnerTests.testFallsBackToStandardKeychainWhenDataProtectionEntitlementIsMissing()' passed on 'My Mac - ACP Client (31500)' (0.002 seconds)
+Test case 'RunnerTests.testMainWindowUsesUnifiedFullSizeChrome()' passed on 'My Mac - ACP Client (31500)' (0.009 seconds)
+Test case 'RunnerTests.testNonInteractiveReadReportsRequiredKeychainInteraction()' passed on 'My Mac - ACP Client (31500)' (0.001 seconds)
+Test case 'RunnerTests.testPendingDeepLinkBufferBoundsCountAndLength()' passed on 'My Mac - ACP Client (31500)' (0.000 seconds)
+Test case 'RunnerTests.testPutReadUpdateAndDeleteGenericPassword()' passed on 'My Mac - ACP Client (31500)' (0.004 seconds)
+Test case 'RunnerTests.testPutRetriesUpdateWhenConcurrentAddWins()' passed on 'My Mac - ACP Client (31500)' (0.001 seconds)
+Test case 'RunnerTests.testQueriesUseDataProtectionAndNonSynchronizingAccessibility()' passed on 'My Mac - ACP Client (31500)' (0.001 seconds)
+Test case 'RunnerTests.testRegisteredDeepLinkScheme()' passed on 'My Mac - ACP Client (31500)' (0.000 seconds)
+Test case 'RunnerTests.testStableReferenceUsesSha256Account()' passed on 'My Mac - ACP Client (31500)' (0.001 seconds)
+Test case 'RunnerTests.testSystemKeychainCrudWithAdHocFallback()' passed on 'My Mac - ACP Client (31500)' (0.049 seconds)
+Test case 'RunnerTests.testUnknownKeychainMethodDoesNotRequireArguments()' passed on 'My Mac - ACP Client (31500)' (0.000 seconds)
+
+Build and artifact checks:
+✓ Built build/macos/Build/Products/Release/ACP Client.app (111.3MB)
+✓ Built build/macos/Build/Products/Debug/agent_chat_demo.app
+macOS signing closure verification passed
+macOS bundle verification passed
+Native permission export: passed; parsed schema ianvs-acp.permission-history.v1, request acceptance-read, status denied, entries 1.
+Public package source diff: empty. Three copied golden baselines: byte-identical.

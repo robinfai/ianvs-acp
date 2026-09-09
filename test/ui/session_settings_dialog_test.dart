@@ -177,7 +177,7 @@ void main() {
 
       expect(options.itemReads, lessThan(128));
       await _jumpSettingsToEnd(tester);
-      expect(find.text('Settings incomplete'), findsOneWidget);
+      expect(find.text('参数信息不完整'), findsOneWidget);
     },
   );
 
@@ -504,7 +504,7 @@ void main() {
     );
 
     await _jumpSettingsToEnd(tester);
-    expect(find.text('Settings incomplete'), findsOneWidget);
+    expect(find.text('参数信息不完整'), findsOneWidget);
     expect(find.textContaining('session settings'), findsOneWidget);
   });
 
@@ -525,12 +525,12 @@ void main() {
       ),
     );
 
-    expect(find.text('Session Settings'), findsOneWidget);
+    expect(find.text('当前会话参数'), findsOneWidget);
     expect(find.text('Model'), findsNothing);
     expect(find.text('No model option exposed by this session.'), findsNothing);
     expect(find.text('Mode'), findsNothing);
     expect(find.text('Ask'), findsNothing);
-    expect(find.text('Config Options'), findsOneWidget);
+    expect(find.text('其他 Agent 参数'), findsOneWidget);
     expect(find.text('Approval mode'), findsOneWidget);
     expect(find.text('Suggest first'), findsOneWidget);
   });
@@ -552,13 +552,14 @@ void main() {
         ),
       );
 
-      expect(find.text('Mode'), findsOneWidget);
+      expect(find.text('模式'), findsOneWidget);
       expect(find.text('Ask'), findsOneWidget);
-      expect(find.text('Config Options'), findsOneWidget);
+      expect(find.text('其他 Agent 参数'), findsNothing);
       expect(
         find.text('No config options exposed by this session.'),
-        findsOneWidget,
+        findsNothing,
       );
+      expect(find.text('Agent 协议能力'), findsOneWidget);
     },
   );
 
@@ -577,8 +578,8 @@ void main() {
       ),
     );
 
-    expect(find.text('Session Configuration'), findsOneWidget);
-    expect(find.text('Active model'), findsOneWidget);
+    expect(find.text('模型与推理'), findsOneWidget);
+    expect(find.text('模型'), findsOneWidget);
     expect(find.text('GPT-5'), findsOneWidget);
     await tester.tap(find.byType(DropdownButtonFormField<String>).first);
     await tester.pumpAndSettle();
@@ -607,10 +608,10 @@ void main() {
       ),
     );
 
-    expect(find.text('Session Configuration'), findsOneWidget);
-    expect(find.text('Reasoning effort'), findsOneWidget);
+    expect(find.text('模型与推理'), findsOneWidget);
+    expect(find.text('推理强度'), findsWidgets);
     expect(find.text('High'), findsOneWidget);
-    expect(find.text('ACP config option: reasoning_effort'), findsOneWidget);
+    expect(find.text('ACP 参数：reasoning_effort'), findsOneWidget);
     await tester.tap(find.text('Medium'));
     await tester.pumpAndSettle();
 
@@ -673,44 +674,14 @@ void main() {
       ),
     );
 
-    expect(find.text('No active session'), findsOneWidget);
-    expect(
-      find.text('Create or resume a session to inspect settings.'),
-      findsOneWidget,
-    );
-  });
-
-  testWidgets('SessionSettingsDialog confirms and closes active session', (
-    tester,
-  ) async {
-    final fake = FakeAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
-
-    await controller.newSession();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
-      ),
-    );
-
-    await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Close Session?'), findsOneWidget);
-
-    await tester.tap(find.widgetWithText(FilledButton, 'Close Session'));
-    await tester.pumpAndSettle();
-
-    expect(fake.lastClosedSessionId, 'fake-session-1');
-    expect(controller.currentSession, isNull);
+    expect(find.text('没有当前会话'), findsOneWidget);
+    expect(find.text('新建或恢复会话后可查看参数。'), findsOneWidget);
   });
 
   testWidgets(
-    'SessionSettingsDialog close failure clears local session and closes dialog',
+    'SessionSettingsDialog presents immediate session parameters only',
     (tester) async {
-      final fake = FakeAgentClient(closeError: Exception('close failed'));
+      final fake = FakeAgentClient(supportsDelete: true);
       final controller = ChatController(client: fake, cwd: '/workspace');
       addTearDown(controller.dispose);
 
@@ -722,41 +693,19 @@ void main() {
         ),
       );
 
-      await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Close Session'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Session Settings'), findsNothing);
-      expect(controller.currentSession, isNull);
-      expect(controller.lastError, contains('close failed'));
+      expect(find.text('当前会话参数'), findsOneWidget);
+      expect(find.text('当前会话 · 选择后即时应用'), findsOneWidget);
+      expect(
+        find.textContaining('Codex · fake-ses · /workspace'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(TextButton, '刷新'), findsOneWidget);
+      expect(find.widgetWithText(TextButton, '完成'), findsOneWidget);
+      expect(find.text('Fork Session'), findsNothing);
+      expect(find.text('Close Session'), findsNothing);
+      expect(find.text('Delete Session'), findsNothing);
     },
   );
-
-  testWidgets('SessionSettingsDialog confirms and deletes active session', (
-    tester,
-  ) async {
-    final fake = FakeAgentClient(supportsDelete: true);
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
-
-    await controller.newSession();
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
-      ),
-    );
-
-    await tester.tap(find.widgetWithText(TextButton, 'Delete Session'));
-    await tester.pumpAndSettle();
-    expect(find.text('Delete Session?'), findsOneWidget);
-
-    await tester.tap(find.widgetWithText(FilledButton, 'Delete Session'));
-    await tester.pumpAndSettle();
-
-    expect(fake.lastDeletedSessionId, 'fake-session-1');
-    expect(controller.currentSession, isNull);
-  });
 
   testWidgets('SessionSettingsDialog disables settings during operations', (
     tester,
@@ -773,7 +722,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.widgetWithText(TextButton, 'Fork Session'));
+    final forkFuture = controller.forkCurrentSession();
     await fake.forkStarted.future;
     await tester.pump();
 
@@ -784,35 +733,13 @@ void main() {
     expect(dropdowns, isNotEmpty);
     expect(dropdowns.every((dropdown) => dropdown.onChanged == null), isTrue);
     final refreshButton = tester.widget<TextButton>(
-      find.widgetWithText(TextButton, 'Refresh'),
+      find.widgetWithText(TextButton, '刷新'),
     );
     expect(refreshButton.onPressed, isNull);
 
     fake.allowFork.complete();
+    await forkFuture;
     await tester.pumpAndSettle();
-  });
-
-  testWidgets('SessionSettingsDialog forks active session when supported', (
-    tester,
-  ) async {
-    final fake = FakeAgentClient();
-    final controller = ChatController(client: fake, cwd: '/workspace');
-    addTearDown(controller.dispose);
-
-    await controller.newSession();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: SessionSettingsDialog(controller: controller)),
-      ),
-    );
-
-    await tester.tap(find.widgetWithText(TextButton, 'Fork Session'));
-    await tester.pumpAndSettle();
-
-    expect(fake.lastForkedSessionId, 'fake-session-1');
-    expect(controller.currentSession?.id, 'fake-fork-2');
-    expect(find.text('Session fake-for'), findsOneWidget);
   });
 }
 

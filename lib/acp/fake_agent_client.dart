@@ -8,7 +8,7 @@ import 'acp_session_catalog.dart';
 import 'acp_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
-import 'prompt_attachment.dart';
+import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 
 class FakeAgentClient implements AcpAgentClient {
   FakeAgentClient({

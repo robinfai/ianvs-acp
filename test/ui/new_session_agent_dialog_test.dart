@@ -23,6 +23,9 @@ void main() {
                     builder: (context) => const NewSessionAgentDialog(
                       currentAgentName: 'Kimi Code Dev',
                       initialCwd: '/workspace',
+                      baseConfig: AcpClientConfig(
+                        defaultAgentServerName: 'Codex',
+                      ),
                       agentServers: [
                         AgentServerConfig(
                           name: 'Kimi Code Dev',
@@ -60,6 +63,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('New Session'), findsOneWidget);
+    expect(find.textContaining('apply to this new session'), findsOneWidget);
+    expect(find.text('Agent for this session'), findsOneWidget);
+    expect(find.text('Current Agent'), findsOneWidget);
+    expect(find.text('Startup default'), findsOneWidget);
+    expect(find.text('Session working directory'), findsOneWidget);
     expect(find.text('Kimi Code Dev'), findsOneWidget);
     expect(find.text('Codex'), findsOneWidget);
     expect(find.text('/usr/local/bin/kimi'), findsOneWidget);
@@ -80,6 +88,8 @@ void main() {
     );
     expect(find.byTooltip('/usr/local/bin/kimi'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('Codex'));
+    await tester.pump();
     await tester.tap(find.text('Codex'));
     await tester.pump();
     await tester.tap(find.widgetWithText(FilledButton, 'Start'));
@@ -130,6 +140,17 @@ void main() {
                       ),
                     ],
                     defaultSessionTemplateId: 'review',
+                    baseConfig: AcpClientConfig(
+                      additionalDirectories: ['/workspace/shared'],
+                      mcpServers: [
+                        McpServerConfig(
+                          raw: {
+                            'name': 'global-tools',
+                            'command': '/usr/local/bin/global-tools',
+                          },
+                        ),
+                      ],
+                    ),
                     sessionTemplates: [
                       SessionTemplateConfig(
                         id: 'fast',
@@ -141,7 +162,12 @@ void main() {
                         name: 'Deep review',
                         version: 2,
                         agentServerName: 'Codex',
+                        model: 'review-model',
+                        mode: 'plan',
                         reasoningEffort: 'high',
+                        mcpServerNames: [],
+                        additionalDirectories: ['/workspace/review-material'],
+                        permissions: AcpPermissionProviderConfig(),
                       ),
                     ],
                   ),
@@ -161,6 +187,28 @@ void main() {
     expect(find.text('Fast coding'), findsOneWidget);
     expect(find.text('Deep review'), findsOneWidget);
     expect(find.text('Custom'), findsOneWidget);
+    expect(find.text('Template summary'), findsOneWidget);
+    expect(find.text('Codex (selected by template)'), findsOneWidget);
+    expect(find.text('None'), findsOneWidget);
+    expect(
+      find.text(
+        'App: /workspace/shared · Template adds: /workspace/review-material',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Template override · no trust rules or reviewer'),
+      findsOneWidget,
+    );
+    expect(find.text('Inherit app settings · disabled'), findsOneWidget);
+    expect(
+      find.text('model review-model · mode plan · reasoning high'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('only when the selected Agent exposes'),
+      findsOneWidget,
+    );
     final selectedTemplate = find.bySemanticsLabel(
       'Deep review, template version 2',
     );

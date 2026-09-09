@@ -32,7 +32,7 @@ export HOME="${TEST_HOME}"
 export XDG_CONFIG_HOME="${TEST_HOME}/.config"
 export FLUTTER_SUPPRESS_ANALYTICS=true
 
-flutter test --no-pub "$@" &
+"${FLUTTER:-flutter}" test --no-pub "$@" &
 child_pid=$!
 set +e
 wait "${child_pid}"

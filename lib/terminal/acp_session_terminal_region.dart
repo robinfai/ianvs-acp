@@ -6,7 +6,7 @@ import 'package:ianvs_terminal_core/ianvs_terminal_core.dart';
 import 'package:path/path.dart' as path;
 
 import '../acp/agent_session.dart';
-import '../ui/theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 typedef AcpTerminalRuntimeFactory = TerminalRuntimeController Function();
 

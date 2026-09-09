@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../config/acp_client_config.dart';
-import '../theme/app_design_tokens.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class AgentDiscoveryDialog extends StatefulWidget {
   const AgentDiscoveryDialog({super.key, required this.agentServers});

@@ -1,0 +1,22 @@
+Settings workspace redesign — 2026-09-09
+Selected visual: workspace concept (option 3)
+
+./tool/flutter_workspace.sh test all --reporter expanded
+PASS app: 1383
+PASS chat: 283; 2 existing skipped tests
+PASS example: 2
+Full output: workspace-tests.log
+
+Direct Dart SDK: /Users/robinfai/development/flutter/bin/cache/dart-sdk/bin/dart
+analyze .: No issues found.
+format --output=none --set-exit-if-changed lib test: 146 files, 0 changed.
+git diff --check: PASS
+
+capture_after_test.dart: PASS, 15 real Flutter state captures
+comparison_test.dart: PASS, combined full-view and focused comparison boards
+macOS Debug fixture: BUILD PASS, START PASS, hot reload/restart PASS
+Native CUA: settings navigation, window zoom, edit/category retention,
+discard/continue, save/reload, return, conditional reviewer, new-session scope inspected.
+Keyboard/semantics verified by settings_keyboard_accessibility_test.dart.
+No live Agent, real credential writes, Rust/FFI re-run or Release re-run claimed.
+Verification completed before the commit and push step.

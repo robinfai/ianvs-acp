@@ -8,7 +8,7 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/acp_config_store.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/config/secret_store.dart';
-import 'package:ianvs_acp/platform/bounded_file_snapshot.dart';
+import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
 
 void main() {
