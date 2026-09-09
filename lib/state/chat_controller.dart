@@ -2791,6 +2791,13 @@ class ChatController extends ChangeNotifier {
   bool get promptAppearsStalled => _promptAppearsStalled;
   bool sessionSettingsLoading = false;
   bool isSessionOperationRunning = false;
+  NewSessionStage? newSessionStage;
+
+  void _setNewSessionStage(NewSessionStage? stage) {
+    newSessionStage = stage;
+    if (!_isDisposed) _notifyListeners();
+  }
+
   Completer<void>? _sessionOperationIdleCompleter;
   bool isSessionReplayLoading = false;
   bool _cachedSessionTranscriptVisible = false;
@@ -3057,6 +3064,7 @@ class ChatController extends ChangeNotifier {
       try {
         if (status == ConnectionStatus.disconnected ||
             status == ConnectionStatus.error) {
+          _setNewSessionStage(NewSessionStage.connecting);
           await _connectWithStatus(ConnectionStatus.connecting);
           if (!_isCurrentSessionOperationGeneration(operationGeneration)) {
             return;
@@ -3064,6 +3072,7 @@ class ChatController extends ChangeNotifier {
           if (status == ConnectionStatus.error) return;
         }
         _pendingSessionSetupGeneration = operationGeneration;
+        _setNewSessionStage(NewSessionStage.creating);
         late final AgentSession remoteSession;
         try {
           remoteSession = await client.createSession(
@@ -3080,6 +3089,7 @@ class ChatController extends ChangeNotifier {
         final createdSession = _copyAgentSessionStrict(
           remoteSession.copyWith(
             agentName: agentName,
+            localUnstarted: true,
             sessionTemplateId: template?.id,
             sessionTemplateVersion: template?.version,
           ),
@@ -3108,9 +3118,15 @@ class ChatController extends ChangeNotifier {
           for (final event in initialEvents) {
             _handleAgentEvent(event, notify: false);
           }
+          if (messages.isEmpty) {
+            _addLocalUnstartedSessionId(session.id);
+          } else {
+            _removeLocalUnstartedSessionId(session.id);
+          }
           _finishTurnBudget();
         });
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
+        _setNewSessionStage(NewSessionStage.configuring);
         await _loadAvailableCommands(session.id, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (messages.isEmpty) {
@@ -3126,6 +3142,7 @@ class ChatController extends ChangeNotifier {
         await _loadSessionSettings(session.id, notify: false);
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         if (template != null) {
+          _setNewSessionStage(NewSessionStage.applyingTemplate);
           _sessionTemplateWarnings = await _applySessionTemplateSettings(
             session.id,
             template,
@@ -3139,6 +3156,8 @@ class ChatController extends ChangeNotifier {
         if (!_isCurrentSessionOperationGeneration(operationGeneration)) return;
         _cancelPendingPermissionOutsideSession(currentSession?.id);
         _setError(error);
+      } finally {
+        _setNewSessionStage(null);
       }
     });
     return created;
@@ -6263,6 +6282,8 @@ class ChatController extends ChangeNotifier {
     if (_addTurnMessage(message) == null) {
       throw StateError('The test message did not fit the turn budget.');
     }
+    final session = currentSession;
+    if (session != null) _removeLocalUnstartedSessionId(session.id);
   }
 
   @visibleForTesting

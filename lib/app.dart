@@ -1372,6 +1372,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
       currentWorkspacePath: _cwd,
       defaultAgentName: _config.defaultAgentServerName ?? _config.agentName,
       includeArchived: true,
+      includeUnstarted: true,
     );
     for (final workspace in workspaceController.workspaces) {
       for (final session in workspace.sessions) {

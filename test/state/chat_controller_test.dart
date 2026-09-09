@@ -12158,10 +12158,11 @@ void main() {
       await controller.newSession();
       final background = controller.currentSession!;
       await controller.newSession();
-      final active = controller.currentSession!;
+
       controller.addMessageForTesting(
         ChatMessage(role: ChatMessageRole.assistant, text: 'active response'),
       );
+      final active = controller.currentSession!;
 
       expect(controller.canCloseSession(background), isTrue);
       await controller.closeSession(background);
@@ -12248,10 +12249,11 @@ void main() {
       await controller.newSession();
       final background = controller.currentSession!;
       await controller.newSession();
-      final active = controller.currentSession!;
+
       controller.addMessageForTesting(
         ChatMessage(role: ChatMessageRole.assistant, text: 'active response'),
       );
+      final active = controller.currentSession!;
 
       expect(controller.canDeleteSession(background), isTrue);
       await controller.deleteSession(background);
@@ -12268,10 +12270,11 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace');
 
     await controller.newSession();
-    final session = controller.currentSession!;
+
     controller.addMessageForTesting(
       ChatMessage(role: ChatMessageRole.assistant, text: 'keep after dispose'),
     );
+    final session = controller.currentSession!;
     controller.availableCommands = const <Map<String, Object?>>[
       <String, Object?>{'name': 'keep-command'},
     ];

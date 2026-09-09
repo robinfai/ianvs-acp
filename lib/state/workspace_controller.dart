@@ -8,6 +8,7 @@ class WorkspaceController {
     required String currentWorkspacePath,
     this.defaultAgentName,
     this.includeArchived = false,
+    this.includeUnstarted = false,
   }) : _controllers = List.unmodifiable(controllers),
        _currentWorkspacePath = normalizeWorkspacePath(currentWorkspacePath);
 
@@ -15,6 +16,7 @@ class WorkspaceController {
   final String _currentWorkspacePath;
   final String? defaultAgentName;
   final bool includeArchived;
+  final bool includeUnstarted;
 
   List<WorkspaceRecord> get workspaces {
     final sessionsByPath = <String, Map<String, _WorkspaceSessionBucket>>{};
@@ -64,7 +66,10 @@ class WorkspaceController {
 
     final records = sessionsByPath.entries.map((entry) {
       final sessions =
-          entry.value.values.map((bucket) => bucket.resolvedSession()).toList()
+          entry.value.values
+              .map((bucket) => bucket.resolvedSession())
+              .where((session) => includeUnstarted || !session.localUnstarted)
+              .toList()
             ..sort((a, b) {
               if (a.pinned && !b.pinned) return -1;
               if (b.pinned && !a.pinned) return 1;
@@ -169,10 +174,19 @@ class _WorkspaceSessionBucket {
     }
 
     final selected = best ?? _candidates.first;
-    return _candidates.fold<AgentSession>(
+    final merged = _candidates.fold<AgentSession>(
       selected.session,
       (session, candidate) => _mergeSession(session, candidate.session),
     );
+    // The live view knows whether a prompt has started; catalog copies may lag.
+    final active = _candidates.where((candidate) => candidate.active);
+    return active.isEmpty
+        ? merged
+        : merged.copyWith(
+            localUnstarted: active.every(
+              (candidate) => candidate.session.localUnstarted,
+            ),
+          );
   }
 
   int _candidateRank(
@@ -217,7 +231,7 @@ class _WorkspaceSessionBucket {
       pinned: selected.pinned || candidate.pinned,
       archived: selected.archived || candidate.archived,
       unread: selected.unread || candidate.unread,
-      localUnstarted: selected.localUnstarted && candidate.localUnstarted,
+      localUnstarted: selected.localUnstarted || candidate.localUnstarted,
     );
   }
 

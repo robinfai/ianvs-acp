@@ -372,15 +372,42 @@ class AppShell extends StatelessWidget {
                           controller: promptAttachmentController,
                           enabled: !controller.isSessionOperationRunning,
                           promptCapabilities: promptCapabilities,
-                          child: AgentChatView(
-                            session: AcpChatSession(controller),
-                            onTapLink: onTapLink,
-                            onNewSession: startNewSession,
-                            attachmentController: promptAttachmentController,
-                            readClipboardImage: readPromptImageFromClipboard,
-                            imageDecodeLedger: imageDecodeLedger,
-                            boundedImageDecoder: boundedImageDecoder,
-                            showError: false,
+                          child: Column(
+                            children: [
+                              if (controller.newSessionStage case final stage?)
+                                Semantics(
+                                  liveRegion: true,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Row(
+                                      children: [
+                                        const SizedBox.square(
+                                          dimension: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Expanded(child: Text(stage.label)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              Expanded(
+                                child: AgentChatView(
+                                  session: AcpChatSession(controller),
+                                  onTapLink: onTapLink,
+                                  onNewSession: startNewSession,
+                                  attachmentController:
+                                      promptAttachmentController,
+                                  readClipboardImage:
+                                      readPromptImageFromClipboard,
+                                  imageDecodeLedger: imageDecodeLedger,
+                                  boundedImageDecoder: boundedImageDecoder,
+                                  showError: false,
+                                ),
+                              ),
+                            ],
                           ),
                         );
 

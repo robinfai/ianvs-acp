@@ -2513,6 +2513,12 @@ void main() {
     await controller.newSession(cwd: '/workspace/current');
     final sessionId = controller.currentSession!.id;
 
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
+
     await pumpWithWindowSize(
       tester,
       AcpClientApp(controller: controller),
@@ -2647,6 +2653,12 @@ void main() {
     );
     addTearDown(controller.dispose);
     await controller.newSession();
+
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
 
     await pumpWithWindowSize(
       tester,
@@ -3176,6 +3188,12 @@ void main() {
       ),
     );
     final sessionId = controller.currentSession!.id;
+
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
 
     await pumpWithWindowSize(
       tester,
@@ -3886,6 +3904,12 @@ void main() {
     await controller.newSession(cwd: '/workspace/current');
     final sourceSessionId = controller.currentSession!.id;
 
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
+
     await pumpWithWindowSize(
       tester,
       AcpClientApp(controller: controller),
@@ -4050,6 +4074,12 @@ void main() {
     await controller.newSession(cwd: '/workspace/current');
     final sessionId = controller.currentSession!.id;
 
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
+
     await pumpWithWindowSize(
       tester,
       AcpClientApp(controller: controller),
@@ -4101,6 +4131,12 @@ void main() {
     await controller.newSession(cwd: '/workspace/current');
     final sessionId = controller.currentSession!.id;
     controller.setSessionUnread(sessionId, true);
+
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
 
     await pumpWithWindowSize(
       tester,
@@ -4155,6 +4191,12 @@ void main() {
     await controller.newSession(cwd: '/workspace/current');
     final session = controller.currentSession!;
 
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
+
     await pumpWithWindowSize(
       tester,
       AcpClientApp(controller: controller),
@@ -4186,6 +4228,12 @@ void main() {
     await controller.newSession(cwd: '/workspace/current');
     final sessionId = controller.currentSession!.id;
 
+    // Sidebar actions are available after a conversation has started.
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
+
     await pumpWithWindowSize(
       tester,
       AcpClientApp(controller: controller),
@@ -4213,9 +4261,17 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace/current');
     addTearDown(controller.dispose);
     await controller.newSession(cwd: '/workspace/current');
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
     final firstSessionId = controller.currentSession!.id;
     controller.setSessionUnread(firstSessionId, true);
     await controller.newSession(cwd: '/workspace/current');
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
     final secondSessionId = controller.currentSession!.id;
     controller.setSessionUnread(secondSessionId, true);
 
@@ -4264,8 +4320,16 @@ void main() {
     );
     addTearDown(controller.dispose);
     await controller.newSession(cwd: '/workspace/current');
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
     final firstSessionId = controller.currentSession!.id;
     await controller.newSession(cwd: '/workspace/current');
+    controller.addMessageForTesting(
+      ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+      startsNewTurn: true,
+    );
     final secondSessionId = controller.currentSession!.id;
 
     await pumpWithWindowSize(
@@ -4308,6 +4372,12 @@ void main() {
       );
       await controller.newSession(cwd: '/workspace/current');
       final sessionId = controller.currentSession!.id;
+      // Sidebar actions are available after a conversation has started.
+      controller.addMessageForTesting(
+        ChatMessage(role: ChatMessageRole.user, text: 'Hello'),
+        startsNewTurn: true,
+      );
+
       await pumpWithWindowSize(
         tester,
         AcpClientApp(controller: controller),
@@ -5006,11 +5076,10 @@ void main() {
         ),
         const Size(1400, 900),
       );
-      await _pumpUntil(
-        tester,
-        () => find.text('Rename-safe session').evaluate().isNotEmpty,
-      );
+      await _pumpUntil(tester, () => restartedStore.lastSaved.isNotEmpty);
 
+      expect(find.text('Rename-safe session'), findsNothing);
+      expect(restartedStore.lastSaved.single.localUnstarted, isTrue);
       expect(renamedConfig.agentName, 'Renamed agent');
       expect(
         renamedConfig.activeAgentServer!.persistenceIdentity,
@@ -5106,10 +5175,9 @@ void main() {
         ),
         const Size(1400, 900),
       );
-      await _pumpUntil(
-        tester,
-        () => find.text('Recover after readd').evaluate().isNotEmpty,
-      );
+      await _pumpUntil(tester, () => readdedStore.lastSaved.isNotEmpty);
+      expect(find.text('Recover after readd'), findsNothing);
+      expect(readdedStore.lastSaved.single.localUnstarted, isTrue);
       expect(readdedStore.lastSaved.single.agentName, persistenceIdentity);
     },
   );
