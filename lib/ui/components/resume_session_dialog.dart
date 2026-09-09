@@ -111,72 +111,66 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
   @override
   Widget build(BuildContext context) {
     final viewportHeight = MediaQuery.sizeOf(context).height;
-    return Transform.translate(
-      offset: const Offset(0, -24),
-      child: AlertDialog(
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-        titlePadding: const EdgeInsets.fromLTRB(28, 18, 28, 22),
-        contentPadding: EdgeInsets.zero,
-        actionsPadding: const EdgeInsets.fromLTRB(24, 15, 24, 16),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.lg),
-        ),
-        title: const Text(
-          'Resume ACP Session',
-          style: AppTypography.dialogTitle,
-        ),
-        content: SizedBox(
-          width: 808,
-          height: math.min(539, math.max(360, viewportHeight * 0.62)),
-          child: DecoratedBox(
-            decoration: const BoxDecoration(
-              border: Border.symmetric(
-                horizontal: BorderSide(color: AppColors.borderSoft),
-              ),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(width: 258, child: _agentPane()),
-                const VerticalDivider(width: 1, thickness: 1),
-                Expanded(child: _sessionPane()),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            style: TextButton.styleFrom(
-              minimumSize: const Size(0, 36),
-              visualDensity: VisualDensity.standard,
-            ),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: !_canLoadSelection()
-                ? null
-                : () {
-                    Navigator.of(context).pop(
-                      ResumeSessionSelection(
-                        agentId: _selectedAgent!.id,
-                        agentName: _selectedAgent!.name,
-                        project: _selectedProject!,
-                        conversation: _selectedConversation!,
-                      ),
-                    );
-                  },
-            style: FilledButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: AppColors.accent,
-              minimumSize: const Size(0, 36),
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              visualDensity: VisualDensity.standard,
-            ),
-            child: const Text('Open Session'),
-          ),
-        ],
+    return AlertDialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      titlePadding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+      contentPadding: EdgeInsets.zero,
+      actionsPadding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
       ),
+      title: const Text('Resume ACP Session', style: AppTypography.dialogTitle),
+      content: SizedBox(
+        width: 808,
+        height: math.min(539, math.max(360, viewportHeight * 0.62)),
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            border: Border.symmetric(
+              horizontal: BorderSide(color: AppColors.borderSoft),
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(width: 258, child: _agentPane()),
+              const VerticalDivider(width: 1, thickness: 1),
+              Expanded(child: _sessionPane()),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          style: TextButton.styleFrom(
+            minimumSize: const Size(0, 32),
+            visualDensity: VisualDensity.standard,
+          ),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: !_canLoadSelection()
+              ? null
+              : () {
+                  Navigator.of(context).pop(
+                    ResumeSessionSelection(
+                      agentId: _selectedAgent!.id,
+                      agentName: _selectedAgent!.name,
+                      project: _selectedProject!,
+                      conversation: _selectedConversation!,
+                    ),
+                  );
+                },
+          style: FilledButton.styleFrom(
+            foregroundColor: Colors.white,
+            backgroundColor: AppColors.accent,
+            minimumSize: const Size(0, 32),
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            visualDensity: VisualDensity.standard,
+          ),
+          child: const Text('Open Session'),
+        ),
+      ],
     );
   }
 
@@ -198,7 +192,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const Padding(
-          padding: EdgeInsets.fromLTRB(28, 8, 16, 8),
+          padding: EdgeInsets.fromLTRB(24, 12, 16, 8),
           child: Text(
             'Agent for this session',
             style: AppTypography.sectionTitle,
@@ -228,7 +222,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       children: [
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 9, 38, 12),
+            padding: const EdgeInsets.fromLTRB(16, 12, 24, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -247,7 +241,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: AppColors.textTertiary,
-                    fontSize: 11,
+                    fontSize: 12,
                     height: 1.3,
                   ),
                 ),
@@ -272,7 +266,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                           ? () => _loadAgent(selectedAgent!, refresh: true)
                           : null,
                       style: IconButton.styleFrom(
-                        fixedSize: const Size(42, 36),
+                        fixedSize: const Size(40, 32),
                         padding: EdgeInsets.zero,
                         visualDensity: VisualDensity.standard,
                       ),
@@ -608,7 +602,7 @@ class _AgentSelectionList extends StatelessWidget {
                             'Current Agent',
                             style: TextStyle(
                               color: AppColors.textTertiary,
-                              fontSize: 9.5,
+                              fontSize: 11,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -631,7 +625,7 @@ class _AgentSelectionList extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: AppColors.textTertiary,
-                              fontSize: 11,
+                              fontSize: 12,
                             ),
                           ),
                         ),
@@ -684,7 +678,7 @@ class _AuthenticationBanner extends StatelessWidget {
     return Container(
       key: ValueKey('resume-authentication-${agent.id}'),
       constraints: const BoxConstraints(minHeight: 60),
-      padding: const EdgeInsets.fromLTRB(16, 9, 38, 9),
+      padding: const EdgeInsets.fromLTRB(16, 8, 24, 8),
       decoration: const BoxDecoration(
         color: AppColors.surface,
         border: Border(top: BorderSide(color: AppColors.borderSoft)),
@@ -941,7 +935,7 @@ class _SessionResultTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: AppColors.textPrimary,
-                            fontSize: 12,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -952,7 +946,7 @@ class _SessionResultTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: AppColors.textTertiary,
-                            fontSize: 11,
+                            fontSize: 12,
                           ),
                         ),
                       ],
@@ -963,7 +957,7 @@ class _SessionResultTile extends StatelessWidget {
                     _formatRelativeDateTime(conversation.updatedAt),
                     style: const TextStyle(
                       color: AppColors.textTertiary,
-                      fontSize: 11,
+                      fontSize: 12,
                     ),
                   ),
                 ],
@@ -1183,6 +1177,8 @@ InputDecoration _inputDecoration({
     fillColor: AppColors.surface,
     isDense: true,
     contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
+    constraints: const BoxConstraints(minHeight: 32),
+    prefixIconConstraints: const BoxConstraints(minWidth: 32, minHeight: 32),
     border: OutlineInputBorder(
       borderRadius: BorderRadius.circular(AppRadius.sm),
       borderSide: const BorderSide(color: AppColors.border),

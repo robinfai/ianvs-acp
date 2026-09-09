@@ -65,7 +65,7 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('New Session'),
+      title: const Text('New Session', style: AppTypography.dialogTitle),
       content: SizedBox(
         width: 560,
         child: SingleChildScrollView(
@@ -91,14 +91,14 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
                   onTap: () => setState(() => _selectedTemplate = null),
                 ),
                 if (_selectedTemplate != null) ...[
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 12),
                   _TemplateSummary(
                     template: _selectedTemplate!,
                     baseConfig: widget.baseConfig,
                     currentAgentName: widget.currentAgentName,
                   ),
                 ],
-                const SizedBox(height: 18),
+                const SizedBox(height: 16),
               ],
               if (_selectedTemplate == null &&
                   widget.agentServers.isNotEmpty) ...[
@@ -208,7 +208,7 @@ class _SessionScopeNotice extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.primaryMist,
         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -228,7 +228,7 @@ class _SessionScopeNotice extends StatelessWidget {
               'These choices apply to this new session. They do not change the startup default Agent.',
               style: TextStyle(
                 color: AppColors.textSecondary,
-                fontSize: 11.5,
+                fontSize: 12,
                 height: 1.35,
               ),
             ),
@@ -250,8 +250,8 @@ class _ChoiceSectionLabel extends StatelessWidget {
       text,
       style: const TextStyle(
         color: AppColors.textTertiary,
-        fontSize: 11,
-        fontWeight: FontWeight.w700,
+        fontSize: 13,
+        fontWeight: FontWeight.w500,
         letterSpacing: 0.2,
       ),
     );
@@ -351,7 +351,7 @@ class _TemplateSummary extends StatelessWidget {
     ];
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.surfaceRaised,
         borderRadius: BorderRadius.circular(AppRadius.md),
@@ -368,7 +368,7 @@ class _TemplateSummary extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 7),
+          const SizedBox(height: 8),
           for (final row in rows) ...[
             _TemplateSummaryRow(label: row.$1, value: row.$2),
             if (row != rows.last) const SizedBox(height: 4),
@@ -378,7 +378,7 @@ class _TemplateSummary extends StatelessWidget {
             'Session option requests are applied after creation only when the selected Agent exposes matching capabilities.',
             style: TextStyle(
               color: AppColors.textTertiary,
-              fontSize: 10.5,
+              fontSize: 12,
               height: 1.3,
             ),
           ),
@@ -488,7 +488,7 @@ class _TemplateSummaryRow extends StatelessWidget {
             label,
             style: const TextStyle(
               color: AppColors.textTertiary,
-              fontSize: 10.5,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -498,7 +498,7 @@ class _TemplateSummaryRow extends StatelessWidget {
             value,
             style: const TextStyle(
               color: AppColors.textSecondary,
-              fontSize: 10.5,
+              fontSize: 12,
               height: 1.25,
             ),
           ),
@@ -532,7 +532,7 @@ class _SessionChoiceSurface extends StatelessWidget {
         onTap: onTap,
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: selected ? AppColors.primaryMist : AppColors.surfaceRaised,
             borderRadius: BorderRadius.circular(AppRadius.md),
@@ -549,7 +549,7 @@ class _SessionChoiceSurface extends StatelessWidget {
                 size: 20,
                 color: selected ? AppColors.success : AppColors.primaryDark,
               ),
-              const SizedBox(width: 9),
+              const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -572,7 +572,7 @@ class _SessionChoiceSurface extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: AppColors.textTertiary,
-                        fontSize: 11,
+                        fontSize: 12,
                         height: 1.25,
                         letterSpacing: 0,
                       ),
@@ -715,7 +715,7 @@ class _AgentChoiceTile extends StatelessWidget {
             onTap: onTap,
             child: Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: selected
                     ? AppColors.primaryMist
@@ -734,7 +734,7 @@ class _AgentChoiceTile extends StatelessWidget {
                     size: 20,
                     color: selected ? AppColors.success : AppColors.primaryDark,
                   ),
-                  const SizedBox(width: 9),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -758,7 +758,7 @@ class _AgentChoiceTile extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: AppColors.textTertiary,
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.w600,
                               letterSpacing: 0,
                             ),
@@ -798,7 +798,7 @@ class _AgentScopeLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: AppColors.primaryMist,
         borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -807,7 +807,7 @@ class _AgentScopeLabel extends StatelessWidget {
         label,
         style: const TextStyle(
           color: AppColors.primaryDark,
-          fontSize: 9.5,
+          fontSize: 11,
           fontWeight: FontWeight.w600,
         ),
       ),

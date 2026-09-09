@@ -141,6 +141,9 @@ class AppShell extends StatelessWidget {
   final BoundedImageDecoder boundedImageDecoder;
   final bool Function(String path) gitWorkspaceDetector;
   final AcpTerminalRuntimeFactory terminalRuntimeFactory;
+  static final Expando<bool> _settingsRoutes = Expando<bool>(
+    'AppShell settings routes',
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -285,8 +288,7 @@ class AppShell extends StatelessWidget {
                         Widget buildSidebar() => _ShellSidebar(
                           agentName: agentName,
                           onNewSession: startNewSession,
-                          onShowAgentConfig: () =>
-                              _showAgentConfigDialog(context),
+                          onShowAgentConfig: layout.openSettings,
                           onShowDiagnostics: () => _showDiagnostics(context),
                           workspaceSidebar: WorkspaceSidebar(
                             agentName: agentName,
@@ -360,6 +362,8 @@ class AppShell extends StatelessWidget {
                                 builder: (_) => buildInspector(),
                               )
                             : layout.toggleInspector;
+                        layout.onSettingsMenu = () =>
+                            _showAgentConfigDialog(context);
 
                         Widget conversationColumn(
                           BuildContext context,
@@ -450,8 +454,7 @@ class AppShell extends StatelessWidget {
                                         (!controller.isStreaming ||
                                             supportsConcurrentSessions),
                                     onSelectAgent: onSelectAgent,
-                                    onShowAgentConfig: () =>
-                                        _showAgentConfigDialog(context),
+                                    onShowAgentConfig: layout.openSettings,
                                     onAuthenticate:
                                         controller.canAuthenticate &&
                                             !agentLifecycleBusy
@@ -806,30 +809,38 @@ class AppShell extends StatelessWidget {
   }
 
   Future<void> _showAgentConfigDialog(BuildContext context) async {
-    final destination = await Navigator.of(context).push<SettingsExitAction>(
-      MaterialPageRoute(
-        settings: const RouteSettings(name: '/settings'),
-        builder: (context) => AgentConfigDialog(
-          agentServers: agentServers,
-          agentPresets: AcpAgentDiscovery.discover(),
-          mcpServers: mcpServers,
-          additionalDirectories: additionalDirectories,
-          clientProviders: settingsClientProviders ?? clientProviders,
-          storage: storage,
-          assistantAgent: assistantAgent,
-          sessionTemplates: sessionTemplates,
-          defaultSessionTemplateId: defaultSessionTemplateId,
-          activeAgentName: agentName,
-          configPath: configPath,
-          defaultAgentName: defaultAgentName,
-          onSaveConfig: onSaveConfig,
-          runtimeBusy: settingsRuntimeBusy,
-          allowAppNavigation: true,
-          onValidateAssistantAgent: onValidateAssistantAgent,
-          onLoadAssistantAgentModels: onLoadAssistantAgentModels,
+    final navigator = Navigator.of(context);
+    if (_settingsRoutes[navigator] == true) return;
+    _settingsRoutes[navigator] = true;
+    SettingsExitAction? destination;
+    try {
+      destination = await navigator.push<SettingsExitAction>(
+        MaterialPageRoute(
+          settings: const RouteSettings(name: '/settings'),
+          builder: (context) => AgentConfigDialog(
+            agentServers: agentServers,
+            agentPresets: AcpAgentDiscovery.discover(),
+            mcpServers: mcpServers,
+            additionalDirectories: additionalDirectories,
+            clientProviders: settingsClientProviders ?? clientProviders,
+            storage: storage,
+            assistantAgent: assistantAgent,
+            sessionTemplates: sessionTemplates,
+            defaultSessionTemplateId: defaultSessionTemplateId,
+            activeAgentName: agentName,
+            configPath: configPath,
+            defaultAgentName: defaultAgentName,
+            onSaveConfig: onSaveConfig,
+            runtimeBusy: settingsRuntimeBusy,
+            allowAppNavigation: true,
+            onValidateAssistantAgent: onValidateAssistantAgent,
+            onLoadAssistantAgentModels: onLoadAssistantAgentModels,
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      _settingsRoutes[navigator] = false;
+    }
     if (!context.mounted || destination == null) return;
     final currentShell =
         context.findAncestorWidgetOfExactType<AppShell>() ?? this;

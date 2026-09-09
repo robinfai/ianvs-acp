@@ -60,6 +60,38 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('ResumeSessionDialog fits a 600 point tall window', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ResumeSessionDialog(
+            agents: [_agent(() async => const <AcpProjectSessions>[])],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    final openButton = _loadButton(tester);
+    expect(
+      openButton.style?.minimumSize?.resolve(<WidgetState>{}),
+      const Size(0, 32),
+    );
+    final refresh = tester.widget<IconButton>(
+      find.byKey(const ValueKey('resume-session-refresh')),
+    );
+    expect(
+      refresh.style?.fixedSize?.resolve(<WidgetState>{}),
+      const Size(40, 32),
+    );
+  });
+
   testWidgets('ResumeSessionDialog loads only the selected agent catalog', (
     tester,
   ) async {

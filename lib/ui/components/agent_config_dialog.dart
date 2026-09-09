@@ -540,7 +540,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                 Expanded(
                   child: SelectableText(
                     directory,
-                    style: const TextStyle(fontSize: 14),
+                    style: AppTypography.label.copyWith(
+                      fontWeight: FontWeight.w400,
+                    ),
                   ),
                 ),
                 _PanelActionButton(
@@ -591,8 +593,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             },
           ),
           if (_assistantEnabled) ...[
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             DropdownButtonFormField<String>(
+              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
               key: const Key('assistant-agent-name-field'),
               initialValue: selected,
               isExpanded: true,
@@ -612,7 +615,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                 _loadAssistantAgentModels(value);
               },
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             _buildAssistantModelField(selected),
             const SizedBox(height: 16),
             if (_connectionsHaveChanges)
@@ -648,7 +651,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   ),
                 ),
               ),
-            const Divider(height: 40, color: AppColors.border),
+            const Divider(height: 32, color: AppColors.border),
             _ConfigSwitch(
               key: const Key('assistant-session-title-switch'),
               title: '生成会话标题',
@@ -677,14 +680,11 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               '辅助 Agent 会收到首条提示和已完成轮次的内容，没有文件、终端或 MCP 工具权限。失败或超时时仍保留原始内容。',
             ),
           ],
-          const Divider(height: 40, color: AppColors.border),
-          const Text(
-            '备用标题',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-          ),
+          const Divider(height: 32, color: AppColors.border),
+          const Text('备用标题', style: AppTypography.sectionTitle),
           const SizedBox(height: 10),
           const _SettingsHelp('未启用 AI 辅助或生成失败时，从首条提示截取标题。'),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           _SettingsField(
             key: const Key('assistant-title-character-limit-field'),
             controller: _assistantFallbackTitleController,
@@ -735,6 +735,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     return KeyedSubtree(
       key: const Key('assistant-agent-model-field'),
       child: DropdownButtonFormField<String>(
+        style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
         key: ValueKey((selectedAgent, selectedValue, _assistantModelsLoading)),
         initialValue: selectedValue,
         isExpanded: true,
@@ -839,7 +840,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         const _SettingsHelp(
           '应用向 Agent 提供的能力默认值。模板可覆盖这些设置；每次操作是否审批由当前会话的执行策略决定。',
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
         _ConfigSwitch(
           key: const Key('filesystem-read-switch'),
           title: '允许读取文本文件',
@@ -864,7 +865,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           value: _terminalEnabled,
           onChanged: (value) => setState(() => _terminalEnabled = value),
         ),
-        const Divider(height: 40, color: AppColors.border),
+        const Divider(height: 32, color: AppColors.border),
         Wrap(
           spacing: 16,
           runSpacing: 8,
@@ -872,7 +873,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           children: [
             Text(
               '信任规则 · ${_trustRules.length}',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              style: AppTypography.sectionTitle,
             ),
             TextButton.icon(
               onPressed: _saving ? null : _addTrustRule,
@@ -888,7 +889,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               Expanded(
                 child: Text(
                   _permissionTrustRuleLabel(rule),
-                  style: const TextStyle(fontSize: 14),
+                  style: AppTypography.label.copyWith(
+                    fontWeight: FontWeight.w400,
+                  ),
                 ),
               ),
               _PanelActionButton(
@@ -898,11 +901,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               ),
             ],
           ),
-        const Divider(height: 40, color: AppColors.border),
-        const Text(
-          '自动审查来源',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-        ),
+        const Divider(height: 32, color: AppColors.border),
+        const Text('自动审查来源', style: AppTypography.sectionTitle),
         const SizedBox(height: 12),
         const _SettingsHelp(
           '当输入区的执行策略设为 Auto Review 时使用。默认由当前 Agent 的独立审查会话处理。',
@@ -916,6 +916,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         if (_reviewAgentEnabled) ...[
           const SizedBox(height: 16),
           DropdownButtonFormField<String>(
+            style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
             key: const Key('review-target-kind'),
             initialValue: _reviewTargetKind,
             decoration: const InputDecoration(labelText: '来源类型'),
@@ -940,7 +941,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               });
             },
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           if (_reviewTargetKind == 'agent')
             _SettingsField(
               key: const Key('review-agent-server-name-field'),
@@ -958,21 +959,21 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               '保留已有内嵌 MCP：${_reviewInlineMcpServer?.name ?? ""}。选择其他来源后保存会替换它。',
             ),
           if (_reviewTargetKind != 'agent') ...[
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             _SettingsField(
               key: const Key('review-tool-name-field'),
               controller: _reviewToolNameController,
               label: '审查工具',
             ),
           ],
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           _SettingsField(
             key: const Key('review-model-field'),
             controller: _reviewModelController,
             label: '审查模型',
             hint: '可选',
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           _SettingsField(
             key: const Key('review-timeout-field'),
             controller: _reviewTimeoutController,
@@ -1006,7 +1007,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SettingsHelp('以下上限和保留期分别应用于会话恢复数据库、对话缓存。到期的本地恢复数据会自动清理。'),
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
         _SettingsField(
           key: const Key('storage-max-size-gb-field'),
           controller: _storageMaxSizeController,
@@ -1397,8 +1398,8 @@ class _ConfigSwitch extends StatelessWidget {
           title,
           style: const TextStyle(
             color: AppColors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
             letterSpacing: 0,
           ),
         ),
@@ -1407,7 +1408,7 @@ class _ConfigSwitch extends StatelessWidget {
           style: const TextStyle(
             color: AppColors.textSecondary,
             fontSize: 12,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w400,
             letterSpacing: 0,
           ),
         ),
@@ -1523,6 +1524,7 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<AcpPermissionDecision>(
+              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
               key: const Key('trust-decision-field'),
               initialValue: _decision,
               decoration: _fieldDecoration(
@@ -1595,6 +1597,7 @@ class _DialogTextField extends StatelessWidget {
   Widget build(BuildContext context) {
     return TextField(
       controller: controller,
+      style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
       obscureText: obscureText,
       decoration: _fieldDecoration(label: label, icon: icon),
     );
@@ -1631,11 +1634,13 @@ class _StringListEditor extends StatelessWidget {
                       child: TextField(
                         key: Key('$itemPrefix-$index-field'),
                         controller: controllers[index],
-                        style: const TextStyle(fontSize: 14),
+                        style: AppTypography.label.copyWith(
+                          fontWeight: FontWeight.w400,
+                        ),
                         decoration: const InputDecoration(
                           contentPadding: EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 13,
+                            horizontal: 12,
+                            vertical: 10,
                           ),
                         ),
                       ),
@@ -1659,10 +1664,7 @@ class _StringListEditor extends StatelessWidget {
       );
       final label = Padding(
         padding: const EdgeInsets.only(top: 12),
-        child: Text(
-          title,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-        ),
+        child: Text(title, style: AppTypography.label),
       );
       if (bounds.maxWidth < 440) {
         return Column(
@@ -1674,7 +1676,7 @@ class _StringListEditor extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(width: 94, child: label),
-          const SizedBox(width: 16),
+          const SizedBox(width: 12),
           Expanded(child: fields),
         ],
       );
@@ -1759,13 +1761,7 @@ class _ListEditorFrame extends StatelessWidget {
     children: [
       Row(
         children: [
-          SizedBox(
-            width: 110,
-            child: Text(
-              title,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-            ),
-          ),
+          SizedBox(width: 110, child: Text(title, style: AppTypography.label)),
           TextButton.icon(
             onPressed: onAdd,
             icon: const Icon(Icons.add_rounded, size: 18),
@@ -1933,21 +1929,15 @@ class _Panel extends StatelessWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 24, color: AppColors.textSecondary),
-              const SizedBox(width: 12),
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+              Icon(icon, size: 18, color: AppColors.textSecondary),
+              const SizedBox(width: 8),
+              Text(title, style: AppTypography.sectionTitle),
             ],
           ),
           ?trailing,
         ],
       ),
-      const SizedBox(height: 26),
+      const SizedBox(height: 16),
       child,
     ],
   );
@@ -1957,12 +1947,6 @@ class _SettingsHelp extends StatelessWidget {
   const _SettingsHelp(this.text);
   final String text;
   @override
-  Widget build(BuildContext context) => Text(
-    text,
-    style: const TextStyle(
-      color: AppColors.textSecondary,
-      fontSize: 13,
-      height: 1.6,
-    ),
-  );
+  Widget build(BuildContext context) =>
+      Text(text, style: Theme.of(context).textTheme.bodySmall);
 }

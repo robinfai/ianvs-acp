@@ -856,7 +856,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('管理 Agent…'), warnIfMissed: false);
     await tester.pumpAndSettle();
-    expect(find.text('设置'), findsWidgets);
+    expect(find.byType(AgentConfigDialog), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('settings-agent-Codex')));
     await tester.pump();
@@ -4646,7 +4646,7 @@ void main() {
     await tester.tap(find.text('管理 Agent…'));
     await tester.pumpAndSettle();
 
-    expect(find.text('设置'), findsWidgets);
+    expect(find.byType(AgentConfigDialog), findsOneWidget);
     final settings = tester.widget<AgentConfigDialog>(
       find.byType(AgentConfigDialog),
     );

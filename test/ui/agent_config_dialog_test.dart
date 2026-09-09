@@ -8,6 +8,7 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
+import 'package:ianvs_agent_chat/ui/theme/app_theme.dart';
 
 void main() {
   testWidgets('renders the settings workspace without exposing secrets', (
@@ -554,6 +555,86 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'macOS form stays usable in a short window and with larger text',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      var saves = 0;
+      for (final scenario in [
+        (const Size(800, 600), 1.0),
+        (const Size(480, 700), 1.6),
+      ]) {
+        tester.view.physicalSize = scenario.$1;
+        await tester.pumpWidget(
+          MaterialApp(
+            key: ValueKey(scenario),
+            theme: AppTheme.light,
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(scenario.$2)),
+              child: child!,
+            ),
+            home: AgentConfigDialog(
+              configPath: '/tmp/settings.json',
+              activeAgentName: 'Codex',
+              agentServers: const [
+                AgentServerConfig(
+                  name: 'Codex',
+                  type: 'custom',
+                  command: 'npx',
+                  args: ['codex-acp'],
+                ),
+              ],
+              onSaveConfig: (config) async {
+                saves++;
+                return config;
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final toolbar = tester.getRect(
+          find.byKey(const Key('settings-toolbar')),
+        );
+        final back = tester.getRect(find.byKey(const Key('settings-back')));
+        final save = find.byKey(const Key('settings-save'));
+        expect(
+          back.left,
+          greaterThanOrEqualTo(80),
+          reason: 'The back action must clear native window controls.',
+        );
+        expect(toolbar.contains(tester.getCenter(save)), isTrue);
+        if (scenario.$2 == 1) {
+          final status = tester.getRect(
+            find.byKey(const Key('settings-status-bar')),
+          );
+          final cwd = tester.getRect(find.byKey(const Key('agent-cwd-field')));
+          expect(
+            cwd.bottom,
+            lessThan(status.top),
+            reason:
+                'The initial short window should expose the startup directory.',
+          );
+        }
+        await tester.enterText(
+          find.byKey(const Key('agent-command-field')),
+          '/bin/updated',
+        );
+        await tester.pump();
+        expect(save.hitTestable(), findsOneWidget);
+        await tester.tap(save);
+        await tester.pumpAndSettle();
+        expect(_saveButton(tester).onPressed, isNull);
+        expect(tester.takeException(), isNull);
+      }
+      expect(saves, 2);
+    },
+    variant: TargetPlatformVariant({TargetPlatform.macOS}),
+  );
 
   testWidgets('sets the startup default from the selected Agent menu', (
     tester,

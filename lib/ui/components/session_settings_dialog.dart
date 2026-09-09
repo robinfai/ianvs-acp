@@ -27,7 +27,7 @@ class SessionSettingsDialog extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         return AlertDialog(
-          title: const Text('当前会话参数'),
+          title: const Text('当前会话参数', style: AppTypography.dialogTitle),
           content: ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.sizeOf(context).height * 0.62,
@@ -161,8 +161,11 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
         (hasCapabilitySummary ? 1 : 0) +
         (hasIncompleteNotice ? 1 : 0);
 
-    return CustomScrollView(
+    final useCompactExtent = optionIndexes.length <= 4;
+    final scrollView = CustomScrollView(
       key: const ValueKey('session-settings-scroll'),
+      shrinkWrap: useCompactExtent,
+      primary: false,
       slivers: [
         SliverList(
           delegate: SliverChildBuilderDelegate((context, index) {
@@ -251,6 +254,17 @@ class _SessionSettingsScrollState extends State<_SessionSettingsScroll> {
           }, childCount: itemCount),
         ),
       ],
+    );
+    if (useCompactExtent) {
+      return KeyedSubtree(
+        key: const ValueKey('session-settings-viewport'),
+        child: scrollView,
+      );
+    }
+    return SizedBox(
+      key: const ValueKey('session-settings-viewport'),
+      height: 520,
+      child: scrollView,
     );
   }
 }

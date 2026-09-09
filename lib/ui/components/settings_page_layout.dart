@@ -44,7 +44,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                       children: [
                         if (wide) ...[
                           SizedBox(
-                            width: 268,
+                            width: 260,
                             child: _buildSettingsNavigation(),
                           ),
                           const VerticalDivider(
@@ -67,6 +67,9 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                                   ),
                                   child:
                                       DropdownButtonFormField<_SettingsSection>(
+                                        style: AppTypography.label.copyWith(
+                                          fontWeight: FontWeight.w400,
+                                        ),
                                         key: const Key(
                                           'settings-section-picker',
                                         ),
@@ -134,7 +137,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                                             const Text(
                                               '会话模板',
                                               style: TextStyle(
-                                                fontSize: 16,
+                                                fontSize: 14,
                                                 fontWeight: FontWeight.w600,
                                               ),
                                             ),
@@ -190,11 +193,17 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(112, 16, 12, 12),
-            child: Text(
-              'ACP Client',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          SizedBox(
+            height: 52,
+            child: Padding(
+              padding: EdgeInsets.only(
+                left: defaultTargetPlatform == TargetPlatform.macOS ? 88 : 18,
+                right: 12,
+              ),
+              child: const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('ACP Client', style: AppTypography.sectionTitle),
+              ),
             ),
           ),
           _navRow(
@@ -205,21 +214,18 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                 ? () => _requestClose(SettingsExitAction.newSession)
                 : null,
           ),
-          _navRow('设置', Icons.settings_outlined, true, null),
+          _navRow('设置', Icons.manage_accounts_outlined, true, null),
           _navRow(
             '活动与诊断',
-            Icons.timeline_rounded,
+            Icons.manage_history_rounded,
             false,
             widget.allowAppNavigation && !_saving
                 ? () => _requestClose(SettingsExitAction.diagnostics)
                 : null,
           ),
           const Padding(
-            padding: EdgeInsets.fromLTRB(24, 30, 24, 12),
-            child: Text(
-              '设置',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-            ),
+            padding: EdgeInsets.fromLTRB(18, 24, 18, 8),
+            child: Text('设置', style: AppTypography.metadata),
           ),
           Expanded(
             child: ListView(
@@ -236,19 +242,29 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(20),
+          Container(
+            constraints: const BoxConstraints(minHeight: 52),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: const BoxDecoration(
+              border: Border(top: BorderSide(color: AppColors.borderSoft)),
+            ),
             child: Row(
               children: [
-                const Icon(
-                  Icons.account_circle,
-                  color: AppColors.textTertiary,
-                  size: 28,
+                CircleAvatar(
+                  radius: 11,
+                  backgroundColor: const Color(0xff9aa6a2),
+                  child: Text(
+                    _activeAgentName.isEmpty
+                        ? 'A'
+                        : _activeAgentName.characters.first.toUpperCase(),
+                    style: const TextStyle(fontSize: 10, color: Colors.white),
+                  ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     _activeAgentName,
+                    style: AppTypography.label,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -266,63 +282,136 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
     bool selected,
     VoidCallback? onTap, {
     Key? key,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+  }) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 12),
+    child: Semantics(
+      selected: selected,
+      button: true,
+      enabled: onTap != null || selected,
       child: Material(
-        color: selected
-            ? AppColors.primary.withValues(alpha: 0.09)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(9),
-        child: ListTile(
+        color: selected ? AppColors.surfaceSelected : Colors.transparent,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        child: InkWell(
           key: key,
-          selected: selected,
-          enabled: onTap != null || selected,
           onTap: onTap,
-          dense: true,
-          visualDensity: VisualDensity.compact,
-          minLeadingWidth: 22,
-          leading: Icon(icon, size: 21),
-          title: Text(
-            label,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
-          ),
-          selectedColor: AppColors.primary,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSettingsHeader(bool wide) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(wide ? 24 : 20, 10, 24, 28),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextButton.icon(
-            key: const Key('settings-back'),
-            onPressed: _saving ? null : () => _requestClose(),
-            icon: const Icon(Icons.arrow_back_rounded, size: 18),
-            label: const Text('返回会话'),
-          ),
-          const SizedBox(height: 14),
-          const Text(
-            '设置',
-            style: TextStyle(fontSize: 28, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 5),
-          Text(
-            _readOnly ? '应用配置 · 只读，当前无法保存' : '应用配置',
-            style: const TextStyle(
-              fontSize: 14,
-              color: AppColors.textSecondary,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 35),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(
+                    icon,
+                    size: 18,
+                    color: selected
+                        ? AppColors.accent
+                        : AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: AppTypography.label.copyWith(
+                        fontSize: 13.5,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                        color: onTap == null && !selected
+                            ? AppColors.textTertiary
+                            : AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-        ],
+        ),
       ),
-    );
-  }
+    ),
+  );
+
+  Widget _buildSettingsHeader(bool wide) => Container(
+    key: const Key('settings-toolbar'),
+    constraints: const BoxConstraints(minHeight: 52),
+    color: AppColors.surfaceRaised,
+    padding: EdgeInsets.fromLTRB(
+      !wide && defaultTargetPlatform == TargetPlatform.macOS ? 88 : 12,
+      8,
+      16,
+      8,
+    ),
+    child: LayoutBuilder(
+      builder: (context, bounds) {
+        final compact = bounds.maxWidth < 440;
+        return Row(
+          children: [
+            Tooltip(
+              message: '返回会话',
+              child: TextButton(
+                key: const Key('settings-back'),
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(32, 32),
+                  padding: const EdgeInsets.all(8),
+                ),
+                onPressed: _saving ? null : () => _requestClose(),
+                child: const Icon(
+                  Icons.arrow_back_rounded,
+                  size: 18,
+                  semanticLabel: '返回会话',
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                compact ? '设置' : '设置 · ${_section.label}',
+                key: const Key('settings-heading'),
+                style: AppTypography.sectionTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 12),
+            OutlinedButton(
+              key: const Key('settings-discard'),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(80, 32),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                visualDensity: VisualDensity.standard,
+              ),
+              onPressed: _hasChanges && !_saving ? _discardChanges : null,
+              child: Text(compact ? '放弃' : '放弃更改'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              key: const Key('settings-save'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(80, 32),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                visualDensity: VisualDensity.standard,
+              ),
+              onPressed: _canSave ? () => _save(context) : null,
+              child: Text(
+                _saving
+                    ? '正在保存…'
+                    : compact
+                    ? '保存'
+                    : '保存更改',
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
 
   Widget _buildSettingsFooter() {
     final status = _saving
@@ -333,109 +422,60 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         ? '有未保存的更改'
         : _saveStatus ?? '所有更改已保存';
     return Container(
+      key: const Key('settings-status-bar'),
       decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AppColors.border)),
+        border: Border(top: BorderSide(color: AppColors.borderSoft)),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 27),
-      child: LayoutBuilder(
-        builder: (context, bounds) {
-          final details = Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(
-                _hasChanges
-                    ? Icons.info_outline_rounded
-                    : Icons.check_circle_outline_rounded,
-                color: _hasChanges ? AppColors.warning : AppColors.textTertiary,
-                size: 22,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      status,
-                      key: const Key('settings-save-status'),
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: _hasChanges
-                            ? AppColors.warning
-                            : AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      _runtimeBusy
-                          ? '会话仍在运行或切换，请完成操作后保存。'
-                          : '保存会重新加载连接配置；当前会话可能需要恢复。',
-                      key: const Key('settings-save-impact'),
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          );
-          final actions = Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: [
-              OutlinedButton(
-                key: const Key('settings-discard'),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(112, 42),
-                  textStyle: AppTypography.label.copyWith(fontSize: 14),
-                  visualDensity: VisualDensity.standard,
-                ),
-                onPressed: _hasChanges && !_saving ? _discardChanges : null,
-                child: const Text('放弃更改'),
-              ),
-              FilledButton(
-                key: const Key('settings-save'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(112, 42),
-                  textStyle: AppTypography.label.copyWith(fontSize: 14),
-                  visualDensity: VisualDensity.standard,
-                ),
-                onPressed: _canSave ? () => _save(context) : null,
-                child: Text(_saving ? '正在保存…' : '保存更改'),
-              ),
-            ],
-          );
-          if (bounds.maxWidth < 720) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            _hasChanges
+                ? Icons.info_outline_rounded
+                : Icons.check_circle_outline_rounded,
+            color: _hasChanges ? AppColors.warning : AppColors.textTertiary,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                details,
-                const SizedBox(height: 12),
-                Align(alignment: Alignment.centerRight, child: actions),
+                Text(
+                  status,
+                  key: const Key('settings-save-status'),
+                  style: AppTypography.metadata.copyWith(
+                    color: _hasChanges
+                        ? AppColors.warning
+                        : AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _runtimeBusy
+                      ? '会话仍在运行或切换，请完成操作后保存。'
+                      : '保存会重新加载连接配置；当前会话可能需要恢复。',
+                  key: const Key('settings-save-impact'),
+                  style: AppTypography.metadata.copyWith(
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
               ],
-            );
-          }
-          return Row(
-            children: [
-              Expanded(child: details),
-              const SizedBox(width: 24),
-              actions,
-            ],
-          );
-        },
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _settingsScroll(Widget child, {Key? key}) => SingleChildScrollView(
     key: key,
-    padding: const EdgeInsets.all(30),
+    padding: const EdgeInsets.all(24),
     child: Align(
       alignment: Alignment.topLeft,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 920),
+        constraints: const BoxConstraints(maxWidth: 760),
         child: AbsorbPointer(
           absorbing: _saving || _readOnly,
           child: Focus(
@@ -470,7 +510,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            SizedBox(width: 336, child: list),
+            SizedBox(width: 260, child: list),
             const VerticalDivider(width: 1, color: AppColors.border),
             Expanded(child: detail),
           ],
@@ -491,14 +531,11 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
       list: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 14, 12),
+            padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
             child: Row(
               children: [
                 const Expanded(
-                  child: Text(
-                    'Agent 连接',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                  ),
+                  child: Text('Agent 连接', style: AppTypography.sectionTitle),
                 ),
                 add,
               ],
@@ -530,6 +567,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         children: [
           Expanded(
             child: DropdownButtonFormField<AgentServerConfig>(
+              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
               key: const Key('settings-agent-picker'),
               initialValue: selected,
               isExpanded: true,
@@ -638,10 +676,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
             child: Row(
               children: [
                 const Expanded(
-                  child: Text(
-                    'MCP 服务器',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                  ),
+                  child: Text('MCP 服务器', style: AppTypography.sectionTitle),
                 ),
                 add,
               ],
@@ -670,6 +705,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         children: [
           Expanded(
             child: DropdownButtonFormField<int>(
+              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
               key: const Key('settings-mcp-picker'),
               initialValue: selected == null
                   ? -1
@@ -742,44 +778,35 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
     String subtitle, {
     required Widget menu,
   }) => Padding(
-    padding: const EdgeInsets.only(bottom: 26),
+    padding: const EdgeInsets.only(bottom: 16),
     child: Column(
       children: [
         Row(
           children: [
             const Icon(
               Icons.terminal_rounded,
-              size: 46,
+              size: 28,
               color: AppColors.textSecondary,
             ),
-            const SizedBox(width: 18),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
-                      fontSize: 23,
-                      fontWeight: FontWeight.w600,
-                    ),
+                    style: AppTypography.sectionTitle,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
+                  const SizedBox(height: 4),
+                  Text(subtitle, style: AppTypography.metadata),
                 ],
               ),
             ),
             menu,
           ],
         ),
-        const SizedBox(height: 26),
+        const SizedBox(height: 16),
         const Divider(height: 1, color: AppColors.border),
       ],
     ),
@@ -803,10 +830,12 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         key: key,
         selected: selected,
         onTap: onTap,
-        leading: Icon(icon, size: 27, color: AppColors.textSecondary),
+        leading: Icon(icon, size: 18, color: AppColors.textSecondary),
         title: Text(
           name,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+          style: AppTypography.label.copyWith(
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+          ),
           overflow: TextOverflow.ellipsis,
         ),
         subtitle: Text(
@@ -814,7 +843,11 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
           style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        dense: true,
+        minTileHeight: 52,
+        minLeadingWidth: 18,
+        horizontalTitleGap: 10,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       ),
     ),
   );
@@ -838,24 +871,20 @@ class _SettingsField extends StatelessWidget {
         label: label,
         child: TextField(
           controller: controller,
-          style: const TextStyle(fontSize: 14),
+          style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
           decoration: InputDecoration(
             hintText: hint,
             contentPadding: const EdgeInsets.symmetric(
-              horizontal: 14,
-              vertical: 13,
+              horizontal: 12,
+              vertical: 10,
             ),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
           ),
         ),
       ),
     );
     return LayoutBuilder(
       builder: (context, bounds) {
-        final labelWidget = Text(
-          label,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-        );
+        final labelWidget = Text(label, style: AppTypography.label);
         if (bounds.maxWidth < 440) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -865,7 +894,7 @@ class _SettingsField extends StatelessWidget {
         return Row(
           children: [
             SizedBox(width: 94, child: labelWidget),
-            const SizedBox(width: 16),
+            const SizedBox(width: 12),
             Expanded(child: field),
           ],
         );

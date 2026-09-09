@@ -230,7 +230,20 @@ class MainFlutterWindow: NSWindow {
       name: "com.ianvs.acp/workspace-layout",
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
+    configureApplicationMenu()
     configureWorkspaceMenu()
+  }
+
+  func configureApplicationMenu() {
+    guard
+      let applicationMenu = NSApp.mainMenu?.items.first?.submenu,
+      let settingsItem = applicationMenu.items.first(where: {
+        $0.keyEquivalent == ","
+      })
+    else { return }
+    settingsItem.title = "Settings…"
+    settingsItem.action = #selector(openSettings)
+    settingsItem.target = self
   }
 
   func configureWindowChrome() {
@@ -281,6 +294,10 @@ class MainFlutterWindow: NSWindow {
 
   @objc private func toggleWorkspaceInspector(_ sender: Any?) {
     workspaceLayoutChannel?.invokeMethod("toggleInspector", arguments: nil)
+  }
+
+  @objc private func openSettings(_ sender: Any?) {
+    workspaceLayoutChannel?.invokeMethod("openSettings", arguments: nil)
   }
 
   private static func readPromptImage() throws -> [String: Any]? {

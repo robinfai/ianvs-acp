@@ -79,6 +79,33 @@ void main() {
     expect(find.text('Option 1023'), findsOneWidget);
   });
 
+  testWidgets('SessionSettingsDialog keeps a small settings set compact', (
+    tester,
+  ) async {
+    final smallController = ChatController(
+      client: FakeAgentClient(sessionSettings: _settingsWithModelAndReasoning),
+      cwd: '/workspace',
+    );
+    addTearDown(smallController.dispose);
+    await smallController.newSession();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SessionSettingsDialog(controller: smallController),
+        ),
+      ),
+    );
+
+    final viewport = find.byKey(const ValueKey('session-settings-viewport'));
+    expect(tester.getSize(viewport).height, lessThan(800 * 0.62));
+    final scrollable = tester.state<ScrollableState>(
+      find.descendant(of: viewport, matching: find.byType(Scrollable)),
+    );
+    expect(scrollable.position.maxScrollExtent, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'SessionSettingsDialog does not rescan unchanged config options',
     (tester) async {
@@ -818,6 +845,29 @@ const _settingsWithReasoning = AcpSessionSettings(
       options: [
         AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
         AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+      ],
+    ),
+  ],
+);
+
+const _settingsWithModelAndReasoning = AcpSessionSettings(
+  configOptions: [
+    AcpConfigOption(
+      id: 'model',
+      name: 'Model',
+      type: 'select',
+      currentValue: 'gpt-5',
+      options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+    ),
+    AcpConfigOption(
+      id: 'reasoning_effort',
+      name: 'Reasoning Effort',
+      type: 'select',
+      currentValue: 'medium',
+      options: [
+        AcpConfigOptionChoice(value: 'low', name: 'Low'),
+        AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
+        AcpConfigOptionChoice(value: 'high', name: 'High'),
       ],
     ),
   ],

@@ -274,4 +274,45 @@ void main() {
     expect(selected?.sessionTemplate, isNull);
     expect(selected?.agentServer?.name, 'Codex');
   });
+
+  testWidgets('NewSessionAgentDialog fits a narrow window', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(480, 600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: NewSessionAgentDialog(
+            currentAgentName: 'Codex',
+            initialCwd: '/workspace',
+            defaultSessionTemplateId: 'review',
+            agentServers: [
+              AgentServerConfig(
+                name: 'Codex',
+                type: 'custom',
+                command: '/usr/local/bin/codex',
+              ),
+            ],
+            sessionTemplates: [
+              SessionTemplateConfig(
+                id: 'review',
+                name: 'Review a long-running workspace change',
+                description:
+                    'Inspect the implementation and provide detailed feedback.',
+                model: 'review-model',
+                reasoningEffort: 'high',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.getSize(find.byType(AlertDialog)).width,
+      lessThanOrEqualTo(480),
+    );
+  });
 }

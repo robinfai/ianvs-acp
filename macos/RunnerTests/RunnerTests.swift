@@ -53,6 +53,31 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(window.toolbar?.autosavesConfiguration ?? true)
   }
 
+  func testSettingsMenuTargetsMainWindow() {
+    let previousMainMenu = NSApp.mainMenu
+    defer { NSApp.mainMenu = previousMainMenu }
+    let mainMenu = NSMenu(title: "Main Menu")
+    let applicationItem = NSMenuItem(title: "ACP Client", action: nil, keyEquivalent: "")
+    let applicationMenu = NSMenu(title: "ACP Client")
+    let settingsItem = NSMenuItem(title: "Preferences…", action: nil, keyEquivalent: ",")
+    applicationMenu.addItem(settingsItem)
+    applicationItem.submenu = applicationMenu
+    mainMenu.addItem(applicationItem)
+    NSApp.mainMenu = mainMenu
+    let window = MainFlutterWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+
+    window.configureApplicationMenu()
+
+    XCTAssertEqual(settingsItem.title, "Settings…")
+    XCTAssertEqual(settingsItem.action, NSSelectorFromString("openSettings:"))
+    XCTAssertTrue(settingsItem.target === window)
+  }
+
   func testRegisteredDeepLinkScheme() {
     let urlTypes = Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes")
       as? [[String: Any]]

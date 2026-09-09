@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -22,13 +23,17 @@ class MacosWorkspaceLayout extends StatefulWidget {
 
 class MacosWorkspaceLayoutState extends State<MacosWorkspaceLayout> {
   static const _menuChannel = MethodChannel('com.ianvs.acp/workspace-layout');
+  static MacosWorkspaceLayoutState? _menuHandlerOwner;
   VoidCallback? onSidebarMenu;
   VoidCallback? onInspectorMenu;
+  Future<void> Function()? onSettingsMenu;
+  bool _settingsRouteOpen = false;
 
   @override
   void initState() {
     super.initState();
     if (Platform.isMacOS) {
+      _menuHandlerOwner = this;
       _menuChannel.setMethodCallHandler((call) async {
         if (!mounted) return;
         switch (call.method) {
@@ -36,6 +41,8 @@ class MacosWorkspaceLayoutState extends State<MacosWorkspaceLayout> {
             onSidebarMenu?.call();
           case 'toggleInspector':
             onInspectorMenu?.call();
+          case 'openSettings':
+            unawaited(openSettings());
         }
       });
     }
@@ -43,7 +50,10 @@ class MacosWorkspaceLayoutState extends State<MacosWorkspaceLayout> {
 
   @override
   void dispose() {
-    if (Platform.isMacOS) _menuChannel.setMethodCallHandler(null);
+    if (Platform.isMacOS && identical(_menuHandlerOwner, this)) {
+      _menuHandlerOwner = null;
+      _menuChannel.setMethodCallHandler(null);
+    }
     super.dispose();
   }
 
@@ -54,6 +64,17 @@ class MacosWorkspaceLayoutState extends State<MacosWorkspaceLayout> {
   void toggleSidebar() => setState(() => sidebarVisible = !sidebarVisible);
   void toggleInspector() =>
       setState(() => inspectorVisible = !inspectorVisible);
+
+  Future<void> openSettings() async {
+    final callback = onSettingsMenu;
+    if (_settingsRouteOpen || callback == null) return;
+    _settingsRouteOpen = true;
+    try {
+      await callback();
+    } finally {
+      _settingsRouteOpen = false;
+    }
+  }
 
   void _resize(double delta) => setState(() {
     sidebarWidth = (sidebarWidth + delta).clamp(220.0, 320.0);
@@ -88,6 +109,8 @@ class MacosWorkspaceLayoutState extends State<MacosWorkspaceLayout> {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) => CallbackShortcuts(
       bindings: {
+        const SingleActivator(LogicalKeyboardKey.comma, meta: true): () =>
+            unawaited(openSettings()),
         if (constraints.maxWidth >= 780)
           const SingleActivator(
             LogicalKeyboardKey.keyS,

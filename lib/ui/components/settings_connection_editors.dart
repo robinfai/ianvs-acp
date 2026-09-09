@@ -143,6 +143,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
       children: [
         if (widget.presets.isNotEmpty) ...[
           DropdownButtonFormField<String>(
+            style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
             key: const Key('agent-preset-field'),
             isExpanded: true,
             initialValue: _selectedPreset,
@@ -168,19 +169,16 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
               });
             },
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 16),
         ],
-        const Text(
-          '启动配置',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 24),
+        const Text('启动配置', style: AppTypography.sectionTitle),
+        const SizedBox(height: 16),
         _SettingsField(
           key: const Key('agent-name-field'),
           controller: _nameController,
           label: '名称',
         ),
-        const SizedBox(height: 22),
+        const SizedBox(height: 12),
         if (_isRemote) ...[
           const _InlineError(message: '远程 ACP 当前不可用。保留此配置以兼容已有文件；请使用本地进程创建会话。'),
           const SizedBox(height: 16),
@@ -195,7 +193,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
             controller: _commandController,
             label: '启动命令',
           ),
-          const SizedBox(height: 22),
+          const SizedBox(height: 12),
           _StringListEditor(
             title: '启动参数',
             addLabel: '添加参数',
@@ -207,7 +205,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                 setState(() => _argControllers.removeAt(i).dispose()),
           ),
         ],
-        const SizedBox(height: 28),
+        const SizedBox(height: 24),
         const Divider(height: 1, color: AppColors.border),
         ExpansionTile(
           key: const Key('agent-advanced-settings'),
@@ -217,11 +215,10 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
           initiallyExpanded: true,
           maintainState: true,
           tilePadding: EdgeInsets.zero,
-          childrenPadding: const EdgeInsets.only(bottom: 24),
-          title: const Text(
-            '高级设置',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-          ),
+          childrenPadding: const EdgeInsets.only(bottom: 16),
+          dense: true,
+          minTileHeight: 36,
+          title: const Text('高级设置', style: AppTypography.label),
           children: [
             if (!_isRemote) ...[
               _SettingsField(
@@ -231,7 +228,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                 hint: '可选',
               ),
               const Padding(
-                padding: EdgeInsets.only(top: 8, bottom: 24),
+                padding: EdgeInsets.only(top: 8, bottom: 16),
                 child: Text(
                   'Agent 进程的启动目录，留空使用默认值；会话工作区在新建会话时选择。',
                   style: TextStyle(
@@ -267,8 +264,9 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                 onRemove: (i) =>
                     setState(() => _headerControllers.removeAt(i).dispose()),
               ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
             DropdownButtonFormField<String>(
+              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
               key: const Key('agent-type-field'),
               isExpanded: true,
               initialValue: _type,
@@ -307,7 +305,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
             ),
             if (widget.initialServer?.permissionReviewAgent.isConfigured ==
                 true) ...[
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
               const Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
@@ -635,8 +633,9 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
           label: '名称',
           icon: Icons.extension_outlined,
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
         DropdownButtonFormField<String>(
+          style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
           key: const Key('mcp-type-field'),
           initialValue: _type,
           decoration: _fieldDecoration(
@@ -662,12 +661,12 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
             });
           },
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 12),
         if (_type == 'acp') ...[
           const Text(
             'MCP-over-ACP is unavailable. This saved entry is retained; use stdio, HTTP or SSE for active sessions.',
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           _DialogTextField(
             key: const Key('mcp-id-field'),
             controller: _idController,
@@ -681,7 +680,7 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
             label: 'URL',
             icon: Icons.link_rounded,
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           _NameValueListEditor(
             title: '请求头',
             addLabel: '添加请求头',
@@ -703,7 +702,7 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
             label: '启动命令',
             icon: Icons.terminal_rounded,
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           _StringListEditor(
             title: '启动参数',
             addLabel: '添加参数',
@@ -716,7 +715,7 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
               _argControllers.removeAt(index).dispose();
             }),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           _NameValueListEditor(
             title: '环境变量',
             addLabel: '添加变量',
@@ -731,7 +730,7 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
           ),
         ],
         if (_error != null) ...[
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           _InlineError(message: _error!),
         ],
       ],
