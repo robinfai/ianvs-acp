@@ -451,99 +451,106 @@ class _PromptInputState extends State<PromptInput> {
                       ),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          if (_isDraggingAttachments)
-                            _AttachmentDropIndicator(
-                              kinds: _availableAttachmentKinds(
-                                widget.promptCapabilities,
-                              ),
-                            ),
-                          if (pendingPermissionRequest != null)
-                            Padding(
-                              padding: EdgeInsets.fromLTRB(8, 8, 8, 6),
-                              child: _PromptPermissionCard(
-                                request: pendingPermissionRequest,
-                                onAllow: widget.onAllowPermission,
-                                onDeny: widget.onDenyPermission,
-                                onCancel: widget.onCancelPermission,
-                                onSelectOption: widget.onSelectPermissionOption,
-                              ),
-                            ),
-                          if (commandSuggestions.isNotEmpty)
-                            _CommandSuggestionPanel(
-                              entries: commandSuggestions,
-                              parameterPreviews: commandParameterPreviews,
-                              onSelect: _insertCommand,
-                            ),
-                          if (_attachments.isNotEmpty)
-                            _AttachmentTray(
-                              attachments: _attachments,
-                              promptCapabilities: widget.promptCapabilities,
-                              onRemove: _removeAttachment,
-                            ),
-                          if (_attachments.any(
-                                (attachment) => attachment.isImage,
-                              ) &&
-                              widget.imageAttachmentLimitation != null)
-                            _ImageAttachmentLimitationNotice(
-                              message: widget.imageAttachmentLimitation!,
-                            ),
-                          AccessibleTextField(
-                            label: 'Prompt message for ${widget.agentName}',
-                            description:
-                                'Write a prompt to ${widget.agentName}',
-                            controller: _controller,
-                            enabled: widget.enabled,
-                            multiline: true,
-                            onChanged: _handlePromptChanged,
-                            builder: (focusNode) => Focus(
-                              canRequestFocus: false,
-                              skipTraversal: true,
-                              onKeyEvent: _handlePromptKeyEvent,
-                              child: TextField(
-                                controller: _controller,
-                                focusNode: focusNode,
-                                minLines: 1,
-                                maxLines: 6,
-                                keyboardType: TextInputType.multiline,
-                                enabled: widget.enabled,
-                                onChanged: _handlePromptChanged,
-                                style: TextStyle(
-                                  color: ChatTheme.of(context).textPrimary,
-                                  fontSize: 15,
-                                  height: 1.48,
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_isDraggingAttachments)
+                                _AttachmentDropIndicator(
+                                  kinds: _availableAttachmentKinds(
+                                    widget.promptCapabilities,
+                                  ),
                                 ),
-                                decoration: InputDecoration(
-                                  hint: ExcludeSemantics(
-                                    child: Text(
-                                      ChatStrings.of(
-                                            context,
-                                          )?.promptHint(widget.agentName) ??
-                                          '发送消息给 ${widget.agentName}',
-                                      style: TextStyle(
-                                        color: ChatTheme.of(
-                                          context,
-                                        ).textTertiary,
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w400,
+                              if (pendingPermissionRequest != null)
+                                Padding(
+                                  padding: EdgeInsets.fromLTRB(8, 8, 8, 6),
+                                  child: _PromptPermissionCard(
+                                    request: pendingPermissionRequest,
+                                    onAllow: widget.onAllowPermission,
+                                    onDeny: widget.onDenyPermission,
+                                    onCancel: widget.onCancelPermission,
+                                    onSelectOption:
+                                        widget.onSelectPermissionOption,
+                                  ),
+                                ),
+                              if (commandSuggestions.isNotEmpty)
+                                _CommandSuggestionPanel(
+                                  entries: commandSuggestions,
+                                  parameterPreviews: commandParameterPreviews,
+                                  onSelect: _insertCommand,
+                                ),
+                              if (_attachments.isNotEmpty)
+                                _AttachmentTray(
+                                  attachments: _attachments,
+                                  promptCapabilities: widget.promptCapabilities,
+                                  onRemove: _removeAttachment,
+                                ),
+                              if (_attachments.any(
+                                    (attachment) => attachment.isImage,
+                                  ) &&
+                                  widget.imageAttachmentLimitation != null)
+                                _ImageAttachmentLimitationNotice(
+                                  message: widget.imageAttachmentLimitation!,
+                                ),
+                              AccessibleTextField(
+                                label: 'Prompt message for ${widget.agentName}',
+                                description:
+                                    'Write a prompt to ${widget.agentName}',
+                                controller: _controller,
+                                enabled: widget.enabled,
+                                multiline: true,
+                                onChanged: _handlePromptChanged,
+                                builder: (focusNode) => Focus(
+                                  canRequestFocus: false,
+                                  skipTraversal: true,
+                                  onKeyEvent: _handlePromptKeyEvent,
+                                  child: TextField(
+                                    controller: _controller,
+                                    focusNode: focusNode,
+                                    minLines: 1,
+                                    maxLines: 6,
+                                    keyboardType: TextInputType.multiline,
+                                    enabled: widget.enabled,
+                                    onChanged: _handlePromptChanged,
+                                    style: TextStyle(
+                                      color: ChatTheme.of(context).textPrimary,
+                                      fontSize: 15,
+                                      height: 1.48,
+                                    ),
+                                    decoration: InputDecoration(
+                                      hint: ExcludeSemantics(
+                                        child: Text(
+                                          ChatStrings.of(
+                                                context,
+                                              )?.promptHint(widget.agentName) ??
+                                              '发送消息给 ${widget.agentName}',
+                                          style: TextStyle(
+                                            color: ChatTheme.of(
+                                              context,
+                                            ).textTertiary,
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
                                       ),
+                                      filled: false,
+                                      isCollapsed: true,
+                                      contentPadding: EdgeInsets.fromLTRB(
+                                        15,
+                                        14,
+                                        15,
+                                        24,
+                                      ),
+                                      border: InputBorder.none,
+                                      enabledBorder: InputBorder.none,
+                                      focusedBorder: InputBorder.none,
+                                      disabledBorder: InputBorder.none,
                                     ),
                                   ),
-                                  filled: false,
-                                  isCollapsed: true,
-                                  contentPadding: EdgeInsets.fromLTRB(
-                                    15,
-                                    14,
-                                    15,
-                                    24,
-                                  ),
-                                  border: InputBorder.none,
-                                  enabledBorder: InputBorder.none,
-                                  focusedBorder: InputBorder.none,
-                                  disabledBorder: InputBorder.none,
                                 ),
                               ),
-                            ),
+                            ],
                           ),
                           Padding(
                             padding: EdgeInsets.fromLTRB(10, 0, 10, 10),
