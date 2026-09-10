@@ -1,5 +1,7 @@
 # ACP theme system and terminal integration QA
 
+> 历史场景评审/验收，结论只适用于本文的截图和构建。当前能力见[产品能力](../../docs/product_capabilities.md)，后续设计记录见[文档导航](../../docs/README.md)；本文不充当当前待办或全应用验收。
+
 Reference: `../design-reference/conversation-canvas-option-2.png`
 
 Native implementation: `native-theme-terminal-pubdev-0.1.0.jpeg`

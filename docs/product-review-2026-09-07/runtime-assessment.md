@@ -1,5 +1,7 @@
 # Runtime 技术能力与产品成本评估
 
+> 历史评估，基线 `322cc03`（2026-09-07）。后续包抽离与清理已改变文件位置和部分结论；执行结果见[清理验收](../cleanup-acceptance-2026-09-09.md)，现状见[产品能力](../product_capabilities.md)。文中行号及“当前”只指原基线，候选不等于待执行清单。
+
 日期：2026-09-07
 范围：`lib/acp`、`lib/config`、`lib/storage`、`lib/terminal`、`rust/crates/ianvs-acp-core`，以及相关测试和 runtime 文档。
 方法：静态阅读当前工作区代码；本次未运行测试，因此“存在测试文件”只表示有验证意图，不代表测试当前通过。

@@ -10,7 +10,7 @@
 
 - [最终验收结果](acceptance.md)：测试数、原生操作、范围与复现命令。
 - [设计全图并列](screenshots/comparison/full.png) / [详情并列](screenshots/comparison/details.png)。
-- [逐项实现标注 A1–A8](implementation-comparison.md) / [视觉验收](../../design-qa.md)。
+- [逐项实现标注 A1–A8](implementation-comparison.md) / [视觉验收](design-qa-imagegen.md)。
 
 ## 现状与取舍
 

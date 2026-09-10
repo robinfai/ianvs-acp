@@ -1,7 +1,11 @@
 # 配置项证据清单
 
+> 改版前历史基线（2026-09-09）。下文入口、行号、缺口和建议描述设置重设计之前；完成情况见[当轮验收](acceptance.md)，后续尺寸调整见[macOS 设置验收](../macos-settings-refinement-2026-09-09/README.md)。当前字段作用和生效语义以[配置指南](../configuration.md)为准。
+
 日期：2026-09-09
-范围：`AcpClientConfig`、Agent/MCP 编辑器、Assistant、权限/reviewer、本地存储、会话模板、当前会话设置与 Independent LLM chat。本文描述当前工作树中的真实实现，作为设置重设计和后续实现对比的基线。
+范围：`AcpClientConfig`、Agent/MCP 编辑器、Assistant、权限/reviewer、本地存储、会话模板、当前会话设置与 Independent LLM chat。本文保留改版前的源码盘点，作为设置重设计的历史输入。
+
+2026-09-10 校准注：原表将 `filesystem.allow_read_outside_workspace` 的配置/UI 含义直接写成运行时能力，证据不足。当前 Rust 仅接收 read/write 开关，所有读取仍受工作区根约束；详见[配置指南](../configuration.md)和[人工后续项](../manual_followups.md)。保存晚到操作的延迟应用、模板权限按对象替换、权限历史的连接范围也以现行说明为准。
 
 ## 先区分五种作用域
 

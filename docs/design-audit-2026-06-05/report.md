@@ -1,5 +1,7 @@
 # Ianvs ACP 应用设计评审
 
+> 历史截图评审（2026-06-05），不是当前缺陷清单。后续见[macOS 重构验收](../macos-ui-refactor-2026-09-07/acceptance.md)和[设置调整验收](../macos-settings-refinement-2026-09-09/README.md)；其他体验问题仍需在当前构建复现，不能推断全部已修复。
+
 日期：2026-06-05
 
 ## 审查范围

@@ -8,7 +8,7 @@
 
 - [逐项实现标注 A1–A8](implementation-comparison.md)：分类、内联连接编辑、唯一保存点、配置作用域、权限来源、AI 辅助、会话菜单、新建与恢复入口。
 - [设计与实现全图并列](screenshots/comparison/full.png)、[详情区域并列](screenshots/comparison/details.png)。
-- [视觉验收与修复历史](../../design-qa.md)：最终 `passed`。
+- [视觉验收与修复历史](design-qa-imagegen.md)：最终 `passed`。
 - [改版前审计](visual-audit.md)、[全部配置清单](config-inventory.md)、[入口清单](navigation-audit.md)。
 
 ## 自动验证

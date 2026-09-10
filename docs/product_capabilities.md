@@ -1,6 +1,6 @@
 # Product capabilities
 
-Updated: 2026-09-09
+Updated: 2026-09-10. Source baseline: `b9297f5`.
 
 ianvs is a workspace and local ACP session client. This document is the
 canonical list of capabilities exposed by the main application. Protocol and
@@ -14,6 +14,9 @@ and the reusable chat package has its own
   sessions to discover workspace roots.
 - Create new sessions; manually list and restore existing sessions; and close or
   delete sessions when the negotiated local Agent supports those operations.
+- Show connection, creation, configuration, and applicable template progress
+  while creating a session. New empty sessions stay out of sidebar history
+  until their first prompt.
 - Rename, pin, archive, mark unread, copy, and open locally indexed sessions in
   another window. These are application projections and do not imply matching
   ACP protocol methods.
@@ -53,12 +56,13 @@ display zero as a substitute.
 
 ## Activity and human decisions
 
-`Activity & Diagnostics` groups three views for the active session:
+`Activity & Diagnostics` opens from the active controller and groups three views:
 
 - `Events` shows the chronological prompt/response, tool, status, permission,
   and error trajectory.
-- `Permissions` shows the bounded in-process permission history and exports the
-  same audit data.
+- `Permissions` shows and exports that controller/connection's bounded
+  in-process permission history. It may include its other sessions; histories
+  from other connections are not combined.
 - `Runtime` shows the effective recipe, MCP and client providers, negotiated
   capabilities, compatibility degradations, and secret-safe inventory.
 
@@ -72,6 +76,9 @@ same policy as other ACP tool calls.
 
 - Filesystem read/write and ACP terminal providers are opt-in, Rust-owned, and
   scoped to the session workspace roots.
+- The saved `filesystem.allow_read_outside_workspace` switch does not widen
+  the Rust provider's roots; that field has no production runtime wiring. See
+  [Configuration](configuration.md) for this limitation and effective controls.
 - Stable stdio, HTTP, and SSE MCP server configuration can be sent through a
   local stdio ACP session when the Agent advertises the matching MCP capability.
 - A configured MCP tool or isolated ACP sidecar can review a permission request.

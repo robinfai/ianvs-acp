@@ -1,20 +1,23 @@
 # 会话加载架构
 
-Updated: 2026-09-09
+Updated: 2026-09-10. Source baseline: `b9297f5`.
 
 ## 范围与行为基线
 
-当前行为以 `6091b82` 源码为准。文末 2026-08-04 至 2026-08-10 的性能数据是当时构建的历史验收记录，不替代当前版本的桌面验收。此前未提交的虚拟历史窗口、占位高度、滚动触发加载、锚点恢复，以及“先显示最近消息预览”的方案均已移除。时间线继续沿用基线渲染模型。
+本文维护当前恢复链路，核对依据为 [ChatController](../lib/state/chat_controller.dart)、[Rust 适配器](../lib/acp/rust_acp_agent_client.dart) 与 [Rust Core](../rust/crates/ianvs-acp-core/src/runtime.rs)。性能诊断和文末 2026-08-04 至 2026-08-10 的数字属于历史验收，不替代当前构建的桌面实测。当前没有协议历史分页或“先显示最近消息预览”的路径。
 
-用户可见语义只有以下几种：
+以下描述需向 Agent 恢复连接的路径；已有内存会话视图可直接激活，不重复请求回放。恢复期间的可见状态为：
 
 1. 无缓存加载中：旧会话已经隐藏，消息区为空，只显示会话加载状态；
 2. 精确版本缓存命中：一次通知显示完整缓存转录，连接状态可继续显示 loading；
-3. 连接完成：移除 loading，时间线内容不发生替换。
+3. 无缓存完整回放完成：原子显示已验证转录并移除 loading；
+4. 缓存命中后的连接完成：移除 loading，时间线不替换。
+
+如果 Agent 只支持 resume、不支持 load，客户端可以恢复连接，但无缓存时无法取回历史，消息区保持空白。这个降级不代表原会话没有历史。
 
 因此不会先显示最新几条，再替换为完整会话，也不会显示正在回放的半成品历史。缓存命中时显示的是同一 `updatedAt` 对应的全部消息，而不是尾部预览。
 
-## 性能诊断
+## 历史性能诊断（2026-08）
 
 目标 Codex rollout JSONL 约 510 MB、19,961 行，其中 104 行超过 1 MiB，最大单行约 13.9 MiB。大量 `compacted` 记录重复携带 replacement history。
 
@@ -38,16 +41,17 @@ Updated: 2026-09-09
 
 `session/list` 只在用户打开 `Resume Session` 后调用，用于手动选择要恢复的会话；应用启动、agent 配置变更、workspace 展开都不会触发全量会话扫描，也不会用扫描结果自动创建 workspace。
 
-ACP 当前没有 history cursor、offset、tail window 或 limit。`session/load` 发出的 `session/update` 是完整回放流，不是可由客户端任意分页的接口。因此本应用不能在不改变 agent/app-server 协议的前提下伪造“只拉最近 50 条”。
+当前仓库使用的 ACP 恢复接口没有 history cursor、offset、tail window 或 limit。`session/load` 发出的 `session/update` 是完整回放流，不是可由客户端任意分页的接口。因此本应用不能在不改变 agent/app-server 协议的前提下伪造“只拉最近 50 条”。
 
 Rust core 接收显式的 `replay_history`：
 
 - `true` 且 agent 支持 load：调用 `session/load`；
 - `false` 且 agent 支持 resume：调用 `session/resume`；
+- `true` 但 agent 不支持 load、只支持 resume：调用 `session/resume`，返回 `replayedHistory=false`，无法补取历史；
 - agent 不支持 resume：回退到 `session/load`，并返回 `replayedHistory=true`；
 - 两者都不支持：返回可恢复的协议错误。
 
-最终方法语义通过 `session_restored.payload.replayedHistory` 贯穿 Rust、FFI、Dart 和指标，UI 不根据事件数量猜测是否回放了历史。
+最终方法语义通过 `session_restored.payload.replayedHistory` 贯穿 Rust、FFI、Dart 和指标，UI 不根据事件数量猜测是否回放了历史。Dart 的 `restoreSession` 必须提供 `onEvent` 流式消费，返回值仅为 `AcpSessionRestoreSummary(eventCount, replayedHistory)`；每个请求独立生成摘要，并发恢复不共享上一请求的回放标记，也不返回第二份完整事件列表。
 
 ## Rust 渲染投影与 FFI 有界延迟传输
 
@@ -92,7 +96,7 @@ ianvs_acp_poll_events(runtime, max_events, max_bytes, timeout_ms)
 - `hasMore=true` 时 Dart 在下一次 event-loop turn 拉取下一批；调用方仍可显式配置更长的批间 delay；
 - `hasMore=false` 时才进入正常等待，避免空轮询；
 - 每批只做一次 UTF-8/JSON 边界转换，减少 FFI 调用、isolate 启动和 JSON decoder 固定成本；
-- 单个事件仍允许超过批预算以保证协议能前进；达到 128 KiB 的批次改在后台 isolate 做 JSON decode；
+- 达到 128 KiB 的批次改在后台 isolate 做 JSON decode；
 - 解码后的事件保持严格 sequence 顺序同步投影，每耗尽 4 ms 时间片才 yield，避免 2 MiB 大批次形成长 UI task。
 
 这属于“有界、按需拉取”的传输延迟优化。它控制内存峰值和桥接调度，但不会把 ACP 完整回放变成协议分页。
@@ -101,13 +105,13 @@ ianvs_acp_poll_events(runtime, max_events, max_bytes, timeout_ms)
 
 完整 `session/load` 成功后，controller 将已经按输入预算校验过的 `ChatMessage` 转录异步写入本地缓存。缓存身份由以下字段共同确定：
 
-- agent name；
+- `sessionPersistenceIdentity`（Agent 的稳定持久身份，缺省回退为名称）；
 - session id；
 - cwd；
 - additional directories（顺序也必须相同）；
 - `session/list.updatedAt`。
 
-再次打开会话时，目录请求和缓存读取并行执行：
+用户在目录中选定会话后，controller 用已取得的 `updatedAt` 读取缓存；缓存读取可与连接准备重叠，不会为了读取缓存另发一次并行 `session/list`：
 
 ```mermaid
 flowchart TD
@@ -117,15 +121,18 @@ flowchart TD
     M -->|"是，且 agent 支持 resume"| R["一次通知显示完整缓存转录"]
     R --> SR["后台 ACP session/resume，不回放历史"]
     SR --> A["移除 loading，时间线不替换"]
-    M -->|"否"| L["ACP session/load，隐藏投影完整回放"]
+    M -->|"否或不支持 resume"| P{"Agent 支持 load？"}
+    P -->|"是"| L["ACP session/load，隐藏投影完整回放"]
     L --> W["一次通知显示并异步更新缓存"]
+    P -->|"否，仅支持 resume"| O["连接恢复；无历史回放，不写回放缓存"]
+    P -->|"两者均不支持"| E["恢复失败，回滚 UI 状态"]
 ```
 
-缓存不是最近一屏预览，也不是部分历史。它只在目录版本精确匹配且 agent 支持 resume 时使用；`updatedAt` 改变、身份不匹配、文件损坏、字段超出输入预算或 agent 不支持 resume，都会自动回退到完整 `session/load`。本应用未正式发布，因此 client 接口不保留忽略 `replayHistory` 的旧兼容路径：所有实现都必须遵守该参数。若实现最终仍报告 `replayedHistory!=false`，controller 会使恢复失败而不是混合缓存与意外回放。
+缓存不是最近一屏预览，也不是部分历史。它只在目录版本精确匹配且 agent 支持 resume 时使用；`updatedAt` 改变、身份不匹配、文件损坏、字段超出输入预算或 agent 不支持 resume，都会放弃缓存路径，并在 agent 支持 load 时回退完整 `session/load`；仅支持 resume 或两者均不支持时遵循上面的降级/报错规则。内部 client 接口不保留忽略 `replayHistory` 的旧兼容路径：实现必须在宣告支持 resume 时遵守 `replayHistory=false`。若实现最终仍报告 `replayedHistory!=false`，controller 会使恢复失败而不是混合缓存与意外回放。
 
-缓存命中后的消息重建仍要执行角色、时间、omission 和 metadata 输入预算校验。目标缓存约 30.9 MiB，若在 UI isolate 一次完成会形成长帧。重建现在使用 4 ms 时间片：每次耗尽时间片就先归还事件循环，确认 session-operation generation 仍有效后继续；只有整份转录全部校验成功才一次安装到 `_messages`。因此“完整内容原子显示”和“加载过程可响应”同时成立。
+缓存命中后的消息重建仍要执行角色、时间、omission 和 metadata 输入预算校验。历史验收样本的目标缓存约 30.9 MB（约 29.5 MiB），若在 UI isolate 一次完成会形成长帧。重建现在使用 4 ms 时间片：每次耗尽时间片就先归还事件循环，确认 session-operation generation 仍有效后继续；只有整份转录全部校验成功才一次安装到 `_messages`。因此“完整内容原子显示”和“加载过程可响应”同时成立。
 
-文件缓存采用 schema version、稳定会话身份的 SHA-256 文件名、私有权限、跨进程锁和原子替换；`updatedAt` 只在文件内容中做版本校验，因此同一会话的新版本会覆盖旧文件，不会逐版本堆积。默认拒绝超过 2,000 条消息或 48 MiB 的缓存文件。JSON 编解码在 isolate 中执行。缓存读取失败不影响 ACP 正常恢复。
+文件缓存采用 schema version、稳定会话身份的 SHA-256 文件名、私有权限、跨进程锁和原子替换；`updatedAt` 只在文件内容中做版本校验，因此同一会话的新版本会覆盖旧文件，不会逐版本堆积。默认拒绝超过 2,000 条消息或 48 MiB 的缓存文件。JSON 编解码在 isolate 中执行。缓存读取失败不影响 ACP 正常恢复。存储目录、总容量和保留期的维护规则统一见[本地恢复存储](sqlite_storage.md)。
 
 ## 显示、隐藏与生命周期
 
@@ -161,7 +168,7 @@ Debug 构建对超过 100 ms 的加载输出一条 `[session-load]`。验收重�
 
 ## 验收标准
 
-自动化验收使用真实会话“拉取最新代码并运行”，覆盖：
+恢复链路应覆盖以下场景。文末历史自动化使用真实会话“拉取最新代码并运行”；复验需使用当前构建和可用样本，不能沿用历史耗时作为当次结果：
 
 1. 首次无缓存打开时只显示 loading，不显示最新消息或半成品历史；
 2. 首次完整 load 后一次显示完整会话并写入版本化缓存；
@@ -215,3 +222,10 @@ Codex 0.147 与 codex-acp 1.1.14 恢复会话；未配置 transcript cache。三
 回放在 adapter 完成前约 6.65 秒就开始进入隐藏 staging；它不代表 UI 多等待了 6.74 秒。
 最终完整可见时间与 adapter 发布结束基本重合。剩余约 33 秒主要仍属于 Codex/adapter 的
 rollout 读取和事件生成，客户端在不改协议、不使用应用层缓存的约束下已不再追加显著串行尾段。
+
+## 当前回归入口
+
+[controller 测试](../test/state/chat_controller_test.dart)覆盖缓存命中/失效、完整显示、失败回滚与会话边界；
+[Rust 适配器测试](../test/acp/rust_acp_agent_client_test.dart)覆盖流式恢复与并发请求摘要隔离；
+[新会话加载测试](../test/ui/new_session_loading_test.dart)覆盖创建阶段提示和未发送会话的侧栏可见性。
+这些源码与测试是当前行为依据，历史性能表只描述各自的实测环境。

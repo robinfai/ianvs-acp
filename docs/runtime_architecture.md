@@ -1,6 +1,6 @@
 # Runtime architecture
 
-Updated: 2026-09-09
+Updated: 2026-09-10. Source baseline: `b9297f5`.
 
 ianvs is a workspace-oriented ACP desktop client. The production ACP path has
 one protocol authority: Flutter presents workspaces and sessions, while Rust
@@ -35,6 +35,10 @@ session state, request correlation, prompt cancellation, permission settlement,
 workspace boundaries, filesystem callbacks, ACP terminal callbacks, and
 recovery. `ianvs-acp-ffi` exposes typed operations and versioned runtime events.
 Raw protocol frames never cross the ABI.
+
+The saved `filesystem.allow_read_outside_workspace` field is not passed into
+Rust's `FilesystemConfig`. Reads still resolve through `WorkspaceScope`; the
+GUI switch does not bypass that validation. See [Configuration](configuration.md).
 
 The standalone `ianvs_agent_chat` package owns reusable timeline, composer, and
 chat-session contracts. The main application connects the ACP controller through
@@ -113,7 +117,9 @@ The application groups runtime inspection under `Activity & Diagnostics`:
 - `Runtime` combines the effective recipe, runtime inventory, negotiated
   compatibility, and degradation reasons without exposing credential values.
 
-The three views retain their existing data sources and session scope. The
+Events follow the current session. Permissions can include other sessions
+retained by the same controller/connection and exclude other connections;
+Runtime describes the selected controller's effective configuration. The
 container does not create another activity database or change permission
 settlement and retention semantics.
 
@@ -140,7 +146,8 @@ preferences and the local index of sessions the app has created or resumed.
 Concurrent app windows merge independent record-field updates and expanded
 Workspace set changes. This state file is outside the payload-store size and
 retention policy. The ACP Agent remains the canonical owner of conversation
-events.
+events. Paths, per-store capacity, and maintenance timing are defined in
+[Local recovery storage](sqlite_storage.md).
 
 ## Packaging and verification
 

@@ -1,6 +1,8 @@
 # 现状截图与问题标注
 
-日期：2026-09-09。截图由 [capture_test.dart](capture_test.dart) 渲染当前实际 Flutter 应用组件，1440×1024、DPR 1。数据来自 [fixture.dart](fixture.dart) 的 FakeAgentClient 和隔离配置；配置写入替换为内存回调，不连接外部 Agent，也不读取用户会话。
+> 改版前历史基线（2026-09-09）。下文入口、行号、缺口和建议描述设置重设计之前；完成情况见[当轮验收](acceptance.md)，后续尺寸调整见[macOS 设置验收](../macos-settings-refinement-2026-09-09/README.md)。当前字段作用和生效语义以[配置指南](../configuration.md)为准。
+
+日期：2026-09-09。截图由 [capture_test.dart](capture_test.dart) 渲染改版前实际 Flutter 应用组件，1440×1024、DPR 1。数据来自 [fixture.dart](fixture.dart) 的 FakeAgentClient 和隔离配置；配置写入替换为内存回调，不连接外部 Agent，也不读取用户会话。
 
 截图并非原生桌面录屏。字体使用 Arial/Hiragino/Roboto Mono 代替系统动态字体，背景 Inspector 个别中文 glyph 缺失是采集限制，不能当成生产缺陷。Fake 暴露的 fork 能力也不能证明生产 Rust 支持 fork。Agent 示例启动配方只用于表单排版，不作为安装或兼容认证。
 

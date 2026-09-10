@@ -1,10 +1,12 @@
 # 配置与操作入口导航审计
 
+> 改版前历史基线（2026-09-09）。下文入口、行号、缺口和建议描述设置重设计之前；完成情况见[当轮验收](acceptance.md)，后续尺寸调整见[macOS 设置验收](../macos-settings-refinement-2026-09-09/README.md)。当前字段作用和生效语义以[配置指南](../configuration.md)为准。
+
 日期：2026-09-09
 
 ## 1. 范围与结论
 
-本审计只依据当前代码，不复用旧报告的结论。阅读范围包括 `app_shell`、`agent_toolbar`、`workspace_sidebar`、`workspace_inspector`、新建/恢复会话、Agent 配置、会话设置、活动诊断和独立 LLM 入口。
+本审计依据改版前代码，不复用更早报告的结论。阅读范围包括 `app_shell`、`agent_toolbar`、`workspace_sidebar`、`workspace_inspector`、新建/恢复会话、Agent 配置、会话设置、活动诊断和独立 LLM 入口。
 
 本文的扩展建议用于记录候选方向，不代表本轮交付承诺；最终实施范围以同目录 [`README.md`](README.md) 的“本轮实施边界”为准。特别是完整模板 CRUD、新建会话高级 override、独立 workspace overview、手动 Agent discovery 和把独立 LLM 改造成新产品入口，均属于候选，不应从本文推断为本轮必做项。
 

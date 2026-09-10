@@ -1,10 +1,13 @@
 # Agent Chat 模块边界
 
+Updated: 2026-09-10. Source baseline: `b9297f5`.
+
 `packages/ianvs_agent_chat` 提供可嵌入的 Flutter 会话界面，同时支持 ACP
 客户端投影和 OpenAI 兼容的 Chat Completions 接口。
 
-首版已发布：[ianvs_agent_chat 0.1.0](https://pub.dev/packages/ianvs_agent_chat/versions/0.1.0)。
-独立临时宿主已从 pub.dev 安装该版本，公开 UI 和 LLM 接口静态检查通过。
+主应用在根 `pubspec.yaml` 中通过本地 path 使用该包；仓库包版本为 `0.1.0`。
+本文维护主应用接入边界，公开 API、LLM 接入、Mermaid 和平台要求统一见
+[包 README](../packages/ianvs_agent_chat/README.md)。仓库当前源码与首版发布归档不能视为逐字相同。
 
 ```text
 ACP ChatController → AcpChatSession ─┐
@@ -46,7 +49,12 @@ LLM API 仅提供模型推理。工具执行由宿主显式注册回调，默认
 界面按能力显示附件、执行策略、权限和队列操作。LLM 首版支持文本，
 可显式启用内联图片；普通文件、音频、服务端恢复和模型发现尚未实现。
 
-## 首版验证
+## 首版历史验证（2026-09-08，`6091b82`）
+
+以下保留首版交付时的记录，不是 2026-09-10 重跑结果，也不代表当前测试归属与数量。
+原交付记录称已发布 [ianvs_agent_chat 0.1.0](https://pub.dev/packages/ianvs_agent_chat/versions/0.1.0)，
+并由临时宿主从 pub.dev 安装、检查公开 UI/LLM 接口。本轮没有取得远端发布页内容，
+不将这条历史记录当作重新核验的发布状态。
 
 - 主应用完整 Flutter 回归：1,635 项通过。
 - 独立包协议及组件测试：16 项通过。
@@ -59,5 +67,5 @@ DeepSeek 测试通过 `RUN_DEEPSEEK_TESTS=1` 显式启用，从环境变量
 `DEEPSEEK_API_KEY` 读取凭据。默认测试不联网；发布归档不包含联调脚本。
 
 macOS 需要 Merman 的 CocoaPods 和动态库路径修正，完整设置见包内
-README 与 example。其他平台未完成同等运行验收。首版仅开放主要输入
+README 与 example。其他平台在首版未完成同等运行验收。首版仅开放主要输入
 标签的自定义，完整多语言支持仍需后续扩展。

@@ -129,6 +129,27 @@ ChatTheme(
 - Supply `readClipboardImage` to enable your host's image clipboard. No application-specific native channel is required.
 - Use `ChatTimeline` and `PromptInput` independently when your host owns layout.
 
+### Mermaid rendering
+
+Assistant messages render fenced `mermaid` blocks through the shared timeline.
+For an independent diagram, import the package's Mermaid entry point:
+
+```dart
+import 'package:ianvs_agent_chat/mermaid/mermaid.dart';
+
+MermaidView(source: 'flowchart TD\nA --> B');
+```
+
+The default renderer uses native `package:merman` through Dart FFI and displays
+SVG with `flutter_svg`. `MermaidRenderOptions.flutterSvgDefault` selects the
+`resvg-safe` SVG profile. CSS normalization inlines supported Mermaid style
+rules before display so unsupported SVG style blocks do not cause black fills.
+The in-memory LRU cache is keyed by source, options JSON, and engine version.
+
+Use `NativeMermanRenderer` to reuse an engine instance, `MermaidController` for
+live render state, and the renderer's `layoutJson()` for node/edge geometry.
+Apply the macOS integration below before relying on native rendering.
+
 ### macOS native rendering
 
 The bundled Mermaid renderer currently uses Merman's CocoaPods library on macOS. The example disables Swift Package Manager to avoid Merman 0.7.0's missing SPM artifact. Set this in a macOS host's pubspec before building:

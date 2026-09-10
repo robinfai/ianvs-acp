@@ -1,10 +1,10 @@
 # 兼容处理与清理维护方案
 
-Updated: 2026-09-09
+Updated: 2026-09-10. Source baseline: `b9297f5`.
 
-本记录承接[上一轮清理验收](cleanup-acceptance-2026-09-09.md)，区分本次已清理内容、仍有必要的处理，以及需要先收缩契约才能退役的分支。当前产品事实以[产品能力](product_capabilities.md)和[运行时架构](runtime_architecture.md)为准。
+本记录承接[上一轮清理验收](cleanup-acceptance-2026-09-09.md)，区分本次已清理内容、仍有必要的处理，以及需要先收缩契约才能退役的分支。当前产品事实以[产品能力](product_capabilities.md)和[运行时架构](runtime_architecture.md)为准。下列保留项仍是维护参考；实施与测试部分固定记录 2026-09-09 阶段。“越界读取”开关未接入 Rust 的后续决策集中记录在[人工后续项](manual_followups.md)，不另建一份待办。
 
-## 本次实施
+## 2026-09-09 实施记录
 
 - Rust Dart 适配器恢复会话只通过必填的 `onEvent` 投递历史，返回 `AcpSessionRestoreSummary`。删除无人使用的事件列表返回值、列表缓存、无 observer 时的缓存分支，以及跨请求共享的 `_lastRestoreReplayedHistory`。摘要在对应请求完成时生成，保留重复恢复保护、失败清理和流式计数。
 - 清理 `mode_changed` 中的 `currentModeId` 字段兜底。当前 ABI v10 的 Rust 控制事件统一产生 `modeId`；会话初始化 `modes.currentModeId` 不变。
@@ -107,11 +107,11 @@ Updated: 2026-09-09
 
 **退役条件：** 旧缓存可读取或可安全回放恢复；缺失 usage 保持未知，不能填零。保留 `session/list` 标题/时间、available commands、恢复事务和真正的缓存预算限制。
 
-## 验证记录
+## 2026-09-09 历史验证记录
 
 清理前新增的并发恢复回归复现：第一个请求 `replayHistory: true`，第二个为 `false`，第一个摘要错误返回 `false`。该回归验证请求结果隔离，不依赖被删除的私有实现。
 
-本次 `make verify` 退出码为 0：
+以下为 `b9297f5` 随附的清理验收记录；2026-09-10 文档校准没有重跑这组全量检查。当时 `make verify` 退出码为 0：
 
 | 检查 | 结果 |
 | --- | --- |

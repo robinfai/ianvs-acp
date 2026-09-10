@@ -9,7 +9,8 @@ filesystem callbacks, and terminal callbacks. Prompt attachments can be
 selected or dropped onto the composer; file, image, and audio content follows
 the negotiated prompt capabilities, with resource-link fallback where needed.
 
-See [Product capabilities](docs/product_capabilities.md),
+Start with the [documentation index](docs/README.md) for current guides and
+historical records. See [Product capabilities](docs/product_capabilities.md),
 [Runtime architecture](docs/runtime_architecture.md), and
 [Conversation loading architecture](docs/conversation_loading_architecture.md).
 Open decisions and manual release checks are tracked in
@@ -28,8 +29,12 @@ current ACP session.
 The package includes a runnable macOS example and documents native integration
 requirements, theming, tools, approvals and lifecycle ownership.
 
-Starting a new session prompts for the session working directory, offers local
-directory path completions while typing, and can apply a versioned session
+## Workspaces and sessions
+
+Starting a new session shows connection, creation, settings, and applicable
+template progress. A newly created empty session appears in sidebar history
+after its first prompt. Creating a session prompts for its working directory,
+offers local directory path completions while typing, and can apply a versioned session
 template that selects the agent runtime, MCP set, workspace roots, permission
 policy, assistant enhancer, mode, model, and reasoning effort.
 
@@ -44,224 +49,33 @@ Workspaces are added explicitly from the sidebar and retained in
 `workspace_ui_state.json`. The app does not scan every Codex/ACP session to
 discover workspaces. Existing sessions are queried only after the user opens
 `Resume Session`; selecting one shows its workspace review before the app sends
-`session/resume` or falls back to `session/load` when required by the agent.
+`session/load` to replay history. An exact-revision transcript cache hit uses
+`session/resume` when advertised; an Agent offering only resume can reconnect
+without replay. The [loading guide](docs/conversation_loading_architecture.md)
+describes those capability and cache decisions.
 For Git repositories, the workspace menu can create a worktree and start a new,
 empty ACP session there. This does not fork the source conversation: the local
 Rust ACP client does not implement `session/fork`.
 
 ## Configuration
 
-Open **设置** in the sidebar, **Agents → 管理 Agent…**, or press **⌘,**
-to manage the saved configuration:
-agent servers, the default agent, MCP servers, additional directories,
-filesystem/terminal provider switches, permission trust rules, the review
-agent, assistant-agent settings, and local recovery storage settings. The app
-persists those GUI choices to:
+Open **设置** in the sidebar, **Agents → 管理 Agent…**, or press **⌘,**.
+Settings manages a shared application draft and normally reloads connections
+when saved. Active session operations block saving; a late operation can defer
+application of an already committed configuration until the runtime is idle.
 
-```text
-~/.config/ianvs-acp/settings.json
-```
-
-On macOS, Agent and MCP `env`/`headers` values entered in Settings
-are stored in the login Keychain. The JSON file stores only opaque
-`env_refs`/`header_refs`; do not edit or copy those references between config
-files. Existing plaintext values are migrated to Keychain before the JSON is
-atomically replaced. If a referenced Keychain item is missing, startup reports
-the exact field and keeps configuration editing disabled until the credential
-is restored or re-entered.
-
-On startup, the app can detect missing local ACP agents and ask whether to add
-them to `agent_servers`. The built-in detectors cover:
-
-- Codex through a local `npx` command running
-  `@agentclientprotocol/codex-acp`.
-- Pi through the `pi-acp` adapter when both `npx` and the `pi` command are
-  available.
-- Cursor through its separately installed CLI (`agent acp`), including the
-  `cursor-agent` executable alias. The official installer places `agent` in
-  `~/.local/bin` by default.
-- CodeBuddy through an installed `codebuddy --acp` command, with
-  `npx -y @tencent-ai/codebuddy-code --acp` as a fallback.
-
-Equivalent direct commands, aliases, and npx packages are treated as the same
-agent so discovery does not add duplicate profiles. Provider credentials remain
-user-managed through each CLI or the agent server `env` fields in Settings.
-Install and authenticate the Cursor CLI before using its ACP
-profile; installing the Cursor desktop editor alone does not guarantee that the
-separate CLI is available.
-
-Saved shape example for automation and debugging:
-
-```json
-{
-  "default_agent_server": "Codex",
-  "agent_servers": {
-    "Codex": {
-      "type": "custom",
-      "command": "/opt/homebrew/bin/npx",
-      "cwd": "/Users/example/project",
-      "args": ["@agentclientprotocol/codex-acp"]
-    },
-    "Pi": {
-      "type": "custom",
-      "command": "/opt/homebrew/bin/npx",
-      "cwd": "/Users/example/project",
-      "args": ["-y", "pi-acp@0.0.31"]
-    },
-    "Cursor": {
-      "type": "custom",
-      "command": "/Users/example/.local/bin/agent",
-      "cwd": "/Users/example/project",
-      "args": ["acp"]
-    },
-    "CodeBuddy": {
-      "type": "custom",
-      "command": "/opt/homebrew/bin/codebuddy",
-      "cwd": "/Users/example/project",
-      "args": ["--acp"]
-    }
-  },
-  "additional_directories": [
-    "/Users/example/related-project"
-  ],
-  "mcp_servers": [
-    {
-      "name": "filesystem",
-      "command": "/opt/homebrew/bin/npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/Users/example/project"
-      ]
-    }
-  ],
-  "client_providers": {
-    "permissions": {
-      "review_agent": {
-        "agent_server_name": "Codex",
-        "model": "review-model"
-      }
-    }
-  },
-  "default_session_template": "review",
-  "session_templates": {
-    "review": {
-      "name": "Code review",
-      "version": 1,
-      "agent_server": "Codex",
-      "mcp_servers": ["filesystem"],
-      "additional_directories": ["/Users/example/related-project"],
-      "mode": "plan",
-      "model": "review-model",
-      "reasoning_effort": "high"
-    }
-  },
-  "storage": {
-    "max_size_gb": 50,
-    "retention_days": 30
-  }
-}
-```
-
-`session_templates` are declarative, versioned recipes shown in the New
-Session dialog. Omitting `mcp_servers` inherits every configured MCP server;
-an empty array selects none. Template permission settings replace the global
-permission policy for that runtime, while omitted fields inherit the active
-configuration. Templates are currently edited in `settings.json`; Settings
-preserves them during unrelated GUI edits. The selected
-template ID and version are retained in the local session index, so resumed
-sessions can report missing definitions or version drift.
-
-Open **活动与诊断** in the sidebar for the active session. Its
-`Events` page shows the chronological prompt/response, tool, status, permission,
-and error trajectory; `Permissions` shows and exports the bounded permission
-audit; and `Runtime` reports the exact recipe, MCP/providers, negotiated ACP
-capabilities, compatibility degradations, and credential-reference counts.
-Credential values and URL credentials/query strings are never displayed.
-
-`storage.max_size_gb` and `storage.retention_days` bound two recovery payload
-stores: the ACP session registry and the exact-revision transcript cache. Each
-store enforces the configured capacity independently, and expired payloads are
-removed automatically.
-
-The adjacent private `workspace_ui_state.json` file stores explicitly added
-Workspace/sidebar preferences and a recovery index for sessions the app has
-created or resumed, including session IDs, workspace roots, display titles,
-agent association, and pin/archive/unread state. It is written
-atomically, and concurrent app windows merge independent Workspace/session
-record fields plus expanded-Workspace additions and removals. It is not
-governed by `storage.max_size_gb` or `storage.retention_days`; those entries
-remain until the corresponding UI state is changed or removed. See the
-[local recovery storage policy](docs/sqlite_storage.md) for the data inventory
-and maintenance behavior.
-
-Remote MCP servers can use `type: "http"` or `"sse"` with `url` and optional
-`headers`; enter secret header values through Settings so they are
-stored in Keychain rather than plaintext JSON. This is MCP configuration sent
-through a local stdio ACP session. It does not make the ACP agent transport
-remote. Existing `type: "acp"` MCP entries can still be read from configuration,
-but the production runtime rejects them because MCP-over-ACP is unavailable.
-
-Stdio `agent_servers` can set `cwd` to choose the working directory used when
-launching the agent process. The aliases `working_directory` and
-`workingDirectory` are also accepted.
-
-`additional_directories` may list extra absolute workspace roots. They are sent
-only to agents that advertise `sessionCapabilities.additionalDirectories`, and
-filesystem/terminal provider jail checks treat those roots as part of the
-session workspace.
-
-`client_providers.permissions.review_agent` can select a configured ACP agent
-with `agent_server_name`, or point at a sidecar MCP server, for the prompt
-composer's `自动审查` policy. ACP reviewers run in an isolated sidecar client and
-session, so they can automatically approve a low-risk `allow` decision even
-when they use the same agent or model as the main session. An individual
-`agent_servers.<name>.review_agent.model` can override the review model for that
-agent. High-risk or inconclusive results remain available for manual approval.
-
-Supported environment overrides:
-
-- `ACP_CONFIG_PATH`
-- `IANVS_ACP_CONFIG`
-- `ACP_WORKSPACE_CWD`
-- `IANVS_ACP_WORKSPACE_CWD`
-- `XDG_CONFIG_HOME`
+The default file is `~/.config/ianvs-acp/settings.json`. Agent/MCP secrets entered
+in Settings are stored in macOS Keychain, with opaque references in JSON.
+See [Configuration](docs/configuration.md) for path overrides, discovery,
+examples, template inheritance, permission controls, and save behavior;
+[Local recovery storage](docs/sqlite_storage.md) defines persistence and retention.
 
 ## Mermaid Rendering
 
-Assistant messages can render fenced Mermaid blocks directly:
-
-````markdown
-```mermaid
-flowchart TD
-  A --> B
-```
-````
-
-The reusable Flutter surface is:
-
-```dart
-MermaidView(
-  source: 'flowchart TD\nA --> B',
-)
-```
-
-Default renderer: `package:merman` through Dart FFI on native platforms.
-
-SVG display: `flutter_svg`.
-
-SVG pipeline: `resvg-safe`.
-
-SVG compatibility: Mermaid CSS rules are inlined before display so native SVG
-rendering does not fall back to black default fills when `flutter_svg` ignores
-`<style>` blocks.
-
-Cache: in-memory LRU keyed by Mermaid source, options JSON, and merman engine
-version.
-
-Use `NativeMermanRenderer` when a screen needs to reuse one engine instance,
-`MermaidController` when a live editor needs render state, and
-`layoutJson()` when interaction overlays need node or edge geometry.
+Fenced Mermaid blocks render in assistant messages. The shared package owns
+`MermaidView`, its native Merman renderer, SVG normalization, and cache. See the
+[package rendering guide](packages/ianvs_agent_chat/README.md#mermaid-rendering)
+for imports, integration, and macOS native requirements.
 
 ## Development
 
@@ -308,39 +122,14 @@ use `FakeAgentClient` instead of launching a real agent.
 
 ## Runtime architecture
 
-ACP has one production authority: a pure Rust Core behind a typed FFI host.
-Rust owns the local stdio/session/prompt/permission path, stable session
-lifecycle and configuration, workspace-scoped attachments, configured
-filesystem and terminal reverse requests, and process recovery. Flutter owns
-workspace/session projections and human interaction.
+Rust Core owns the production local stdio ACP connection, session lifecycle,
+permissions, workspace validation, reverse filesystem/terminal requests, and
+process recovery. Flutter owns the UI and bounded session projections. There
+is no parallel Flutter ACP transport. Stable HTTP/SSE MCP configuration is
+separate from remote ACP agent transport.
 
-Stable stdio/HTTP/SSE MCP server configuration is projected by Rust into session
-new/load/resume. Filesystem and terminal reverse requests use the ordinary
-permission flow and follow the selected client policy. The ACP client does not
-classify commands or destinations as external egress; external side effects are
-owned by the agent and its tools:
-
-```sh
-make run
-make test-rust
-```
-
-That verification script covers the Rust workspace and the Flutter/Rust
-integration boundary used by the packaged macOS app.
-
-Available-command notifications are projected as bounded session state and
-drive slash-command suggestions in the composer. Session catalog entries retain
-their bounded `SessionInfo` directory metadata. Live session-info updates and
-usage updates are not projected by the local Rust runtime, so the UI does not
-invent values for them.
-
-The bottom terminal panel is a user-opened local shell tied to the selected UI
-session. ACP terminal reverse requests are instead owned by Rust and by the ACP
-session. They have independent handles and lifecycles; opening or closing the
-shell does not create, release, or kill an ACP terminal.
-
-Remote ACP transports, `session/fork`, MCP-over-ACP, generic extension requests,
-and experimental protocol operations are explicitly unavailable. The
-production app never opens a parallel compatibility connection. The ownership
-contract, implemented scope, and remaining runtime work are tracked in
-[Runtime architecture](docs/runtime_architecture.md).
+The user-opened bottom shell and Agent-requested ACP terminals have independent
+handles and lifecycles. Remote ACP, `session/fork`, MCP-over-ACP, generic
+extensions, and live session-info/usage projection are unavailable in the local
+production runtime. See [Runtime architecture](docs/runtime_architecture.md)
+for ownership and [Product capabilities](docs/product_capabilities.md) for scope.

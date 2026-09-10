@@ -1,6 +1,6 @@
 # Manual follow-ups
 
-Updated: 2026-09-09
+Updated: 2026-09-10. Source baseline: `b9297f5`.
 
 This list contains only work that still requires a product decision, a real
 external service, or desktop interaction. Implemented runtime work belongs in
@@ -44,9 +44,27 @@ ABI. Keep `session/list` directory `SessionInfo` entries and available commands:
 both already have production projections. Missing usage must remain absent
 until the Agent and runtime provide it.
 
+## Out-of-workspace read setting
+
+Status: saved and editable, but not connected to the production Rust provider.
+
+`client_providers.filesystem.allow_read_outside_workspace` is retained by the
+config model and Settings, but the [runtime factory](../lib/app.dart) passes
+only read/write enablement. Rust's
+[FilesystemConfig and read path](../rust/crates/ianvs-acp-core/src/filesystem.rs)
+keep all reads within `WorkspaceScope`.
+
+Decide whether to retire/disable the ineffective switch while preserving saved
+values, or define an explicit Rust-owned access policy before implementing it.
+The current supported way to grant another root is `additional_directories`.
+A future fix must verify both the UI's effective-state description and Rust
+outside-root rejection/authorization; documentation correction alone does not
+resolve the UI mismatch.
+
 ## Permission audit retention
 
-Status: bounded in-process history only.
+Status: bounded in-process history per controller/connection; it may retain
+multiple sessions from that connection and does not aggregate other connections.
 
 Decide whether resolved permission decisions need durable encrypted retention,
 export retention limits, or organization policy. Core request settlement already
@@ -81,8 +99,8 @@ Run before a release candidate:
 - verify macOS keychain entitlements in the signed application;
 - exercise session recovery after an agent-process restart;
 - verify `Activity & Diagnostics` Events, Permissions, and Runtime pages keep
-  the active-session scope, permission export, compatibility reasons, Escape,
-  and focus return behavior;
+  the Events session scope, retained connection-level permission export,
+  compatibility reasons, Escape, and focus return behavior;
 - create a Git worktree with a new empty session and verify that no source
   conversation history is copied;
 - open the user shell and an Agent-requested ACP terminal, then verify that

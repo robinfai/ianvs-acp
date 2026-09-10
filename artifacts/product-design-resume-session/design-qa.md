@@ -1,13 +1,15 @@
 # Resume ACP Session — Design QA
 
+> 历史场景评审/验收，结论只适用于本文的截图和构建。当前能力见[产品能力](../../docs/product_capabilities.md)，后续设计记录见[文档导航](../../docs/README.md)；本文不充当当前待办或全应用验收。
+
 ## Evidence
 
-- Source visual truth: `/Users/luobinghui/.codex/generated_images/01a01fe8-db31-7610-af93-e475971c774b/exec-da4cbf23-9c77-42b4-ace2-2e3763127e9d.png`
+- Source component retained in the repository: [reference-dialog.png](reference-dialog.png). The original full generated image was recorded in a machine-local directory and is not included here; use this retained crop and [final comparison](comparison-final.png) for reproducible evidence.
 - Rendered implementation: `implementation-full.png`
 - Normalized source component: `reference-dialog.png`
 - Normalized implementation component: `implementation-dialog.png`
 - Final side-by-side comparison: `comparison-final.png`
-- Viewport and CSS size: 1586 × 992 logical pixels
+- Flutter logical viewport (not a CSS viewport): 1586 × 992 logical pixels
 - Source pixels: 1586 × 992; implementation pixels: 1586 × 992
 - Density normalization: device pixel ratio 1.0 for both captures; dialog crops normalized to 808 × 669 pixels
 - State: light theme; Codex selected and ready; first Codex session selected; Kimi Code Dev connecting; pi ACP requires authentication; two expanded workspace groups; authentication banner visible

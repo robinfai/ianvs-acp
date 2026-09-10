@@ -1,5 +1,7 @@
 # ChatGPT Desktop 参考图：组件拆分与复刻规格
 
+> 早期参考设计，保留原图拆解参数。侧栏宽度、工具栏、窄窗入口和设置密度随后由[macOS 主界面重构](macos-ui-refactor-2026-09-07/acceptance.md)及[设置调整](macos-settings-refinement-2026-09-09/README.md)更新；下文不作为当前布局数值契约。
+
 ## 视觉基准
 
 - 基准图尺寸：`1990 × 1258 px`，浅色桌面窗口。
