@@ -36,6 +36,12 @@ workspace boundaries, filesystem callbacks, ACP terminal callbacks, and
 recovery. `ianvs-acp-ffi` exposes typed operations and versioned runtime events.
 Raw protocol frames never cross the ABI.
 
+When automatic process recovery is exhausted, Core reports the original failure
+and keeps the host command handle open for an explicit retry. A new start clears
+the failed process's in-memory session states; persisted recovery rows remain
+available for an explicit session restore. Disposing the runtime still ends the
+worker and releases its subprocess resources.
+
 The saved `filesystem.allow_read_outside_workspace` field reaches Rust through
 `allowFilesystemReadOutsideWorkspace` in the ABI v11 launch DTO. Only the enabled
 text reader may use that explicit policy to resolve a canonical file outside

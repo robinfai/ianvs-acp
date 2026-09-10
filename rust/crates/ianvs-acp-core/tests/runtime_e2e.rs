@@ -1976,6 +1976,71 @@ fn terminal_reverse_requests_use_real_pty_and_generic_permissions() {
 }
 
 #[test]
+fn exhausted_startup_failure_can_be_retried_with_a_corrected_config() {
+    let runtime = RuntimeHandle::new();
+    let mut config = fixture_config(BTreeMap::new());
+    config.max_restart_attempts = Some(1);
+    config.mcp_servers.push(McpServerLaunchConfig::Http {
+        name: "unsupported-mcp".to_string(),
+        url: "https://example.test/mcp".to_string(),
+        headers: BTreeMap::new(),
+    });
+    let expected_error = "agent does not support configured HTTP MCP server unsupported-mcp";
+    for _ in 0..2 {
+        runtime.start_agent(config.clone()).unwrap();
+        wait_for(&runtime, |event| {
+            matches!(
+                event,
+                RuntimeEvent::StatusChanged {
+                    status: RuntimeStatus::Recovering,
+                    ..
+                }
+            )
+        });
+        wait_for(&runtime, |event| {
+            matches!(
+                event,
+                RuntimeEvent::StatusChanged {
+                    status: RuntimeStatus::Failed,
+                    detail: Some(detail),
+                    ..
+                } if detail == expected_error
+            )
+        });
+        wait_for(&runtime, |event| {
+            matches!(
+                event,
+                RuntimeEvent::RuntimeError { code, message, .. }
+                    if code == "agent_runtime_failed" && message == expected_error
+            )
+        });
+    }
+    config.mcp_servers.clear();
+    runtime.start_agent(config).unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    runtime
+        .create_session("after-retry", std::env::temp_dir().display().to_string(), vec![])
+        .unwrap();
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::SessionUpdate { update }
+                if update.kind == SessionUpdateKind::SessionCreated
+                    && update.request_id.as_deref() == Some("after-retry")
+        )
+    });
+    runtime.join().unwrap();
+}
+
+#[test]
 fn initialize_projection_limits_fail_before_the_runtime_becomes_ready() {
     for variable in [
         "IANVS_FIXTURE_OVERSIZED_AUTH_METHODS",

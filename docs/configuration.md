@@ -70,6 +70,13 @@ Install and authenticate the Cursor CLI before using its ACP
 profile; installing the Cursor desktop editor alone does not guarantee that the
 separate CLI is available.
 
+The former built-in `ianvs-task-center` MCP service has been removed. If an old
+configuration still contains its local HTTP entry in `mcp_servers`, remove that
+entry and reload the application configuration. It is not required for current
+Agent sessions; it can prevent Pi from connecting because Pi may not advertise
+HTTP MCP support. Other user-configured MCP services remain supported according
+to the selected Agent's capabilities.
+
 ## Saved configuration example
 
 The paths, model and mode below are placeholders; use values present on your

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_acp/acp/rust_acp_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
@@ -16,6 +17,55 @@ void main() {
   final agentPath = '$root/rust/target/debug/ianvs-acp-fixture-agent';
   final artifactsAvailable =
       File(libraryPath).existsSync() && File(agentPath).existsSync();
+
+  test(
+    'client retries native startup failure and connects after MCP cleanup',
+    () async {
+      var includeUnsupportedMcp = true;
+      final client = RustAcpAgentClient(
+        agentName: 'retry-fixture',
+        agentCommand: agentPath,
+        mcpServersProvider: () async => includeUnsupportedMcp
+            ? const <Map<String, Object?>>[
+                <String, Object?>{
+                  'type': 'http',
+                  'name': 'unsupported-mcp',
+                  'url': 'https://example.test/mcp',
+                },
+              ]
+            : const <Map<String, Object?>>[],
+        runtime: IanvsRustRuntime(
+          native: FfiIanvsAcpNativeApi.open(libraryPath: libraryPath),
+          pollInterval: const Duration(milliseconds: 1),
+        ),
+      );
+      addTearDown(client.dispose);
+      for (var attempt = 0; attempt < 2; attempt++) {
+        await expectLater(
+          client.connect(),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'original startup error',
+              contains(
+                'agent does not support configured HTTP MCP server unsupported-mcp',
+              ),
+            ),
+          ),
+        );
+      }
+      includeUnsupportedMcp = false;
+      await client.connect();
+      final session = await client.createSession(
+        cwd: Directory.systemTemp.path,
+      );
+      expect(session.id, 'fixture-session');
+    },
+    skip: artifactsAvailable
+        ? false
+        : 'Run tool/verify_rust_runtime.sh to build native test artifacts.',
+    timeout: const Timeout(Duration(seconds: 20)),
+  );
 
   test(
     'Dart FFI rejects interior NUL without rejecting JSON unicode escapes',

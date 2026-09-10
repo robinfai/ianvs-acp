@@ -44,6 +44,24 @@ fn rust_owns_runtime_session_and_permission_transitions() {
 }
 
 #[test]
+fn explicit_retry_drops_failed_process_sessions_but_rejected_start_does_not() {
+    let mut state = RuntimeStateMachine::new();
+    state.start_agent().unwrap();
+    state.agent_ready().unwrap();
+    state.session_created("session-1").unwrap();
+    assert!(state.start_agent().is_err());
+    assert_eq!(state.session_status("session-1"), Some(SessionStatus::Ready));
+
+    state.agent_failed();
+    assert_eq!(state.session_status("session-1"), Some(SessionStatus::Failed));
+    state.start_agent().unwrap();
+    assert_eq!(state.session_status("session-1"), None);
+    state.agent_ready().unwrap();
+    state.session_created("session-1").unwrap();
+    assert_eq!(state.session_status("session-1"), Some(SessionStatus::Ready));
+}
+
+#[test]
 fn illegal_parallel_prompt_is_rejected_by_core() {
     let mut state = RuntimeStateMachine::new();
     state.start_agent().unwrap();

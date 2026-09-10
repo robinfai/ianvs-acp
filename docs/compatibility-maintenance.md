@@ -4,6 +4,28 @@ Updated: 2026-09-10. Historical cleanup baseline: `b9297f5`; current runtime con
 
 本记录承接[上一轮清理验收](cleanup-acceptance-2026-09-09.md)，区分本次已清理内容、仍有必要的处理，以及需要先收缩契约才能退役的分支。当前产品事实以[产品能力](product_capabilities.md)和[运行时架构](runtime_architecture.md)为准。下列保留项仍是维护参考；实施与测试部分固定记录 2026-09-09 阶段。文档校准发现的“越界读取”开关接线缺口已在后续 ABI v11 修复，见下文；其他产品决策仍在[人工后续项](manual_followups.md)维护。
 
+## 2026-09-10 Pi 遗留 MCP 与启动重试修复
+
+旧用户配置残留的 `ianvs-task-center` 是已退役任务中心的本地 HTTP MCP 服务。
+当前 `pi-acp 0.0.31` 声明不支持 HTTP MCP，因此初始化后的能力检查报错。
+自动重试耗尽后，原实现退出 Rust worker；再次连接复用了已关闭的命令队列，
+把原始错误覆盖为 `runtime command queue is closed`。
+
+本次按用户授权备份本机配置并移除这一条遗留 MCP，其他配置字段保持不变。
+应用不会按服务名称自动删除其他用户的 MCP 配置；旧配置处理说明见[配置指南](configuration.md)。
+Rust 在自动重试耗尽后保留命令接收器，允许显式重新启动 Agent，并保留实际失败原因。
+显式启动清理上一进程的内存会话状态，持久恢复记录继续保留。
+
+验证：Rust workspace 73 项测试、Clippy，以及 Flutter/FFI 51 项测试通过。
+新增回归覆盖重复启动失败仍保留原始 MCP 错误、修正配置后连接并创建会话，
+以及显式重试清理失败进程状态而拒绝非法重复启动时不丢失当前会话。
+测试使用本地 fixture Agent，没有调用模型服务；Flutter 隔离测试通过在 PATH
+中提供现有 `.cargo/bin` 复用本机 Rust 工具链。
+
+macOS Debug 构建和重启通过。真实 Pi 在当前项目目录创建新会话成功，
+诊断显示 `sessionReady`、`ACP 1`、`0 MCP`；应用保留在该会话供继续使用。
+没有发送真实模型提示，验证范围止于连接、会话创建和会话参数加载。
+
 ## 2026-09-10 越界读取开关修复
 
 `filesystem.allow_read_outside_workspace` 已贯穿应用配方、Dart 适配器、FFI launch DTO 和 Rust 文件读取模块。它默认关闭，仅在 read provider 开启时扩大文本读取范围；仍走既有权限决策、大小限制和文件身份复核。写入、终端目录和附件范围没有扩大，受限 AI 助手不获得该权限。

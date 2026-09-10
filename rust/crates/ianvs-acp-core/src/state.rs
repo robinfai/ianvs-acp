@@ -59,6 +59,9 @@ impl RuntimeStateMachine {
     pub fn start_agent(&mut self) -> Result<(), RuntimeStateError> {
         match self.runtime {
             RuntimeStatus::Stopped | RuntimeStatus::Failed => {
+                // Explicit starts own a new process generation. Durable
+                // sessions remain in the registry for an explicit restore.
+                self.sessions.clear();
                 self.runtime = RuntimeStatus::Starting;
                 Ok(())
             }

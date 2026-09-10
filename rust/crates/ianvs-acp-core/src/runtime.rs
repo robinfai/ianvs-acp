@@ -1439,7 +1439,10 @@ async fn runtime_main(mut commands: tokio_mpsc::Receiver<RuntimeCommand>, sink: 
                             capabilities: None,
                         });
                         sink.error(None, "agent_runtime_failed", message, false);
-                        return;
+                        // Automatic recovery is exhausted, but the host may
+                        // explicitly retry with a corrected launch config.
+                        // Keep its command handle and original error usable.
+                        break;
                     }
                     restart_attempt = restart_attempt.saturating_add(1);
                     if let Err(error) = state.begin_recovery() {
