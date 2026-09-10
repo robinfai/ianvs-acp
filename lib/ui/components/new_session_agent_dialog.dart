@@ -734,11 +734,9 @@ class _AgentChoiceTile extends StatelessWidget {
               child: Row(
                 children: [
                   Icon(
-                    selected ? Icons.check_circle_rounded : Icons.hub_outlined,
+                    Icons.smart_toy_outlined,
                     size: 20,
-                    color: selected
-                        ? context.ianvs.success
-                        : context.ianvs.focus,
+                    color: context.ianvs.muted,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -751,7 +749,7 @@ class _AgentChoiceTile extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: context.ianvs.text,
-                            fontSize: 13,
+                            fontSize: 14,
                             fontWeight: FontWeight.w600,
                             letterSpacing: 0,
                           ),
@@ -765,7 +763,7 @@ class _AgentChoiceTile extends StatelessWidget {
                             style: TextStyle(
                               color: context.ianvs.subtle,
                               fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w400,
                               letterSpacing: 0,
                             ),
                           ),
@@ -785,6 +783,16 @@ class _AgentChoiceTile extends StatelessWidget {
                         ],
                       ],
                     ),
+                  ),
+                  const SizedBox(width: 12),
+                  Icon(
+                    selected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    size: 18,
+                    color: selected
+                        ? context.ianvs.accent
+                        : context.ianvs.subtle,
                   ),
                 ],
               ),

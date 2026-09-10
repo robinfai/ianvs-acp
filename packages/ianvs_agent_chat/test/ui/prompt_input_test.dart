@@ -2833,6 +2833,7 @@ void main() {
           ChatConfigOption(
             id: 'reasoning_effort',
             name: 'Reasoning Effort',
+            group: 'Model',
             type: 'select',
             currentValue: 'high',
             options: [

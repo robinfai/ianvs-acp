@@ -2632,9 +2632,9 @@ class _AdaptiveSessionConfigSelectorState
   }
 
   String _optionLabel(ChatConfigOption option) {
-    if (option.isModelOption) return 'Model';
     if (option.isReasoningEffortOption) return 'Reasoning';
     if (option.isFastOption) return 'Speed';
+    if (option.isModelOption) return 'Model';
     final name = option.name.trim();
     return name.isEmpty ? option.id : name;
   }

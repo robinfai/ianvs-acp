@@ -92,7 +92,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             ),
-            textStyle: const TextStyle(
+            textStyle: Theme.of(context).textTheme.labelLarge!.copyWith(
               fontSize: 13,
               fontWeight: FontWeight.w600,
             ),
@@ -106,7 +106,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             ),
-            textStyle: const TextStyle(
+            textStyle: Theme.of(context).textTheme.labelLarge!.copyWith(
               fontSize: 13,
               fontWeight: FontWeight.w600,
             ),

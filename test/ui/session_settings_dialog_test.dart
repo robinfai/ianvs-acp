@@ -638,6 +638,11 @@ void main() {
     expect(find.text('模型与推理'), findsOneWidget);
     expect(find.text('推理强度'), findsWidgets);
     expect(find.text('High'), findsOneWidget);
+    expect(find.text('ACP 参数：reasoning_effort'), findsNothing);
+    await tester.ensureVisible(find.text('Agent 协议能力'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agent 协议能力'));
+    await tester.pumpAndSettle();
     expect(find.text('ACP 参数：reasoning_effort'), findsOneWidget);
     await tester.tap(find.text('Medium'));
     await tester.pumpAndSettle();

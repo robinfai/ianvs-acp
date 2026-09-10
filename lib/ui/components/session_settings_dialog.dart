@@ -634,38 +634,45 @@ class _CapabilitySummary extends StatelessWidget {
     return Container(
       key: const ValueKey('session-capability-summary'),
       width: double.infinity,
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(color: context.ianvs.separator),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Agent 协议能力',
-            style: TextStyle(
-              color: context.ianvs.subtle,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: Material(
+          color: Colors.transparent,
+          child: ExpansionTile(
+            key: const Key('session-compatibility-details'),
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(bottom: 8),
+            dense: true,
+            title: Text(
+              'Agent 协议能力',
+              style: Theme.of(context).textTheme.labelSmall,
             ),
-          ),
-          const SizedBox(height: 7),
-          Wrap(
-            spacing: 8,
-            runSpacing: 6,
             children: [
-              if (hasModel) const _TinyPill('模型切换'),
-              if (hasReasoningEffort) const _TinyPill('推理强度'),
-              if (hasModes) const _TinyPill('会话模式'),
-              if (reasoningEffortConfigId != null &&
-                  reasoningEffortConfigId!.isNotEmpty)
-                _TinyPill('ACP 参数：$reasoningEffortConfigId'),
-              if (configOptionsActive) const _TinyPill('动态参数'),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    if (hasModel) const _TinyPill('模型切换'),
+                    if (hasReasoningEffort) const _TinyPill('推理强度'),
+                    if (hasModes) const _TinyPill('会话模式'),
+                    if (reasoningEffortConfigId != null &&
+                        reasoningEffortConfigId!.isNotEmpty)
+                      _TinyPill('ACP 参数：$reasoningEffortConfigId'),
+                    if (configOptionsActive) const _TinyPill('动态参数'),
+                  ],
+                ),
+              ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }

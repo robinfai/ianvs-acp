@@ -1338,8 +1338,12 @@ class _EmptyTimeline extends StatelessWidget {
                         icon: Icon(Icons.add_rounded, size: 18),
                         label: Text('New Session'),
                         style: FilledButton.styleFrom(
-                          foregroundColor: ChatTheme.of(context).primaryDark,
-                          backgroundColor: ChatTheme.of(context).primarySoft,
+                          foregroundColor: Theme.of(
+                            context,
+                          ).colorScheme.onPrimary,
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.primary,
                           disabledForegroundColor: ChatTheme.of(
                             context,
                           ).textTertiary,
@@ -5067,13 +5071,11 @@ class _DetailBlock extends StatelessWidget {
     );
     return Container(
       width: double.infinity,
-      padding: EdgeInsets.all(9),
+      padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: backgroundColor,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(
-          color: ChatTheme.of(context).warning.withValues(alpha: 0.3),
-        ),
+        border: Border.all(color: ChatTheme.of(context).borderSoft),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -5081,8 +5083,8 @@ class _DetailBlock extends StatelessWidget {
           Text(
             entry.label,
             style: TextStyle(
-              color: ChatTheme.of(context).warning,
-              fontSize: 11,
+              color: ChatTheme.of(context).textSecondary,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),

@@ -1,0 +1,464 @@
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:ianvs_acp/app.dart';
+import 'package:ianvs_acp/ui/components/session_time_label.dart';
+import 'package:ianvs_acp/ui/theme/app_design_tokens.dart';
+
+import 'audit_fixture.dart';
+import 'package:ianvs_acp/ui/components/chat_timeline.dart';
+import 'package:ianvs_acp/ui/components/file_preview_workspace.dart';
+import 'package:ianvs_acp/ui/theme/app_theme.dart';
+import 'package:ianvs_acp/state/chat_controller.dart';
+import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
+import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
+import 'package:ianvs_acp/ui/components/capabilities_dialog.dart';
+import 'package:ianvs_acp/ui/components/session_activity_dialog.dart';
+import 'package:ianvs_acp/ui/components/agent_discovery_dialog.dart';
+import 'package:ianvs_acp/ui/components/session_workspace_review_dialog.dart';
+import 'package:ianvs_acp/ui/components/deep_link_confirmation_dialog.dart';
+import 'package:ianvs_acp/ui/components/runtime_inventory_dialog.dart';
+import 'package:ianvs_acp/ui/components/protocol_feature_review_dialog.dart';
+import 'package:ianvs_acp/ui/components/new_session_agent_dialog.dart';
+import 'package:ianvs_acp/ui/components/permission_history_dialog.dart';
+import 'package:ianvs_acp/ui/components/resume_session_dialog.dart';
+import 'package:ianvs_acp/startup/startup_options.dart';
+
+void main() {
+  setUpAll(() async {
+    Future<ByteData> fontData(String path) async =>
+        ByteData.sublistView(await File(path).readAsBytes());
+    var flutterRoot = File(Platform.resolvedExecutable).parent;
+    while (!Directory(
+      '${flutterRoot.path}/bin/cache/artifacts/material_fonts',
+    ).existsSync()) {
+      final parent = flutterRoot.parent;
+      if (parent.path == flutterRoot.path) {
+        throw StateError('Unable to locate the Flutter SDK font cache.');
+      }
+      flutterRoot = parent;
+    }
+
+    // Keep the audit renderer deterministic while covering every visible
+    // surface. One sans face is deliberately synthesized across 400/500/600;
+    // loading a second face into the same test family caused dialog text to
+    // rasterize as solid blocks. Arial Unicode supplies the Chinese fallback,
+    // and Material Icons prevents icon-codepoint tofu squares.
+    final sans = FontLoader(AppTypography.family)
+      ..addFont(
+        fontData('/System/Library/Fonts/Supplemental/Arial Unicode.ttf'),
+      );
+    final defaultFont = FontLoader('Roboto')
+      ..addFont(
+        fontData('/System/Library/Fonts/Supplemental/Arial Unicode.ttf'),
+      );
+    final cjk = FontLoader('PingFang SC')
+      ..addFont(fontData('/System/Library/Fonts/Hiragino Sans GB.ttc'));
+    final mono = FontLoader(AppTypography.monoFamily)
+      ..addFont(
+        fontData(
+          '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/'
+          'assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
+        ),
+      );
+    final monoFallback = FontLoader('Menlo')
+      ..addFont(
+        fontData(
+          '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/'
+          'assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
+        ),
+      );
+    final icons = FontLoader('MaterialIcons')
+      ..addFont(
+        fontData(
+          '${flutterRoot.path}/bin/cache/artifacts/material_fonts/'
+          'MaterialIcons-Regular.otf',
+        ),
+      );
+    await Future.wait([
+      sans.load(),
+      defaultFont.load(),
+      cjk.load(),
+      mono.load(),
+      monoFallback.load(),
+      icons.load(),
+    ]);
+    debugSessionTimeNow = () => DateTime(2026, 7, 8, 12);
+  });
+
+  tearDownAll(() {
+    debugSessionTimeNow = null;
+  });
+
+  Future<AuditFixture> pumpScenario(
+    WidgetTester tester,
+    String scenario, {
+    Size size = const Size(1440, 900),
+    String? startupError,
+  }) async {
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final fixture = await createAuditFixture(scenario);
+    addTearDown(fixture.dispose);
+    await tester.pumpWidget(fixture.app(startupError: startupError));
+    await tester.pumpAndSettle();
+    return fixture;
+  }
+
+  Future<void> capture(String name) async {
+    await expectLater(
+      find.byType(AcpClientApp),
+      matchesGoldenFile('after/$name.png'),
+    );
+  }
+
+  Future<void> dialog(WidgetTester tester, Widget child) async {
+    final context = tester.element(find.byType(Scaffold).first);
+    showDialog<void>(context: context, builder: (_) => child);
+    await tester.pumpAndSettle();
+  }
+
+  for (final scenario in ['empty', 'active', 'permission', 'reference']) {
+    testWidgets('workspace $scenario', (tester) async {
+      await pumpScenario(tester, scenario, size: const Size(1440, 900));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pumpAndSettle();
+      await capture('workspace-$scenario');
+      expect(tester.takeException(), isNull);
+    });
+  }
+  testWidgets('compact workspace', (tester) async {
+    await pumpScenario(tester, 'empty', size: const Size(800, 600));
+    await capture('workspace-compact');
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('narrow workspace', (tester) async {
+    await pumpScenario(tester, 'active', size: const Size(390, 844));
+    await capture('workspace-narrow');
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('configuration sections', (tester) async {
+    await pumpScenario(tester, 'empty', size: const Size(1000, 720));
+    await dialog(
+      tester,
+      AgentConfigDialog(
+        activeAgentName: 'Codex',
+        agentServers: auditSeedConfig.agentServers,
+        mcpServers: auditSeedConfig.mcpServers,
+        additionalDirectories: auditSeedConfig.additionalDirectories,
+        clientProviders: auditSeedConfig.clientProviders,
+        configPath: '/Users/example/.config/ianvs-acp/settings.json',
+        onSaveConfig: (config) async => config,
+      ),
+    );
+    for (final section in [
+      'Agents',
+      'Workspace',
+      'MCP Servers',
+      'Assistant',
+      'Permissions',
+      'Storage',
+    ]) {
+      await tester.tap(find.byKey(Key('config-section-$section')));
+      await tester.pumpAndSettle();
+      await capture('settings-${section.toLowerCase().replaceAll(' ', '-')}');
+      expect(tester.takeException(), isNull);
+    }
+  });
+  testWidgets('compact settings navigation', (tester) async {
+    await pumpScenario(tester, 'empty', size: const Size(600, 650));
+    await dialog(
+      tester,
+      AgentConfigDialog(
+        activeAgentName: 'Codex',
+        agentServers: auditSeedConfig.agentServers,
+        configPath: '/Users/example/settings.json',
+        onSaveConfig: (c) async => c,
+      ),
+    );
+    await capture('settings-compact');
+    await tester.tap(find.byKey(const Key('config-section-picker')));
+    await tester.pumpAndSettle();
+    await capture('settings-section-menu');
+    await tester.tap(find.text('Storage').last);
+    await tester.pumpAndSettle();
+    await capture('settings-compact-storage');
+    expect(tester.takeException(), isNull);
+  });
+  for (final kind in [
+    'new-session',
+    'session-settings',
+    'compatibility',
+    'activity',
+    'discovery',
+    'workspace-review',
+    'deep-link',
+    'runtime',
+    'protocol',
+    'permission-history',
+    'resume-empty',
+  ]) {
+    testWidgets('dialog $kind', (tester) async {
+      final fixture = await pumpScenario(
+        tester,
+        'active',
+        size: const Size(1000, 720),
+      );
+      final controller = fixture.controller;
+      final Widget child = switch (kind) {
+        'new-session' => NewSessionAgentDialog(
+          agentServers: auditSeedConfig.agentServers,
+          currentAgentName: 'Codex',
+          initialCwd: '/Users/example/project',
+        ),
+        'session-settings' => SessionSettingsDialog(controller: controller),
+        'compatibility' => CapabilitiesDialog(
+          capabilities: controller.capabilities,
+        ),
+        'activity' => SessionActivityDialog(controller: controller),
+        'discovery' => AgentDiscoveryDialog(
+          agentServers: auditSeedConfig.agentServers,
+        ),
+        'workspace-review' => SessionWorkspaceReviewDialog(
+          session: controller.currentSession!,
+        ),
+        'deep-link' => DeepLinkConfirmationDialog(
+          request: StartupOptions.fromDeepLink(
+            'ianvs-acp://session?id=example-session&cwd=/Users/example/project&agent=Codex',
+          )!,
+        ),
+        'runtime' => RuntimeInventoryDialog(
+          controller: controller,
+          runtimeConfig: auditSeedConfig,
+        ),
+        'protocol' => ProtocolFeatureReviewDialog(controller: controller),
+        'permission-history' => const PermissionHistoryDialog(entries: []),
+        'resume-empty' => ResumeSessionDialog(
+          agents: [
+            ResumeSessionAgentOption(
+              id: 'Codex',
+              name: 'Codex',
+              loadSessions: () async => [],
+            ),
+          ],
+        ),
+        _ => throw StateError(kind),
+      };
+      await dialog(tester, child);
+      await capture(kind);
+      expect(tester.takeException(), isNull);
+    });
+  }
+  testWidgets('conversation menus and expanded tools', (tester) async {
+    await pumpScenario(tester, 'active', size: const Size(1000, 720));
+    await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+    await tester.pumpAndSettle();
+    await capture('composer-config-menu');
+    expect(find.text('Reasoning'), findsOneWidget);
+    await tester.tap(find.text('Reasoning'));
+    await tester.pumpAndSettle();
+    await capture('composer-reasoning-menu');
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Used flutter test').first);
+    await tester.tap(find.text('Used flutter test').first);
+    await tester.pumpAndSettle();
+    await capture('tool-details');
+    expect(tester.takeException(), isNull);
+  });
+  for (final action in [
+    'Create Permanent Worktree',
+    'Continue in New Worktree',
+  ]) {
+    testWidgets('worktree dialog $action', (tester) async {
+      final fixture = await pumpScenario(
+        tester,
+        'active',
+        size: const Size(1000, 720),
+      );
+      await tester.pumpWidget(
+        AcpClientApp(
+          controller: fixture.controller,
+          config: auditSeedConfig,
+          autoLoadWorkspaceSessions: false,
+          gitWorkspaceDetector: (_) => true,
+        ),
+      );
+      await tester.pumpAndSettle();
+      if (action == 'Create Permanent Worktree') {
+        await tester.tap(find.byTooltip('Workspace actions').first);
+      } else {
+        await tester.tap(find.byTooltip('Session actions').first);
+      }
+      await tester.pumpAndSettle();
+      if (action == 'Continue in New Worktree') {
+        await tester.tap(find.text('Continue in...'));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.text(action));
+      await tester.pumpAndSettle();
+      await capture(
+        action == 'Create Permanent Worktree'
+            ? 'create-worktree'
+            : 'fork-worktree',
+      );
+      expect(find.byType(AlertDialog), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
+  testWidgets('settings editors and validation', (tester) async {
+    await pumpScenario(tester, 'empty', size: const Size(1000, 720));
+    await dialog(
+      tester,
+      AgentConfigDialog(
+        activeAgentName: 'Codex',
+        agentServers: auditSeedConfig.agentServers,
+        configPath: '/private/tmp/ianvs-ui-review/settings.json',
+        onSaveConfig: (c) async => c,
+      ),
+    );
+    for (final item in [
+      ('Agents', 'Add Agent', 'agent-editor'),
+      ('Workspace', 'Add Directory', 'directory-editor'),
+      ('MCP Servers', 'Add MCP Server', 'mcp-editor'),
+      ('Permissions', 'Add Trust Rule', 'trust-rule-editor'),
+    ]) {
+      await tester.tap(find.byKey(Key('config-section-${item.$1}')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.widgetWithText(TextButton, item.$2));
+      await tester.tap(find.widgetWithText(TextButton, item.$2));
+      await tester.pumpAndSettle();
+      await capture(item.$3);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel').last);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+  });
+  testWidgets('session compatibility disclosure and close confirmation', (
+    tester,
+  ) async {
+    final fixture = await pumpScenario(
+      tester,
+      'active',
+      size: const Size(800, 600),
+    );
+    await dialog(tester, SessionSettingsDialog(controller: fixture.controller));
+    await capture('session-settings-compact');
+    await tester.ensureVisible(
+      find.byKey(const Key('session-compatibility-details')),
+    );
+    await tester.tap(find.byKey(const Key('session-compatibility-details')));
+    await tester.pumpAndSettle();
+    await capture('session-compatibility-expanded');
+    await tester.tap(find.widgetWithText(TextButton, 'Close Session'));
+    await tester.pumpAndSettle();
+    await capture('close-session-confirmation');
+    expect(tester.takeException(), isNull);
+  });
+  for (final filename in ['guide.md', 'example.dart', 'missing.txt']) {
+    testWidgets('file preview $filename', (tester) async {
+      final workspace = Directory.systemTemp.createTempSync(
+        'ianvs-ui-preview-',
+      );
+      addTearDown(() => workspace.deleteSync(recursive: true));
+      File('${workspace.path}/guide.md').writeAsStringSync(
+        '# Workspace guide\n\nReview a file alongside your conversation.\n\n## Validation\n- Inspect changes\n- Run relevant checks\n',
+      );
+      File(
+        '${workspace.path}/example.dart',
+      ).writeAsStringSync('void main() {\n  print("Hello, workspace");\n}\n');
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      late FilePreviewLinkHandler open;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light,
+          home: Scaffold(
+            body: FilePreviewWorkspace(
+              workspacePath: workspace.path,
+              additionalDirectories: const [],
+              showInspector: false,
+              inspector: const SizedBox.shrink(),
+              conversationBuilder: (context, onTapLink) {
+                open = onTapLink;
+                return ChatTimeline(
+                  messages: [
+                    ChatMessage(
+                      role: ChatMessageRole.assistant,
+                      text:
+                          'Review [$filename]($filename) alongside this conversation.',
+                    ),
+                  ],
+                  onTapLink: onTapLink,
+                );
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.runAsync(() async {
+        open(filename, filename, '');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      for (var i = 0; i < 15; i++) {
+        await tester.pump(const Duration(milliseconds: 80));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+      }
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      await expectLater(
+        find.byType(Scaffold),
+        matchesGoldenFile('after/file-$filename.png'),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final action in ['Authenticate', 'Log Out']) {
+    testWidgets('agent action $action', (tester) async {
+      await pumpScenario(tester, 'active', size: const Size(1000, 720));
+      await tester.tap(find.byTooltip('Agents').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(action).last);
+      await tester.pumpAndSettle();
+      await capture(
+        action == 'Authenticate' ? 'authentication' : 'logout-confirmation',
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+  testWidgets('attachment menu and command disclosure', (tester) async {
+    await pumpScenario(tester, 'active', size: const Size(1000, 720));
+    await tester.tap(find.byKey(const Key('prompt-attachment-picker')));
+    await tester.pumpAndSettle();
+    await capture('attachment-menu');
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Command details'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Command details'));
+    await tester.pumpAndSettle();
+    await capture('command-details');
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('startup recovery', (tester) async {
+    await pumpScenario(
+      tester,
+      'empty',
+      size: const Size(1000, 720),
+      startupError:
+          'Unable to start the configured ACP agent. Check the command and retry.',
+    );
+    await capture('startup-recovery');
+    expect(tester.takeException(), isNull);
+  });
+}
