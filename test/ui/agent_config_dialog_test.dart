@@ -932,6 +932,48 @@ void main() {
     );
   });
 
+  testWidgets(
+    'outside read selection requires the reader and survives disabling it',
+    (tester) async {
+      AcpClientConfig? saved;
+      await _pump(
+        tester,
+        AgentConfigDialog(
+          configPath: '/tmp/settings.json',
+          activeAgentName: 'Codex',
+          agentServers: const [_codex],
+          clientProviders: const AcpClientProviderConfig(
+            filesystem: AcpFilesystemProviderConfig(
+              allowReadOutsideWorkspace: true,
+            ),
+          ),
+          onSaveConfig: (config) async {
+            saved = config;
+            return config;
+          },
+        ),
+      );
+      await _section(tester, 'permissions');
+      expect(_switch(tester, 'filesystem-outside-switch').value, isTrue);
+      expect(_switch(tester, 'filesystem-outside-switch').onChanged, isNull);
+      expect(find.textContaining('需先启用'), findsOneWidget);
+      _switch(tester, 'filesystem-read-switch').onChanged!(true);
+      await tester.pump();
+      expect(_switch(tester, 'filesystem-outside-switch').onChanged, isNotNull);
+      expect(find.textContaining('写入和终端目录保持工作区限制'), findsOneWidget);
+      _switch(tester, 'filesystem-read-switch').onChanged!(false);
+      _switch(tester, 'filesystem-write-switch').onChanged!(true);
+      await tester.pump();
+      expect(_switch(tester, 'filesystem-outside-switch').onChanged, isNull);
+      await _save(tester);
+      expect(saved?.clientProviders.filesystem.readTextFile, isFalse);
+      expect(
+        saved?.clientProviders.filesystem.allowReadOutsideWorkspace,
+        isTrue,
+      );
+    },
+  );
+
   testWidgets('invalid reviewer input remains visible after save', (
     tester,
   ) async {

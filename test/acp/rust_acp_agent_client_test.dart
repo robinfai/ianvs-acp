@@ -868,6 +868,7 @@ void main() {
       agentCommand: 'fixture-agent',
       enableFilesystemReadTextFile: true,
       enableFilesystemWriteTextFile: false,
+      allowFilesystemReadOutsideWorkspace: true,
       runtime: IanvsRustRuntime(
         native: native,
         pollInterval: const Duration(milliseconds: 1),
@@ -877,6 +878,10 @@ void main() {
     await client.connect();
     expect(native.startedConfig?['enableFilesystemReadTextFile'], isTrue);
     expect(native.startedConfig?['enableFilesystemWriteTextFile'], isFalse);
+    expect(
+      native.startedConfig?['allowFilesystemReadOutsideWorkspace'],
+      isTrue,
+    );
     expect(client.capabilities?.client.fsReadTextFile, isTrue);
     expect(client.capabilities?.client.fsWriteTextFile, isFalse);
     expect(client.capabilities?.client.hasFsProvider, isTrue);
@@ -1120,7 +1125,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   }
 
   @override
-  int get ffiVersion => 10;
+  int get ffiVersion => IanvsRustRuntime.expectedFfiVersion;
 
   @override
   Object createRuntime() => handle;

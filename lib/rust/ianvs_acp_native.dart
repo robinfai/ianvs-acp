@@ -160,7 +160,9 @@ final class IanvsRustRuntime {
     });
   }
 
-  static const int expectedFfiVersion = 10;
+  // ABI 11 forwards the explicit outside-workspace read policy. Reject older
+  // libraries instead of silently ignoring an enabled permission setting.
+  static const int expectedFfiVersion = 11;
   static const int maxNativeEventsPerPoll = 4096;
   static const int maxNativeBytesPerPoll = 64 * 1024 * 1024;
   static const int _backgroundDecodeThresholdBytes = 128 * 1024;
@@ -197,6 +199,7 @@ final class IanvsRustRuntime {
     Duration? permissionTimeout,
     bool enableFilesystemReadTextFile = false,
     bool enableFilesystemWriteTextFile = false,
+    bool allowFilesystemReadOutsideWorkspace = false,
     bool enableTerminalProvider = false,
     int? maxTerminalHandles,
     int? maxTerminalHandlesPerSession,
@@ -229,6 +232,8 @@ final class IanvsRustRuntime {
           'permissionTimeoutMs': permissionTimeout.inMilliseconds,
         'enableFilesystemReadTextFile': enableFilesystemReadTextFile,
         'enableFilesystemWriteTextFile': enableFilesystemWriteTextFile,
+        'allowFilesystemReadOutsideWorkspace':
+            allowFilesystemReadOutsideWorkspace,
         'enableTerminalProvider': enableTerminalProvider,
         'maxTerminalHandles': ?maxTerminalHandles,
         'maxTerminalHandlesPerSession': ?maxTerminalHandlesPerSession,

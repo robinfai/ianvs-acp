@@ -714,7 +714,8 @@ String _filesystemLabel(AcpClientConfig config) {
   final features = <String>[
     if (fs.readTextFile) 'read',
     if (fs.writeTextFile) 'write',
-    if (fs.allowReadOutsideWorkspace) 'outside workspace',
+    if (fs.readTextFile && fs.allowReadOutsideWorkspace)
+      'read outside workspace',
   ];
   return features.isEmpty ? 'disabled' : features.join(', ');
 }

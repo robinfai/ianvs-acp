@@ -1,6 +1,6 @@
 # Manual follow-ups
 
-Updated: 2026-09-10. Source baseline: `b9297f5`.
+Updated: 2026-09-10. Runtime contract: FFI ABI v11.
 
 This list contains only work that still requires a product decision, a real
 external service, or desktop interaction. Implemented runtime work belongs in
@@ -43,23 +43,6 @@ define bounded typed projections before sending either notification across the
 ABI. Keep `session/list` directory `SessionInfo` entries and available commands:
 both already have production projections. Missing usage must remain absent
 until the Agent and runtime provide it.
-
-## Out-of-workspace read setting
-
-Status: saved and editable, but not connected to the production Rust provider.
-
-`client_providers.filesystem.allow_read_outside_workspace` is retained by the
-config model and Settings, but the [runtime factory](../lib/app.dart) passes
-only read/write enablement. Rust's
-[FilesystemConfig and read path](../rust/crates/ianvs-acp-core/src/filesystem.rs)
-keep all reads within `WorkspaceScope`.
-
-Decide whether to retire/disable the ineffective switch while preserving saved
-values, or define an explicit Rust-owned access policy before implementing it.
-The current supported way to grant another root is `additional_directories`.
-A future fix must verify both the UI's effective-state description and Rust
-outside-root rejection/authorization; documentation correction alone does not
-resolve the UI mismatch.
 
 ## Permission audit retention
 

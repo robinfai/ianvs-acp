@@ -12,6 +12,7 @@ fn filesystem_read_and_write_use_pending_permission_operations() {
     let manager = FilesystemManager::new(FilesystemConfig {
         read_text_file: true,
         write_text_file: true,
+        allow_read_outside_workspace: false,
     });
     manager
         .register_session(
@@ -62,6 +63,7 @@ fn filesystem_scope_and_selected_file_identity_fail_closed() {
     let manager = FilesystemManager::new(FilesystemConfig {
         read_text_file: true,
         write_text_file: true,
+        allow_read_outside_workspace: false,
     });
     manager
         .register_session(
@@ -100,6 +102,7 @@ fn filesystem_write_pins_the_approved_parent_directory_against_symlink_replaceme
     let manager = FilesystemManager::new(FilesystemConfig {
         read_text_file: false,
         write_text_file: true,
+        allow_read_outside_workspace: false,
     });
     manager
         .register_session(
@@ -146,6 +149,7 @@ fn filesystem_atomic_write_preserves_existing_permissions_and_honors_umask_for_n
     let manager = FilesystemManager::new(FilesystemConfig {
         read_text_file: false,
         write_text_file: true,
+        allow_read_outside_workspace: false,
     });
     manager
         .register_session(
@@ -175,6 +179,143 @@ fn filesystem_atomic_write_preserves_existing_permissions_and_honors_umask_for_n
         expected_new_mode
     );
     std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn outside_reads_require_explicit_policy_and_keep_write_roots_unchanged() {
+    let root = unique_temp_dir("filesystem-read-policy");
+    let workspace = root.join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let outside = root.join("outside.txt");
+    std::fs::write(&outside, "first\nsecond\n").unwrap();
+    symlink(&outside, workspace.join("linked.txt")).unwrap();
+    let scope = WorkspaceScope::new(&workspace, std::iter::empty::<&std::path::Path>()).unwrap();
+
+    for allow in [false, true] {
+        let manager = FilesystemManager::new(FilesystemConfig {
+            read_text_file: true,
+            write_text_file: true,
+            allow_read_outside_workspace: allow,
+        });
+        manager.register_session("session", scope.clone()).unwrap();
+        for path in [
+            outside.clone(),
+            "../outside.txt".into(),
+            "linked.txt".into(),
+        ] {
+            let result = manager.request_read("session", &path, Some(2), Some(1));
+            if allow {
+                let request = result.unwrap();
+                assert_eq!(
+                    request.path,
+                    outside.canonicalize().unwrap().display().to_string()
+                );
+                assert_eq!(request.content_preview, None);
+                assert_eq!(
+                    manager.approve(&request.approval_id).unwrap(),
+                    FilesystemOperationResult::Read("second\n".to_string())
+                );
+            } else {
+                assert!(matches!(result, Err(FilesystemError::Workspace(_))));
+            }
+            assert!(matches!(
+                manager.request_write("session", &path, "no".into()),
+                Err(FilesystemError::Workspace(_))
+            ));
+        }
+        if allow {
+            let denied = manager
+                .request_read("session", &outside, None, None)
+                .unwrap();
+            manager.deny(&denied.approval_id).unwrap();
+            assert!(matches!(
+                manager.approve(&denied.approval_id),
+                Err(FilesystemError::UnknownApproval(_))
+            ));
+        }
+    }
+    // Read access never mutates the roots used by other workspace operations.
+    assert!(scope.resolve_existing(&outside).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&outside).unwrap(),
+        "first\nsecond\n"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn outside_policy_does_not_enable_a_disabled_reader_or_skip_session_admission() {
+    let root = unique_temp_dir("filesystem-read-disabled");
+    let file = root.join("input.txt");
+    std::fs::write(&file, "text").unwrap();
+    for read_text_file in [false, true] {
+        let manager = FilesystemManager::new(FilesystemConfig {
+            read_text_file,
+            write_text_file: false,
+            allow_read_outside_workspace: true,
+        });
+        let result = manager.request_read("unknown", &file, None, None);
+        if read_text_file {
+            assert!(matches!(result, Err(FilesystemError::UnknownSession(_))));
+        } else {
+            assert!(matches!(result, Err(FilesystemError::ReadDisabled)));
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn outside_reads_retain_limits_and_revalidate_the_approved_file() {
+    let root = unique_temp_dir("filesystem-read-outside-identity");
+    let workspace = root.join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let file = root.join("input.txt");
+    let manager = FilesystemManager::new(FilesystemConfig {
+        read_text_file: true,
+        write_text_file: false,
+        allow_read_outside_workspace: true,
+    });
+    manager
+        .register_session(
+            "session",
+            WorkspaceScope::new(&workspace, std::iter::empty::<&std::path::Path>()).unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        manager.request_read("session", &root, None, None),
+        Err(FilesystemError::NotRegularFile(_))
+    ));
+    std::fs::write(&file, [0xff]).unwrap();
+    let invalid = manager.request_read("session", &file, None, None).unwrap();
+    assert!(matches!(
+        manager.approve(&invalid.approval_id),
+        Err(FilesystemError::InvalidUtf8)
+    ));
+    std::fs::File::create(&file)
+        .unwrap()
+        .set_len(8 * 1024 * 1024 + 1)
+        .unwrap();
+    assert!(matches!(
+        manager.request_read("session", &file, None, None),
+        Err(FilesystemError::ReadLimit)
+    ));
+
+    std::fs::write(&file, "before").unwrap();
+    let replaced = manager.request_read("session", &file, None, None).unwrap();
+    std::fs::rename(&file, root.join("original.txt")).unwrap();
+    std::fs::write(&file, "secret").unwrap();
+    assert!(matches!(
+        manager.approve(&replaced.approval_id),
+        Err(FilesystemError::OperationChanged)
+    ));
+    let redirected = manager.request_read("session", &file, None, None).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    symlink(root.join("original.txt"), &file).unwrap();
+    assert!(matches!(
+        manager.approve(&redirected.approval_id),
+        Err(FilesystemError::OperationChanged)
+    ));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn unique_temp_dir(label: &str) -> std::path::PathBuf {

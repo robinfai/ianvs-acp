@@ -5,7 +5,7 @@
 日期：2026-09-09
 范围：`AcpClientConfig`、Agent/MCP 编辑器、Assistant、权限/reviewer、本地存储、会话模板、当前会话设置与 Independent LLM chat。本文保留改版前的源码盘点，作为设置重设计的历史输入。
 
-2026-09-10 校准注：原表将 `filesystem.allow_read_outside_workspace` 的配置/UI 含义直接写成运行时能力，证据不足。当前 Rust 仅接收 read/write 开关，所有读取仍受工作区根约束；详见[配置指南](../configuration.md)和[人工后续项](../manual_followups.md)。保存晚到操作的延迟应用、模板权限按对象替换、权限历史的连接范围也以现行说明为准。
+2026-09-10 文档校准注（`b9297f5`）：原表将 `filesystem.allow_read_outside_workspace` 的配置/UI 含义直接写成运行时能力，证据不足。当时 Rust 仅接收 read/write 开关，所有读取仍受工作区根约束。随后 ABI v11 已接入显式越界读取策略，详见[配置指南](../configuration.md)和[兼容维护](../compatibility-maintenance.md)。保存晚到操作的延迟应用、模板权限按对象替换、权限历史的连接范围也以现行说明为准。
 
 ## 先区分五种作用域
 

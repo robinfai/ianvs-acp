@@ -6,6 +6,26 @@ import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
 import 'package:ianvs_acp/rust/ianvs_runtime_event.dart';
 
 void main() {
+  test('rejects libraries that would ignore the outside-read policy', () {
+    final native = _FakeNativeApi(ffiVersion: 10);
+    expect(() => IanvsRustRuntime(native: native), throwsStateError);
+    expect(native.startedConfig, isNull);
+  });
+
+  test(
+    'filesystem read scope stays restricted when launch policy is omitted',
+    () async {
+      final native = _FakeNativeApi();
+      final runtime = IanvsRustRuntime(native: native);
+      addTearDown(runtime.dispose);
+      runtime.startAgent(agentName: 'fixture', command: 'fixture');
+      expect(
+        native.startedConfig?['allowFilesystemReadOutsideWorkspace'],
+        isFalse,
+      );
+    },
+  );
+
   test('uses adaptive default FFI drain budgets', () async {
     final runtime = IanvsRustRuntime(
       native: _FakeNativeApi(),
@@ -197,6 +217,7 @@ void main() {
       permissionTimeout: const Duration(seconds: 45),
       enableFilesystemReadTextFile: true,
       enableFilesystemWriteTextFile: true,
+      allowFilesystemReadOutsideWorkspace: true,
       enableTerminalProvider: true,
       maxTerminalHandles: 8,
       maxTerminalHandlesPerSession: 2,
@@ -229,6 +250,10 @@ void main() {
     expect((native.startedConfig?['mcpServers'] as List).length, 1);
     expect(native.startedConfig?['enableFilesystemReadTextFile'], isTrue);
     expect(native.startedConfig?['enableFilesystemWriteTextFile'], isTrue);
+    expect(
+      native.startedConfig?['allowFilesystemReadOutsideWorkspace'],
+      isTrue,
+    );
     expect(native.startedConfig?['enableTerminalProvider'], isTrue);
     expect(native.startedConfig?['maxTerminalHandles'], 8);
     expect(native.startedConfig?['maxTerminalHandlesPerSession'], 2);
@@ -292,6 +317,7 @@ void main() {
 }
 
 final class _FakeNativeApi implements IanvsAcpNativeApi {
+  _FakeNativeApi({this.ffiVersion = IanvsRustRuntime.expectedFfiVersion});
   final Object handle = Object();
   final List<String> events = <String>[];
   Map<String, Object?>? startedConfig;
@@ -301,7 +327,7 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
   void Function()? onPoll;
 
   @override
-  int get ffiVersion => 10;
+  final int ffiVersion;
 
   @override
   Object createRuntime() => handle;

@@ -2887,6 +2887,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
       enableFilesystemWriteTextFile:
           !restrictedAssistant &&
           config.clientProviders.filesystem.writeTextFile,
+      allowFilesystemReadOutsideWorkspace:
+          !restrictedAssistant &&
+          config.clientProviders.filesystem.allowReadOutsideWorkspace,
       enableTerminalProvider:
           !restrictedAssistant && config.clientProviders.terminal.enabled,
     );

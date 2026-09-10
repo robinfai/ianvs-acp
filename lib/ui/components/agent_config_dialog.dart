@@ -857,7 +857,12 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           key: const Key('filesystem-outside-switch'),
           title: '允许读取工作区外的文件',
           value: _filesystemOutside,
-          onChanged: (value) => setState(() => _filesystemOutside = value),
+          subtitle: _filesystemRead
+              ? '仅扩大文本读取范围；仍按当前会话执行策略处理权限。写入和终端目录保持工作区限制。'
+              : '需先启用“允许读取文本文件”；已保存的选择会保留。',
+          onChanged: _filesystemRead
+              ? (value) => setState(() => _filesystemOutside = value)
+              : null,
         ),
         _ConfigSwitch(
           key: const Key('terminal-enabled-switch'),
@@ -1381,11 +1386,13 @@ class _ConfigSwitch extends StatelessWidget {
     required this.title,
     required this.value,
     required this.onChanged,
+    this.subtitle,
   });
 
   final String title;
   final bool value;
   final ValueChanged<bool>? onChanged;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -1404,7 +1411,7 @@ class _ConfigSwitch extends StatelessWidget {
           ),
         ),
         subtitle: Text(
-          value ? '已开启' : '已关闭',
+          subtitle ?? (value ? '已开启' : '已关闭'),
           style: const TextStyle(
             color: AppColors.textSecondary,
             fontSize: 12,

@@ -1575,6 +1575,7 @@ async fn run_agent(
             Arc::new(FilesystemManager::new(FilesystemConfig {
                 read_text_file: config.enable_filesystem_read_text_file,
                 write_text_file: config.enable_filesystem_write_text_file,
+                allow_read_outside_workspace: config.allow_filesystem_read_outside_workspace,
             }))
         });
 

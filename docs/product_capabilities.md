@@ -1,6 +1,6 @@
 # Product capabilities
 
-Updated: 2026-09-10. Source baseline: `b9297f5`.
+Updated: 2026-09-10. Runtime contract: FFI ABI v11.
 
 ianvs is a workspace and local ACP session client. This document is the
 canonical list of capabilities exposed by the main application. Protocol and
@@ -75,10 +75,12 @@ same policy as other ACP tool calls.
 ## Providers, MCP, and terminals
 
 - Filesystem read/write and ACP terminal providers are opt-in, Rust-owned, and
-  scoped to the session workspace roots.
-- The saved `filesystem.allow_read_outside_workspace` switch does not widen
-  the Rust provider's roots; that field has no production runtime wiring. See
-  [Configuration](configuration.md) for this limitation and effective controls.
+  scoped to the session workspace roots by default.
+- Explicit `filesystem.allow_read_outside_workspace` permits an enabled text
+  reader to request files outside those roots under the existing permission
+  policy and byte/identity checks. Writes, terminal working directories, and
+  prompt attachments keep their workspace boundaries. See
+  [Configuration](configuration.md) for the controls and save lifecycle.
 - Stable stdio, HTTP, and SSE MCP server configuration can be sent through a
   local stdio ACP session when the Agent advertises the matching MCP capability.
 - A configured MCP tool or isolated ACP sidecar can review a permission request.

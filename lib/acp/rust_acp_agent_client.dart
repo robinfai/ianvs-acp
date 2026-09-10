@@ -44,6 +44,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     this.permissionTimeout = const Duration(minutes: 2),
     this.enableFilesystemReadTextFile = false,
     this.enableFilesystemWriteTextFile = false,
+    this.allowFilesystemReadOutsideWorkspace = false,
     this.enableTerminalProvider = false,
     this.maxTerminalHandles,
     this.maxTerminalHandlesPerSession,
@@ -85,6 +86,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final Duration permissionTimeout;
   final bool enableFilesystemReadTextFile;
   final bool enableFilesystemWriteTextFile;
+  final bool allowFilesystemReadOutsideWorkspace;
   final bool enableTerminalProvider;
   final int? maxTerminalHandles;
   final int? maxTerminalHandlesPerSession;
@@ -241,6 +243,8 @@ final class RustAcpAgentClient implements AcpAgentClient {
         permissionTimeout: permissionTimeout,
         enableFilesystemReadTextFile: enableFilesystemReadTextFile,
         enableFilesystemWriteTextFile: enableFilesystemWriteTextFile,
+        allowFilesystemReadOutsideWorkspace:
+            allowFilesystemReadOutsideWorkspace,
         enableTerminalProvider: enableTerminalProvider,
         maxTerminalHandles: maxTerminalHandles,
         maxTerminalHandlesPerSession: maxTerminalHandlesPerSession,

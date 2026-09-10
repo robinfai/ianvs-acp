@@ -1,13 +1,23 @@
 # 兼容处理与清理维护方案
 
-Updated: 2026-09-10. Source baseline: `b9297f5`.
+Updated: 2026-09-10. Historical cleanup baseline: `b9297f5`; current runtime contract: FFI ABI v11.
 
-本记录承接[上一轮清理验收](cleanup-acceptance-2026-09-09.md)，区分本次已清理内容、仍有必要的处理，以及需要先收缩契约才能退役的分支。当前产品事实以[产品能力](product_capabilities.md)和[运行时架构](runtime_architecture.md)为准。下列保留项仍是维护参考；实施与测试部分固定记录 2026-09-09 阶段。“越界读取”开关未接入 Rust 的后续决策集中记录在[人工后续项](manual_followups.md)，不另建一份待办。
+本记录承接[上一轮清理验收](cleanup-acceptance-2026-09-09.md)，区分本次已清理内容、仍有必要的处理，以及需要先收缩契约才能退役的分支。当前产品事实以[产品能力](product_capabilities.md)和[运行时架构](runtime_architecture.md)为准。下列保留项仍是维护参考；实施与测试部分固定记录 2026-09-09 阶段。文档校准发现的“越界读取”开关接线缺口已在后续 ABI v11 修复，见下文；其他产品决策仍在[人工后续项](manual_followups.md)维护。
+
+## 2026-09-10 越界读取开关修复
+
+`filesystem.allow_read_outside_workspace` 已贯穿应用配方、Dart 适配器、FFI launch DTO 和 Rust 文件读取模块。它默认关闭，仅在 read provider 开启时扩大文本读取范围；仍走既有权限决策、大小限制和文件身份复核。写入、终端目录和附件范围没有扩大，受限 AI 助手不获得该权限。
+
+已有配置保存的 `true` 在新运行时加载后会生效；读取关闭时保留选项但不产生读取能力。设置显示该依赖，Runtime 只在读取开启时列出越界读取。ABI 升至 v11，拒绝忽略该选项的旧库。行为说明统一见[配置指南](configuration.md)，原问题不再列为开放待办。
+
+验证覆盖 Rust 的默认拒绝、显式允许、相对路径/符号链接、拒绝审批、文件替换与字节限制；应用集成从实际配置经默认工厂进入真实 Rust/FFI 和 fixture Agent，验证越界读取与工作区内写入各自审批。测试文件见[filesystem_core](../rust/crates/ianvs-acp-core/tests/filesystem_core.rs)、[FFI 集成](../test/rust/ianvs_acp_ffi_integration_test.dart)与[设置表单](../test/ui/agent_config_dialog_test.dart)。
+
+本轮 `make verify` 退出码 0：三个 Dart 工程格式及分析、发布脚本检查、Rust Clippy 通过；Rust 71 项、应用 1,398 项、聊天包 283 项（另有 2 项既有跳过）、示例 2 项测试通过。Rust/Flutter 边界单独运行的 50 项也通过，它们已包含在应用测试中，不重复计数。本轮没有调用真实模型服务，也未进行 macOS 安装或签名发布。
 
 ## 2026-09-09 实施记录
 
 - Rust Dart 适配器恢复会话只通过必填的 `onEvent` 投递历史，返回 `AcpSessionRestoreSummary`。删除无人使用的事件列表返回值、列表缓存、无 observer 时的缓存分支，以及跨请求共享的 `_lastRestoreReplayedHistory`。摘要在对应请求完成时生成，保留重复恢复保护、失败清理和流式计数。
-- 清理 `mode_changed` 中的 `currentModeId` 字段兜底。当前 ABI v10 的 Rust 控制事件统一产生 `modeId`；会话初始化 `modes.currentModeId` 不变。
+- 清理 `mode_changed` 中的 `currentModeId` 字段兜底。当时 ABI v10 的 Rust 控制事件统一产生 `modeId`；会话初始化 `modes.currentModeId` 不变。
 - 删除 `WorkspaceInspector.onConfigOptionSelected`、Agent 工具栏的 `onShowDiagnostics` 和不可触发的菜单分支。Inspector 继续打开完整会话参数；侧栏诊断入口保留。
 - 工具栏、侧栏及 AppShell 统一使用 `SessionActionAvailability`，删除重复的 `canForkSession` 参数和 OR/fallback 拼接；宿主仍负责计算实际能力。
 - 删除无引用的 `DotGridBackground`、`AcpUtf8LineBudgetCheckpoint` 和 `AcpImageDecodeReservation` 宿主别名。共享包的原类型和公开路径不变。

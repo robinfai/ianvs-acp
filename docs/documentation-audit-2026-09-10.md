@@ -1,5 +1,7 @@
 # 文档校准记录
 
+> 本文保留文档提交 `cb1c34f` 的校准记录。随后 D08 的越界读取接线缺口已由 ABI v11 实现修复，当前行为见[配置指南](configuration.md)，实现记录见[兼容维护](compatibility-maintenance.md)。下文“仅修改文档”和 42 项测试只指原文档阶段。
+
 日期：2026-09-10。核对源码：`b9297f5`。范围：仓库原有 49 份 Markdown/文本说明，
 包括根说明、docs、包/example、工具和 artifacts 中的记录。本次修改仅涉及 Markdown，
 不修改应用实现、依赖、测试、截图或用户数据。
@@ -15,17 +17,17 @@
 | D05 | 当前配置说明缺少草稿与保存时序，历史盘点的“立即重载”会掩盖晚到操作 | 配置指南说明无改动不保存、失败保留草稿、忙碌阻止保存、写入期间晚到操作使已提交配置延迟应用。依据 [`_saveConfig`](../lib/app.dart)与[保存生命周期测试](../test/ui/settings_save_lifecycle_test.dart) |
 | D06 | “模板遗漏字段继承”表述过宽，易误解为权限对象逐字段合并；额外目录无法靠空列表收窄未明确 | 按 [`forSessionTemplate`](../lib/config/acp_client_config.dart)说明权限/助手按对象继承或替换、MCP 未指定和空数组的区别、模板目录与全局目录取并集 |
 | D07 | 最新的新会话阶段提示与未开始会话隐藏未进入现行说明 | 产品能力、README、存储说明补充创建进度和首次 prompt 前的侧栏过滤；依据[新会话测试](../test/ui/new_session_loading_test.dart)，不把 UI 隐藏误写成没有持久元数据 |
-| D08 | 旧配置清单把“越界读取”字段直接当作生效能力 | 现行配置/能力/架构明确该字段未接入 Rust，旧表加校准注；[运行时工厂](../lib/app.dart)只传 read/write，[Rust 读取](../rust/crates/ianvs-acp-core/src/filesystem.rs)仍校验根目录。界面与实现的剩余差异转入[人工后续项](manual_followups.md) |
+| D08 | 旧配置清单把“越界读取”字段直接当作生效能力 | 文档阶段按 `b9297f5` 明确该字段当时未接入 Rust，旧表加校准注并列为后续项。随后 ABI v11 已接通[运行时工厂](../lib/app.dart)与 [Rust 读取](../rust/crates/ianvs-acp-core/src/filesystem.rs)，该项关闭；见[修复记录](compatibility-maintenance.md) |
 | D09 | 第 3 稿历史设计页的“视觉验收”仍指向已被下一轮覆盖的根 `design-qa.md` | 改链到同轮[生成稿 QA](settings-redesign-2026-09-09/design-qa-imagegen.md)，并保留指向[后续 macOS 调整](macos-settings-refinement-2026-09-09/README.md)的明确关系；原本文件存在，问题是证据阶段错配 |
 | D10 | 产品评估子报告、改版前审计、早期参考规格和部分 artifacts 没有独立的历史标识 | 在各文件开头补阶段/替代说明；旧建议、行号、测试数和截图保留，不重写为当前待办或新验收。已标明历史的 superpowers 方案不重复改写 |
 | D11 | 存储文档只列相对文件名，“50 GB”未说明二进制单位；加载文档把 30,939,722 bytes 写成约 30.9 MiB | 按[路径解析](../lib/storage/app_state_path.dart)补自定义配置的状态目录规则；容量为每个 payload store 50 GiB，UI index 不受该策略约束；历史缓存样本改为约 30.9 MB / 29.5 MiB |
 | D12 | 包首版发布/测试记录和当前源码说明混排；探测工具把候选模型写成公共型号 | 包记录限定为 `6091b82` 首版历史验收，注明本地 path 消费和发布归档差别；模型文档按[脚本](../tool/codex_model_probe/probe.mjs)说明候选字符串、`unknown` 状态及“任一成功即退出 0”，不宣称当前账号可用 |
 | D13 | 恢复会话 QA 的唯一原始图出处是另一台机器的绝对路径，并使用 CSS 尺寸术语描述 Flutter | 改为仓库保留的[参考裁图](../artifacts/product-design-resume-session/reference-dialog.png)与[最终对照](../artifacts/product-design-resume-session/comparison-final.png)，明确完整原始图未随仓库提供；改称 Flutter 逻辑视口 |
 
-## 仍需后续处理的边界
+## 文档校准交付时的后续边界
 
-- “允许越界读取”的 UI/运行时不一致仍存在。本次完成说明校准，未决定新增越界权限或删除配置；
-  后续决策和验证要求只在[人工后续项](manual_followups.md)维护。
+- 文档交付时“允许越界读取”的 UI/运行时不一致仍存在，未修改实现；随后已根据用户指示
+  完成 ABI v11 修复并从开放待办移除，见[兼容维护](compatibility-maintenance.md)。
 - pub.dev 首版链接未取得可读页面内容，外部发布状态没有重新核验。首版测试和发布描述作为
   历史记录保留；本轮没有调用真实 LLM 或模型探测脚本。
 - 早期体验报告的未落实项不能仅凭日期判定已修复。历史标识说明证据边界，当前是否仍可复现

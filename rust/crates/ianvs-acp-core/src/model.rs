@@ -53,12 +53,16 @@ pub struct AgentLaunchConfig {
     /// Advertise and enforce the Rust PTY-backed ACP terminal provider.
     #[serde(default)]
     pub enable_terminal_provider: bool,
-    /// Advertise the Rust workspace-scoped, permission-gated text read provider.
+    /// Advertise the Rust permission-gated text read provider.
     #[serde(default)]
     pub enable_filesystem_read_text_file: bool,
     /// Advertise the Rust workspace-scoped, permission-gated atomic text writer.
     #[serde(default)]
     pub enable_filesystem_write_text_file: bool,
+    /// Allow the enabled text reader outside session roots. Writes and terminal
+    /// working directories remain workspace-scoped. Omission keeps reads scoped.
+    #[serde(default)]
+    pub allow_filesystem_read_outside_workspace: bool,
     /// Global live plus approval-pending terminal quota.
     #[serde(default)]
     pub max_terminal_handles: Option<usize>,

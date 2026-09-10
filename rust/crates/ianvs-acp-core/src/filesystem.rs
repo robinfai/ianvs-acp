@@ -24,6 +24,8 @@ const WRITE_PREVIEW_MAX_BYTES: usize = 16 * 1024;
 pub struct FilesystemConfig {
     pub read_text_file: bool,
     pub write_text_file: bool,
+    /// Widen only the text reader; permission settlement and byte limits still apply.
+    pub allow_read_outside_workspace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +89,7 @@ pub enum FilesystemError {
 enum PreparedFilesystemOperation {
     Read {
         scope: WorkspaceScope,
+        allow_outside_workspace: bool,
         path: PathBuf,
         line: Option<u32>,
         limit: Option<u32>,
@@ -172,7 +175,7 @@ impl FilesystemManager {
             .expect("filesystem admission mutex poisoned");
         self.require_capacity(0)?;
         let (session_id, scope) = self.scope(session_id)?;
-        let path = scope.resolve_existing(path)?;
+        let path = resolve_read_path(&scope, path, self.config.allow_read_outside_workspace)?;
         let metadata = fs::metadata(&path).map_err(|error| io_error(&error))?;
         if !metadata.is_file() {
             return Err(FilesystemError::NotRegularFile(path.display().to_string()));
@@ -189,6 +192,7 @@ impl FilesystemManager {
                 approval_id.clone(),
                 PreparedFilesystemOperation::Read {
                     scope,
+                    allow_outside_workspace: self.config.allow_read_outside_workspace,
                     path,
                     line,
                     limit,
@@ -347,6 +351,7 @@ fn execute(
     match prepared {
         PreparedFilesystemOperation::Read {
             scope,
+            allow_outside_workspace,
             path,
             line,
             limit,
@@ -354,7 +359,9 @@ fn execute(
             inode,
             size,
         } => {
-            scope.resolve_existing(&path)?;
+            if resolve_read_path(&scope, &path, allow_outside_workspace)? != path {
+                return Err(FilesystemError::OperationChanged);
+            }
             read_text(&path, line, limit, device, inode, size).map(FilesystemOperationResult::Read)
         }
         PreparedFilesystemOperation::Write {
@@ -380,6 +387,18 @@ fn execute(
     }
 }
 
+fn resolve_read_path(
+    scope: &WorkspaceScope,
+    path: &Path,
+    allow_outside_workspace: bool,
+) -> Result<PathBuf, WorkspaceError> {
+    if allow_outside_workspace {
+        scope.canonicalize_existing(path)
+    } else {
+        scope.resolve_existing(path)
+    }
+}
+
 fn read_text(
     path: &Path,
     line: Option<u32>,
@@ -388,7 +407,13 @@ fn read_text(
     inode: u64,
     expected_size: u64,
 ) -> Result<String, FilesystemError> {
-    let file = File::open(path).map_err(|error| io_error(&error))?;
+    // A racing replacement must not follow a new leaf symlink or block on a
+    // FIFO before we can check the approved regular-file identity.
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| io_error(&error))?;
     let metadata = file.metadata().map_err(|error| io_error(&error))?;
     if !metadata.is_file()
         || metadata.dev() != device

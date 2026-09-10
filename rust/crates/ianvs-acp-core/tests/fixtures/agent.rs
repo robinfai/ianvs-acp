@@ -381,9 +381,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             async move {
                                 let read = connection
                                     .send_request(
-                                        ReadTextFileRequest::new(session_id.clone(), "input.txt")
-                                            .line(2)
-                                            .limit(1),
+                                        ReadTextFileRequest::new(
+                                            session_id.clone(),
+                                            std::env::var("IANVS_FIXTURE_FILESYSTEM_READ_PATH")
+                                                .unwrap_or_else(|_| "input.txt".to_string()),
+                                        )
+                                        .line(2)
+                                        .limit(1),
                                     )
                                     .block_task()
                                     .await?;

@@ -51,15 +51,20 @@ impl WorkspaceScope {
 
     /// Resolve an existing path and prove it is beneath an allowed root.
     pub fn resolve_existing(&self, path: impl AsRef<Path>) -> Result<PathBuf, WorkspaceError> {
-        let candidate = self.absolute_candidate(path.as_ref())?;
-        let canonical =
-            candidate
-                .canonicalize()
-                .map_err(|error| WorkspaceError::CannotResolve {
-                    path: candidate.display().to_string(),
-                    message: error.to_string(),
-                })?;
-        self.ensure_allowed(canonical)
+        self.ensure_allowed(self.canonicalize_existing(path.as_ref())?)
+    }
+
+    /// Canonicalize without granting workspace access. Only the filesystem
+    /// reader's explicit outside-workspace policy may use this instead of
+    /// `resolve_existing`; writes, attachments and terminals remain scoped.
+    pub(crate) fn canonicalize_existing(&self, path: &Path) -> Result<PathBuf, WorkspaceError> {
+        let candidate = self.absolute_candidate(path)?;
+        candidate
+            .canonicalize()
+            .map_err(|error| WorkspaceError::CannotResolve {
+                path: candidate.display().to_string(),
+                message: error.to_string(),
+            })
     }
 
     /// Resolve a path that may not exist yet. The nearest existing ancestor is

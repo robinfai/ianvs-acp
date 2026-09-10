@@ -98,3 +98,18 @@ fn unique_temp_dir(label: &str) -> std::path::PathBuf {
     fs::create_dir_all(&path).unwrap();
     path
 }
+
+#[test]
+fn outside_read_launch_policy_defaults_closed_and_rejects_non_boolean_values() {
+    let base = serde_json::json!({"agentName": "fixture", "command": "fixture"});
+    let config: ianvs_acp_core::AgentLaunchConfig = serde_json::from_value(base.clone()).unwrap();
+    assert!(!config.allow_filesystem_read_outside_workspace);
+    let mut explicit = base;
+    explicit["allowFilesystemReadOutsideWorkspace"] = serde_json::json!(true);
+    let config: ianvs_acp_core::AgentLaunchConfig =
+        serde_json::from_value(explicit.clone()).unwrap();
+    assert!(config.allow_filesystem_read_outside_workspace);
+    assert!(!config.enable_filesystem_read_text_file);
+    explicit["allowFilesystemReadOutsideWorkspace"] = serde_json::json!("true");
+    assert!(serde_json::from_value::<ianvs_acp_core::AgentLaunchConfig>(explicit).is_err());
+}

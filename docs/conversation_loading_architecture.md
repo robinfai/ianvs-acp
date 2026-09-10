@@ -55,7 +55,7 @@ Rust core 接收显式的 `replay_history`：
 
 ## Rust 渲染投影与 FFI 有界延迟传输
 
-FFI ABI v10 不再把 ACP `session/update` 的通用 payload 交给 Dart
+FFI ABI v11 沿用 v10 的渲染投影边界，不把 ACP `session/update` 的通用 payload 交给 Dart
 解释。Rust 将协议事件分成两类：
 
 - `session_update`：仅保留会话生命周期、模式、配置、可用命令和权限失效等小型控制状态；

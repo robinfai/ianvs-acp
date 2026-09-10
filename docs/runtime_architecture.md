@@ -1,6 +1,6 @@
 # Runtime architecture
 
-Updated: 2026-09-10. Source baseline: `b9297f5`.
+Updated: 2026-09-10. Runtime contract: FFI ABI v11.
 
 ianvs is a workspace-oriented ACP desktop client. The production ACP path has
 one protocol authority: Flutter presents workspaces and sessions, while Rust
@@ -36,9 +36,14 @@ workspace boundaries, filesystem callbacks, ACP terminal callbacks, and
 recovery. `ianvs-acp-ffi` exposes typed operations and versioned runtime events.
 Raw protocol frames never cross the ABI.
 
-The saved `filesystem.allow_read_outside_workspace` field is not passed into
-Rust's `FilesystemConfig`. Reads still resolve through `WorkspaceScope`; the
-GUI switch does not bypass that validation. See [Configuration](configuration.md).
+The saved `filesystem.allow_read_outside_workspace` field reaches Rust through
+`allowFilesystemReadOutsideWorkspace` in the ABI v11 launch DTO. Only the enabled
+text reader may use that explicit policy to resolve a canonical file outside
+session roots. It retains permission settlement, regular-file/UTF-8/byte limits,
+and revalidation of the approved path and file identity. Writes, terminal
+working directories, and attachments still use `WorkspaceScope` root checks.
+Restricted assistant runtimes keep the flag and filesystem providers disabled.
+See [Configuration](configuration.md) for the user-facing behavior.
 
 The standalone `ianvs_agent_chat` package owns reusable timeline, composer, and
 chat-session contracts. The main application connects the ACP controller through
@@ -50,8 +55,9 @@ recovery, permission, or session-registry ownership.
 
 Every ACP session has one canonical working directory and an optional bounded
 list of additional directories. Core validates these roots before creating or
-restoring a session and uses the same scope for attachments and reverse
-filesystem/terminal requests.
+restoring a session and uses those roots for attachments and reverse
+filesystem/terminal requests. The explicit text-read policy above is the only
+outside-root exception in these providers; it does not alter the session roots.
 
 The Flutter sidebar shows workspaces users add explicitly and groups locally
 known sessions inside them. It does not scan Agent catalogs to derive the
@@ -153,7 +159,8 @@ events. Paths, per-store capacity, and maintenance timing are defined in
 
 The macOS build compiles `ianvs-acp-core` into
 `libianvs_acp_ffi.dylib` and embeds that library in the app bundle. There is no
-separate background ACP execution host.
+separate background ACP execution host. The Dart host requires ABI v11 so an
+older native library cannot silently ignore the outside-workspace read policy.
 
 Run `./tool/verify_rust_runtime.sh` to test the Rust workspace, ABI, and Dart
 integration boundary. Desktop release checks remain in

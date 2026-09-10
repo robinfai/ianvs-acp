@@ -1,6 +1,6 @@
 # Configuration
 
-Updated: 2026-09-10. Source baseline: `b9297f5`.
+Updated: 2026-09-10. Runtime contract: FFI ABI v11.
 
 This is the current configuration guide. The dated settings audits preserve
 pre-redesign observations; they are not the current field or navigation guide.
@@ -198,13 +198,23 @@ only to agents that advertise `sessionCapabilities.additionalDirectories`, and
 filesystem/terminal provider jail checks treat those roots as part of the
 session workspace.
 
-Filesystem read/write and ACP terminal providers default to disabled. When
-explicitly enabled, the production Rust providers enforce the session roots.
-`client_providers.filesystem.allow_read_outside_workspace` is still parsed,
-saved and shown in Settings, but is not passed into the Rust provider: enabling
-it does not permit out-of-workspace reads. Add an explicit allowed root for
-supported access; the unresolved field/implementation mismatch is tracked in
-[Manual follow-ups](manual_followups.md).
+Filesystem read/write and ACP terminal providers default to disabled. Enabled
+providers use the session roots by default. Setting
+`client_providers.filesystem.allow_read_outside_workspace` to `true` permits
+an enabled text reader to request files beyond those roots, including canonical
+symlink targets. Requests still follow the current session's permission policy,
+regular-file and UTF-8 validation, size limits, and approved-file identity checks.
+The flag does not enable reading by itself or widen writes, terminal working
+directories, or prompt attachment access. Restricted assistant sidecars do not
+receive filesystem access.
+
+Settings enables this switch only while **允许读取文本文件** is enabled, and
+preserves the saved selection when reading is disabled. Runtime inventory lists
+outside-workspace reading only when both settings are enabled. Existing configs
+that already saved `true` begin applying that choice when loaded by ABI v11;
+omitted or `false` values keep reads within the roots. Apply/reload the saved
+configuration as described above. Older native libraries are rejected instead
+of silently ignoring the new runtime field.
 
 `client_providers.permissions.review_agent` can select a configured ACP agent
 with `agent_server_name`, or point at a sidecar MCP server, for the prompt

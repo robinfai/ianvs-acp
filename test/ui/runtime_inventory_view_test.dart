@@ -10,6 +10,47 @@ import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/runtime_inventory_view.dart';
 
 void main() {
+  for (final readEnabled in [false, true]) {
+    testWidgets(
+      'outside read inventory requires enabled reader: $readEnabled',
+      (tester) async {
+        final controller = ChatController(
+          client: FakeAgentClient(),
+          cwd: '/workspace',
+        );
+        addTearDown(controller.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: RuntimeInventoryView(
+                controller: controller,
+                runtimeConfig: AcpClientConfig(
+                  clientProviders: AcpClientProviderConfig(
+                    filesystem: AcpFilesystemProviderConfig(
+                      readTextFile: readEnabled,
+                      writeTextFile: true,
+                      allowReadOutsideWorkspace: true,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(
+          find.textContaining('read outside workspace'),
+          readEnabled ? findsOneWidget : findsNothing,
+        );
+        expect(
+          find.text(
+            readEnabled ? 'read, write, read outside workspace' : 'write',
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+  }
+
   testWidgets('runtime inventory is exact, drift-aware, and secret-safe', (
     tester,
   ) async {
