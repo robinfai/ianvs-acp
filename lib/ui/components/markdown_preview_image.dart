@@ -3,7 +3,7 @@ import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as p;
 
@@ -12,7 +12,6 @@ import '../../platform/file_manager.dart';
 import '../../platform/secure_file_reader.dart';
 import '../image_decode_budget.dart';
 import '../file_preview/file_preview_document.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 
 const int _maxInlineMarkdownImageBytes = 16 * 1024 * 1024;
@@ -571,7 +570,7 @@ class _MarkdownPreviewImageState extends State<MarkdownPreviewImage> {
         constraints: const BoxConstraints(maxWidth: 920, maxHeight: 560),
         margin: const EdgeInsets.symmetric(vertical: 8),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
           child: child,
         ),
       ),
@@ -612,9 +611,9 @@ class _RemoteMarkdownImageConsent extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 8),
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: AppColors.surfaceRaised,
-          border: Border.all(color: AppColors.border),
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          color: context.ianvs.raised,
+          border: Border.all(color: context.ianvs.border),
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -632,8 +631,8 @@ class _RemoteMarkdownImageConsent extends StatelessWidget {
                       if (description != null && description.isNotEmpty)
                         description,
                     ].join(' · '),
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
+                    style: TextStyle(
+                      color: context.ianvs.muted,
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                     ),
@@ -643,10 +642,7 @@ class _RemoteMarkdownImageConsent extends StatelessWidget {
                     uri.host,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textTertiary,
-                      fontSize: 11,
-                    ),
+                    style: TextStyle(color: context.ianvs.subtle, fontSize: 11),
                   ),
                 ],
               ),
@@ -694,9 +690,9 @@ class _MarkdownImageFailure extends StatelessWidget {
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        color: context.ianvs.raised,
+        border: Border.all(color: context.ianvs.border),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Row(
         children: [
@@ -708,10 +704,7 @@ class _MarkdownImageFailure extends StatelessWidget {
                 message,
                 if (description != null && description.isNotEmpty) description,
               ].join(' · '),
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 12,
-              ),
+              style: TextStyle(color: context.ianvs.muted, fontSize: 12),
             ),
           ),
         ],

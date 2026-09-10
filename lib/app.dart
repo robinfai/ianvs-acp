@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:crypto/crypto.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 
 import 'acp/acp_agent_client.dart';
@@ -38,8 +38,6 @@ import 'ui/components/session_menu_actions.dart';
 import 'ui/components/session_workspace_review_dialog.dart';
 import 'ui/image_decode_budget.dart';
 import 'ui/shell/app_shell.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_theme.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'workspace/workspace.dart';
 import 'workspace/workspace_sidebar_state_store.dart';
 
@@ -775,7 +773,9 @@ class _AcpClientAppState extends State<AcpClientApp> {
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
       scaffoldMessengerKey: _messengerKey,
-      theme: AppTheme.light,
+      theme: IanvsTheme.light(),
+      darkTheme: IanvsTheme.dark(),
+      themeMode: ThemeMode.system,
       home: AppShell(
         inputBudget: _inputBudget,
         imageDecodeLedger: _imageDecodeLedger,
@@ -2034,8 +2034,10 @@ class _AcpClientAppState extends State<AcpClientApp> {
               ),
               FilledButton(
                 style: FilledButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  backgroundColor: AppColors.danger,
+                  foregroundColor: IanvsTheme.foregroundFor(
+                    dialogContext.ianvs.danger,
+                  ),
+                  backgroundColor: dialogContext.ianvs.danger,
                 ),
                 onPressed: () => Navigator.of(dialogContext).pop(true),
                 child: const Text('删除 Agent 历史'),

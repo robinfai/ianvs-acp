@@ -143,11 +143,14 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
       children: [
         if (widget.presets.isNotEmpty) ...[
           DropdownButtonFormField<String>(
-            style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
             key: const Key('agent-preset-field'),
             isExpanded: true,
             initialValue: _selectedPreset,
             decoration: _fieldDecoration(
+              context,
               label: '连接预设',
               icon: Icons.smart_toy_outlined,
             ),
@@ -171,7 +174,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
           ),
           const SizedBox(height: 16),
         ],
-        const Text('启动配置', style: AppTypography.sectionTitle),
+        Text('启动配置', style: Theme.of(context).textTheme.titleMedium!),
         const SizedBox(height: 16),
         _SettingsField(
           key: const Key('agent-name-field'),
@@ -206,7 +209,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
           ),
         ],
         const SizedBox(height: 24),
-        const Divider(height: 1, color: AppColors.border),
+        Divider(height: 1, color: context.ianvs.border),
         ExpansionTile(
           key: const Key('agent-advanced-settings'),
           controlAffinity: ListTileControlAffinity.leading,
@@ -218,7 +221,7 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
           childrenPadding: const EdgeInsets.only(bottom: 16),
           dense: true,
           minTileHeight: 36,
-          title: const Text('高级设置', style: AppTypography.label),
+          title: Text('高级设置', style: Theme.of(context).textTheme.labelLarge!),
           children: [
             if (!_isRemote) ...[
               _SettingsField(
@@ -227,14 +230,11 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                 label: '启动工作目录',
                 hint: '可选',
               ),
-              const Padding(
+              Padding(
                 padding: EdgeInsets.only(top: 8, bottom: 16),
                 child: Text(
                   'Agent 进程的启动目录，留空使用默认值；会话工作区在新建会话时选择。',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                  ),
+                  style: TextStyle(color: context.ianvs.muted, fontSize: 12),
                 ),
               ),
               _NameValueListEditor(
@@ -266,11 +266,14 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
               ),
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
-              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+              style: Theme.of(
+                context,
+              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
               key: const Key('agent-type-field'),
               isExpanded: true,
               initialValue: _type,
               decoration: _fieldDecoration(
+                context,
                 label: '连接类型',
                 icon: Icons.cable_rounded,
               ),
@@ -635,10 +638,13 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
         ),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(
-          style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+          style: Theme.of(
+            context,
+          ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
           key: const Key('mcp-type-field'),
           initialValue: _type,
           decoration: _fieldDecoration(
+            context,
             label: '连接类型',
             icon: Icons.cable_rounded,
           ),

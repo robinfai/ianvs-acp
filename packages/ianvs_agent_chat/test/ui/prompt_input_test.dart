@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:ianvs_agent_chat/models/chat_input_budget.dart';
 import 'package:desktop_drop/desktop_drop.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_agent_chat/models/chat_capabilities.dart';
@@ -13,7 +12,7 @@ import 'package:ianvs_agent_chat/models/chat_session_settings.dart';
 import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
 import 'package:ianvs_agent_chat/models/chat_message.dart';
 import 'package:ianvs_agent_chat/ui/components/prompt_input.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 void main() {
   Future<PromptAttachment?> readPromptImageFromClipboardForTest() async => null;
@@ -1929,8 +1928,8 @@ void main() {
     );
     final decoration = surface.decoration as BoxDecoration;
     final border = decoration.border as Border;
-    expect(decoration.color, AppColors.surface);
-    expect(border.top.color, AppColors.border);
+    expect(decoration.color, IanvsTokens.light.canvas);
+    expect(border.top.color, IanvsTokens.light.border);
     expect(border.top.width, 1);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));

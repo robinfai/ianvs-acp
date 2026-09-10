@@ -1,7 +1,6 @@
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../file_preview/markdown_front_matter.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 const int _collapsedMetadataItems = 6;
 
@@ -33,9 +32,9 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
       decoration: BoxDecoration(
-        color: AppColors.surfaceMuted,
-        border: Border.all(color: AppColors.primarySoft),
-        borderRadius: BorderRadius.circular(AppRadius.lg),
+        color: context.ianvs.chrome,
+        border: Border.all(color: context.ianvs.selected),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -43,16 +42,16 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
         children: [
           Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.description_outlined,
                 size: 17,
-                color: AppColors.primaryDark,
+                color: context.ianvs.focus,
               ),
               const SizedBox(width: 8),
-              const Text(
+              Text(
                 '文档信息',
                 style: TextStyle(
-                  color: AppColors.textPrimary,
+                  color: context.ianvs.text,
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),
@@ -61,13 +60,13 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: AppColors.primarySoft,
-                  borderRadius: BorderRadius.circular(AppRadius.pill),
+                  color: context.ianvs.selected,
+                  borderRadius: BorderRadius.circular(999),
                 ),
-                child: const Text(
+                child: Text(
                   'YAML',
                   style: TextStyle(
-                    color: AppColors.primaryDark,
+                    color: context.ianvs.focus,
                     fontSize: 9,
                     fontWeight: FontWeight.w600,
                     letterSpacing: .5,
@@ -77,8 +76,8 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
               const Spacer(),
               Text(
                 '${widget.entries.length} 项',
-                style: const TextStyle(
-                  color: AppColors.textTertiary,
+                style: TextStyle(
+                  color: context.ianvs.subtle,
                   fontSize: 10.5,
                   fontWeight: FontWeight.w600,
                 ),
@@ -94,13 +93,13 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
                         : Icons.expand_more_rounded,
                     size: 17,
                   ),
-                  color: AppColors.textSecondary,
+                  color: context.ianvs.muted,
                   constraints: const BoxConstraints(
                     minWidth: 30,
                     minHeight: 30,
                   ),
                   padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
+                  visualDensity: VisualDensity.standard,
                 ),
               ],
             ],
@@ -144,9 +143,9 @@ class _MetadataEntryTile extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.surface.withValues(alpha: .82),
-        border: Border.all(color: AppColors.borderSoft),
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        color: context.ianvs.canvas.withValues(alpha: .82),
+        border: Border.all(color: context.ianvs.separator),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -156,8 +155,8 @@ class _MetadataEntryTile extends StatelessWidget {
             entry.label,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textTertiary,
+            style: TextStyle(
+              color: context.ianvs.subtle,
               fontSize: 9.5,
               fontWeight: FontWeight.w600,
             ),
@@ -175,13 +174,13 @@ class _MetadataEntryTile extends StatelessWidget {
                       vertical: 3,
                     ),
                     decoration: BoxDecoration(
-                      color: AppColors.primaryMist,
-                      borderRadius: BorderRadius.circular(AppRadius.pill),
+                      color: context.ianvs.accent.withValues(alpha: .08),
+                      borderRadius: BorderRadius.circular(999),
                     ),
                     child: Text(
                       item,
-                      style: const TextStyle(
-                        color: AppColors.primaryDark,
+                      style: TextStyle(
+                        color: context.ianvs.focus,
                         fontSize: 10.5,
                         fontWeight: FontWeight.w600,
                       ),
@@ -192,8 +191,8 @@ class _MetadataEntryTile extends StatelessWidget {
           else
             SelectableText(
               entry.value,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
+              style: TextStyle(
+                color: context.ianvs.text,
                 fontSize: 11.5,
                 height: 1.35,
                 fontWeight: FontWeight.w600,

@@ -1,9 +1,10 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+
+final _captureTheme = IanvsTheme.build(platform: TargetPlatform.macOS);
 
 void main() {
   setUpAll(() async {
@@ -20,12 +21,14 @@ void main() {
     }
     await Future.wait([
       (FontLoader(
-        AppTypography.family,
+        _captureTheme.textTheme.bodyMedium!.fontFamily!,
       )..addFont(bytes('/System/Library/Fonts/Supplemental/Arial.ttf'))).load(),
       (FontLoader(
         'PingFang SC',
       )..addFont(bytes('/System/Library/Fonts/Hiragino Sans GB.ttc'))).load(),
-      (FontLoader(AppTypography.monoFamily)..addFont(
+      (FontLoader(
+            _captureTheme.extension<IanvsTypography>()!.code.fontFamily!,
+          )..addFont(
             bytes(
               '${sdk.path}/bin/cache/dart-sdk/bin/resources/devtools/assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
             ),
@@ -85,15 +88,19 @@ void main() {
               child: Column(
                 children: [
                   const SizedBox(height: 12),
-                  const Row(
+                  Row(
                     children: [
                       Expanded(
                         child: Text(
                           '方案 3 · ImageGen',
                           textAlign: TextAlign.center,
                           style: TextStyle(
-                            fontFamily: AppTypography.family,
-                            fontFamilyFallback: AppTypography.familyFallback,
+                            fontFamily:
+                                _captureTheme.textTheme.bodyMedium!.fontFamily!,
+                            fontFamilyFallback: _captureTheme
+                                .textTheme
+                                .bodyMedium!
+                                .fontFamilyFallback,
                             fontSize: 20,
                             color: Colors.black,
                           ),
@@ -104,8 +111,12 @@ void main() {
                           '实际 Flutter 界面 · 草稿状态',
                           textAlign: TextAlign.center,
                           style: TextStyle(
-                            fontFamily: AppTypography.family,
-                            fontFamilyFallback: AppTypography.familyFallback,
+                            fontFamily:
+                                _captureTheme.textTheme.bodyMedium!.fontFamily!,
+                            fontFamilyFallback: _captureTheme
+                                .textTheme
+                                .bodyMedium!
+                                .fontFamilyFallback,
                             fontSize: 20,
                             color: Colors.black,
                           ),

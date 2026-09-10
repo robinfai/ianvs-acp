@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_session_settings.dart';
 import '../../acp/acp_session_usage.dart';
@@ -6,7 +6,6 @@ import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../workspace/workspace.dart';
 import 'session_time_label.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class WorkspaceInspector extends StatelessWidget {
   const WorkspaceInspector({
@@ -48,7 +47,7 @@ class WorkspaceInspector extends StatelessWidget {
         .trim();
     final mode = _sessionModeLabel(sessionSettings);
     return Material(
-      color: AppColors.surface,
+      color: context.ianvs.canvas,
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Padding(
@@ -88,7 +87,7 @@ class WorkspaceInspector extends StatelessWidget {
                   ),
               ],
               const SizedBox(height: 14),
-              const Divider(height: 1, color: AppColors.borderSoft),
+              Divider(height: 1, color: context.ianvs.separator),
               const SizedBox(height: 12),
               _InspectorDisclosure(
                 label: '环境',
@@ -104,7 +103,7 @@ class WorkspaceInspector extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 12),
-              const Divider(height: 1, color: AppColors.borderSoft),
+              Divider(height: 1, color: context.ianvs.separator),
               const SizedBox(height: 12),
               _InspectorDisclosure(
                 label: '上下文',
@@ -116,7 +115,7 @@ class WorkspaceInspector extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 12),
-              const Divider(height: 1, color: AppColors.borderSoft),
+              Divider(height: 1, color: context.ianvs.separator),
               const SizedBox(height: 12),
               const _CompactInspectorHeader(
                 label: '详细信息',
@@ -143,12 +142,12 @@ class WorkspaceInspector extends StatelessWidget {
     return showDialog<void>(
       context: context,
       builder: (context) => Dialog(
-        child: SizedBox(width: 680, height: 620, child: _detailsBody()),
+        child: SizedBox(width: 680, height: 620, child: _detailsBody(context)),
       ),
     );
   }
 
-  Widget _detailsBody() {
+  Widget _detailsBody(BuildContext context) {
     return DefaultTabController(
       key: ValueKey(
         currentSession == null
@@ -158,7 +157,7 @@ class WorkspaceInspector extends StatelessWidget {
       length: 2,
       initialIndex: currentSession == null ? 0 : 1,
       child: Container(
-        color: AppColors.surface,
+        color: context.ianvs.canvas,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -166,18 +165,18 @@ class WorkspaceInspector extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
               child: Row(
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.menu_book_outlined,
-                    color: AppColors.textSecondary,
+                    color: context.ianvs.muted,
                     size: 17,
                   ),
                   const SizedBox(width: 8),
-                  const Expanded(
+                  Expanded(
                     child: Text(
                       '会话详情',
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: AppColors.textPrimary,
+                        color: context.ianvs.text,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0,
@@ -190,11 +189,11 @@ class WorkspaceInspector extends StatelessWidget {
             SizedBox(
               height: 40,
               child: TabBar(
-                labelColor: AppColors.textPrimary,
-                unselectedLabelColor: AppColors.textSecondary,
+                labelColor: context.ianvs.text,
+                unselectedLabelColor: context.ianvs.muted,
                 dividerColor: Colors.transparent,
-                indicator: const UnderlineTabIndicator(
-                  borderSide: BorderSide(color: AppColors.accent, width: 2),
+                indicator: UnderlineTabIndicator(
+                  borderSide: BorderSide(color: context.ianvs.accent, width: 2),
                   insets: EdgeInsets.symmetric(horizontal: 26),
                 ),
                 indicatorSize: TabBarIndicatorSize.tab,
@@ -214,7 +213,7 @@ class WorkspaceInspector extends StatelessWidget {
                 ],
               ),
             ),
-            const Divider(height: 1, color: AppColors.border),
+            Divider(height: 1, color: context.ianvs.border),
             Expanded(
               child: TabBarView(
                 children: [
@@ -306,15 +305,13 @@ class _CompactInspectorHeader extends StatelessWidget {
             child: Text(
               label,
               style:
-                  const TextStyle(
-                    color: AppColors.textPrimary,
+                  TextStyle(
+                    color: context.ianvs.text,
                     fontSize: 13.5,
                     height: 1.3,
                     fontWeight: FontWeight.w600,
                   ).copyWith(
-                    color: prominent
-                        ? AppColors.textPrimary
-                        : AppColors.textSecondary,
+                    color: prominent ? context.ianvs.text : context.ianvs.muted,
                   ),
             ),
           ),
@@ -352,29 +349,27 @@ class _CompactSourceRow extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         onTap: onTap,
         child: SizedBox(
           height: 40,
           child: Row(
             children: [
-              Icon(icon, size: 17, color: AppColors.textSecondary),
+              Icon(icon, size: 17, color: context.ianvs.muted),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   label,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    color: muted
-                        ? AppColors.textTertiary
-                        : AppColors.textSecondary,
+                    color: muted ? context.ianvs.subtle : context.ianvs.muted,
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
               ),
               if (trailing != null)
-                Icon(trailing, size: 15, color: AppColors.textTertiary),
+                Icon(trailing, size: 15, color: context.ianvs.subtle),
             ],
           ),
         ),
@@ -404,7 +399,7 @@ class _InspectorDisclosureState extends State<_InspectorDisclosure> {
         Material(
           color: Colors.transparent,
           child: InkWell(
-            borderRadius: BorderRadius.circular(AppRadius.sm),
+            borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
             onTap: () => setState(() => _expanded = !_expanded),
             child: SizedBox(
               height: 40,
@@ -413,8 +408,8 @@ class _InspectorDisclosureState extends State<_InspectorDisclosure> {
                   Expanded(
                     child: Text(
                       widget.label,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
+                      style: TextStyle(
+                        color: context.ianvs.muted,
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                       ),
@@ -425,7 +420,7 @@ class _InspectorDisclosureState extends State<_InspectorDisclosure> {
                         ? Icons.keyboard_arrow_down_rounded
                         : Icons.chevron_right_rounded,
                     size: 18,
-                    color: AppColors.textTertiary,
+                    color: context.ianvs.subtle,
                   ),
                 ],
               ),
@@ -595,12 +590,12 @@ class _UsageRow extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(left: 80),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(AppRadius.pill),
+              borderRadius: BorderRadius.circular(999),
               child: LinearProgressIndicator(
                 value: progress,
                 minHeight: 3,
-                backgroundColor: AppColors.surfaceMuted,
-                color: _usageColor(percent),
+                backgroundColor: context.ianvs.chrome,
+                color: _usageColor(context, percent),
               ),
             ),
           ),
@@ -609,11 +604,11 @@ class _UsageRow extends StatelessWidget {
     );
   }
 
-  Color _usageColor(double? percent) {
-    if (percent == null) return AppColors.textSecondary;
-    if (percent >= 0.95) return AppColors.danger;
-    if (percent >= 0.75) return AppColors.warning;
-    return AppColors.textPrimary;
+  Color _usageColor(BuildContext context, double? percent) {
+    if (percent == null) return context.ianvs.muted;
+    if (percent >= 0.95) return context.ianvs.danger;
+    if (percent >= 0.75) return context.ianvs.warning;
+    return context.ianvs.text;
   }
 }
 
@@ -631,22 +626,22 @@ class _DiagnosticsSection extends StatelessWidget {
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: Material(
-        color: AppColors.surface,
+        color: context.ianvs.canvas,
         child: ExpansionTile(
           key: const Key('workspace-diagnostics-section'),
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
           minTileHeight: 34,
           dense: true,
-          leading: const Icon(
+          leading: Icon(
             Icons.tune_rounded,
             size: 14,
-            color: AppColors.textSecondary,
+            color: context.ianvs.muted,
           ),
-          title: const Text(
+          title: Text(
             '诊断',
             style: TextStyle(
-              color: AppColors.textSecondary,
+              color: context.ianvs.muted,
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
@@ -685,28 +680,28 @@ class _InspectorActionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 7),
         child: Row(
           children: [
-            Icon(icon, size: 14, color: AppColors.textSecondary),
+            Icon(icon, size: 14, color: context.ianvs.muted),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 label,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontSize: 11.5,
                   fontWeight: FontWeight.w500,
                 ),
               ),
             ),
-            const Icon(
+            Icon(
               Icons.chevron_right_rounded,
               size: 15,
-              color: AppColors.textTertiary,
+              color: context.ianvs.subtle,
             ),
           ],
         ),
@@ -732,14 +727,14 @@ class _McpServerRow extends StatelessWidget {
             width: 24,
             height: 24,
             decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
-              border: Border.all(color: AppColors.borderSoft),
+              color: context.ianvs.canvas,
+              borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+              border: Border.all(color: context.ianvs.separator),
             ),
-            child: const Icon(
+            child: Icon(
               Icons.hub_outlined,
               size: 13,
-              color: AppColors.textSecondary,
+              color: context.ianvs.muted,
             ),
           ),
           const SizedBox(width: 8),
@@ -750,8 +745,8 @@ class _McpServerRow extends StatelessWidget {
                 Text(
                   server.name,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
@@ -762,8 +757,8 @@ class _McpServerRow extends StatelessWidget {
                   target.isEmpty ? server.type : '${server.type} - $target',
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
+                  style: TextStyle(
+                    color: context.ianvs.muted,
                     fontSize: 11,
                     height: 1.3,
                   ),
@@ -789,10 +784,10 @@ class _MiniSessionRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(
+          Icon(
             Icons.chat_bubble_outline_rounded,
             size: 15,
-            color: AppColors.textSecondary,
+            color: context.ianvs.muted,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -802,8 +797,8 @@ class _MiniSessionRow extends StatelessWidget {
                 Text(
                   session.displayTitle,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
@@ -813,10 +808,7 @@ class _MiniSessionRow extends StatelessWidget {
                 Text(
                   '${session.agentName ?? 'Agent'} - ${formatRelativeSessionTime(session.displayTime)}',
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textTertiary,
-                    fontSize: 11,
-                  ),
+                  style: TextStyle(color: context.ianvs.subtle, fontSize: 11),
                 ),
               ],
             ),
@@ -839,14 +831,14 @@ class _SectionTitle extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 7),
       child: Row(
         children: [
-          Icon(icon, size: 14, color: AppColors.textSecondary),
+          Icon(icon, size: 14, color: context.ianvs.muted),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
+              style: TextStyle(
+                color: context.ianvs.muted,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
@@ -864,7 +856,7 @@ class _InspectorSectionDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Divider(height: 25, thickness: 1, color: AppColors.borderSoft);
+    return Divider(height: 25, thickness: 1, color: context.ianvs.separator);
   }
 }
 
@@ -887,8 +879,8 @@ class _InfoRow extends StatelessWidget {
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textTertiary,
+              style: TextStyle(
+                color: context.ianvs.subtle,
                 fontSize: 10.5,
                 fontWeight: FontWeight.w500,
                 letterSpacing: 0,
@@ -901,8 +893,8 @@ class _InfoRow extends StatelessWidget {
               value,
               maxLines: maxLines,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
+              style: TextStyle(
+                color: context.ianvs.text,
                 fontSize: 12,
                 height: 1.3,
                 fontWeight: FontWeight.w500,
@@ -925,11 +917,7 @@ class _EmptyLine extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       message,
-      style: const TextStyle(
-        color: AppColors.textSecondary,
-        fontSize: 12,
-        height: 1.35,
-      ),
+      style: TextStyle(color: context.ianvs.muted, fontSize: 12, height: 1.35),
     );
   }
 }

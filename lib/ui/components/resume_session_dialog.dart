@@ -1,12 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_session_catalog.dart';
 import '../../workspace/workspace.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
 import 'package:ianvs_agent_chat/ui/components/accessible_text_field.dart';
 
@@ -117,16 +116,19 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       contentPadding: EdgeInsets.zero,
       actionsPadding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.lg),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
-      title: const Text('Resume ACP Session', style: AppTypography.dialogTitle),
+      title: Text(
+        'Resume ACP Session',
+        style: Theme.of(context).textTheme.titleLarge!,
+      ),
       content: SizedBox(
         width: 808,
         height: math.min(539, math.max(360, viewportHeight * 0.62)),
         child: DecoratedBox(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             border: Border.symmetric(
-              horizontal: BorderSide(color: AppColors.borderSoft),
+              horizontal: BorderSide(color: context.ianvs.separator),
             ),
           ),
           child: Row(
@@ -162,8 +164,8 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   );
                 },
           style: FilledButton.styleFrom(
-            foregroundColor: Colors.white,
-            backgroundColor: AppColors.accent,
+            foregroundColor: Theme.of(context).colorScheme.onPrimary,
+            backgroundColor: context.ianvs.accent,
             minimumSize: const Size(0, 32),
             padding: const EdgeInsets.symmetric(horizontal: 18),
             visualDensity: VisualDensity.standard,
@@ -191,11 +193,11 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Padding(
+        Padding(
           padding: EdgeInsets.fromLTRB(24, 12, 16, 8),
           child: Text(
             'Agent for this session',
-            style: AppTypography.sectionTitle,
+            style: Theme.of(context).textTheme.titleMedium!,
           ),
         ),
         Expanded(
@@ -231,7 +233,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                       ? 'Sessions'
                       : 'Sessions for ${selectedAgent.name}',
                   key: const ValueKey('resume-session-pane-title'),
-                  style: AppTypography.sectionTitle,
+                  style: Theme.of(context).textTheme.titleMedium!,
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -239,8 +241,8 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                   key: const ValueKey('resume-session-scope'),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textTertiary,
+                  style: TextStyle(
+                    color: context.ianvs.subtle,
                     fontSize: 12,
                     height: 1.3,
                   ),
@@ -277,7 +279,7 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
                 const SizedBox(height: 10),
                 Expanded(
                   child: AnimatedSwitcher(
-                    duration: AppMotion.standard,
+                    duration: IanvsMotion.resolve(context),
                     transitionBuilder: _sessionResultTransition,
                     child: _sessionResults(selectedAgent),
                   ),
@@ -549,7 +551,7 @@ class _AgentSelectionList extends StatelessWidget {
       );
     }
     return Material(
-      color: AppColors.surface,
+      color: context.ianvs.canvas,
       child: ListView.builder(
         key: const ValueKey('resume-agent-list'),
         primary: false,
@@ -565,13 +567,17 @@ class _AgentSelectionList extends StatelessWidget {
             onTap: () => onSelected(agent),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: isSelected ? AppColors.accentMist : AppColors.surface,
+                color: isSelected
+                    ? context.ianvs.accent.withValues(alpha: .08)
+                    : context.ianvs.canvas,
                 border: Border(
                   left: BorderSide(
-                    color: isSelected ? AppColors.accent : Colors.transparent,
+                    color: isSelected
+                        ? context.ianvs.accent
+                        : Colors.transparent,
                     width: 3,
                   ),
-                  bottom: const BorderSide(color: AppColors.borderSoft),
+                  bottom: BorderSide(color: context.ianvs.separator),
                 ),
               ),
               child: Padding(
@@ -589,8 +595,8 @@ class _AgentSelectionList extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: isSelected
-                                  ? AppColors.accent
-                                  : AppColors.textPrimary,
+                                  ? context.ianvs.accent
+                                  : context.ianvs.text,
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
                             ),
@@ -598,10 +604,10 @@ class _AgentSelectionList extends StatelessWidget {
                         ),
                         if (agent.isCurrent) ...[
                           const SizedBox(width: 6),
-                          const Text(
+                          Text(
                             'Current Agent',
                             style: TextStyle(
-                              color: AppColors.textTertiary,
+                              color: context.ianvs.subtle,
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
                             ),
@@ -615,7 +621,7 @@ class _AgentSelectionList extends StatelessWidget {
                         Icon(
                           Icons.circle,
                           size: 8,
-                          color: _agentStatusColor(agent, description),
+                          color: _agentStatusColor(context, agent, description),
                         ),
                         const SizedBox(width: 6),
                         Expanded(
@@ -623,8 +629,8 @@ class _AgentSelectionList extends StatelessWidget {
                             description,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppColors.textTertiary,
+                            style: TextStyle(
+                              color: context.ianvs.subtle,
                               fontSize: 12,
                             ),
                           ),
@@ -643,23 +649,24 @@ class _AgentSelectionList extends StatelessWidget {
 }
 
 Color _agentStatusColor(
+  BuildContext context,
   ResumeSessionAgentOption agent,
   String visibleDescription,
 ) {
   final description = visibleDescription.toLowerCase();
   if (description.contains('auth') || description.contains('error')) {
-    return AppColors.danger;
+    return context.ianvs.danger;
   }
   if (description.contains('progress') ||
       description.contains('connecting') ||
       description.contains('reconnecting')) {
-    return AppColors.warning;
+    return context.ianvs.warning;
   }
   if ((!agent.enabled && description != 'ready') ||
       description.contains('unsupported')) {
-    return AppColors.textTertiary;
+    return context.ianvs.subtle;
   }
-  return AppColors.success;
+  return context.ianvs.success;
 }
 
 class _AuthenticationBanner extends StatelessWidget {
@@ -679,17 +686,17 @@ class _AuthenticationBanner extends StatelessWidget {
       key: ValueKey('resume-authentication-${agent.id}'),
       constraints: const BoxConstraints(minHeight: 60),
       padding: const EdgeInsets.fromLTRB(16, 8, 24, 8),
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(top: BorderSide(color: AppColors.borderSoft)),
+      decoration: BoxDecoration(
+        color: context.ianvs.canvas,
+        border: Border(top: BorderSide(color: context.ianvs.separator)),
       ),
       child: Row(
         children: [
           Container(
             width: 7,
             height: 7,
-            decoration: const BoxDecoration(
-              color: AppColors.danger,
+            decoration: BoxDecoration(
+              color: context.ianvs.danger,
               shape: BoxShape.circle,
             ),
           ),
@@ -699,10 +706,10 @@ class _AuthenticationBanner extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Authentication required',
                   style: TextStyle(
-                    color: AppColors.textPrimary,
+                    color: context.ianvs.text,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
@@ -712,10 +719,7 @@ class _AuthenticationBanner extends StatelessWidget {
                   '${agent.name} needs new credentials to list sessions.',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textTertiary,
-                    fontSize: 11,
-                  ),
+                  style: TextStyle(color: context.ianvs.subtle, fontSize: 11),
                 ),
               ],
             ),
@@ -759,10 +763,7 @@ class _LoadingPanel extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             'Loading sessions from $agentName...',
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 12,
-            ),
+            style: TextStyle(color: context.ianvs.muted, fontSize: 12),
           ),
         ],
       ),
@@ -855,10 +856,10 @@ class _WorkspaceGroupHeader extends StatelessWidget {
         padding: EdgeInsets.only(top: addTopSpacing ? 7 : 0),
         child: Row(
           children: [
-            const Icon(
+            Icon(
               Icons.keyboard_arrow_down_rounded,
               size: 16,
-              color: AppColors.textSecondary,
+              color: context.ianvs.muted,
             ),
             const SizedBox(width: 8),
             Flexible(
@@ -866,15 +867,15 @@ class _WorkspaceGroupHeader extends StatelessWidget {
                 project.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),
               ),
             ),
             const SizedBox(width: 10),
-            const Expanded(child: Divider(color: AppColors.borderSoft)),
+            Expanded(child: Divider(color: context.ianvs.separator)),
           ],
         ),
       ),
@@ -907,7 +908,9 @@ class _SessionResultTile extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Material(
-          color: selected ? AppColors.accentMist : AppColors.surface,
+          color: selected
+              ? context.ianvs.accent.withValues(alpha: .08)
+              : context.ianvs.canvas,
           child: InkWell(
             onTap: onTap,
             child: Container(
@@ -917,7 +920,7 @@ class _SessionResultTile extends StatelessWidget {
                 border: Border(
                   left: BorderSide(
                     width: 3,
-                    color: selected ? AppColors.accent : Colors.transparent,
+                    color: selected ? context.ianvs.accent : Colors.transparent,
                   ),
                 ),
               ),
@@ -933,8 +936,8 @@ class _SessionResultTile extends StatelessWidget {
                           conversation.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
+                          style: TextStyle(
+                            color: context.ianvs.text,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -944,8 +947,8 @@ class _SessionResultTile extends StatelessWidget {
                           conversation.id,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textTertiary,
+                          style: TextStyle(
+                            color: context.ianvs.subtle,
                             fontSize: 12,
                           ),
                         ),
@@ -955,10 +958,7 @@ class _SessionResultTile extends StatelessWidget {
                   const SizedBox(width: 12),
                   Text(
                     _formatRelativeDateTime(conversation.updatedAt),
-                    style: const TextStyle(
-                      color: AppColors.textTertiary,
-                      fontSize: 12,
-                    ),
+                    style: TextStyle(color: context.ianvs.subtle, fontSize: 12),
                   ),
                 ],
               ),
@@ -1141,13 +1141,14 @@ class _SearchField extends StatelessWidget {
         focusNode: focusNode,
         enabled: enabled,
         onChanged: onChanged,
-        style: const TextStyle(
-          color: AppColors.textPrimary,
+        style: TextStyle(
+          color: context.ianvs.text,
           fontSize: 12,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
         decoration: _inputDecoration(
+          context,
           icon: Icons.search_rounded,
           hintText: hintText,
         ),
@@ -1156,17 +1157,18 @@ class _SearchField extends StatelessWidget {
   }
 }
 
-InputDecoration _inputDecoration({
+InputDecoration _inputDecoration(
+  BuildContext context, {
   required IconData icon,
   required String hintText,
 }) {
   return InputDecoration(
-    prefixIcon: Icon(icon, size: 18, color: AppColors.textSecondary),
+    prefixIcon: Icon(icon, size: 18, color: context.ianvs.muted),
     hint: ExcludeSemantics(
       child: Text(
         hintText,
-        style: const TextStyle(
-          color: AppColors.textTertiary,
+        style: TextStyle(
+          color: context.ianvs.subtle,
           fontSize: 12,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,
@@ -1174,26 +1176,26 @@ InputDecoration _inputDecoration({
       ),
     ),
     filled: true,
-    fillColor: AppColors.surface,
+    fillColor: context.ianvs.canvas,
     isDense: true,
     contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
     constraints: const BoxConstraints(minHeight: 32),
     prefixIconConstraints: const BoxConstraints(minWidth: 32, minHeight: 32),
     border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      borderSide: const BorderSide(color: AppColors.border),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+      borderSide: BorderSide(color: context.ianvs.border),
     ),
     enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      borderSide: const BorderSide(color: AppColors.border),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+      borderSide: BorderSide(color: context.ianvs.border),
     ),
     focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      borderSide: const BorderSide(color: AppColors.primary),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+      borderSide: BorderSide(color: context.ianvs.accent),
     ),
     disabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      borderSide: const BorderSide(color: AppColors.borderSoft),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+      borderSide: BorderSide(color: context.ianvs.separator),
     ),
   );
 }
@@ -1223,9 +1225,9 @@ class _ConversationPreview extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        color: context.ianvs.raised,
+        border: Border.all(color: context.ianvs.border),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1234,8 +1236,8 @@ class _ConversationPreview extends StatelessWidget {
             conversation.title,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
+            style: TextStyle(
+              color: context.ianvs.text,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
@@ -1329,17 +1331,17 @@ class _MetadataPreviewState extends State<_MetadataPreview> {
           },
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
-          title: const Text(
+          title: Text(
             'Metadata',
             style: TextStyle(
-              color: AppColors.textPrimary,
+              color: context.ianvs.text,
               fontSize: 13,
               fontWeight: FontWeight.w600,
             ),
           ),
-          leading: const Icon(
+          leading: Icon(
             Icons.data_object_rounded,
-            color: AppColors.primaryDark,
+            color: context.ianvs.focus,
             size: 18,
           ),
           children: _preview == null
@@ -1349,16 +1351,19 @@ class _MetadataPreviewState extends State<_MetadataPreview> {
                     width: double.infinity,
                     padding: const EdgeInsets.all(9),
                     decoration: BoxDecoration(
-                      color: AppColors.surface,
-                      borderRadius: BorderRadius.circular(AppRadius.sm),
-                      border: Border.all(color: AppColors.border),
+                      color: context.ianvs.canvas,
+                      borderRadius: BorderRadius.circular(
+                        context.ianvs.controlRadius,
+                      ),
+                      border: Border.all(color: context.ianvs.border),
                     ),
                     child: SelectableText(
                       _preview!.text,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontFamily: AppTypography.monoFamily,
-                        fontFamilyFallback: AppTypography.monoFallback,
+                      style: TextStyle(
+                        color: context.ianvs.muted,
+                        fontFamily: context.ianvsTypography.code.fontFamily,
+                        fontFamilyFallback:
+                            context.ianvsTypography.code.fontFamilyFallback,
                         fontSize: 12,
                         height: 1.35,
                       ),
@@ -1384,8 +1389,8 @@ class _MetadataOmissionLabel extends StatelessWidget {
       padding: const EdgeInsets.only(top: 6),
       child: Text(
         'Details omitted · ${omission.resource}',
-        style: const TextStyle(
-          color: AppColors.warning,
+        style: TextStyle(
+          color: context.ianvs.warning,
           fontSize: 11,
           fontWeight: FontWeight.w600,
         ),
@@ -1404,14 +1409,14 @@ class _PreviewRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, size: 15, color: AppColors.textTertiary),
+        Icon(icon, size: 15, color: context.ianvs.subtle),
         const SizedBox(width: 7),
         Expanded(
           child: Text(
             label,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
+            style: TextStyle(
+              color: context.ianvs.muted,
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
@@ -1445,12 +1450,12 @@ class _PreviewPathRow extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
+        Padding(
           padding: EdgeInsets.only(top: 2),
           child: Icon(
             Icons.folder_outlined,
             size: 15,
-            color: AppColors.textTertiary,
+            color: context.ianvs.subtle,
           ),
         ),
         const SizedBox(width: 7),
@@ -1460,18 +1465,19 @@ class _PreviewPathRow extends StatelessWidget {
             children: [
               Text(
                 label,
-                style: const TextStyle(
-                  color: AppColors.textTertiary,
+                style: TextStyle(
+                  color: context.ianvs.subtle,
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               SelectableText(
                 path,
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontFamily: AppTypography.monoFamily,
-                  fontFamilyFallback: AppTypography.monoFallback,
+                style: TextStyle(
+                  color: context.ianvs.muted,
+                  fontFamily: context.ianvsTypography.code.fontFamily,
+                  fontFamilyFallback:
+                      context.ianvsTypography.code.fontFamilyFallback,
                   fontSize: 12,
                   height: 1.3,
                 ),
@@ -1497,17 +1503,17 @@ class _MessagePanel extends StatelessWidget {
       alignment: Alignment.center,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        color: context.ianvs.raised,
+        border: Border.all(color: context.ianvs.border),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
             title,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
+            style: TextStyle(
+              color: context.ianvs.text,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
@@ -1516,10 +1522,7 @@ class _MessagePanel extends StatelessWidget {
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              height: 1.35,
-            ),
+            style: TextStyle(color: context.ianvs.muted, height: 1.35),
           ),
         ],
       ),

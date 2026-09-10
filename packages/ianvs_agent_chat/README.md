@@ -111,17 +111,24 @@ The originating Ianvs app uses this boundary in `lib/chat/acp_chat_session.dart`
 
 ## Customize
 
+The app and this package use `ianvs_design` for Material 3 controls, light/dark
+surfaces, spacing and monospaced typography. Configure the host with
+`IanvsTheme.light()`, `IanvsTheme.dark()` and `ThemeMode.system`. Standalone
+`ChatTimeline` and `PromptInput` also derive their palette from the ambient
+Ianvs theme. A plain Material host receives Ianvs defaults matching its brightness.
+
 ```dart
 ChatTheme(
   data: const ChatThemeData(
     colors: {'userMessageSurface': Color(0xffeef4ff)},
     contentMaxWidth: 900,
+    bodyFontSize: 15,
   ),
   child: AgentChatView(session: session),
 );
 ```
 
-- Use `ChatTheme` for conversation surfaces, text colors and content width. Some semantic status colors retain their defaults.
+- Use `ChatTheme` for conversation surfaces, semantic status colors, content width and reading font size. Unspecified colors continue to follow the host theme, including after a light/dark switch. Code highlighting and Mermaid rendering also follow host brightness.
 - Use `ChatStrings` to override primary composer labels. Full localization is not included in this release.
 - Supply `ToolPresentationRegistry` rules for tool families.
 - Supply `timelineBuilder` or `composerBuilder` to wrap or replace either region.

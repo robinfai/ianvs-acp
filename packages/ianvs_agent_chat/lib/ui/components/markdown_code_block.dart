@@ -2,7 +2,7 @@ import '../../chat_theme.dart';
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
@@ -37,9 +37,10 @@ import 'package:re_highlight/languages/xml.dart';
 import 'package:re_highlight/languages/yaml.dart';
 import 'package:re_highlight/re_highlight.dart';
 import 'package:re_highlight/styles/github.dart';
+import 'package:re_highlight/styles/github-dark.dart';
 
 import '../../mermaid/mermaid_view.dart';
-import '../theme/app_design_tokens.dart';
+import '../../mermaid/mermaid_render_options.dart';
 import 'scroll_fade_region.dart';
 
 const int markdownCodeHighlightCharacterLimit = 200 * 1024;
@@ -126,9 +127,9 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
   @override
   Widget build(BuildContext context) {
     final baseStyle = TextStyle(
-      color: Color(0xff24292e),
-      fontFamily: AppTypography.monoFamily,
-      fontFamilyFallback: AppTypography.monoFallback,
+      color: ChatTheme.of(context).textPrimary,
+      fontFamily: context.ianvsTypography.code.fontFamily,
+      fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
       fontSize: 12.5,
       height: 1.5,
     );
@@ -140,6 +141,7 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
       widget.source,
       language: widget.language,
       baseStyle: baseStyle,
+      brightness: Theme.of(context).brightness,
     );
 
     Widget body = LayoutBuilder(
@@ -172,7 +174,7 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
         key: ValueKey('code-block-scroll-region'),
         controller: _verticalController,
         maxHeight: _collapsedCodeHeight,
-        backgroundColor: Color(0xfffbfbfd),
+        backgroundColor: ChatTheme.of(context).surfaceRaised,
         showScrollbar: true,
         child: body,
       );
@@ -184,8 +186,8 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
       margin: EdgeInsets.symmetric(vertical: 2),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: Color(0xfffbfbfd),
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        color: ChatTheme.of(context).surfaceRaised,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       foregroundDecoration: BoxDecoration(
         border: Border.all(
@@ -193,7 +195,7 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
               ? Colors.white.withValues(alpha: 0.34)
               : ChatTheme.of(context).border,
         ),
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -251,8 +253,8 @@ class MarkdownMermaidBlock extends StatelessWidget {
               ? Colors.white.withValues(alpha: 0.34)
               : ChatTheme.of(context).border,
         ),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        boxShadow: user ? null : AppShadows.soft,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        boxShadow: user ? null : kElevationToShadow[2]!,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -264,6 +266,12 @@ class MarkdownMermaidBlock extends StatelessWidget {
             height: 320,
             child: MermaidView(
               source: source,
+              options: Theme.of(context).brightness == Brightness.dark
+                  ? const MermaidRenderOptions(
+                      theme: 'dark',
+                      themeVariables: {},
+                    )
+                  : MermaidRenderOptions.flutterSvgDefault,
               semanticsLabel: 'Mermaid diagram',
               loadingBuilder: (_) => Center(
                 child: SizedBox.square(
@@ -317,7 +325,7 @@ class _CodeBlockToolbar extends StatelessWidget {
       key: ValueKey('markdown-code-block-toolbar'),
       constraints: BoxConstraints(minHeight: 38),
       padding: EdgeInsets.only(left: 13, right: 5),
-      color: Color(0xfff6f7f8),
+      color: ChatTheme.of(context).surfaceMuted,
       child: Row(
         children: [
           Icon(
@@ -352,7 +360,7 @@ class _CodeBlockToolbar extends StatelessWidget {
               onPressed: onToggleExpanded,
               style: TextButton.styleFrom(
                 foregroundColor: ChatTheme.of(context).textSecondary,
-                visualDensity: VisualDensity.compact,
+                visualDensity: VisualDensity.standard,
                 padding: EdgeInsets.symmetric(horizontal: 7),
                 textStyle: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
               ),
@@ -406,7 +414,7 @@ class _MermaidToolbarState extends State<_MermaidToolbar> {
     return Container(
       constraints: BoxConstraints(minHeight: 36),
       padding: EdgeInsets.only(left: 12, right: 4),
-      color: Color(0xfff5f6fa),
+      color: ChatTheme.of(context).surfaceMuted,
       child: Row(
         children: [
           Icon(
@@ -484,7 +492,7 @@ class _CodeToolbarButton extends StatelessWidget {
             ),
       constraints: BoxConstraints(minWidth: 32, minHeight: 32),
       padding: EdgeInsets.zero,
-      visualDensity: VisualDensity.compact,
+      visualDensity: VisualDensity.standard,
     );
   }
 }
@@ -535,6 +543,7 @@ TextSpan markdownHighlightedCodeSpan(
   String source, {
   required String? language,
   required TextStyle baseStyle,
+  Brightness brightness = Brightness.light,
 }) {
   final normalized = normalizeMarkdownCodeLanguage(language);
   if (normalized == null ||
@@ -554,7 +563,10 @@ TextSpan markdownHighlightedCodeSpan(
       return TextSpan(text: source, style: baseStyle);
     }
   }
-  final renderer = TextSpanRenderer(baseStyle, githubTheme);
+  final renderer = TextSpanRenderer(
+    baseStyle,
+    brightness == Brightness.dark ? githubDarkTheme : githubTheme,
+  );
   result.render(renderer);
   return renderer.span ?? TextSpan(text: source, style: baseStyle);
 }

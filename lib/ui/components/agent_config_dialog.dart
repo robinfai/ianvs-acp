@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 
 import '../../acp/acp_permission_request.dart';
@@ -10,7 +10,6 @@ import '../../config/acp_client_config.dart';
 import '../../config/config_reference_updates.dart';
 import '../../config/assistant_agent_config.dart';
 import '../../storage/sqlite_storage_config.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 part 'settings_connection_editors.dart';
 part 'settings_page_layout.dart';
@@ -531,16 +530,16 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             padding: const EdgeInsets.only(bottom: 12),
             child: Row(
               children: [
-                const Icon(
+                Icon(
                   Icons.folder_outlined,
                   size: 20,
-                  color: AppColors.textSecondary,
+                  color: context.ianvs.muted,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: SelectableText(
                     directory,
-                    style: AppTypography.label.copyWith(
+                    style: Theme.of(context).textTheme.labelLarge!.copyWith(
                       fontWeight: FontWeight.w400,
                     ),
                   ),
@@ -595,7 +594,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           if (_assistantEnabled) ...[
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
-              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+              style: Theme.of(
+                context,
+              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
               key: const Key('assistant-agent-name-field'),
               initialValue: selected,
               isExpanded: true,
@@ -646,12 +647,12 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
                   style: TextStyle(
                     fontSize: 13,
                     color: _assistantValidationSucceeded
-                        ? AppColors.success
-                        : AppColors.warning,
+                        ? context.ianvs.success
+                        : context.ianvs.warning,
                   ),
                 ),
               ),
-            const Divider(height: 32, color: AppColors.border),
+            Divider(height: 32, color: context.ianvs.border),
             _ConfigSwitch(
               key: const Key('assistant-session-title-switch'),
               title: '生成会话标题',
@@ -680,8 +681,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               '辅助 Agent 会收到首条提示和已完成轮次的内容，没有文件、终端或 MCP 工具权限。失败或超时时仍保留原始内容。',
             ),
           ],
-          const Divider(height: 32, color: AppColors.border),
-          const Text('备用标题', style: AppTypography.sectionTitle),
+          Divider(height: 32, color: context.ianvs.border),
+          Text('备用标题', style: Theme.of(context).textTheme.titleMedium!),
           const SizedBox(height: 10),
           const _SettingsHelp('未启用 AI 辅助或生成失败时，从首条提示截取标题。'),
           const SizedBox(height: 16),
@@ -735,7 +736,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     return KeyedSubtree(
       key: const Key('assistant-agent-model-field'),
       child: DropdownButtonFormField<String>(
-        style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+        style: Theme.of(
+          context,
+        ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
         key: ValueKey((selectedAgent, selectedValue, _assistantModelsLoading)),
         initialValue: selectedValue,
         isExpanded: true,
@@ -870,7 +873,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           value: _terminalEnabled,
           onChanged: (value) => setState(() => _terminalEnabled = value),
         ),
-        const Divider(height: 32, color: AppColors.border),
+        Divider(height: 32, color: context.ianvs.border),
         Wrap(
           spacing: 16,
           runSpacing: 8,
@@ -878,7 +881,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           children: [
             Text(
               '信任规则 · ${_trustRules.length}',
-              style: AppTypography.sectionTitle,
+              style: Theme.of(context).textTheme.titleMedium!,
             ),
             TextButton.icon(
               onPressed: _saving ? null : _addTrustRule,
@@ -894,9 +897,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               Expanded(
                 child: Text(
                   _permissionTrustRuleLabel(rule),
-                  style: AppTypography.label.copyWith(
-                    fontWeight: FontWeight.w400,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
                 ),
               ),
               _PanelActionButton(
@@ -906,8 +909,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
               ),
             ],
           ),
-        const Divider(height: 32, color: AppColors.border),
-        const Text('自动审查来源', style: AppTypography.sectionTitle),
+        Divider(height: 32, color: context.ianvs.border),
+        Text('自动审查来源', style: Theme.of(context).textTheme.titleMedium!),
         const SizedBox(height: 12),
         const _SettingsHelp(
           '当输入区的执行策略设为 Auto Review 时使用。默认由当前 Agent 的独立审查会话处理。',
@@ -921,7 +924,9 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         if (_reviewAgentEnabled) ...[
           const SizedBox(height: 16),
           DropdownButtonFormField<String>(
-            style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
             key: const Key('review-target-kind'),
             initialValue: _reviewTargetKind,
             decoration: const InputDecoration(labelText: '来源类型'),
@@ -1329,20 +1334,20 @@ class _ErrorPanel extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.danger.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.danger.withValues(alpha: 0.22)),
+        color: context.ianvs.danger.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.danger.withValues(alpha: 0.22)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.error_outline_rounded, color: AppColors.danger),
+          Icon(Icons.error_outline_rounded, color: context.ianvs.danger),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               message,
-              style: const TextStyle(
-                color: AppColors.danger,
+              style: TextStyle(
+                color: context.ianvs.danger,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
@@ -1368,14 +1373,11 @@ class _PanelActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
+    return IanvsIconButton(
       key: Key(tooltip),
       tooltip: tooltip,
       onPressed: onPressed,
-      icon: Icon(icon),
-      iconSize: 17,
-      visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+      icon: icon,
     );
   }
 }
@@ -1388,42 +1390,18 @@ class _ConfigSwitch extends StatelessWidget {
     required this.onChanged,
     this.subtitle,
   });
-
   final String title;
   final bool value;
   final ValueChanged<bool>? onChanged;
   final String? subtitle;
 
   @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        dense: true,
-        title: Text(
-          title,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 13,
-            fontWeight: FontWeight.w500,
-            letterSpacing: 0,
-          ),
-        ),
-        subtitle: Text(
-          subtitle ?? (value ? '已开启' : '已关闭'),
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            fontWeight: FontWeight.w400,
-            letterSpacing: 0,
-          ),
-        ),
-        value: value,
-        onChanged: onChanged,
-      ),
-    );
-  }
+  Widget build(BuildContext context) => IanvsSettingsRow(
+    title: title,
+    description: subtitle ?? (value ? '已开启' : '已关闭'),
+    value: value,
+    onChanged: onChanged,
+  );
 }
 
 class _DirectoryEditorDialog extends StatefulWidget {
@@ -1531,10 +1509,13 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
             ),
             const SizedBox(height: 10),
             DropdownButtonFormField<AcpPermissionDecision>(
-              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+              style: Theme.of(
+                context,
+              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
               key: const Key('trust-decision-field'),
               initialValue: _decision,
               decoration: _fieldDecoration(
+                context,
                 label: '规则结果',
                 icon: Icons.rule_rounded,
               ),
@@ -1602,11 +1583,13 @@ class _DialogTextField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
+    return IanvsTextField(
       controller: controller,
-      style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+      style: Theme.of(
+        context,
+      ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
       obscureText: obscureText,
-      decoration: _fieldDecoration(label: label, icon: icon),
+      decoration: _fieldDecoration(context, label: label, icon: icon),
     );
   }
 }
@@ -1641,7 +1624,7 @@ class _StringListEditor extends StatelessWidget {
                       child: TextField(
                         key: Key('$itemPrefix-$index-field'),
                         controller: controllers[index],
-                        style: AppTypography.label.copyWith(
+                        style: Theme.of(context).textTheme.labelLarge!.copyWith(
                           fontWeight: FontWeight.w400,
                         ),
                         decoration: const InputDecoration(
@@ -1669,24 +1652,7 @@ class _StringListEditor extends StatelessWidget {
           ),
         ],
       );
-      final label = Padding(
-        padding: const EdgeInsets.only(top: 12),
-        child: Text(title, style: AppTypography.label),
-      );
-      if (bounds.maxWidth < 440) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [label, const SizedBox(height: 10), fields],
-        );
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 94, child: label),
-          const SizedBox(width: 12),
-          Expanded(child: fields),
-        ],
-      );
+      return IanvsFieldRow(label: title, child: fields);
     },
   );
 }
@@ -1768,7 +1734,10 @@ class _ListEditorFrame extends StatelessWidget {
     children: [
       Row(
         children: [
-          SizedBox(width: 110, child: Text(title, style: AppTypography.label)),
+          SizedBox(
+            width: 110,
+            child: Text(title, style: Theme.of(context).textTheme.labelLarge!),
+          ),
           TextButton.icon(
             onPressed: onAdd,
             icon: const Icon(Icons.add_rounded, size: 18),
@@ -1790,8 +1759,8 @@ class _InlineError extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       message,
-      style: const TextStyle(
-        color: AppColors.danger,
+      style: TextStyle(
+        color: context.ianvs.danger,
         fontSize: 12,
         fontWeight: FontWeight.w600,
         letterSpacing: 0,
@@ -1800,7 +1769,8 @@ class _InlineError extends StatelessWidget {
   }
 }
 
-InputDecoration _fieldDecoration({
+InputDecoration _fieldDecoration(
+  BuildContext context, {
   required String label,
   required IconData icon,
 }) {
@@ -1809,7 +1779,7 @@ InputDecoration _fieldDecoration({
     prefixIcon: Icon(icon),
     isDense: true,
     border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
     ),
   );
 }
@@ -1902,8 +1872,8 @@ class _ConfigPathPanel extends StatelessWidget {
       title: '配置文件',
       child: SelectableText(
         path == null || path!.isEmpty ? '未提供可写配置路径' : path!,
-        style: const TextStyle(
-          color: AppColors.textSecondary,
+        style: TextStyle(
+          color: context.ianvs.muted,
           fontSize: 12,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,
@@ -1924,29 +1894,18 @@ class _Panel extends StatelessWidget {
   final String title;
   final Widget child;
   final Widget? trailing;
+
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Wrap(
-        spacing: 16,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 18, color: AppColors.textSecondary),
-              const SizedBox(width: 8),
-              Text(title, style: AppTypography.sectionTitle),
-            ],
-          ),
-          ?trailing,
-        ],
-      ),
-      const SizedBox(height: 16),
-      child,
-    ],
+  Widget build(BuildContext context) => IanvsFormSection(
+    title: Row(
+      children: [
+        Icon(icon, size: 18, color: context.ianvs.muted),
+        const SizedBox(width: 8),
+        Expanded(child: Text(title)),
+      ],
+    ),
+    trailing: trailing,
+    children: [child],
   );
 }
 

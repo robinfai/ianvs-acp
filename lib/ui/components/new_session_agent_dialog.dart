@@ -1,10 +1,9 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../config/acp_client_config.dart';
 import '../../config/assistant_agent_config.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class NewSessionSelection {
   const NewSessionSelection({
@@ -65,7 +64,10 @@ class _NewSessionAgentDialogState extends State<NewSessionAgentDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('New Session', style: AppTypography.dialogTitle),
+      title: Text(
+        'New Session',
+        style: Theme.of(context).textTheme.titleLarge!,
+      ),
       content: SizedBox(
         width: 560,
         child: SingleChildScrollView(
@@ -210,24 +212,24 @@ class _SessionScopeNotice extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.primaryMist,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.accent.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
-      child: const Row(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(
             Icons.play_circle_outline_rounded,
             size: 18,
-            color: AppColors.primaryDark,
+            color: context.ianvs.focus,
           ),
           SizedBox(width: 8),
           Expanded(
             child: Text(
               'These choices apply to this new session. They do not change the startup default Agent.',
               style: TextStyle(
-                color: AppColors.textSecondary,
+                color: context.ianvs.muted,
                 fontSize: 12,
                 height: 1.35,
               ),
@@ -248,8 +250,8 @@ class _ChoiceSectionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(
-        color: AppColors.textTertiary,
+      style: TextStyle(
+        color: context.ianvs.subtle,
         fontSize: 13,
         fontWeight: FontWeight.w500,
         letterSpacing: 0.2,
@@ -353,17 +355,17 @@ class _TemplateSummary extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Template summary',
             style: TextStyle(
-              color: AppColors.textPrimary,
+              color: context.ianvs.text,
               fontSize: 12,
               fontWeight: FontWeight.w700,
             ),
@@ -374,10 +376,10 @@ class _TemplateSummary extends StatelessWidget {
             if (row != rows.last) const SizedBox(height: 4),
           ],
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Session option requests are applied after creation only when the selected Agent exposes matching capabilities.',
             style: TextStyle(
-              color: AppColors.textTertiary,
+              color: context.ianvs.subtle,
               fontSize: 12,
               height: 1.3,
             ),
@@ -486,8 +488,8 @@ class _TemplateSummaryRow extends StatelessWidget {
           width: 116,
           child: Text(
             label,
-            style: const TextStyle(
-              color: AppColors.textTertiary,
+            style: TextStyle(
+              color: context.ianvs.subtle,
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
@@ -496,8 +498,8 @@ class _TemplateSummaryRow extends StatelessWidget {
         Expanded(
           child: Text(
             value,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
+            style: TextStyle(
+              color: context.ianvs.muted,
               fontSize: 12,
               height: 1.25,
             ),
@@ -528,18 +530,20 @@ class _SessionChoiceSurface extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         onTap: onTap,
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: selected ? AppColors.primaryMist : AppColors.surfaceRaised,
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            color: selected
+                ? context.ianvs.accent.withValues(alpha: .08)
+                : context.ianvs.raised,
+            borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             border: Border.all(
               color: selected
-                  ? AppColors.primary.withValues(alpha: 0.22)
-                  : AppColors.border,
+                  ? context.ianvs.accent.withValues(alpha: 0.22)
+                  : context.ianvs.border,
             ),
           ),
           child: Row(
@@ -547,7 +551,7 @@ class _SessionChoiceSurface extends StatelessWidget {
               Icon(
                 selected ? Icons.check_circle_rounded : icon,
                 size: 20,
-                color: selected ? AppColors.success : AppColors.primaryDark,
+                color: selected ? context.ianvs.success : context.ianvs.focus,
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -558,8 +562,8 @@ class _SessionChoiceSurface extends StatelessWidget {
                     Text(
                       title,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
+                      style: TextStyle(
+                        color: context.ianvs.text,
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0,
@@ -570,8 +574,8 @@ class _SessionChoiceSurface extends StatelessWidget {
                       subtitle,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textTertiary,
+                      style: TextStyle(
+                        color: context.ianvs.subtle,
                         fontSize: 12,
                         height: 1.25,
                         letterSpacing: 0,
@@ -620,7 +624,7 @@ class _PathAutocompleteField extends StatelessWidget {
             errorText: errorText,
             isDense: true,
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(AppRadius.sm),
+              borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
             ),
           ),
           textInputAction: TextInputAction.done,
@@ -632,9 +636,9 @@ class _PathAutocompleteField extends StatelessWidget {
           Container(
             width: double.infinity,
             decoration: BoxDecoration(
-              color: AppColors.surfaceRaised,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
-              border: Border.all(color: AppColors.border),
+              color: context.ianvs.raised,
+              borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+              border: Border.all(color: context.ianvs.border),
             ),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 180),
@@ -653,18 +657,18 @@ class _PathAutocompleteField extends StatelessWidget {
                       ),
                       child: Row(
                         children: [
-                          const Icon(
+                          Icon(
                             Icons.folder_outlined,
                             size: 16,
-                            color: AppColors.primaryDark,
+                            color: context.ianvs.focus,
                           ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               suggestion,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
+                              style: TextStyle(
+                                color: context.ianvs.muted,
                                 fontSize: 12,
                                 fontWeight: FontWeight.w600,
                                 letterSpacing: 0,
@@ -711,20 +715,20 @@ class _AgentChoiceTile extends StatelessWidget {
         child: Material(
           color: Colors.transparent,
           child: InkWell(
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             onTap: onTap,
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: selected
-                    ? AppColors.primaryMist
-                    : AppColors.surfaceRaised,
-                borderRadius: BorderRadius.circular(AppRadius.md),
+                    ? context.ianvs.accent.withValues(alpha: .08)
+                    : context.ianvs.raised,
+                borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
                 border: Border.all(
                   color: selected
-                      ? AppColors.primary.withValues(alpha: 0.22)
-                      : AppColors.border,
+                      ? context.ianvs.accent.withValues(alpha: 0.22)
+                      : context.ianvs.border,
                 ),
               ),
               child: Row(
@@ -732,7 +736,9 @@ class _AgentChoiceTile extends StatelessWidget {
                   Icon(
                     selected ? Icons.check_circle_rounded : Icons.hub_outlined,
                     size: 20,
-                    color: selected ? AppColors.success : AppColors.primaryDark,
+                    color: selected
+                        ? context.ianvs.success
+                        : context.ianvs.focus,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -743,8 +749,8 @@ class _AgentChoiceTile extends StatelessWidget {
                         Text(
                           server.name,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
+                          style: TextStyle(
+                            color: context.ianvs.text,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                             letterSpacing: 0,
@@ -756,8 +762,8 @@ class _AgentChoiceTile extends StatelessWidget {
                           child: Text(
                             server.safeDisplayTarget,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppColors.textTertiary,
+                            style: TextStyle(
+                              color: context.ianvs.subtle,
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                               letterSpacing: 0,
@@ -800,13 +806,13 @@ class _AgentScopeLabel extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.primaryMist,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        color: context.ianvs.accent.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Text(
         label,
-        style: const TextStyle(
-          color: AppColors.primaryDark,
+        style: TextStyle(
+          color: context.ianvs.focus,
           fontSize: 11,
           fontWeight: FontWeight.w600,
         ),

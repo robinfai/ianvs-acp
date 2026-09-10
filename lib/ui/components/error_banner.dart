@@ -1,6 +1,4 @@
-import 'package:flutter/material.dart';
-
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 class ErrorBanner extends StatelessWidget {
   const ErrorBanner({
@@ -35,9 +33,11 @@ class ErrorBanner extends StatelessWidget {
           width: double.infinity,
           padding: const EdgeInsets.fromLTRB(11, 8, 9, 8),
           decoration: BoxDecoration(
-            color: const Color(0xfffff7f7),
-            borderRadius: BorderRadius.circular(AppRadius.md),
-            border: Border.all(color: const Color(0xffffcdd2)),
+            color: context.ianvs.danger.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+            border: Border.all(
+              color: context.ianvs.danger.withValues(alpha: 0.3),
+            ),
           ),
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -45,11 +45,11 @@ class ErrorBanner extends StatelessWidget {
               final messageBlock = Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Padding(
+                  Padding(
                     padding: EdgeInsets.only(top: 1),
                     child: Icon(
                       Icons.error_outline_rounded,
-                      color: AppColors.danger,
+                      color: context.ianvs.danger,
                       size: 17,
                     ),
                   ),
@@ -60,8 +60,8 @@ class ErrorBanner extends StatelessWidget {
                       children: [
                         Text(
                           message,
-                          style: const TextStyle(
-                            color: AppColors.danger,
+                          style: TextStyle(
+                            color: context.ianvs.danger,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                             letterSpacing: 0,
@@ -73,8 +73,8 @@ class ErrorBanner extends StatelessWidget {
                             trimmedDetail!,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppColors.textSecondary,
+                            style: TextStyle(
+                              color: context.ianvs.muted,
                               fontSize: 11.5,
                               fontWeight: FontWeight.w400,
                             ),
@@ -110,7 +110,7 @@ class ErrorBanner extends StatelessWidget {
                       tooltip: 'Copy diagnostics',
                       onPressed: onCopy,
                       icon: const Icon(Icons.copy_rounded, size: 16),
-                      color: AppColors.textSecondary,
+                      color: context.ianvs.muted,
                       constraints: const BoxConstraints.tightFor(
                         width: 40,
                         height: 40,

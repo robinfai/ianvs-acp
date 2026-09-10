@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,7 +15,7 @@ import 'package:ianvs_acp/ui/components/markdown_front_matter_card.dart';
 import 'package:ianvs_acp/ui/components/markdown_preview_image.dart';
 import 'package:ianvs_acp/ui/file_preview/file_preview_document.dart';
 import 'package:ianvs_acp/ui/image_decode_budget.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 void main() {
   Future<void> pumpAsyncUntil(WidgetTester tester, bool Function() done) async {
@@ -169,10 +168,10 @@ void main() {
         find.byKey(const Key('workspace-inspector-surface')),
       );
       final inspectorDecoration = surface.decoration! as BoxDecoration;
-      expect(inspectorDecoration.color, AppColors.surface);
+      expect(inspectorDecoration.color, IanvsTokens.light.canvas);
       expect(
         inspectorDecoration.border,
-        const Border(left: BorderSide(color: AppColors.borderSoft)),
+        Border(left: BorderSide(color: IanvsTokens.light.separator)),
       );
       expect(surface.foregroundDecoration, isNull);
 

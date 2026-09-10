@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
@@ -22,7 +22,6 @@ import '../../platform/prompt_image_clipboard.dart';
 export '../../platform/prompt_image_clipboard.dart' show emptyClipboardImage;
 import '../../models/chat_message.dart';
 import '../../models/permission_context.dart';
-import '../theme/app_design_tokens.dart';
 import '../bounded_metadata_preview.dart';
 import 'accessible_text_field.dart';
 
@@ -36,12 +35,6 @@ typedef PromptDroppedImageReader =
     Future<PromptAttachment?> Function(PromptAttachment attachment);
 typedef SessionConfigSelectionCallback =
     void Function(String configId, Object value);
-
-const Color _permissionAccent = Color(0xffea580c);
-const Color _permissionAccentDark = Color(0xff9a3412);
-const Color _permissionAccentSoft = Color(0xfffffcf8);
-const Color _permissionAccentMist = Color(0xffffedd5);
-const Color _permissionAccentBorderSoft = Color(0xfffed7aa);
 
 bool _samePromptHistory(List<String> left, List<String> right) {
   if (identical(left, right)) return true;
@@ -425,7 +418,9 @@ class _PromptInputState extends State<PromptInput> {
                         color: _isDraggingAttachments
                             ? ChatTheme.of(context).accentMist
                             : ChatTheme.of(context).surface,
-                        borderRadius: BorderRadius.circular(AppRadius.xl),
+                        borderRadius: BorderRadius.circular(
+                          context.ianvs.panelRadius,
+                        ),
                         border: Border.all(
                           color: _isDraggingAttachments
                               ? ChatTheme.of(context).accent
@@ -929,7 +924,9 @@ class _PromptInputState extends State<PromptInput> {
                 padding: EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: ChatTheme.of(context).surfaceRaised,
-                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  borderRadius: BorderRadius.circular(
+                    context.ianvs.panelRadius,
+                  ),
                   border: Border.all(color: ChatTheme.of(context).border),
                 ),
                 child: SingleChildScrollView(
@@ -943,8 +940,12 @@ class _PromptInputState extends State<PromptInput> {
                             attachment.path,
                             style: TextStyle(
                               color: ChatTheme.of(context).textSecondary,
-                              fontFamily: AppTypography.monoFamily,
-                              fontFamilyFallback: AppTypography.monoFallback,
+                              fontFamily:
+                                  context.ianvsTypography.code.fontFamily,
+                              fontFamilyFallback: context
+                                  .ianvsTypography
+                                  .code
+                                  .fontFamilyFallback,
                               fontSize: 11,
                             ),
                           ),
@@ -1102,7 +1103,9 @@ class _PromptAttachmentDropRegionState
                     padding: EdgeInsets.symmetric(horizontal: 24, vertical: 18),
                     decoration: BoxDecoration(
                       color: ChatTheme.of(context).surface,
-                      borderRadius: BorderRadius.circular(AppRadius.xl),
+                      borderRadius: BorderRadius.circular(
+                        context.ianvs.panelRadius,
+                      ),
                       border: Border.all(
                         color: ChatTheme.of(context).textSecondary,
                         width: 1.5,
@@ -1197,6 +1200,7 @@ class _PromptPermissionCard extends StatelessWidget {
   }
 
   Widget _structuredChoiceButton(
+    BuildContext context,
     ChatPermissionChoice choice, {
     required bool contextIsComplete,
   }) {
@@ -1214,11 +1218,13 @@ class _PromptPermissionCard extends StatelessWidget {
         icon: Icon(Icons.block_rounded, size: 15),
         label: Text(choice.name),
         style: OutlinedButton.styleFrom(
-          foregroundColor: AppColors.danger,
-          backgroundColor: Colors.white,
+          foregroundColor: ChatTheme.of(context).danger,
+          backgroundColor: ChatTheme.of(context).surface,
           minimumSize: Size(0, 44),
           padding: EdgeInsets.symmetric(horizontal: 14),
-          side: BorderSide(color: Color(0xfffecaca)),
+          side: BorderSide(
+            color: ChatTheme.of(context).danger.withValues(alpha: 0.3),
+          ),
           tapTargetSize: MaterialTapTargetSize.padded,
         ),
       );
@@ -1236,8 +1242,10 @@ class _PromptPermissionCard extends StatelessWidget {
       icon: Icon(Icons.check_rounded, size: 15),
       label: Text(choice.name),
       style: FilledButton.styleFrom(
-        foregroundColor: Colors.white,
-        backgroundColor: Color(0xffc2410c),
+        foregroundColor: IanvsTheme.foregroundFor(
+          ChatTheme.of(context).warning,
+        ),
+        backgroundColor: ChatTheme.of(context).warning,
         minimumSize: Size(0, 44),
         padding: EdgeInsets.symmetric(horizontal: 14),
         tapTargetSize: MaterialTapTargetSize.padded,
@@ -1246,6 +1254,7 @@ class _PromptPermissionCard extends StatelessWidget {
   }
 
   Widget _structuredChoiceMenu(
+    BuildContext context,
     List<ChatPermissionChoice> choices, {
     required bool contextIsComplete,
   }) {
@@ -1267,7 +1276,7 @@ class _PromptPermissionCard extends StatelessWidget {
               choice.name,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: AppTypography.label,
+              style: Theme.of(context).textTheme.labelLarge!,
             ),
           ),
       ],
@@ -1275,9 +1284,9 @@ class _PromptPermissionCard extends StatelessWidget {
         height: 44,
         padding: EdgeInsets.symmetric(horizontal: 13),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(AppRadius.md),
-          border: Border.all(color: AppColors.border),
+          color: ChatTheme.of(context).surface,
+          borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+          border: Border.all(color: ChatTheme.of(context).border),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1285,10 +1294,10 @@ class _PromptPermissionCard extends StatelessWidget {
             Icon(
               Icons.more_horiz_rounded,
               size: 17,
-              color: AppColors.textSecondary,
+              color: ChatTheme.of(context).textSecondary,
             ),
             SizedBox(width: 6),
-            Text('More', style: AppTypography.label),
+            Text('More', style: Theme.of(context).textTheme.labelLarge!),
           ],
         ),
       ),
@@ -1318,9 +1327,11 @@ class _PromptPermissionCard extends StatelessWidget {
       key: Key('prompt-permission-card'),
       width: double.infinity,
       decoration: BoxDecoration(
-        color: _permissionAccentSoft,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: _permissionAccentBorderSoft),
+        color: ChatTheme.of(context).warning.withValues(alpha: .06),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(
+          color: ChatTheme.of(context).warning.withValues(alpha: .30),
+        ),
       ),
       clipBehavior: Clip.antiAlias,
       child: Stack(
@@ -1330,7 +1341,7 @@ class _PromptPermissionCard extends StatelessWidget {
             top: 0,
             bottom: 0,
             width: 4,
-            child: ColoredBox(color: _permissionAccent),
+            child: ColoredBox(color: ChatTheme.of(context).warning),
           ),
           Padding(
             padding: EdgeInsets.fromLTRB(16, 13, 12, 13),
@@ -1345,13 +1356,19 @@ class _PromptPermissionCard extends StatelessWidget {
                       width: 38,
                       height: 38,
                       decoration: BoxDecoration(
-                        color: _permissionAccentMist,
+                        color: ChatTheme.of(
+                          context,
+                        ).warning.withValues(alpha: .12),
                         shape: BoxShape.circle,
-                        border: Border.all(color: _permissionAccentBorderSoft),
+                        border: Border.all(
+                          color: ChatTheme.of(
+                            context,
+                          ).warning.withValues(alpha: .30),
+                        ),
                       ),
                       child: Icon(
                         Icons.privacy_tip_rounded,
-                        color: _permissionAccentDark,
+                        color: ChatTheme.of(context).warning,
                         size: 21,
                       ),
                     ),
@@ -1370,10 +1387,13 @@ class _PromptPermissionCard extends StatelessWidget {
                                 'Tool call approval required',
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: _permissionAccentDark,
-                                  fontFamily: AppTypography.family,
-                                  fontFamilyFallback:
-                                      AppTypography.familyFallback,
+                                  color: ChatTheme.of(context).warning,
+                                  fontFamily: Theme.of(
+                                    context,
+                                  ).textTheme.bodyMedium?.fontFamily,
+                                  fontFamilyFallback: Theme.of(
+                                    context,
+                                  ).textTheme.bodyMedium?.fontFamilyFallback,
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
                                   letterSpacing: 0,
@@ -1385,19 +1405,21 @@ class _PromptPermissionCard extends StatelessWidget {
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: _permissionAccentMist,
-                                  borderRadius: BorderRadius.circular(
-                                    AppRadius.pill,
-                                  ),
+                                  color: ChatTheme.of(
+                                    context,
+                                  ).warning.withValues(alpha: .12),
+                                  borderRadius: BorderRadius.circular(999),
                                   border: Border.all(
-                                    color: _permissionAccentBorderSoft,
+                                    color: ChatTheme.of(
+                                      context,
+                                    ).warning.withValues(alpha: .30),
                                   ),
                                 ),
                                 child: Text(
                                   request.displayKind,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    color: _permissionAccentDark,
+                                    color: ChatTheme.of(context).warning,
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
                                     letterSpacing: 0,
@@ -1453,18 +1475,21 @@ class _PromptPermissionCard extends StatelessWidget {
                       if (collapseSecondaryChoices) ...[
                         ...featuredChoices.map(
                           (choice) => _structuredChoiceButton(
+                            context,
                             choice,
                             contextIsComplete: displayContext.isComplete,
                           ),
                         ),
                         if (secondaryChoices.isNotEmpty)
                           _structuredChoiceMenu(
+                            context,
                             secondaryChoices,
                             contextIsComplete: displayContext.isComplete,
                           ),
                       ] else
                         ...request.choices.map(
                           (choice) => _structuredChoiceButton(
+                            context,
                             choice,
                             contextIsComplete: displayContext.isComplete,
                           ),
@@ -1476,10 +1501,14 @@ class _PromptPermissionCard extends StatelessWidget {
                         label: Text(request.denyActionLabel),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: ChatTheme.of(context).danger,
-                          backgroundColor: Colors.white,
+                          backgroundColor: ChatTheme.of(context).surface,
                           minimumSize: Size(0, 44),
                           padding: EdgeInsets.symmetric(horizontal: 14),
-                          side: BorderSide(color: Color(0xfffecaca)),
+                          side: BorderSide(
+                            color: ChatTheme.of(
+                              context,
+                            ).danger.withValues(alpha: 0.3),
+                          ),
                           tapTargetSize: MaterialTapTargetSize.padded,
                         ),
                       ),
@@ -1488,8 +1517,10 @@ class _PromptPermissionCard extends StatelessWidget {
                         icon: Icon(Icons.check_rounded, size: 15),
                         label: Text(request.allowActionLabel),
                         style: FilledButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          backgroundColor: Color(0xffc2410c),
+                          foregroundColor: IanvsTheme.foregroundFor(
+                            ChatTheme.of(context).warning,
+                          ),
+                          backgroundColor: ChatTheme.of(context).warning,
                           minimumSize: Size(0, 44),
                           padding: EdgeInsets.symmetric(horizontal: 14),
                           tapTargetSize: MaterialTapTargetSize.padded,
@@ -1644,7 +1675,7 @@ class _AttachmentDropIndicator extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surface.withValues(alpha: 0.88),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(
           color: ChatTheme.of(context).primary.withValues(alpha: 0.34),
         ),
@@ -1856,7 +1887,7 @@ class _PromptIdleWarning extends StatelessWidget {
       padding: EdgeInsets.fromLTRB(12, 9, 8, 9),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).warning.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(AppRadius.lg),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         border: Border.all(
           color: ChatTheme.of(context).warning.withValues(alpha: 0.28),
         ),
@@ -1919,9 +1950,9 @@ class _PromptQueueTray extends StatelessWidget {
       width: double.infinity,
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surface,
-        borderRadius: BorderRadius.circular(AppRadius.xl),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         border: Border.all(color: ChatTheme.of(context).border),
-        boxShadow: AppShadows.soft,
+        boxShadow: kElevationToShadow[2]!,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -2110,7 +2141,7 @@ class _PromptQueueRow extends StatelessWidget {
               key: Key('remove-queued-prompt-${prompt.id}'),
               tooltip: 'Remove from queue',
               onPressed: onRemove,
-              visualDensity: VisualDensity.compact,
+              visualDensity: VisualDensity.standard,
               constraints: BoxConstraints.tightFor(width: 30, height: 30),
               iconSize: 16,
               icon: Icon(Icons.delete_outline_rounded),
@@ -2407,7 +2438,7 @@ class _AdaptiveSessionConfigSelectorState
           },
           child: MenuAnchor(
             controller: _menuController,
-            style: _sessionConfigMenuStyle(width: 246),
+            style: _sessionConfigMenuStyle(context, width: 246),
             alignmentOffset: Offset(0, -6),
             onOpen: _closeAdvancedOverlay,
             menuChildren: [
@@ -2417,7 +2448,7 @@ class _AdaptiveSessionConfigSelectorState
               if (hasAdvancedControls)
                 MenuItemButton(
                   key: Key('prompt-session-config-advanced'),
-                  style: _sessionConfigButtonStyle(width: 246),
+                  style: _sessionConfigButtonStyle(context, width: 246),
                   trailingIcon: Icon(
                     Icons.keyboard_arrow_up_rounded,
                     size: 19,
@@ -2444,7 +2475,7 @@ class _AdaptiveSessionConfigSelectorState
                 message: 'Agent session configuration',
                 child: InkWell(
                   key: Key('prompt-session-config-selector'),
-                  borderRadius: BorderRadius.circular(AppRadius.pill),
+                  borderRadius: BorderRadius.circular(999),
                   onTap: widget.enabled
                       ? () {
                           _closeAdvancedOverlay();
@@ -2504,8 +2535,9 @@ class _AdaptiveSessionConfigSelectorState
   Widget _configSubmenu(ChatConfigOption option, {double buttonWidth = 246}) {
     return SubmenuButton(
       key: Key('prompt-session-config-option-${option.id}'),
-      style: _sessionConfigButtonStyle(width: buttonWidth),
+      style: _sessionConfigButtonStyle(context, width: buttonWidth),
       menuStyle: _sessionConfigMenuStyle(
+        context,
         width: option.isModelOption ? 286 : 306,
       ),
       hoverOpenDelay: Duration(milliseconds: 90),
@@ -2538,6 +2570,7 @@ class _AdaptiveSessionConfigSelectorState
               'prompt-session-config-choice-${option.id}-${value ? 'on' : 'off'}',
             ),
             style: _sessionConfigChoiceButtonStyle(
+              context,
               width: option.isFastOption ? 306 : 286,
             ),
             trailingIcon: option.currentBoolValue == value
@@ -2571,6 +2604,7 @@ class _AdaptiveSessionConfigSelectorState
         MenuItemButton(
           key: Key('prompt-session-config-choice-${option.id}-${choice.value}'),
           style: _sessionConfigChoiceButtonStyle(
+            context,
             width: option.isModelOption ? 286 : 306,
           ),
           trailingIcon: choice.value == option.currentValue
@@ -2750,13 +2784,13 @@ class _SessionConfigAdvancedPanelState
                   child: IconButton(
                     key: Key('prompt-session-config-advanced-fast-toggle'),
                     onPressed: widget.enabled ? widget.onFastToggle : null,
-                    visualDensity: VisualDensity.compact,
+                    visualDensity: VisualDensity.standard,
                     constraints: BoxConstraints.tightFor(width: 32, height: 32),
                     padding: EdgeInsets.zero,
                     icon: Icon(
                       Icons.bolt_rounded,
                       size: 20,
-                      color: Color(0xFF3194F6),
+                      color: ChatTheme.of(context).accent,
                     ),
                   ),
                 ),
@@ -2942,6 +2976,7 @@ class _ReasoningBalanceSliderState extends State<_ReasoningBalanceSlider>
               child: CustomPaint(
                 key: Key('prompt-session-config-advanced-particles'),
                 painter: _ReasoningBalanceSliderPainter(
+                  theme: ChatTheme.of(context),
                   fraction: _max == 0 ? 0 : value / _max,
                   divisions: widget.choiceLabels.length - 1,
                   particleAnimation: _particleController,
@@ -2981,18 +3016,20 @@ class _ReasoningBalanceSliderState extends State<_ReasoningBalanceSlider>
 class _ReasoningBalanceSliderPainter extends CustomPainter {
   _ReasoningBalanceSliderPainter({
     required this.fraction,
+    required this.theme,
     required this.divisions,
     required this.particleAnimation,
     required this.enabled,
   }) : super(repaint: particleAnimation);
 
   final double fraction;
+  final ChatThemeData theme;
   final int divisions;
   final Animation<double> particleAnimation;
   final bool enabled;
 
-  static const _trackColor = Color(0xFFE3E4E6);
-  static const _activeColor = Color(0xFF3194F6);
+  Color get _trackColor => theme.border;
+  Color get _activeColor => theme.accent;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -3010,7 +3047,7 @@ class _ReasoningBalanceSliderPainter extends CustomPainter {
     );
     canvas.drawRRect(
       trackRRect,
-      Paint()..color = enabled ? _trackColor : AppColors.primaryMist,
+      Paint()..color = enabled ? _trackColor : theme.primaryMist,
     );
 
     final thumbCenterX =
@@ -3024,7 +3061,7 @@ class _ReasoningBalanceSliderPainter extends CustomPainter {
         thumbCenterX,
         trackRect.bottom,
       ),
-      Paint()..color = enabled ? _activeColor : AppColors.border,
+      Paint()..color = enabled ? _activeColor : theme.border,
     );
     if (enabled && thumbCenterX > 34) {
       _paintParticles(canvas, trackRect, thumbCenterX);
@@ -3049,7 +3086,7 @@ class _ReasoningBalanceSliderPainter extends CustomPainter {
     canvas.drawCircle(
       thumbCenter,
       thumbRadius,
-      Paint()..color = enabled ? Colors.white : AppColors.surface,
+      Paint()..color = enabled ? Colors.white : theme.surface,
     );
     canvas.drawCircle(
       thumbCenter,
@@ -3085,7 +3122,9 @@ class _ReasoningBalanceSliderPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ReasoningBalanceSliderPainter oldDelegate) {
-    return oldDelegate.fraction != fraction ||
+    return oldDelegate.theme.tokens != theme.tokens ||
+        oldDelegate.theme.colors != theme.colors ||
+        oldDelegate.fraction != fraction ||
         oldDelegate.divisions != divisions ||
         oldDelegate.particleAnimation != particleAnimation ||
         oldDelegate.enabled != enabled;
@@ -3235,7 +3274,7 @@ class _SessionConfigSummaryButton extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: 11),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).primaryMist,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(999),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -3272,9 +3311,12 @@ class _SessionConfigSummaryButton extends StatelessWidget {
   }
 }
 
-MenuStyle _sessionConfigMenuStyle({required double width}) {
+MenuStyle _sessionConfigMenuStyle(
+  BuildContext context, {
+  required double width,
+}) {
   return MenuStyle(
-    backgroundColor: WidgetStatePropertyAll(AppColors.surface),
+    backgroundColor: WidgetStatePropertyAll(ChatTheme.of(context).surface),
     surfaceTintColor: WidgetStatePropertyAll(Colors.transparent),
     shadowColor: WidgetStatePropertyAll(Color(0x18000000)),
     elevation: WidgetStatePropertyAll(10),
@@ -3286,13 +3328,16 @@ MenuStyle _sessionConfigMenuStyle({required double width}) {
     shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: AppColors.border),
+        side: BorderSide(color: ChatTheme.of(context).border),
       ),
     ),
   );
 }
 
-ButtonStyle _sessionConfigButtonStyle({required double width}) {
+ButtonStyle _sessionConfigButtonStyle(
+  BuildContext context, {
+  required double width,
+}) {
   return ButtonStyle(
     minimumSize: WidgetStatePropertyAll(Size(width - 12, 42)),
     maximumSize: WidgetStatePropertyAll(Size(width - 12, 42)),
@@ -3300,18 +3345,21 @@ ButtonStyle _sessionConfigButtonStyle({required double width}) {
     shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
     ),
-    foregroundColor: WidgetStatePropertyAll(AppColors.textPrimary),
+    foregroundColor: WidgetStatePropertyAll(ChatTheme.of(context).textPrimary),
     overlayColor: WidgetStateProperty.resolveWith((states) {
       if (states.contains(WidgetState.hovered) ||
           states.contains(WidgetState.focused)) {
-        return AppColors.primaryMist;
+        return ChatTheme.of(context).primaryMist;
       }
       return Colors.transparent;
     }),
   );
 }
 
-ButtonStyle _sessionConfigChoiceButtonStyle({required double width}) {
+ButtonStyle _sessionConfigChoiceButtonStyle(
+  BuildContext context, {
+  required double width,
+}) {
   return ButtonStyle(
     minimumSize: WidgetStatePropertyAll(Size(width - 12, 48)),
     maximumSize: WidgetStatePropertyAll(Size(width - 12, 56)),
@@ -3321,11 +3369,11 @@ ButtonStyle _sessionConfigChoiceButtonStyle({required double width}) {
     shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
     ),
-    foregroundColor: WidgetStatePropertyAll(AppColors.textPrimary),
+    foregroundColor: WidgetStatePropertyAll(ChatTheme.of(context).textPrimary),
     overlayColor: WidgetStateProperty.resolveWith((states) {
       if (states.contains(WidgetState.hovered) ||
           states.contains(WidgetState.focused)) {
-        return AppColors.primaryMist;
+        return ChatTheme.of(context).primaryMist;
       }
       return Colors.transparent;
     }),
@@ -3453,15 +3501,19 @@ class _ComposerControlButton extends StatelessWidget {
         : emphasized
         ? ChatTheme.of(context).danger
         : ChatTheme.of(context).primaryDark;
-    final background = emphasized ? Color(0xfffef2f2) : Colors.transparent;
-    final borderColor = emphasized ? Color(0xfffecaca) : Colors.transparent;
+    final background = emphasized
+        ? ChatTheme.of(context).danger.withValues(alpha: 0.08)
+        : Colors.transparent;
+    final borderColor = emphasized
+        ? ChatTheme.of(context).danger.withValues(alpha: 0.3)
+        : Colors.transparent;
     return Container(
       height: 30,
       constraints: BoxConstraints(maxWidth: 190),
       padding: EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         color: background,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color: enabled ? borderColor : ChatTheme.of(context).border,
         ),
@@ -3575,7 +3627,9 @@ class _PromptActionButton extends StatelessWidget {
           onPressed: isSending ? onStop : (canSend ? onSend : null),
           key: Key('prompt-action-button'),
           style: FilledButton.styleFrom(
-            foregroundColor: Colors.white,
+            foregroundColor: IanvsTheme.foregroundFor(
+              ChatTheme.of(context).textPrimary,
+            ),
             disabledForegroundColor: ChatTheme.of(context).textTertiary,
             backgroundColor: ChatTheme.of(context).textPrimary,
             disabledBackgroundColor: ChatTheme.of(context).surfaceRaised,
@@ -3600,7 +3654,7 @@ class _PromptActionButton extends StatelessWidget {
             child: IconButton(
               key: Key('prompt-queue-button'),
               onPressed: onSend,
-              visualDensity: VisualDensity.compact,
+              visualDensity: VisualDensity.standard,
               iconSize: 19,
               icon: Icon(Icons.playlist_add_rounded),
             ),
@@ -3708,14 +3762,14 @@ class _CommandSuggestionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       onTap: onTap,
       child: Container(
         constraints: BoxConstraints(minHeight: 38),
         padding: EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
           color: ChatTheme.of(context).surfaceRaised,
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
           border: Border.all(color: ChatTheme.of(context).border),
         ),
         child: Column(
@@ -3768,8 +3822,9 @@ class _CommandSuggestionTile extends StatelessWidget {
                 maxLines: 1,
                 style: TextStyle(
                   color: ChatTheme.of(context).textTertiary,
-                  fontFamily: AppTypography.monoFamily,
-                  fontFamilyFallback: AppTypography.monoFallback,
+                  fontFamily: context.ianvsTypography.code.fontFamily,
+                  fontFamilyFallback:
+                      context.ianvsTypography.code.fontFamilyFallback,
                   fontSize: 10,
                 ),
               ),
@@ -3919,7 +3974,7 @@ class _ImageAttachmentLimitationNotice extends StatelessWidget {
         padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: ChatTheme.of(context).warning.withValues(alpha: 0.07),
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
           border: Border.all(
             color: ChatTheme.of(context).warning.withValues(alpha: 0.25),
           ),
@@ -3982,7 +4037,7 @@ class _AttachmentChip extends StatelessWidget {
         padding: EdgeInsets.fromLTRB(8, 4, 4, 4),
         decoration: BoxDecoration(
           color: ChatTheme.of(context).surfaceRaised,
-          borderRadius: BorderRadius.circular(AppRadius.pill),
+          borderRadius: BorderRadius.circular(999),
           border: Border.all(color: ChatTheme.of(context).border),
         ),
         child: Row(
@@ -4027,7 +4082,7 @@ class _AttachmentChip extends StatelessWidget {
                 onPressed: onRemove,
                 tooltip: 'Remove attachment',
                 padding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
+                visualDensity: VisualDensity.standard,
                 iconSize: 14,
                 color: ChatTheme.of(context).textSecondary,
                 icon: Icon(Icons.close_rounded),
@@ -4147,7 +4202,7 @@ class _ImageAttachmentPreviewState extends State<_ImageAttachmentPreview> {
                     onPressed: widget.onRemove,
                     tooltip: 'Remove image',
                     padding: EdgeInsets.zero,
-                    visualDensity: VisualDensity.compact,
+                    visualDensity: VisualDensity.standard,
                     style: IconButton.styleFrom(
                       backgroundColor: ChatTheme.of(context).textPrimary,
                       foregroundColor: ChatTheme.of(context).surface,
@@ -4189,14 +4244,14 @@ class _AttachmentModeBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = _attachmentModeColor(mode);
+    final color = _attachmentModeColor(context, mode);
     return Tooltip(
       message: _attachmentModeTooltip(mode),
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.09),
-          borderRadius: BorderRadius.circular(AppRadius.pill),
+          borderRadius: BorderRadius.circular(999),
           border: Border.all(color: color.withValues(alpha: 0.24)),
         ),
         child: Row(
@@ -4229,12 +4284,19 @@ IconData _attachmentModeIcon(PromptAttachmentPromptMode mode) {
   };
 }
 
-Color _attachmentModeColor(PromptAttachmentPromptMode mode) {
+Color _attachmentModeColor(
+  BuildContext context,
+  PromptAttachmentPromptMode mode,
+) {
   return switch (mode) {
-    PromptAttachmentPromptMode.image => AppColors.primaryDark,
-    PromptAttachmentPromptMode.audio => AppColors.primaryDark,
-    PromptAttachmentPromptMode.embeddedResource => AppColors.success,
-    PromptAttachmentPromptMode.resourceLink => AppColors.textSecondary,
+    PromptAttachmentPromptMode.image => ChatTheme.of(context).primaryDark,
+    PromptAttachmentPromptMode.audio => ChatTheme.of(context).primaryDark,
+    PromptAttachmentPromptMode.embeddedResource => ChatTheme.of(
+      context,
+    ).success,
+    PromptAttachmentPromptMode.resourceLink => ChatTheme.of(
+      context,
+    ).textSecondary,
   };
 }
 

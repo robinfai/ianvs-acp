@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
@@ -15,7 +15,6 @@ import '../image_decode_budget.dart';
 import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_agent_chat/ui/components/markdown_code_block.dart';
 import 'package:ianvs_agent_chat/ui/components/markdown_inline_link.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'markdown_front_matter_card.dart';
 import 'markdown_preview_image.dart';
 
@@ -145,7 +144,7 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
             child: Container(
               key: const Key('conversation-canvas-surface'),
               clipBehavior: Clip.antiAlias,
-              decoration: const BoxDecoration(color: AppColors.surface),
+              decoration: BoxDecoration(color: context.ianvs.canvas),
               child: conversation,
             ),
           ),
@@ -154,9 +153,11 @@ class _FilePreviewWorkspaceState extends State<FilePreviewWorkspace> {
               width: 320,
               child: Container(
                 key: const Key('workspace-inspector-surface'),
-                decoration: const BoxDecoration(
-                  color: AppColors.surface,
-                  border: Border(left: BorderSide(color: AppColors.borderSoft)),
+                decoration: BoxDecoration(
+                  color: context.ianvs.canvas,
+                  border: Border(
+                    left: BorderSide(color: context.ianvs.separator),
+                  ),
                 ),
                 child: widget.inspector,
               ),
@@ -407,7 +408,7 @@ class _FilePreviewPaneState extends State<FilePreviewPane> {
   Widget build(BuildContext context) {
     return ColoredBox(
       key: const ValueKey('file-preview-pane'),
-      color: AppColors.surfaceRaised,
+      color: context.ianvs.raised,
       child: Column(
         children: [
           _PreviewTabs(
@@ -416,9 +417,9 @@ class _FilePreviewPaneState extends State<FilePreviewPane> {
             onSelect: widget.onSelectTab,
             onClose: widget.onCloseTab,
           ),
-          const Divider(height: 1, color: AppColors.border),
+          Divider(height: 1, color: context.ianvs.border),
           _FileBreadcrumb(target: _target),
-          const Divider(height: 1, color: AppColors.border),
+          Divider(height: 1, color: context.ianvs.border),
           _PreviewToolbar(
             showSearch: _showSearch,
             searchController: _searchController,
@@ -431,7 +432,7 @@ class _FilePreviewPaneState extends State<FilePreviewPane> {
             onOpenExternal: _openExternal,
             onClose: widget.onClosePreview,
           ),
-          const Divider(height: 1, color: AppColors.border),
+          Divider(height: 1, color: context.ianvs.border),
           Expanded(
             child: FutureBuilder<FilePreviewDocument>(
               future: widget.document,
@@ -575,9 +576,9 @@ class _PreviewResizeHandle extends StatelessWidget {
         onHorizontalDragUpdate: (details) => onDrag(details.delta.dx),
         child: Container(
           width: 7,
-          color: AppColors.surface,
+          color: context.ianvs.canvas,
           alignment: Alignment.center,
-          child: Container(width: 1, color: AppColors.border),
+          child: Container(width: 1, color: context.ianvs.border),
         ),
       ),
     );
@@ -621,16 +622,16 @@ class _PreviewTabs extends StatelessWidget {
                     padding: const EdgeInsets.only(left: 13),
                     decoration: BoxDecoration(
                       color: selected
-                          ? AppColors.surface
-                          : AppColors.surfaceRaised,
+                          ? context.ianvs.canvas
+                          : context.ianvs.raised,
                       border: Border(
                         bottom: BorderSide(
                           color: selected
-                              ? AppColors.primary
+                              ? context.ianvs.accent
                               : Colors.transparent,
                           width: 2,
                         ),
-                        right: const BorderSide(color: AppColors.borderSoft),
+                        right: BorderSide(color: context.ianvs.separator),
                       ),
                     ),
                     child: Row(
@@ -639,8 +640,8 @@ class _PreviewTabs extends StatelessWidget {
                           _iconForPath(tab.path),
                           size: 16,
                           color: selected
-                              ? AppColors.primary
-                              : AppColors.textTertiary,
+                              ? context.ianvs.accent
+                              : context.ianvs.subtle,
                         ),
                         const SizedBox(width: 7),
                         Expanded(
@@ -650,8 +651,8 @@ class _PreviewTabs extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: selected
-                                  ? AppColors.primaryDark
-                                  : AppColors.textSecondary,
+                                  ? context.ianvs.focus
+                                  : context.ianvs.muted,
                               fontSize: 12,
                               fontWeight: selected
                                   ? FontWeight.w600
@@ -663,7 +664,7 @@ class _PreviewTabs extends StatelessWidget {
                           tooltip: '关闭 ${tab.name}',
                           onPressed: () => onClose(index),
                           icon: const Icon(Icons.close_rounded, size: 15),
-                          visualDensity: VisualDensity.compact,
+                          visualDensity: VisualDensity.standard,
                         ),
                       ],
                     ),
@@ -672,12 +673,12 @@ class _PreviewTabs extends StatelessWidget {
               },
             ),
           ),
-          const Padding(
+          Padding(
             padding: EdgeInsets.symmetric(horizontal: 10),
             child: Icon(
               Icons.more_vert_rounded,
               size: 18,
-              color: AppColors.textSecondary,
+              color: context.ianvs.muted,
             ),
           ),
         ],
@@ -705,13 +706,15 @@ class _FileBreadcrumb extends StatelessWidget {
               width: 27,
               height: 27,
               decoration: BoxDecoration(
-                color: AppColors.primarySoft,
-                borderRadius: BorderRadius.circular(AppRadius.sm),
+                color: context.ianvs.selected,
+                borderRadius: BorderRadius.circular(
+                  context.ianvs.controlRadius,
+                ),
               ),
               child: Icon(
                 _iconForPath(target.path),
                 size: 16,
-                color: AppColors.primaryDark,
+                color: context.ianvs.focus,
               ),
             ),
             const SizedBox(width: 9),
@@ -724,17 +727,17 @@ class _FileBreadcrumb extends StatelessWidget {
                         text: segments[index],
                         style: TextStyle(
                           color: index == segments.length - 1
-                              ? AppColors.textPrimary
-                              : AppColors.textSecondary,
+                              ? context.ianvs.text
+                              : context.ianvs.muted,
                           fontWeight: index == segments.length - 1
                               ? FontWeight.w600
                               : FontWeight.w500,
                         ),
                       ),
                       if (index != segments.length - 1)
-                        const TextSpan(
+                        TextSpan(
                           text: '  /  ',
-                          style: TextStyle(color: AppColors.textTertiary),
+                          style: TextStyle(color: context.ianvs.subtle),
                         ),
                     ],
                   ],
@@ -781,7 +784,7 @@ class _PreviewToolbar extends StatelessWidget {
     return Container(
       constraints: const BoxConstraints(minHeight: 52),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      color: AppColors.surface,
+      color: context.ianvs.canvas,
       child: Row(
         children: [
           _ToolbarButton(
@@ -873,12 +876,12 @@ class _ToolbarButton extends StatelessWidget {
     return IconButton(
       tooltip: tooltip,
       onPressed: onPressed,
-      color: selected ? AppColors.primaryDark : AppColors.textSecondary,
+      color: selected ? context.ianvs.focus : context.ianvs.muted,
       style: selected
-          ? IconButton.styleFrom(backgroundColor: AppColors.primarySoft)
+          ? IconButton.styleFrom(backgroundColor: context.ianvs.selected)
           : null,
       icon: Icon(icon, size: 18),
-      visualDensity: VisualDensity.compact,
+      visualDensity: VisualDensity.standard,
     );
   }
 }
@@ -907,7 +910,7 @@ class _MarkdownModeToggle extends StatelessWidget {
           onSelectionChanged: (value) => onChanged(value.single),
           showSelectedIcon: false,
           style: const ButtonStyle(
-            visualDensity: VisualDensity.compact,
+            visualDensity: VisualDensity.standard,
             textStyle: WidgetStatePropertyAll(
               TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
             ),
@@ -1001,7 +1004,7 @@ class _PreviewBody extends StatelessWidget {
         final bytes = document.previewBytes;
         if (bytes != null) {
           return Container(
-            color: const Color(0xffeef0f5),
+            color: context.ianvs.chrome,
             padding: const EdgeInsets.all(20),
             alignment: Alignment.center,
             child: InteractiveViewer(
@@ -1131,7 +1134,7 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                   onSelect: _scrollToHeading,
                 ),
               ),
-              const VerticalDivider(width: 1, color: AppColors.border),
+              VerticalDivider(width: 1, color: context.ianvs.border),
             ],
             Expanded(
               child: SingleChildScrollView(
@@ -1175,44 +1178,50 @@ class _MarkdownFilePreviewState extends State<_MarkdownFilePreview> {
                           MarkdownStyleSheet.fromTheme(
                             Theme.of(context),
                           ).copyWith(
-                            h1: const TextStyle(
-                              color: AppColors.textPrimary,
+                            h1: TextStyle(
+                              color: context.ianvs.text,
                               fontSize: 26,
                               height: 1.22,
                               fontWeight: FontWeight.w600,
                             ),
-                            h2: const TextStyle(
-                              color: AppColors.textPrimary,
+                            h2: TextStyle(
+                              color: context.ianvs.text,
                               fontSize: 19,
                               height: 1.3,
                               fontWeight: FontWeight.w600,
                             ),
-                            h3: const TextStyle(
-                              color: AppColors.textPrimary,
+                            h3: TextStyle(
+                              color: context.ianvs.text,
                               fontSize: 15,
                               height: 1.35,
                               fontWeight: FontWeight.w600,
                             ),
-                            p: const TextStyle(
-                              color: AppColors.textPrimary,
+                            p: TextStyle(
+                              color: context.ianvs.text,
                               fontSize: 14,
                               height: 1.65,
                             ),
-                            a: const TextStyle(
-                              color: AppColors.primaryDark,
+                            a: TextStyle(
+                              color: context.ianvs.focus,
                               decoration: TextDecoration.underline,
-                              decorationColor: AppColors.primary,
+                              decorationColor: context.ianvs.accent,
                               fontWeight: FontWeight.w600,
                             ),
-                            code: const TextStyle(
-                              color: AppColors.primaryDark,
-                              backgroundColor: AppColors.primaryMist,
-                              fontFamily: AppTypography.monoFamily,
-                              fontFamilyFallback: AppTypography.monoFallback,
+                            code: TextStyle(
+                              color: context.ianvs.focus,
+                              backgroundColor: context.ianvs.accent.withValues(
+                                alpha: .08,
+                              ),
+                              fontFamily:
+                                  context.ianvsTypography.code.fontFamily,
+                              fontFamilyFallback: context
+                                  .ianvsTypography
+                                  .code
+                                  .fontFamilyFallback,
                               fontSize: 12,
                             ),
                             tableBorder: TableBorder.all(
-                              color: AppColors.border,
+                              color: context.ianvs.border,
                             ),
                             tableHead: const TextStyle(
                               fontWeight: FontWeight.w600,
@@ -1268,7 +1277,7 @@ class _MarkdownOutline extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.surfaceRaised,
+      color: context.ianvs.raised,
       child: collapsed
           ? Align(
               alignment: Alignment.topCenter,
@@ -1278,8 +1287,8 @@ class _MarkdownOutline extends StatelessWidget {
                   tooltip: '展开文档大纲',
                   onPressed: onToggle,
                   icon: const Icon(Icons.toc_rounded, size: 19),
-                  color: AppColors.textSecondary,
-                  visualDensity: VisualDensity.compact,
+                  color: context.ianvs.muted,
+                  visualDensity: VisualDensity.standard,
                 ),
               ),
             )
@@ -1288,13 +1297,13 @@ class _MarkdownOutline extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Padding(
                         padding: EdgeInsets.only(left: 4),
                         child: Text(
                           '文档大纲',
                           style: TextStyle(
-                            color: AppColors.textSecondary,
+                            color: context.ianvs.muted,
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),
@@ -1308,8 +1317,8 @@ class _MarkdownOutline extends StatelessWidget {
                         Icons.keyboard_double_arrow_left_rounded,
                         size: 17,
                       ),
-                      color: AppColors.textSecondary,
-                      visualDensity: VisualDensity.compact,
+                      color: context.ianvs.muted,
+                      visualDensity: VisualDensity.standard,
                     ),
                   ],
                 ),
@@ -1349,12 +1358,12 @@ class _MarkdownOutlineItem extends StatelessWidget {
       padding: EdgeInsets.only(left: (heading.level - 1) * 9, bottom: 3),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
           decoration: BoxDecoration(
-            color: selected ? AppColors.primarySoft : Colors.transparent,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
+            color: selected ? context.ianvs.selected : Colors.transparent,
+            borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
           ),
           child: Text(
             heading.text,
@@ -1362,8 +1371,8 @@ class _MarkdownOutlineItem extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: selected || heading.level == 1
-                  ? AppColors.primaryDark
-                  : AppColors.textSecondary,
+                  ? context.ianvs.focus
+                  : context.ianvs.muted,
               fontSize: 11,
               height: 1.3,
               fontWeight: selected || heading.level == 1
@@ -1441,7 +1450,7 @@ class _TextFilePreviewState extends State<_TextFilePreview> {
     final lines = widget.text.split('\n');
     final query = widget.searchQuery.trim().toLowerCase();
     return ColoredBox(
-      color: AppColors.surface,
+      color: context.ianvs.canvas,
       child: ListView.builder(
         key: const ValueKey('file-preview-text-lines'),
         controller: _scrollController,
@@ -1454,9 +1463,9 @@ class _TextFilePreviewState extends State<_TextFilePreview> {
               query.isNotEmpty && lines[index].toLowerCase().contains(query);
           return Container(
             color: selected
-                ? AppColors.primarySoft
+                ? context.ianvs.selected
                 : match
-                ? const Color(0xfffff4cc)
+                ? context.ianvs.warning.withValues(alpha: 0.15)
                 : Colors.transparent,
             padding: const EdgeInsets.symmetric(vertical: 2),
             child: Row(
@@ -1469,10 +1478,11 @@ class _TextFilePreviewState extends State<_TextFilePreview> {
                     textAlign: TextAlign.right,
                     style: TextStyle(
                       color: selected
-                          ? AppColors.primaryDark
-                          : AppColors.textTertiary,
-                      fontFamily: AppTypography.monoFamily,
-                      fontFamilyFallback: AppTypography.monoFallback,
+                          ? context.ianvs.focus
+                          : context.ianvs.subtle,
+                      fontFamily: context.ianvsTypography.code.fontFamily,
+                      fontFamilyFallback:
+                          context.ianvsTypography.code.fontFamilyFallback,
                       fontSize: 12,
                       height: 1.5,
                     ),
@@ -1483,10 +1493,11 @@ class _TextFilePreviewState extends State<_TextFilePreview> {
                   child: SelectableText(
                     lines[index].isEmpty ? ' ' : lines[index],
                     maxLines: widget.wrapText ? null : 1,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontFamily: AppTypography.monoFamily,
-                      fontFamilyFallback: AppTypography.monoFallback,
+                    style: TextStyle(
+                      color: context.ianvs.text,
+                      fontFamily: context.ianvsTypography.code.fontFamily,
+                      fontFamilyFallback:
+                          context.ianvsTypography.code.fontFamilyFallback,
                       fontSize: 12.5,
                       height: 1.5,
                     ),
@@ -1518,7 +1529,7 @@ class _ImageFilePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: const Color(0xffeef0f5),
+      color: context.ianvs.chrome,
       child: InteractiveViewer(
         minScale: .2,
         maxScale: 6,
@@ -1542,7 +1553,7 @@ class _PreviewLoading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1554,7 +1565,7 @@ class _PreviewLoading extends StatelessWidget {
           SizedBox(height: 12),
           Text(
             '正在安全地加载预览…',
-            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            style: TextStyle(color: context.ianvs.muted, fontSize: 12),
           ),
         ],
       ),
@@ -1589,17 +1600,19 @@ class _PreviewFailure extends StatelessWidget {
                 width: 52,
                 height: 52,
                 decoration: BoxDecoration(
-                  color: AppColors.primarySoft,
-                  borderRadius: BorderRadius.circular(AppRadius.lg),
+                  color: context.ianvs.selected,
+                  borderRadius: BorderRadius.circular(
+                    context.ianvs.panelRadius,
+                  ),
                 ),
-                child: Icon(icon, color: AppColors.primaryDark, size: 26),
+                child: Icon(icon, color: context.ianvs.focus, size: 26),
               ),
               const SizedBox(height: 14),
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                 ),
@@ -1608,8 +1621,8 @@ class _PreviewFailure extends StatelessWidget {
               Text(
                 message,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
+                style: TextStyle(
+                  color: context.ianvs.muted,
                   fontSize: 12,
                   height: 1.5,
                 ),
@@ -1640,20 +1653,20 @@ class _PreviewNotice extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-      color: AppColors.primaryMist,
+      color: context.ianvs.accent.withValues(alpha: .08),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             Icons.info_outline_rounded,
             size: 15,
-            color: AppColors.primary,
+            color: context.ianvs.accent,
           ),
           const SizedBox(width: 7),
           Expanded(
             child: Text(
               text,
-              style: const TextStyle(
-                color: AppColors.primaryDark,
+              style: TextStyle(
+                color: context.ianvs.focus,
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
               ),
@@ -1675,16 +1688,16 @@ class _PreviewStatus extends StatelessWidget {
     return Container(
       height: 30,
       padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: const BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border(top: BorderSide(color: AppColors.border)),
+      decoration: BoxDecoration(
+        color: context.ianvs.raised,
+        border: Border(top: BorderSide(color: context.ianvs.border)),
       ),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             Icons.lock_outline_rounded,
             size: 13,
-            color: AppColors.success,
+            color: context.ianvs.success,
           ),
           const SizedBox(width: 6),
           Expanded(
@@ -1692,8 +1705,8 @@ class _PreviewStatus extends StatelessWidget {
               '${document.typeLabel} · ${formatFilePreviewSize(document.size)} · 只读 · 当前工作区',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
+              style: TextStyle(
+                color: context.ianvs.muted,
                 fontSize: 10.5,
                 fontWeight: FontWeight.w600,
               ),
@@ -1702,8 +1715,8 @@ class _PreviewStatus extends StatelessWidget {
           if (document.target.line != null)
             Text(
               '第 ${document.target.line} 行',
-              style: const TextStyle(
-                color: AppColors.primaryDark,
+              style: TextStyle(
+                color: context.ianvs.focus,
                 fontSize: 10.5,
                 fontWeight: FontWeight.w600,
               ),

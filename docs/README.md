@@ -17,6 +17,7 @@
 | [会话加载架构](conversation_loading_architecture.md) | load/resume 决策、原子可见性、缓存与传输；末尾性能数字为历史实测 |
 | [本地恢复存储](sqlite_storage.md) | 数据清单、实际路径、容量、保留期及维护时机 |
 | [Agent Chat 模块边界](agent_chat_module.md) | 主应用如何接入独立包；首版验收另行标明历史范围 |
+| [共享设计系统](ianvs-design-integration-2026-09-10/README.md) | Ianvs Design 接入、主题边界与本轮验证 |
 | [聊天包 README](../packages/ianvs_agent_chat/README.md) | 包的公开接入、LLM、Mermaid、主题、生命周期和原生集成 |
 | [独立 example](../packages/ianvs_agent_chat/example/README.md) | 离线演示及临时 API 连接的运行方式 |
 | [人工后续项](manual_followups.md) | 尚需产品决策、真实服务或桌面验收的事项 |
@@ -37,7 +38,7 @@
 | [9 月 9 日清理方案](cleanup-plan-2026-09-09.md) → [清理验收](cleanup-acceptance-2026-09-09.md) | 已执行；保留原方案取舍，残留兼容问题由兼容维护承接 |
 | [设置重设计](settings-redesign-2026-09-09/README.md) | config-inventory/navigation-audit/visual-audit/validation-matrix 为改版前基线；验收与实现对照记录所选第 3 稿 |
 | [第 3 稿设计 QA](settings-redesign-2026-09-09/design-qa-imagegen.md) | 当轮结论；大字号、留白和底部保存栏已被下一轮替代 |
-| [macOS 设置调整](macos-settings-refinement-2026-09-09/README.md)与[根设计 QA](../design-qa.md) | 最近一次设置视觉验收，记录于 `997b246`；不是整个应用的持续验收证明 |
+| [macOS 设置调整](macos-settings-refinement-2026-09-09/README.md)与[根设计 QA](../design-qa.md) | 当轮设置视觉验收，记录于 `997b246`；主题已由 9 月 10 日共享设计系统接入替代 |
 | [验收材料目录](../artifacts/README.md) | 截图、金图和迭代报告；按各自日期/场景解释，保留可复现材料 |
 | [本次校准记录](documentation-audit-2026-09-10.md) | 本次发现、修订、剩余问题和验证范围 |
 

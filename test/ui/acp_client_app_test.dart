@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:ianvs_acp/acp/acp_input_budget.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_client.dart';
@@ -78,6 +78,29 @@ void main() {
       );
     }
   }
+
+  testWidgets(
+    'application follows system appearance with shared Ianvs tokens',
+    (tester) async {
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
+      await tester.pumpWidget(AcpClientApp(controller: controller));
+      await tester.pumpAndSettle();
+      BuildContext shellContext() => tester.element(find.byType(AppShell));
+      expect(shellContext().ianvs.canvas, IanvsTokens.light.canvas);
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      await tester.pumpAndSettle();
+      expect(Theme.of(shellContext()).brightness, Brightness.dark);
+      expect(shellContext().ianvs.canvas, IanvsTokens.dark.canvas);
+      expect(shellContext().ianvsTypography.code.color, IanvsTokens.dark.text);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('AcpClientApp validates and forwards the same input budget', (
     tester,
@@ -865,7 +888,7 @@ void main() {
     await tester.tap(find.text('设为启动默认 Agent'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('settings-save')), findsOneWidget);
-    final saveButton = tester.widget<FilledButton>(
+    final saveButton = tester.widget<IanvsButton>(
       find.byKey(const Key('settings-save')),
     );
     expect(saveButton.onPressed, isNotNull);

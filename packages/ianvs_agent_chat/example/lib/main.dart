@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:ianvs_agent_chat/llm.dart';
 import 'package:ianvs_agent_chat/llm_chat_panel.dart';
 import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 void main() => runApp(const AgentChatDemo());
 
@@ -24,10 +24,9 @@ class _AgentChatDemoState extends State<AgentChatDemo> {
   @override
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      colorSchemeSeed: const Color(0xff0b57d0),
-    ),
+    theme: IanvsTheme.light(),
+    darkTheme: IanvsTheme.dark(),
+    themeMode: ThemeMode.system,
     home: Scaffold(
       appBar: AppBar(
         title: const Text('Agent Chat'),

@@ -691,7 +691,13 @@ void main() {
     final inspectorRect = tester.getRect(find.byType(WorkspaceInspector));
     expect(
       panelRect.left,
-      moreOrLessEquals(sidebarRect.right + 5, epsilon: 0.1),
+      moreOrLessEquals(
+        sidebarRect.right +
+            tester
+                .getSize(find.byKey(const Key('sidebar-resize-handle')))
+                .width,
+        epsilon: 0.1,
+      ),
     );
     expect(panelRect.right, greaterThan(inspectorRect.right - 1));
     expect(panelRect.height, moreOrLessEquals(261, epsilon: 5.1));

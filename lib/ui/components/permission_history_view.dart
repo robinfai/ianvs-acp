@@ -2,10 +2,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_permission_request.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 typedef PermissionHistoryExporter =
     Future<String?> Function(String fileName, String json);
@@ -113,19 +112,19 @@ class _PermissionHistoryEmptyState extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.canvas,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
-      child: const Column(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.shield_outlined, size: 30, color: AppColors.textTertiary),
+          Icon(Icons.shield_outlined, size: 30, color: context.ianvs.subtle),
           SizedBox(height: 12),
           Text(
             'No permission requests yet.',
             style: TextStyle(
-              color: AppColors.textPrimary,
+              color: context.ianvs.text,
               fontSize: 14,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
@@ -136,7 +135,7 @@ class _PermissionHistoryEmptyState extends StatelessWidget {
             'Requests that need your approval will be recorded here.',
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: AppColors.textSecondary,
+              color: context.ianvs.muted,
               fontSize: 12,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
@@ -156,13 +155,13 @@ class _ExportStatus extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = isError ? AppColors.danger : AppColors.success;
+    final color = isError ? context.ianvs.danger : context.ianvs.success;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(color: color.withValues(alpha: 0.22)),
       ),
       child: Text(
@@ -186,14 +185,14 @@ class _PermissionHistoryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final request = entry.request;
-    final statusColor = _statusColor(entry.status);
+    final statusColor = _statusColor(context, entry.status);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.border),
-        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.border),
+        color: context.ianvs.canvas,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -206,8 +205,8 @@ class _PermissionHistoryRow extends StatelessWidget {
                 child: Text(
                   request.displayTitle,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
@@ -230,8 +229,8 @@ class _PermissionHistoryRow extends StatelessWidget {
             request.displayRationale,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
+            style: TextStyle(
+              color: context.ianvs.muted,
               fontSize: 12,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
@@ -243,8 +242,8 @@ class _PermissionHistoryRow extends StatelessWidget {
               review.displayRationale,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
+              style: TextStyle(
+                color: context.ianvs.muted,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
@@ -308,22 +307,22 @@ class _MetaChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 13, color: AppColors.textTertiary),
+          Icon(icon, size: 13, color: context.ianvs.subtle),
           const SizedBox(width: 4),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 220),
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
+              style: TextStyle(
+                color: context.ianvs.muted,
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
@@ -345,12 +344,12 @@ IconData _statusIcon(AcpPermissionAuditStatus status) {
   };
 }
 
-Color _statusColor(AcpPermissionAuditStatus status) {
+Color _statusColor(BuildContext context, AcpPermissionAuditStatus status) {
   return switch (status) {
-    AcpPermissionAuditStatus.pending => AppColors.warning,
-    AcpPermissionAuditStatus.allowed => AppColors.success,
-    AcpPermissionAuditStatus.denied => AppColors.danger,
-    AcpPermissionAuditStatus.cancelled => AppColors.textTertiary,
+    AcpPermissionAuditStatus.pending => context.ianvs.warning,
+    AcpPermissionAuditStatus.allowed => context.ianvs.success,
+    AcpPermissionAuditStatus.denied => context.ianvs.danger,
+    AcpPermissionAuditStatus.cancelled => context.ianvs.subtle,
   };
 }
 

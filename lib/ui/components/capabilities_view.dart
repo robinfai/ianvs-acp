@@ -1,9 +1,8 @@
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_agent_capabilities.dart';
 import '../../acp/acp_input_budget.dart';
 import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class CapabilitiesView extends StatelessWidget {
   const CapabilitiesView({
@@ -179,11 +178,11 @@ class _CapabilitySummary extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.primaryMist,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.accent.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
@@ -191,14 +190,14 @@ class _CapabilitySummary extends StatelessWidget {
               Icon(
                 Icons.dashboard_customize_outlined,
                 size: 15,
-                color: AppColors.primaryDark,
+                color: context.ianvs.focus,
               ),
               SizedBox(width: 6),
               Expanded(
                 child: Text(
                   'Negotiated capability status',
                   style: TextStyle(
-                    color: AppColors.textPrimary,
+                    color: context.ianvs.text,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
@@ -210,7 +209,7 @@ class _CapabilitySummary extends StatelessWidget {
           Text(
             'The statuses below reflect the capabilities available after runtime and Agent negotiation.',
             style: TextStyle(
-              color: AppColors.textSecondary,
+              color: context.ianvs.muted,
               fontSize: 11.5,
               height: 1.35,
             ),
@@ -230,18 +229,18 @@ class _EmptyState extends StatelessWidget {
       height: 150,
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
-      child: const Column(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.info_outline_rounded, color: AppColors.primaryDark),
+          Icon(Icons.info_outline_rounded, color: context.ianvs.focus),
           SizedBox(height: 8),
           Text(
             'Connect to an ACP agent to inspect capabilities.',
-            style: TextStyle(color: AppColors.textSecondary),
+            style: TextStyle(color: context.ianvs.muted),
           ),
         ],
       ),
@@ -265,20 +264,20 @@ class _Section extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(2, 12, 2, 12),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: context.ianvs.separator)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, size: 15, color: AppColors.primaryDark),
+              Icon(icon, size: 15, color: context.ianvs.focus),
               const SizedBox(width: 6),
               Text(
                 title,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
@@ -304,7 +303,7 @@ class _BoolRow extends StatelessWidget {
     return _Pill(
       label: label,
       value: supported ? 'supported' : 'off',
-      color: supported ? AppColors.success : AppColors.textTertiary,
+      color: supported ? context.ianvs.success : context.ianvs.subtle,
     );
   }
 }
@@ -317,7 +316,7 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _Pill(label: label, value: value, color: AppColors.primaryDark);
+    return _Pill(label: label, value: value, color: context.ianvs.focus);
   }
 }
 
@@ -334,9 +333,9 @@ class _Pill extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 320),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.canvas,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -351,8 +350,8 @@ class _Pill extends StatelessWidget {
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
+              style: TextStyle(
+                color: context.ianvs.text,
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
@@ -462,10 +461,10 @@ class _RawSectionState extends State<_RawSection> {
             _expanded = expanded;
           });
         },
-        title: const Text(
+        title: Text(
           'Raw capability data',
           style: TextStyle(
-            color: AppColors.textPrimary,
+            color: context.ianvs.text,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -554,17 +553,17 @@ class _RawBlock extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(9),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             label,
-            style: const TextStyle(
-              color: AppColors.primaryDark,
+            style: TextStyle(
+              color: context.ianvs.focus,
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
@@ -572,10 +571,11 @@ class _RawBlock extends StatelessWidget {
           const SizedBox(height: 6),
           SelectableText(
             preview.text,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontFamily: AppTypography.monoFamily,
-              fontFamilyFallback: AppTypography.monoFallback,
+            style: TextStyle(
+              color: context.ianvs.muted,
+              fontFamily: context.ianvsTypography.code.fontFamily,
+              fontFamilyFallback:
+                  context.ianvsTypography.code.fontFamilyFallback,
               fontSize: 12,
               height: 1.35,
             ),
@@ -586,8 +586,8 @@ class _RawBlock extends StatelessWidget {
               omission.truncated
                   ? 'Preview truncated · ${omission.resource}'
                   : 'Details omitted · ${omission.resource}',
-              style: const TextStyle(
-                color: AppColors.warning,
+              style: TextStyle(
+                color: context.ianvs.warning,
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
               ),

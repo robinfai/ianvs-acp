@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
-
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 /// Owns window layout preferences independently of streaming session updates.
 class MacosWorkspaceLayout extends StatefulWidget {
@@ -76,33 +74,15 @@ class MacosWorkspaceLayoutState extends State<MacosWorkspaceLayout> {
     }
   }
 
-  void _resize(double delta) => setState(() {
-    sidebarWidth = (sidebarWidth + delta).clamp(220.0, 320.0);
-  });
-
-  Widget get sidebarDivider => Semantics(
-    container: true,
-    label: 'Sidebar width',
-    value: '${sidebarWidth.round()} points',
-    increasedValue: '${(sidebarWidth + 20).clamp(220, 320).round()} points',
-    decreasedValue: '${(sidebarWidth - 20).clamp(220, 320).round()} points',
-    onIncrease: () => _resize(20),
-    onDecrease: () => _resize(-20),
-    child: MouseRegion(
-      cursor: SystemMouseCursors.resizeColumn,
-      child: GestureDetector(
-        key: const Key('sidebar-resize-handle'),
-        behavior: HitTestBehavior.opaque,
-        onHorizontalDragUpdate: (details) => _resize(details.delta.dx),
-        onDoubleTap: () => setState(() => sidebarWidth = 260),
-        child: const SizedBox(
-          width: 5,
-          child: Center(
-            child: VerticalDivider(width: 1, color: AppColors.border),
-          ),
-        ),
-      ),
-    ),
+  Widget get sidebarDivider => IanvsResizeHandle(
+    key: const Key('sidebar-resize-handle'),
+    value: sidebarWidth,
+    min: 220,
+    max: 320,
+    resetValue: 260,
+    semanticLabel: 'Sidebar width',
+    semanticValueFormatter: (value) => '${value.round()} points',
+    onChanged: (value) => setState(() => sidebarWidth = value),
   );
 
   @override

@@ -1,14 +1,15 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 import '../settings-redesign-2026-09-09/fixture.dart';
+
+final _captureTheme = IanvsTheme.build(platform: TargetPlatform.macOS);
 
 void main() {
   setUpAll(() async {
@@ -24,7 +25,7 @@ void main() {
       sdk = sdk.parent;
     }
     await Future.wait([
-      (FontLoader(AppTypography.family)..addFont(
+      (FontLoader(_captureTheme.textTheme.bodyMedium!.fontFamily!)..addFont(
             bytes('/System/Library/Fonts/Supplemental/Arial Unicode.ttf'),
           ))
           .load(),
@@ -32,7 +33,9 @@ void main() {
             bytes('/System/Library/Fonts/Supplemental/Arial Unicode.ttf'),
           ))
           .load(),
-      (FontLoader(AppTypography.monoFamily)..addFont(
+      (FontLoader(
+            _captureTheme.extension<IanvsTypography>()!.code.fontFamily!,
+          )..addFont(
             bytes(
               '${sdk.path}/bin/cache/dart-sdk/bin/resources/devtools/assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
             ),

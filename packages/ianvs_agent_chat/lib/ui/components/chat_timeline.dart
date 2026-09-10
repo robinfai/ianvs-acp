@@ -2,7 +2,7 @@ import '../../chat_theme.dart';
 import 'dart:async';
 import '../../platform/chat_platform.dart';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -11,7 +11,6 @@ import '../../models/chat_input_budget.dart';
 import '../../models/chat_message.dart';
 import '../bounded_metadata_preview.dart';
 import '../image_decode_budget.dart';
-import '../theme/app_design_tokens.dart';
 import '../user_message_projection.dart';
 import '../markdown_render_budget.dart';
 import '../tool_presentation/tool_presentation_registry.dart';
@@ -27,7 +26,7 @@ const List<String> _toolCallIdMetadataKeys = [
   'callId',
   'call_id',
 ];
-const _userMessageSelectionColor = Color(0x3d000000);
+
 const int _maxTimelineSignatureMessages = 200;
 const int _inlineCollectionPreviewItems = 5;
 const int _contentBlockProjectionBatchItems = 16;
@@ -1123,9 +1122,7 @@ class _TurnNavigationRailState extends State<_TurnNavigationRail> {
                                 ChatTheme.of(context).textSecondary,
                                 hoverInfluence,
                               ),
-                              borderRadius: BorderRadius.circular(
-                                AppRadius.pill,
-                              ),
+                              borderRadius: BorderRadius.circular(999),
                             ),
                           ),
                         ),
@@ -1166,9 +1163,9 @@ class _TurnNavigationPreview extends StatelessWidget {
       padding: EdgeInsets.fromLTRB(16, 14, 16, 15),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surface,
-        borderRadius: BorderRadius.circular(AppRadius.xl),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         border: Border.all(color: ChatTheme.of(context).border),
-        boxShadow: AppShadows.raised,
+        boxShadow: kElevationToShadow[4]!,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1222,7 +1219,7 @@ class _ProcessedTurnHeader extends StatelessWidget {
       expanded: expanded,
       label: expanded ? 'Collapse processed turn' : 'Expand processed turn',
       child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         onTap: onPressed,
         child: Padding(
           padding: EdgeInsets.symmetric(vertical: 5),
@@ -1352,13 +1349,14 @@ class _EmptyTimeline extends StatelessWidget {
                           elevation: 0,
                           minimumSize: Size(154, compact ? 36 : 40),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppRadius.pill),
+                            borderRadius: BorderRadius.circular(999),
                           ),
-                          textStyle: AppTypography.label.copyWith(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0,
-                          ),
+                          textStyle: Theme.of(context).textTheme.labelLarge!
+                              .copyWith(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0,
+                              ),
                         ),
                       ),
                     ),
@@ -1435,7 +1433,7 @@ class _CodeCardIllustration extends StatelessWidget {
       height: compact ? 40 : 46,
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.lg),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         border: Border.all(color: ChatTheme.of(context).border),
       ),
       child: Icon(
@@ -1489,15 +1487,23 @@ class _MessageBubble extends StatelessWidget {
     final color = switch (message.role) {
       ChatMessageRole.user => ChatTheme.of(context).userMessageSurface,
       ChatMessageRole.assistant => Colors.transparent,
-      ChatMessageRole.tool => Color(0xfffffbeb),
-      ChatMessageRole.error => Color(0xfffef2f2),
+      ChatMessageRole.tool => ChatTheme.of(
+        context,
+      ).warning.withValues(alpha: 0.08),
+      ChatMessageRole.error => ChatTheme.of(
+        context,
+      ).danger.withValues(alpha: 0.08),
       ChatMessageRole.status => ChatTheme.of(context).surfaceRaised,
     };
     final borderColor = switch (message.role) {
       ChatMessageRole.user => Colors.transparent,
       ChatMessageRole.assistant => Colors.transparent,
-      ChatMessageRole.tool => Color(0xfffde68a),
-      ChatMessageRole.error => Color(0xfffecaca),
+      ChatMessageRole.tool => ChatTheme.of(
+        context,
+      ).warning.withValues(alpha: 0.3),
+      ChatMessageRole.error => ChatTheme.of(
+        context,
+      ).danger.withValues(alpha: 0.3),
       ChatMessageRole.status => ChatTheme.of(context).border,
     };
     final textColor = ChatTheme.of(context).textPrimary;
@@ -1544,7 +1550,9 @@ class _MessageBubble extends StatelessWidget {
                   padding: EdgeInsets.symmetric(horizontal: 15, vertical: 11),
                   decoration: BoxDecoration(
                     color: ChatTheme.of(context).userMessageSurface,
-                    borderRadius: BorderRadius.circular(AppRadius.xl),
+                    borderRadius: BorderRadius.circular(
+                      context.ianvs.panelRadius,
+                    ),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1593,7 +1601,7 @@ class _MessageBubble extends StatelessWidget {
               : EdgeInsets.all(11),
           decoration: BoxDecoration(
             color: color,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
+            borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
             border: Border.all(color: borderColor),
           ),
           child: Column(
@@ -1608,12 +1616,12 @@ class _MessageBubble extends StatelessWidget {
                     Icon(
                       _iconForRole(message.role),
                       size: 14,
-                      color: _labelColor(message.role),
+                      color: _labelColor(context, message.role),
                     ),
                     Text(
                       _labelForRole(message.role),
                       style: TextStyle(
-                        color: _labelColor(message.role),
+                        color: _labelColor(context, message.role),
                         fontWeight: FontWeight.w600,
                         fontSize: 12,
                         letterSpacing: 0,
@@ -1640,7 +1648,7 @@ class _MessageBubble extends StatelessWidget {
                     markdownDecision.text,
                     style: TextStyle(
                       color: textColor,
-                      fontSize: 15,
+                      fontSize: ChatTheme.of(context).bodyFontSize,
                       height: 1.58,
                       fontWeight: FontWeight.w400,
                     ),
@@ -1666,9 +1674,9 @@ class _MessageBubble extends StatelessWidget {
     bool user, {
     bool emphasizeAssistant = false,
   }) {
-    final baseTextStyle = TextStyle(
+    final baseTextStyle = Theme.of(context).textTheme.bodyLarge!.copyWith(
       color: textColor,
-      fontSize: 15,
+      fontSize: ChatTheme.of(context).bodyFontSize,
       height: 1.58,
       fontWeight: FontWeight.w400,
     );
@@ -1687,8 +1695,8 @@ class _MessageBubble extends StatelessWidget {
       strong: baseTextStyle.copyWith(fontWeight: FontWeight.w600),
       em: baseTextStyle.copyWith(fontStyle: FontStyle.italic),
       code: baseTextStyle.copyWith(
-        fontFamily: AppTypography.monoFamily,
-        fontFamilyFallback: AppTypography.monoFallback,
+        fontFamily: context.ianvsTypography.code.fontFamily,
+        fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
         backgroundColor: codeBackground,
         fontSize: 13,
       ),
@@ -1716,13 +1724,14 @@ class _MessageBubble extends StatelessWidget {
     ChatMessageRole.status => 'Status',
   };
 
-  Color _labelColor(ChatMessageRole role) => switch (role) {
-    ChatMessageRole.user => Colors.white,
-    ChatMessageRole.assistant => AppColors.primaryDark,
-    ChatMessageRole.tool => Color(0xff92400e),
-    ChatMessageRole.error => Color(0xffb91c1c),
-    ChatMessageRole.status => AppColors.textSecondary,
-  };
+  Color _labelColor(BuildContext context, ChatMessageRole role) =>
+      switch (role) {
+        ChatMessageRole.user => ChatTheme.of(context).textPrimary,
+        ChatMessageRole.assistant => ChatTheme.of(context).primaryDark,
+        ChatMessageRole.tool => ChatTheme.of(context).warning,
+        ChatMessageRole.error => ChatTheme.of(context).danger,
+        ChatMessageRole.status => ChatTheme.of(context).textSecondary,
+      };
 }
 
 class _AssistantSummaryBubble extends StatelessWidget {
@@ -1808,7 +1817,7 @@ class _TextImageThumbnails extends StatelessWidget {
               message: 'Preview image',
               child: InkWell(
                 key: ValueKey('text-image-thumbnail:$path'),
-                borderRadius: BorderRadius.circular(AppRadius.lg),
+                borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
                 onTap: () => _showImagePreviewDialog(
                   context,
                   title: path.replaceAll('\\', '/').split('/').last,
@@ -1829,10 +1838,14 @@ class _TextImageThumbnails extends StatelessWidget {
                   clipBehavior: Clip.antiAlias,
                   decoration: BoxDecoration(
                     color: ChatTheme.of(context).surface,
-                    borderRadius: BorderRadius.circular(AppRadius.lg),
+                    borderRadius: BorderRadius.circular(
+                      context.ianvs.panelRadius,
+                    ),
                   ),
                   foregroundDecoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(AppRadius.lg),
+                    borderRadius: BorderRadius.circular(
+                      context.ianvs.panelRadius,
+                    ),
                     border: Border.all(color: ChatTheme.of(context).border),
                   ),
                   child: Image(
@@ -1886,7 +1899,7 @@ class _InputOmissionNotice extends StatelessWidget {
       child: Text(
         'Content omitted · ${omission.resource}',
         style: TextStyle(
-          color: user ? Colors.white70 : ChatTheme.of(context).warning,
+          color: ChatTheme.of(context).warning,
           fontSize: 11,
           fontWeight: FontWeight.w600,
         ),
@@ -1916,7 +1929,8 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       softLineBreak: user,
       styleSheet: styleSheet,
       onTapLink: onTapLink,
-      imageBuilder: _blockedMarkdownImage,
+      imageBuilder: (uri, title, alt) =>
+          _blockedMarkdownImage(context, uri, title, alt),
       builders: <String, MarkdownElementBuilder>{
         'pre': MarkdownCodeBlockBuilder(user: user),
         'a': MarkdownInlineLinkBuilder(onTapLink: onTapLink),
@@ -1927,20 +1941,25 @@ class _SelectableMessageMarkdown extends StatelessWidget {
 
     return TextSelectionTheme(
       data: TextSelectionTheme.of(context).copyWith(
-        cursorColor: Colors.white,
-        selectionColor: _userMessageSelectionColor,
-        selectionHandleColor: Colors.white,
+        cursorColor: ChatTheme.of(context).accent,
+        selectionColor: ChatTheme.of(context).accent.withValues(alpha: .24),
+        selectionHandleColor: ChatTheme.of(context).accent,
       ),
       child: DefaultSelectionStyle(
-        cursorColor: Colors.white,
-        selectionColor: _userMessageSelectionColor,
+        cursorColor: ChatTheme.of(context).accent,
+        selectionColor: ChatTheme.of(context).accent.withValues(alpha: .24),
         child: markdown,
       ),
     );
   }
 }
 
-Widget _blockedMarkdownImage(Uri uri, String? title, String? alt) {
+Widget _blockedMarkdownImage(
+  BuildContext context,
+  Uri uri,
+  String? title,
+  String? alt,
+) {
   final scheme = uri.scheme.trim().toLowerCase();
   final source = switch (scheme) {
     'http' || 'https' when uri.host.trim().isNotEmpty => uri.host.toLowerCase(),
@@ -1953,9 +1972,9 @@ Widget _blockedMarkdownImage(Uri uri, String? title, String? alt) {
     child: Container(
       padding: EdgeInsets.only(left: 8, top: 3, bottom: 3),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        color: ChatTheme.of(context).surface,
+        border: Border.all(color: ChatTheme.of(context).border),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1969,7 +1988,7 @@ Widget _blockedMarkdownImage(Uri uri, String? title, String? alt) {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: AppColors.textSecondary,
+                color: ChatTheme.of(context).textSecondary,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
@@ -1977,7 +1996,7 @@ Widget _blockedMarkdownImage(Uri uri, String? title, String? alt) {
           ),
           IconButton(
             tooltip: 'Copy blocked image link',
-            visualDensity: VisualDensity.compact,
+            visualDensity: VisualDensity.standard,
             iconSize: 16,
             constraints: BoxConstraints(minWidth: 32, minHeight: 32),
             onPressed: () {
@@ -2003,7 +2022,7 @@ class _ToolBubble extends StatelessWidget {
     final images = _toolImageBlocks(parsed.content);
     final diffs = _toolDiffs(parsed.content);
     if (images.isNotEmpty || diffs.isNotEmpty) {
-      final statusSummary = _ToolGroupStatusSummary.from([parsed]);
+      final statusSummary = _ToolGroupStatusSummary.from(context, [parsed]);
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -2073,7 +2092,7 @@ class _ToolGroupBubble extends StatelessWidget {
                 ordinaryMessages.any((tool) => identical(tool, message)),
           )
           .toList(growable: false);
-      final statusSummary = _ToolGroupStatusSummary.from(richTools);
+      final statusSummary = _ToolGroupStatusSummary.from(context, richTools);
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -2101,7 +2120,7 @@ class _ToolGroupBubble extends StatelessWidget {
         ],
       );
     }
-    final statusSummary = _ToolGroupStatusSummary.from(parsedTools);
+    final statusSummary = _ToolGroupStatusSummary.from(context, parsedTools);
 
     return _ToolFrame(
       child: _ToolGroupDisclosure(
@@ -2181,7 +2200,7 @@ class _ToolImageActivityState extends State<_ToolImageActivity> {
                               decoration: BoxDecoration(
                                 color: ChatTheme.of(context).surfaceRaised,
                                 borderRadius: BorderRadius.circular(
-                                  AppRadius.lg,
+                                  context.ianvs.panelRadius,
                                 ),
                                 border: Border.all(
                                   color: ChatTheme.of(context).border,
@@ -2236,7 +2255,7 @@ class _ToolDiffActivityState extends State<_ToolDiffActivity> {
         width: double.infinity,
         decoration: BoxDecoration(
           color: ChatTheme.of(context).surface,
-          borderRadius: BorderRadius.circular(AppRadius.lg),
+          borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
           border: Border.all(color: ChatTheme.of(context).border),
         ),
         child: Column(
@@ -2253,7 +2272,9 @@ class _ToolDiffActivityState extends State<_ToolDiffActivity> {
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
                       color: ChatTheme.of(context).surfaceRaised,
-                      borderRadius: BorderRadius.circular(AppRadius.md),
+                      borderRadius: BorderRadius.circular(
+                        context.ianvs.panelRadius,
+                      ),
                     ),
                     child: Icon(
                       Icons.note_add_outlined,
@@ -2623,8 +2644,8 @@ class _ToolDiffHoverPreview extends StatelessWidget {
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surface,
         border: Border.all(color: ChatTheme.of(context).border),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        boxShadow: AppShadows.floatingPanel,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        boxShadow: kElevationToShadow[8]!,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2673,8 +2694,8 @@ class _UnifiedDiffLineRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final codeStyle = TextStyle(
       color: ChatTheme.of(context).textPrimary,
-      fontFamily: AppTypography.monoFamily,
-      fontFamilyFallback: AppTypography.monoFallback,
+      fontFamily: context.ianvsTypography.code.fontFamily,
+      fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
       fontSize: 11,
       height: 1.25,
     );
@@ -2682,6 +2703,7 @@ class _UnifiedDiffLineRow extends StatelessWidget {
       line.text,
       language: language,
       baseStyle: codeStyle,
+      brightness: Theme.of(context).brightness,
     );
     final background = switch (line.kind) {
       _UnifiedDiffLineKind.addition => ChatTheme.of(
@@ -2733,8 +2755,9 @@ class _UnifiedDiffLineRow extends StatelessWidget {
                   marker,
                   style: TextStyle(
                     color: accent,
-                    fontFamily: AppTypography.monoFamily,
-                    fontFamilyFallback: AppTypography.monoFallback,
+                    fontFamily: context.ianvsTypography.code.fontFamily,
+                    fontFamilyFallback:
+                        context.ianvsTypography.code.fontFamilyFallback,
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                   ),
@@ -2805,8 +2828,8 @@ class _DiffLineNumber extends StatelessWidget {
         value?.toString() ?? '',
         style: TextStyle(
           color: ChatTheme.of(context).textTertiary,
-          fontFamily: AppTypography.monoFamily,
-          fontFamilyFallback: AppTypography.monoFallback,
+          fontFamily: context.ianvsTypography.code.fontFamily,
+          fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
           fontSize: 10,
           height: 1.2,
         ),
@@ -2896,7 +2919,7 @@ class _ToolCallCardState extends State<_ToolCallCard> {
       width: double.infinity,
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(color: ChatTheme.of(context).border),
       ),
       child: Theme(
@@ -2999,7 +3022,9 @@ class _ToolGroupDisclosureState extends State<_ToolGroupDisclosure> {
               color: Colors.transparent,
               child: InkWell(
                 key: ValueKey('tool-call-group-toggle'),
-                borderRadius: BorderRadius.circular(AppRadius.sm),
+                borderRadius: BorderRadius.circular(
+                  context.ianvs.controlRadius,
+                ),
                 hoverColor: Colors.transparent,
                 splashColor: Colors.transparent,
                 highlightColor: Colors.transparent,
@@ -3167,7 +3192,9 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
               color: Colors.transparent,
               child: InkWell(
                 key: ValueKey('tool-activity-toggle-${parsed.id}'),
-                borderRadius: BorderRadius.circular(AppRadius.sm),
+                borderRadius: BorderRadius.circular(
+                  context.ianvs.controlRadius,
+                ),
                 hoverColor: Colors.transparent,
                 splashColor: Colors.transparent,
                 highlightColor: Colors.transparent,
@@ -3233,7 +3260,7 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
                         Text(
                           statusLabel,
                           style: TextStyle(
-                            color: _statusColor(parsed.status),
+                            color: _statusColor(context, parsed.status),
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),
@@ -3343,7 +3370,10 @@ class _ToolGroupStatusSummary {
   final String label;
   final Color color;
 
-  factory _ToolGroupStatusSummary.from(List<ToolPresentationSource> tools) {
+  factory _ToolGroupStatusSummary.from(
+    BuildContext context,
+    List<ToolPresentationSource> tools,
+  ) {
     var pendingCount = 0;
     var inProgressCount = 0;
     var failedCount = 0;
@@ -3367,30 +3397,30 @@ class _ToolGroupStatusSummary {
     if (pendingCount > 0) {
       return _ToolGroupStatusSummary(
         label: '$pendingCount pending',
-        color: AppColors.warning,
+        color: ChatTheme.of(context).warning,
       );
     }
     if (inProgressCount > 0) {
       return _ToolGroupStatusSummary(
         label: '$inProgressCount in progress',
-        color: AppColors.primaryDark,
+        color: ChatTheme.of(context).primaryDark,
       );
     }
     if (failedCount > 0) {
       return _ToolGroupStatusSummary(
         label: '$failedCount failed',
-        color: AppColors.danger,
+        color: ChatTheme.of(context).danger,
       );
     }
     if (cancelledCount > 0) {
       return _ToolGroupStatusSummary(
         label: '$cancelledCount cancelled',
-        color: AppColors.textSecondary,
+        color: ChatTheme.of(context).textSecondary,
       );
     }
     return _ToolGroupStatusSummary(
       label: 'completed',
-      color: AppColors.success,
+      color: ChatTheme.of(context).success,
     );
   }
 }
@@ -3456,7 +3486,10 @@ class _ToolHeader extends StatelessWidget {
           ),
         ),
         SizedBox(width: 8),
-        _StatusPill(label: parsed.status, color: _statusColor(parsed.status)),
+        _StatusPill(
+          label: parsed.status,
+          color: _statusColor(context, parsed.status),
+        ),
       ],
     );
   }
@@ -3521,7 +3554,9 @@ class _StatusBubble extends StatelessWidget {
               ? null
               : BoxDecoration(
                   color: ChatTheme.of(context).surfaceRaised,
-                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  borderRadius: BorderRadius.circular(
+                    context.ianvs.controlRadius,
+                  ),
                   border: Border.all(color: ChatTheme.of(context).border),
                 ),
           child: Column(
@@ -3602,7 +3637,7 @@ class _TurnStatus extends StatelessWidget {
         if (stopReason.isNotEmpty)
           _StatusPill(
             label: _wireStopReason(stopReason),
-            color: _stopReasonColor(stopReason),
+            color: _stopReasonColor(context, stopReason),
           ),
       ],
     );
@@ -3893,7 +3928,9 @@ class _ImageContentBlock extends StatelessWidget {
     final mimeType = _stringMetadata(block, 'mimeType') ?? 'image';
     final data = _stringMetadata(block, 'data');
     final imageDecode = _ImageDecodeScope.of(context);
-    final previewRadius = compact ? AppRadius.lg : AppRadius.md;
+    final previewRadius = compact
+        ? context.ianvs.panelRadius
+        : context.ianvs.panelRadius;
     final preview = data == null
         ? Center(child: Text('Image preview unavailable.'))
         : ClipRRect(
@@ -3913,7 +3950,7 @@ class _ImageContentBlock extends StatelessWidget {
         child: Tooltip(
           message: 'Preview image',
           child: InkWell(
-            borderRadius: BorderRadius.circular(AppRadius.lg),
+            borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             onTap: data == null
                 ? null
                 : () => _showImagePreviewDialog(
@@ -3933,10 +3970,10 @@ class _ImageContentBlock extends StatelessWidget {
               clipBehavior: Clip.antiAlias,
               decoration: BoxDecoration(
                 color: ChatTheme.of(context).surface,
-                borderRadius: BorderRadius.circular(AppRadius.lg),
+                borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
               ),
               foregroundDecoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(AppRadius.lg),
+                borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
                 border: Border.all(color: ChatTheme.of(context).border),
               ),
               child: preview,
@@ -3988,7 +4025,7 @@ class _ImagePreviewDialog extends StatelessWidget {
       shadowColor: Colors.black.withValues(alpha: 0.24),
       elevation: 20,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.xl),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         side: BorderSide(color: ChatTheme.of(context).borderSoft),
       ),
       clipBehavior: Clip.antiAlias,
@@ -4250,7 +4287,7 @@ class _InlineContentFrame extends StatelessWidget {
       padding: EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(color: ChatTheme.of(context).border),
       ),
       child: Column(
@@ -4355,7 +4392,7 @@ class _PlanEntryRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final status = _stringMetadata(entry, 'status') ?? 'pending';
     final content = _stringMetadata(entry, 'content') ?? '';
-    final color = _statusColor(status);
+    final color = _statusColor(context, status);
     final icon = switch (_normalizedStatusToken(status)) {
       'completed' => Icons.check_circle_rounded,
       'in_progress' => Icons.play_circle_outline_rounded,
@@ -4409,7 +4446,7 @@ class _DiffStatus extends StatelessWidget {
                 label: 'Diff',
               ),
             ),
-            _StatusPill(label: status, color: _statusColor(status)),
+            _StatusPill(label: status, color: _statusColor(context, status)),
           ],
         ),
         SizedBox(height: 6),
@@ -4532,7 +4569,7 @@ class _DiffChangeRow extends StatelessWidget {
       padding: EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surface,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(color: ChatTheme.of(context).border),
       ),
       child: Column(
@@ -4540,7 +4577,7 @@ class _DiffChangeRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              _StatusPill(label: type, color: _statusColor(type)),
+              _StatusPill(label: type, color: _statusColor(context, type)),
               if (line != null) ...[
                 SizedBox(width: 7),
                 Text(
@@ -4560,8 +4597,9 @@ class _DiffChangeRow extends StatelessWidget {
               body,
               style: TextStyle(
                 color: ChatTheme.of(context).textPrimary,
-                fontFamily: AppTypography.monoFamily,
-                fontFamilyFallback: AppTypography.monoFallback,
+                fontFamily: context.ianvsTypography.code.fontFamily,
+                fontFamilyFallback:
+                    context.ianvsTypography.code.fontFamilyFallback,
                 fontSize: 12,
                 height: 1.35,
               ),
@@ -4706,7 +4744,7 @@ class _TinyCollectionPill extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surfaceMuted,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(999),
         border: Border.all(color: ChatTheme.of(context).borderSoft),
       ),
       child: Text(
@@ -4763,7 +4801,7 @@ class _CommandDetailCard extends StatelessWidget {
       padding: EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).surface,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(color: ChatTheme.of(context).border),
       ),
       child: Column(
@@ -4865,7 +4903,7 @@ class _TerminalStatus extends StatelessWidget {
                 label: 'Terminal',
               ),
             ),
-            _StatusPill(label: status, color: _statusColor(status)),
+            _StatusPill(label: status, color: _statusColor(context, status)),
           ],
         ),
         SizedBox(height: 6),
@@ -4873,8 +4911,8 @@ class _TerminalStatus extends StatelessWidget {
           command.isEmpty ? 'Command unavailable' : command,
           style: TextStyle(
             color: ChatTheme.of(context).textPrimary,
-            fontFamily: AppTypography.monoFamily,
-            fontFamilyFallback: AppTypography.monoFallback,
+            fontFamily: context.ianvsTypography.code.fontFamily,
+            fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
             fontSize: 12,
             fontWeight: FontWeight.w600,
             height: 1.35,
@@ -4963,7 +5001,7 @@ class _StatusPill extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(999),
         border: Border.all(color: color.withValues(alpha: 0.22)),
       ),
       child: Text(
@@ -4990,7 +5028,7 @@ class _CommandChip extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
         color: ChatTheme.of(context).primarySoft,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color: ChatTheme.of(context).primary.withValues(alpha: 0.18),
         ),
@@ -5016,13 +5054,13 @@ class _DetailBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const backgroundColor = Color(0xb8ffffff);
+    final backgroundColor = ChatTheme.of(context).surfaceRaised;
     final value = SelectableText(
       entry.value,
       style: TextStyle(
         color: ChatTheme.of(context).textPrimary,
-        fontFamily: AppTypography.monoFamily,
-        fontFamilyFallback: AppTypography.monoFallback,
+        fontFamily: context.ianvsTypography.code.fontFamily,
+        fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
         fontSize: 12,
         height: 1.35,
       ),
@@ -5032,8 +5070,10 @@ class _DetailBlock extends StatelessWidget {
       padding: EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: backgroundColor,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: Color(0xfffde68a)),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(
+          color: ChatTheme.of(context).warning.withValues(alpha: 0.3),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -5041,7 +5081,7 @@ class _DetailBlock extends StatelessWidget {
           Text(
             entry.label,
             style: TextStyle(
-              color: Color(0xff92400e),
+              color: ChatTheme.of(context).warning,
               fontSize: 11,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
@@ -5470,17 +5510,17 @@ Map<String, Object?> _objectMap(Object? value) {
   return value.map((key, value) => MapEntry(key.toString(), value));
 }
 
-Color _statusColor(String status) {
+Color _statusColor(BuildContext context, String status) {
   final normalized = _normalizedStatusToken(status);
   return switch (normalized) {
-    'completed' || 'applied' => AppColors.success,
+    'completed' || 'applied' => ChatTheme.of(context).success,
     'in_progress' ||
     'progress' ||
     'running' ||
-    'started' => AppColors.primaryDark,
-    'failed' || 'error' || 'rejected' => AppColors.danger,
-    'cancelled' || 'canceled' => AppColors.textSecondary,
-    _ => AppColors.warning,
+    'started' => ChatTheme.of(context).primaryDark,
+    'failed' || 'error' || 'rejected' => ChatTheme.of(context).danger,
+    'cancelled' || 'canceled' => ChatTheme.of(context).textSecondary,
+    _ => ChatTheme.of(context).warning,
   };
 }
 
@@ -5520,12 +5560,12 @@ String _wireStopReason(String value) {
   };
 }
 
-Color _stopReasonColor(String value) {
+Color _stopReasonColor(BuildContext context, String value) {
   return switch (value) {
-    'endTurn' => AppColors.success,
-    'cancelled' => AppColors.textSecondary,
-    'maxTokens' || 'maxTurnRequests' => AppColors.warning,
-    'refusal' => AppColors.danger,
-    _ => AppColors.primaryDark,
+    'endTurn' => ChatTheme.of(context).success,
+    'cancelled' => ChatTheme.of(context).textSecondary,
+    'maxTokens' || 'maxTurnRequests' => ChatTheme.of(context).warning,
+    'refusal' => ChatTheme.of(context).danger,
+    _ => ChatTheme.of(context).primaryDark,
   };
 }

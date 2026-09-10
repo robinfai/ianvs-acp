@@ -1,3 +1,10 @@
+## Unreleased
+
+* Adopt `ianvs_design` for shared controls, typography and light/dark themes.
+* Resolve partial `ChatThemeData` color overrides against the ambient theme and expose the conversation reading font size.
+* Switch code highlighting, Mermaid diagrams and permission feedback with the host appearance.
+* Remove the application-specific `ui/theme/app_theme.dart` and `ui/theme/app_design_tokens.dart`; use the public Ianvs Design APIs instead.
+
 ## 0.1.0
 
 * Extract the conversation timeline and composer from the Ianvs ACP desktop app.

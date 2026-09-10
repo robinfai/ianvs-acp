@@ -1,8 +1,7 @@
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../state/chat_controller.dart';
 import '../activity/session_activity_model.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class SessionActivityView extends StatefulWidget {
   const SessionActivityView({
@@ -75,9 +74,9 @@ class _ActivitySummary extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.primaryMist,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.accent.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Wrap(
         spacing: 8,
@@ -124,19 +123,19 @@ class _SummaryChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.canvas,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: AppColors.primaryDark),
+          Icon(icon, size: 14, color: context.ianvs.focus),
           const SizedBox(width: 5),
           Text(
             label,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
+            style: TextStyle(
+              color: context.ianvs.muted,
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -180,17 +179,24 @@ class _ActivityRow extends StatelessWidget {
                   width: 28,
                   height: 28,
                   decoration: BoxDecoration(
-                    color: _activityColor(entry.kind).withValues(alpha: 0.12),
+                    color: _activityColor(
+                      context,
+                      entry.kind,
+                    ).withValues(alpha: 0.12),
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
                     _activityIcon(entry.kind),
                     size: 15,
-                    color: _activityColor(entry.kind),
+                    color: _activityColor(context, entry.kind),
                   ),
                 ),
                 if (!isLast)
-                  Container(width: 1, height: 38, color: AppColors.borderSoft),
+                  Container(
+                    width: 1,
+                    height: 38,
+                    color: context.ianvs.separator,
+                  ),
               ],
             ),
           ),
@@ -208,8 +214,8 @@ class _ActivityRow extends StatelessWidget {
                           entry.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
+                          style: TextStyle(
+                            color: context.ianvs.text,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -217,8 +223,8 @@ class _ActivityRow extends StatelessWidget {
                       ),
                       Text(
                         _timeLabel(entry.timestamp),
-                        style: const TextStyle(
-                          color: AppColors.textTertiary,
+                        style: TextStyle(
+                          color: context.ianvs.subtle,
                           fontSize: 10.5,
                           fontFeatures: [FontFeature.tabularFigures()],
                         ),
@@ -231,8 +237,8 @@ class _ActivityRow extends StatelessWidget {
                       entry.detail,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
+                      style: TextStyle(
+                        color: context.ianvs.muted,
                         fontSize: 11.5,
                         height: 1.3,
                       ),
@@ -242,8 +248,8 @@ class _ActivityRow extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       activityMetadata.join(' · '),
-                      style: const TextStyle(
-                        color: AppColors.textTertiary,
+                      style: TextStyle(
+                        color: context.ianvs.subtle,
                         fontSize: 10.5,
                         fontWeight: FontWeight.w600,
                       ),
@@ -264,10 +270,10 @@ class _EmptyActivity extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Text(
         'No activity has been recorded for this session.',
-        style: TextStyle(color: AppColors.textSecondary),
+        style: TextStyle(color: context.ianvs.muted),
       ),
     );
   }
@@ -282,14 +288,15 @@ IconData _activityIcon(SessionActivityKind kind) => switch (kind) {
   SessionActivityKind.error => Icons.error_outline_rounded,
 };
 
-Color _activityColor(SessionActivityKind kind) => switch (kind) {
-  SessionActivityKind.prompt => AppColors.primaryDark,
-  SessionActivityKind.response => AppColors.success,
-  SessionActivityKind.tool => AppColors.primary,
-  SessionActivityKind.status => AppColors.textSecondary,
-  SessionActivityKind.permission => AppColors.warning,
-  SessionActivityKind.error => AppColors.danger,
-};
+Color _activityColor(BuildContext context, SessionActivityKind kind) =>
+    switch (kind) {
+      SessionActivityKind.prompt => context.ianvs.focus,
+      SessionActivityKind.response => context.ianvs.success,
+      SessionActivityKind.tool => context.ianvs.accent,
+      SessionActivityKind.status => context.ianvs.muted,
+      SessionActivityKind.permission => context.ianvs.warning,
+      SessionActivityKind.error => context.ianvs.danger,
+    };
 
 String _timeLabel(DateTime value) {
   final local = value.toLocal();

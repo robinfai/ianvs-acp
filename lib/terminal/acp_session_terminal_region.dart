@@ -1,12 +1,11 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:ianvs_terminal_core/ianvs_terminal_core.dart';
 import 'package:path/path.dart' as path;
 
 import '../acp/agent_session.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 typedef AcpTerminalRuntimeFactory = TerminalRuntimeController Function();
 
@@ -135,21 +134,9 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
       builder: (context, constraints) {
         final theme = Theme.of(context);
         final colorScheme = theme.colorScheme;
-        final terminalTheme = theme.extension<AppTerminalTheme>();
-        final terminalColors = terminalTheme == null
-            ? TerminalViewportColors.fromBrightness(
-                theme.brightness,
-              ).copyWith(minimumContrastRatio: 4.5, smartCursorColor: true)
-            : TerminalViewportColors(
-                canvasBackground: terminalTheme.background,
-                foreground: terminalTheme.foreground,
-                cursor: terminalTheme.cursor,
-                selection: terminalTheme.selection,
-                scrollbarTrack: terminalTheme.scrollbarTrack,
-                scrollbarThumb: terminalTheme.scrollbarThumb,
-                minimumContrastRatio: 4.5,
-                smartCursorColor: true,
-              );
+        final terminalColors = TerminalViewportColors.fromBrightness(
+          theme.brightness,
+        ).copyWith(minimumContrastRatio: 4.5, smartCursorColor: true);
         final desiredHeight = constraints.maxHeight * 0.29;
         final availableHeight = math.max<double>(
           140.0,
@@ -273,7 +260,7 @@ class _AcpTerminalToggleAction extends StatelessWidget {
               alpha: 0.45,
             ),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(AppRadius.sm),
+              borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
             ),
           ),
           iconSize: 18,

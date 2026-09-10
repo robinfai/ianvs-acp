@@ -1,7 +1,6 @@
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/agent_session.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 Future<bool> showSessionWorkspaceReviewDialog(
   BuildContext context,
@@ -30,10 +29,10 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
       contentPadding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
       actionsPadding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
       actionsAlignment: MainAxisAlignment.end,
-      title: const Text(
+      title: Text(
         'Review Session Workspace',
         style: TextStyle(
-          color: AppColors.textPrimary,
+          color: context.ianvs.text,
           fontSize: 17,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,
@@ -48,8 +47,8 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
             children: [
               Text(
                 session.displayTitle,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
                 ),
@@ -58,18 +57,18 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(
                   agentName,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
+                  style: TextStyle(
+                    color: context.ianvs.muted,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'Confirm the folders this session can use for local files and terminal commands.',
                 style: TextStyle(
-                  color: AppColors.textSecondary,
+                  color: context.ianvs.muted,
                   fontSize: 13,
                   height: 1.35,
                 ),
@@ -88,10 +87,10 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
           style: TextButton.styleFrom(
-            foregroundColor: AppColors.textSecondary,
+            foregroundColor: context.ianvs.muted,
             minimumSize: const Size(88, 40),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(AppRadius.md),
+              borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             ),
             textStyle: const TextStyle(
               fontSize: 13,
@@ -105,7 +104,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
           style: FilledButton.styleFrom(
             minimumSize: const Size(148, 40),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(AppRadius.md),
+              borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             ),
             textStyle: const TextStyle(
               fontSize: 13,
@@ -143,17 +142,17 @@ class _WorkspacePath extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        color: context.ianvs.raised,
+        border: Border.all(color: context.ianvs.border),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             label,
-            style: const TextStyle(
-              color: AppColors.textTertiary,
+            style: TextStyle(
+              color: context.ianvs.subtle,
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -161,10 +160,11 @@ class _WorkspacePath extends StatelessWidget {
           const SizedBox(height: 4),
           SelectableText(
             path,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontFamily: AppTypography.monoFamily,
-              fontFamilyFallback: AppTypography.monoFallback,
+            style: TextStyle(
+              color: context.ianvs.text,
+              fontFamily: context.ianvsTypography.code.fontFamily,
+              fontFamilyFallback:
+                  context.ianvsTypography.code.fontFamilyFallback,
               fontSize: 12,
               height: 1.35,
             ),

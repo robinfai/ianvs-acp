@@ -1,8 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
-import '../ui/theme/app_design_tokens.dart';
 import 'mermaid_render_options.dart';
 import 'mermaid_view.dart';
 import 'native_merman_renderer.dart';
@@ -105,9 +104,9 @@ class _SourceEditor extends StatelessWidget {
       maxLines: null,
       minLines: null,
       textAlignVertical: TextAlignVertical.top,
-      style: const TextStyle(
-        fontFamily: AppTypography.monoFamily,
-        fontFamilyFallback: AppTypography.monoFallback,
+      style: TextStyle(
+        fontFamily: context.ianvsTypography.code.fontFamily,
+        fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
         fontSize: 13,
       ),
       decoration: const InputDecoration(

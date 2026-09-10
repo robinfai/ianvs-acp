@@ -3,7 +3,6 @@ import 'dart:io';
 import 'dart:ui' as ui;
 import 'dart:ui' show PointerDeviceKind, SemanticsAction, Tristate;
 
-import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show
         debugPaintBaselinesEnabled,
@@ -18,7 +17,7 @@ import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_agent_chat/ui/components/chat_timeline.dart';
 import 'package:ianvs_agent_chat/ui/components/markdown_code_block.dart';
 import 'package:ianvs_agent_chat/ui/image_decode_budget.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 void main() {
   Widget timeline(
@@ -515,7 +514,7 @@ Review the screenshot''',
       );
       expect(
         (activeBar.decoration! as BoxDecoration).color,
-        AppColors.textPrimary,
+        IanvsTokens.light.text,
       );
     },
   );
@@ -931,7 +930,7 @@ Review the screenshot''',
             ),
           )
           .color,
-      AppColors.surfaceRaised,
+      IanvsTokens.light.raised,
     );
   });
 
@@ -1023,7 +1022,7 @@ Review the screenshot''',
 
     await mouse.moveTo(tester.getCenter(firstRow));
     await tester.pump();
-    expect(surface('lib/first.dart').color, AppColors.surfaceRaised);
+    expect(surface('lib/first.dart').color, IanvsTokens.light.raised);
     expect(surface('lib/second.dart').color, Colors.transparent);
     expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);
 
@@ -1035,7 +1034,7 @@ Review the screenshot''',
     await mouse.moveTo(tester.getCenter(secondRow));
     await tester.pump();
     expect(surface('lib/first.dart').color, Colors.transparent);
-    expect(surface('lib/second.dart').color, AppColors.surfaceRaised);
+    expect(surface('lib/second.dart').color, IanvsTokens.light.raised);
 
     await mouse.moveTo(Offset.zero);
     await tester.pump(const Duration(milliseconds: 120));
@@ -1161,7 +1160,12 @@ Review the screenshot''',
         timeline(
           messages,
           mediaQuerySize: const Size(1000, 600),
-          theme: ThemeData(fontFamily: 'ACPTestSans'),
+          theme: IanvsTheme.build(
+            platform: TargetPlatform.macOS,
+            fontFamily: 'ACPTestSans',
+            fontFamilyFallback: const ['ACPTestCjk'],
+            monoFontFamily: 'monospace',
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -1343,17 +1347,22 @@ Review the screenshot''',
 
 ```dart
 decoration: BoxDecoration(
-  color: AppColors.surface,
-  borderRadius: BorderRadius.circular(AppRadius.xl),
+  color: IanvsTokens.light.canvas,
+  borderRadius: BorderRadius.circular(IanvsTokens.light.panelRadius),
 ),
 foregroundDecoration: BoxDecoration(
-  border: Border.all(color: AppColors.border),
+  border: Border.all(color: IanvsTokens.light.border),
 ),
 ```''',
             ),
           ],
           mediaQuerySize: const Size(1000, 600),
-          theme: ThemeData(fontFamily: 'ACPTestSans'),
+          theme: IanvsTheme.build(
+            platform: TargetPlatform.macOS,
+            fontFamily: 'ACPTestSans',
+            fontFamilyFallback: const ['ACPTestCjk'],
+            monoFontFamily: 'monospace',
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -1679,8 +1688,8 @@ foregroundDecoration: BoxDecoration(
   testWidgets('ChatTimeline gives user message selections contrast', (
     tester,
   ) async {
-    final appSelectionColor = AppColors.primary.withValues(alpha: 0.18);
-    const userSelectionColor = Color(0x3d000000);
+    final appSelectionColor = IanvsTokens.light.accent.withValues(alpha: 0.18);
+    final userSelectionColor = IanvsTokens.light.accent.withValues(alpha: .24);
 
     await tester.pumpWidget(
       timeline(
@@ -2251,7 +2260,7 @@ foregroundDecoration: BoxDecoration(
     var chevronOpacity = tester.widget<AnimatedOpacity>(
       find.byKey(const ValueKey('tool-call-group-chevron-opacity')),
     );
-    expect(summaryStyle.style.color, AppColors.textSecondary);
+    expect(summaryStyle.style.color, IanvsTokens.light.muted);
     expect(chevronOpacity.opacity, 0);
 
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
@@ -2267,7 +2276,7 @@ foregroundDecoration: BoxDecoration(
     chevronOpacity = tester.widget<AnimatedOpacity>(
       find.byKey(const ValueKey('tool-call-group-chevron-opacity')),
     );
-    expect(summaryStyle.style.color, AppColors.textPrimary);
+    expect(summaryStyle.style.color, IanvsTokens.light.text);
     expect(chevronOpacity.opacity, 1);
     expect(
       find.byKey(const ValueKey('tool-call-group-details-collapsed')),
@@ -2295,7 +2304,7 @@ foregroundDecoration: BoxDecoration(
     final chevron = tester.widget<AnimatedRotation>(
       find.byKey(const ValueKey('tool-call-group-chevron')),
     );
-    expect(summaryStyle.style.color, AppColors.textSecondary);
+    expect(summaryStyle.style.color, IanvsTokens.light.muted);
     expect(chevronOpacity.opacity, 1);
     expect(chevron.turns, 0.25);
     expect(
@@ -4151,6 +4160,8 @@ Future<void> _loadDiffGoldenFonts() async {
         'fonts/Roboto_Mono/RobotoMono-Regular.ttf',
       ),
     );
+  final cjk = FontLoader('ACPTestCjk')
+    ..addFont(fontData('/System/Library/Fonts/Supplemental/Arial Unicode.ttf'));
   final icons = FontLoader('MaterialIcons')
     ..addFont(
       fontData(
@@ -4158,7 +4169,13 @@ Future<void> _loadDiffGoldenFonts() async {
         'MaterialIcons-Regular.otf',
       ),
     );
-  await Future.wait([sans.load(), mono.load(), sfMono.load(), icons.load()]);
+  await Future.wait([
+    sans.load(),
+    mono.load(),
+    sfMono.load(),
+    cjk.load(),
+    icons.load(),
+  ]);
   _diffGoldenFontsLoaded = true;
 }
 

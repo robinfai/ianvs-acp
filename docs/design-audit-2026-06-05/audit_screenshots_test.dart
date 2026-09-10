@@ -1,13 +1,14 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/ui/components/session_time_label.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 import 'audit_fixture.dart';
+
+final _captureTheme = IanvsTheme.build(platform: TargetPlatform.macOS);
 
 void main() {
   setUpAll(() async {
@@ -29,17 +30,18 @@ void main() {
     // loading a second face into the same test family caused dialog text to
     // rasterize as solid blocks. Arial Unicode supplies the Chinese fallback,
     // and Material Icons prevents icon-codepoint tofu squares.
-    final sans = FontLoader(AppTypography.family)
+    final sans = FontLoader(_captureTheme.textTheme.bodyMedium!.fontFamily!)
       ..addFont(fontData('/System/Library/Fonts/Supplemental/Arial.ttf'));
     final cjk = FontLoader('PingFang SC')
       ..addFont(fontData('/System/Library/Fonts/Hiragino Sans GB.ttc'));
-    final mono = FontLoader(AppTypography.monoFamily)
-      ..addFont(
-        fontData(
-          '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/'
-          'assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
-        ),
-      );
+    final mono =
+        FontLoader(_captureTheme.extension<IanvsTypography>()!.code.fontFamily!)
+          ..addFont(
+            fontData(
+              '${flutterRoot.path}/bin/cache/dart-sdk/bin/resources/devtools/'
+              'assets/fonts/Roboto_Mono/RobotoMono-Regular.ttf',
+            ),
+          );
     final monoFallback = FontLoader('Menlo')
       ..addFont(
         fontData(

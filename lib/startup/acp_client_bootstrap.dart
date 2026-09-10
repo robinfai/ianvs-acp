@@ -1,13 +1,12 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../app.dart';
 import '../config/acp_client_config.dart';
 import '../config/acp_config_store.dart';
 import '../config/macos_keychain_secret_store.dart';
 import '../config/secret_store.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_theme.dart';
 import 'startup_options.dart';
 
 typedef AcpBootstrapConfigLoader =
@@ -130,7 +129,9 @@ final class _AcpClientBootstrapState extends State<AcpClientBootstrap> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'ACP Client',
-      theme: AppTheme.light,
+      theme: IanvsTheme.light(),
+      darkTheme: IanvsTheme.dark(),
+      themeMode: ThemeMode.system,
       home: Scaffold(
         body: Center(
           child: _loading

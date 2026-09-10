@@ -34,7 +34,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
           child: Focus(
             autofocus: true,
             child: Scaffold(
-              backgroundColor: AppColors.surface,
+              backgroundColor: context.ianvs.canvas,
               body: SafeArea(
                 child: LayoutBuilder(
                   builder: (context, bounds) {
@@ -47,9 +47,9 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                             width: 260,
                             child: _buildSettingsNavigation(),
                           ),
-                          const VerticalDivider(
+                          VerticalDivider(
                             width: 1,
-                            color: AppColors.border,
+                            color: context.ianvs.border,
                           ),
                         ],
                         Expanded(
@@ -67,9 +67,12 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                                   ),
                                   child:
                                       DropdownButtonFormField<_SettingsSection>(
-                                        style: AppTypography.label.copyWith(
-                                          fontWeight: FontWeight.w400,
-                                        ),
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelLarge!
+                                            .copyWith(
+                                              fontWeight: FontWeight.w400,
+                                            ),
                                         key: const Key(
                                           'settings-section-picker',
                                         ),
@@ -107,7 +110,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                                   ),
                                   child: _ErrorPanel(message: _error!),
                                 ),
-                              const Divider(height: 1, color: AppColors.border),
+                              Divider(height: 1, color: context.ianvs.border),
                               Expanded(
                                 child: IndexedStack(
                                   index: _section.index,
@@ -142,10 +145,10 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                                               ),
                                             ),
                                             const SizedBox(height: 8),
-                                            const Text(
+                                            Text(
                                               '模板由配置文件管理；新建会话时可选择。此处保存会保留模板及高级配置。',
                                               style: TextStyle(
-                                                color: AppColors.textSecondary,
+                                                color: context.ianvs.muted,
                                               ),
                                             ),
                                             for (final template
@@ -189,7 +192,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
 
   Widget _buildSettingsNavigation() {
     return ColoredBox(
-      color: AppColors.bg,
+      color: context.ianvs.chrome,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -200,9 +203,12 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                 left: defaultTargetPlatform == TargetPlatform.macOS ? 88 : 18,
                 right: 12,
               ),
-              child: const Align(
+              child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('ACP Client', style: AppTypography.sectionTitle),
+                child: Text(
+                  'ACP Client',
+                  style: Theme.of(context).textTheme.titleMedium!,
+                ),
               ),
             ),
           ),
@@ -223,9 +229,9 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                 ? () => _requestClose(SettingsExitAction.diagnostics)
                 : null,
           ),
-          const Padding(
+          Padding(
             padding: EdgeInsets.fromLTRB(18, 24, 18, 8),
-            child: Text('设置', style: AppTypography.metadata),
+            child: Text('设置', style: Theme.of(context).textTheme.bodySmall!),
           ),
           Expanded(
             child: ListView(
@@ -245,8 +251,8 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
           Container(
             constraints: const BoxConstraints(minHeight: 52),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: const BoxDecoration(
-              border: Border(top: BorderSide(color: AppColors.borderSoft)),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: context.ianvs.separator)),
             ),
             child: Row(
               children: [
@@ -264,7 +270,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                 Expanded(
                   child: Text(
                     _activeAgentName,
-                    style: AppTypography.label,
+                    style: Theme.of(context).textTheme.labelLarge!,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
@@ -289,12 +295,12 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
       button: true,
       enabled: onTap != null || selected,
       child: Material(
-        color: selected ? AppColors.surfaceSelected : Colors.transparent,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        color: selected ? context.ianvs.selected : Colors.transparent,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         child: InkWell(
           key: key,
           onTap: onTap,
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 35),
             child: Padding(
@@ -305,21 +311,21 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                     icon,
                     size: 18,
                     color: selected
-                        ? AppColors.accent
-                        : AppColors.textSecondary,
+                        ? context.ianvs.accent
+                        : context.ianvs.muted,
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       label,
-                      style: AppTypography.label.copyWith(
+                      style: Theme.of(context).textTheme.labelLarge!.copyWith(
                         fontSize: 13.5,
                         fontWeight: selected
                             ? FontWeight.w600
                             : FontWeight.w500,
                         color: onTap == null && !selected
-                            ? AppColors.textTertiary
-                            : AppColors.textPrimary,
+                            ? context.ianvs.subtle
+                            : context.ianvs.text,
                       ),
                     ),
                   ),
@@ -335,7 +341,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
   Widget _buildSettingsHeader(bool wide) => Container(
     key: const Key('settings-toolbar'),
     constraints: const BoxConstraints(minHeight: 52),
-    color: AppColors.surfaceRaised,
+    color: context.ianvs.raised,
     padding: EdgeInsets.fromLTRB(
       !wide && defaultTargetPlatform == TargetPlatform.macOS ? 88 : 12,
       8,
@@ -368,7 +374,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
               child: Text(
                 compact ? '设置' : '设置 · ${_section.label}',
                 key: const Key('settings-heading'),
-                style: AppTypography.sectionTitle,
+                style: Theme.of(context).textTheme.titleMedium!,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -388,8 +394,10 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
               child: Text(compact ? '放弃' : '放弃更改'),
             ),
             const SizedBox(width: 8),
-            FilledButton(
+            IanvsButton(
               key: const Key('settings-save'),
+              loading: _saving,
+              loadingLabel: '正在保存',
               style: FilledButton.styleFrom(
                 minimumSize: const Size(80, 32),
                 padding: const EdgeInsets.symmetric(
@@ -423,8 +431,8 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         : _saveStatus ?? '所有更改已保存';
     return Container(
       key: const Key('settings-status-bar'),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AppColors.borderSoft)),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: context.ianvs.separator)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
       child: Row(
@@ -434,7 +442,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
             _hasChanges
                 ? Icons.info_outline_rounded
                 : Icons.check_circle_outline_rounded,
-            color: _hasChanges ? AppColors.warning : AppColors.textTertiary,
+            color: _hasChanges ? context.ianvs.warning : context.ianvs.subtle,
             size: 18,
           ),
           const SizedBox(width: 8),
@@ -445,10 +453,10 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                 Text(
                   status,
                   key: const Key('settings-save-status'),
-                  style: AppTypography.metadata.copyWith(
+                  style: Theme.of(context).textTheme.bodySmall!.copyWith(
                     color: _hasChanges
-                        ? AppColors.warning
-                        : AppColors.textSecondary,
+                        ? context.ianvs.warning
+                        : context.ianvs.muted,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -457,9 +465,9 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                       ? '会话仍在运行或切换，请完成操作后保存。'
                       : '保存会重新加载连接配置；当前会话可能需要恢复。',
                   key: const Key('settings-save-impact'),
-                  style: AppTypography.metadata.copyWith(
-                    fontWeight: FontWeight.w400,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall!.copyWith(fontWeight: FontWeight.w400),
                 ),
               ],
             ),
@@ -502,7 +510,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                 padding: const EdgeInsets.all(16),
                 child: compactSelector,
               ),
-              const Divider(height: 1, color: AppColors.border),
+              Divider(height: 1, color: context.ianvs.border),
               Expanded(child: detail),
             ],
           );
@@ -511,7 +519,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             SizedBox(width: 260, child: list),
-            const VerticalDivider(width: 1, color: AppColors.border),
+            VerticalDivider(width: 1, color: context.ianvs.border),
             Expanded(child: detail),
           ],
         );
@@ -534,8 +542,11 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
             padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
             child: Row(
               children: [
-                const Expanded(
-                  child: Text('Agent 连接', style: AppTypography.sectionTitle),
+                Expanded(
+                  child: Text(
+                    'Agent 连接',
+                    style: Theme.of(context).textTheme.titleMedium!,
+                  ),
                 ),
                 add,
               ],
@@ -567,7 +578,9 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         children: [
           Expanded(
             child: DropdownButtonFormField<AgentServerConfig>(
-              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+              style: Theme.of(
+                context,
+              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
               key: const Key('settings-agent-picker'),
               initialValue: selected,
               isExpanded: true,
@@ -675,8 +688,11 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(
               children: [
-                const Expanded(
-                  child: Text('MCP 服务器', style: AppTypography.sectionTitle),
+                Expanded(
+                  child: Text(
+                    'MCP 服务器',
+                    style: Theme.of(context).textTheme.titleMedium!,
+                  ),
                 ),
                 add,
               ],
@@ -705,7 +721,9 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
         children: [
           Expanded(
             child: DropdownButtonFormField<int>(
-              style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
+              style: Theme.of(
+                context,
+              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
               key: const Key('settings-mcp-picker'),
               initialValue: selected == null
                   ? -1
@@ -783,11 +801,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
       children: [
         Row(
           children: [
-            const Icon(
-              Icons.terminal_rounded,
-              size: 28,
-              color: AppColors.textSecondary,
-            ),
+            Icon(Icons.terminal_rounded, size: 28, color: context.ianvs.muted),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -795,11 +809,11 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                 children: [
                   Text(
                     title,
-                    style: AppTypography.sectionTitle,
+                    style: Theme.of(context).textTheme.titleMedium!,
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
-                  Text(subtitle, style: AppTypography.metadata),
+                  Text(subtitle, style: Theme.of(context).textTheme.bodySmall!),
                 ],
               ),
             ),
@@ -807,7 +821,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
           ],
         ),
         const SizedBox(height: 16),
-        const Divider(height: 1, color: AppColors.border),
+        Divider(height: 1, color: context.ianvs.border),
       ],
     ),
   );
@@ -823,24 +837,24 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
     padding: const EdgeInsets.only(bottom: 6),
     child: Material(
       color: selected
-          ? AppColors.primary.withValues(alpha: 0.08)
+          ? context.ianvs.accent.withValues(alpha: 0.08)
           : Colors.transparent,
       borderRadius: BorderRadius.circular(8),
       child: ListTile(
         key: key,
         selected: selected,
         onTap: onTap,
-        leading: Icon(icon, size: 18, color: AppColors.textSecondary),
+        leading: Icon(icon, size: 18, color: context.ianvs.muted),
         title: Text(
           name,
-          style: AppTypography.label.copyWith(
+          style: Theme.of(context).textTheme.labelLarge!.copyWith(
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),
           overflow: TextOverflow.ellipsis,
         ),
         subtitle: Text(
           subtitle,
-          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          style: TextStyle(fontSize: 12, color: context.ianvs.muted),
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         dense: true,
@@ -865,40 +879,8 @@ class _SettingsField extends StatelessWidget {
   final String? hint;
 
   @override
-  Widget build(BuildContext context) {
-    final field = MergeSemantics(
-      child: Semantics(
-        label: label,
-        child: TextField(
-          controller: controller,
-          style: AppTypography.label.copyWith(fontWeight: FontWeight.w400),
-          decoration: InputDecoration(
-            hintText: hint,
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 10,
-            ),
-          ),
-        ),
-      ),
-    );
-    return LayoutBuilder(
-      builder: (context, bounds) {
-        final labelWidget = Text(label, style: AppTypography.label);
-        if (bounds.maxWidth < 440) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [labelWidget, const SizedBox(height: 8), field],
-          );
-        }
-        return Row(
-          children: [
-            SizedBox(width: 94, child: labelWidget),
-            const SizedBox(width: 12),
-            Expanded(child: field),
-          ],
-        );
-      },
-    );
-  }
+  Widget build(BuildContext context) => IanvsFieldRow(
+    label: label,
+    child: IanvsTextField(controller: controller, hintText: hint),
+  );
 }

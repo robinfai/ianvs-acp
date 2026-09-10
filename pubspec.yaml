@@ -6,8 +6,10 @@ version: 1.0.0+1
 
 environment:
   sdk: ^3.12.0
+  flutter: '>=3.44.0'
 
 dependencies:
+  ianvs_design: ^0.2.0
   ianvs_agent_chat:
     path: packages/ianvs_agent_chat
   flutter:

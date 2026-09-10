@@ -1,9 +1,8 @@
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/connection_state.dart' as app_state;
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'session_menu_actions.dart';
 
 class AgentToolbar extends StatelessWidget {
@@ -62,9 +61,9 @@ class AgentToolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 52,
-      decoration: const BoxDecoration(
-        color: AppColors.surfaceRaised,
-        border: Border(bottom: BorderSide(color: AppColors.borderSoft)),
+      decoration: BoxDecoration(
+        color: context.ianvs.raised,
+        border: Border(bottom: BorderSide(color: context.ianvs.separator)),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -292,7 +291,7 @@ class _AgentMenuItem extends StatelessWidget {
         Icon(
           selected ? Icons.check_circle_rounded : Icons.circle_outlined,
           size: 17,
-          color: selected ? AppColors.success : AppColors.textTertiary,
+          color: selected ? context.ianvs.success : context.ianvs.subtle,
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -303,8 +302,8 @@ class _AgentMenuItem extends StatelessWidget {
               Text(
                 server.name,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
@@ -312,8 +311,8 @@ class _AgentMenuItem extends StatelessWidget {
               Text(
                 server.safeDisplayTarget,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textTertiary,
+                style: TextStyle(
+                  color: context.ianvs.subtle,
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0,
@@ -340,7 +339,7 @@ class _ToolbarButtonShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = enabled ? AppColors.primaryDark : AppColors.textTertiary;
+    final color = enabled ? context.ianvs.focus : context.ianvs.subtle;
     return Semantics(
       button: true,
       enabled: enabled,
@@ -353,11 +352,11 @@ class _ToolbarButtonShell extends StatelessWidget {
             : const EdgeInsets.symmetric(horizontal: 8),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: label == null ? Colors.transparent : AppColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          color: label == null ? Colors.transparent : context.ianvs.chrome,
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
           border: label == null
               ? null
-              : Border.all(color: AppColors.borderSoft),
+              : Border.all(color: context.ianvs.separator),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -418,7 +417,7 @@ class _BrandMark extends StatelessWidget {
             status != app_state.ConnectionStatus.sessionReady;
         return Row(
           children: [
-            Expanded(child: _buildTitle()),
+            Expanded(child: _buildTitle(context)),
             if (showAgentChip) ...[
               const SizedBox(width: 9),
               _AgentChip(agentName: agentName),
@@ -433,14 +432,10 @@ class _BrandMark extends StatelessWidget {
     );
   }
 
-  Widget _buildTitle() {
+  Widget _buildTitle(BuildContext context) {
     final label = Row(
       children: [
-        const Icon(
-          Icons.folder_outlined,
-          size: 17,
-          color: AppColors.textSecondary,
-        ),
+        Icon(Icons.folder_outlined, size: 17, color: context.ianvs.muted),
         const SizedBox(width: 10),
         Expanded(
           child: Text(
@@ -448,7 +443,7 @@ class _BrandMark extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             softWrap: false,
             style: TextStyle(
-              color: AppColors.textPrimary,
+              color: context.ianvs.text,
               fontSize: 13,
               fontWeight: FontWeight.w600,
               letterSpacing: -0.05,
@@ -494,8 +489,9 @@ class _ToolbarSessionActions extends StatelessWidget {
         MenuAnchor(
           alignmentOffset: const Offset(0, 7),
           consumeOutsideTap: true,
-          style: _toolbarMenuStyle(),
+          style: _toolbarMenuStyle(context),
           menuChildren: _toolbarSessionMenuItems(
+            context,
             session: session,
             availability: availability,
             supportsGitWorktrees: supportsGitWorktrees,
@@ -506,7 +502,9 @@ class _ToolbarSessionActions extends StatelessWidget {
               message: '会话操作',
               child: InkWell(
                 key: const Key('toolbar-session-actions'),
-                borderRadius: BorderRadius.circular(AppRadius.sm),
+                borderRadius: BorderRadius.circular(
+                  context.ianvs.controlRadius,
+                ),
                 onTap: () {
                   if (controller.isOpen) {
                     controller.close();
@@ -520,13 +518,15 @@ class _ToolbarSessionActions extends StatelessWidget {
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: controller.isOpen
-                        ? AppColors.surfaceSelected
+                        ? context.ianvs.selected
                         : Colors.transparent,
-                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                    borderRadius: BorderRadius.circular(
+                      context.ianvs.controlRadius,
+                    ),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.more_horiz_rounded,
-                    color: AppColors.textSecondary,
+                    color: context.ianvs.muted,
                     size: 17,
                   ),
                 ),
@@ -539,7 +539,8 @@ class _ToolbarSessionActions extends StatelessWidget {
   }
 }
 
-List<Widget> _toolbarSessionMenuItems({
+List<Widget> _toolbarSessionMenuItems(
+  BuildContext context, {
   required AgentSession session,
   required SessionActionAvailability availability,
   required bool supportsGitWorktrees,
@@ -557,6 +558,7 @@ List<Widget> _toolbarSessionMenuItems({
     }
     items.add(
       _toolbarMenuItem(
+        context,
         action,
         action.iconFor(session),
         action.labelFor(session),
@@ -570,22 +572,23 @@ List<Widget> _toolbarSessionMenuItems({
   return items;
 }
 
-MenuStyle _toolbarMenuStyle() {
+MenuStyle _toolbarMenuStyle(BuildContext context) {
   return MenuStyle(
-    backgroundColor: const WidgetStatePropertyAll(AppColors.surface),
+    backgroundColor: WidgetStatePropertyAll(context.ianvs.canvas),
     surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
     elevation: const WidgetStatePropertyAll(0),
     padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(vertical: 6)),
     shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-        side: const BorderSide(color: AppColors.border),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        side: BorderSide(color: context.ianvs.border),
       ),
     ),
   );
 }
 
 MenuItemButton _toolbarMenuItem(
+  BuildContext context,
   WorkspaceSessionMenuAction value,
   IconData icon,
   String label,
@@ -595,9 +598,9 @@ MenuItemButton _toolbarMenuItem(
 }) {
   final color = enabled
       ? destructive
-            ? AppColors.danger
-            : AppColors.textPrimary
-      : AppColors.textTertiary;
+            ? context.ianvs.danger
+            : context.ianvs.text
+      : context.ianvs.subtle;
   return MenuItemButton(
     onPressed: enabled ? () => onSelected(value) : null,
     leadingIcon: Icon(icon, size: 17, color: color),
@@ -628,17 +631,17 @@ class _AgentChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 190),
         child: Text(
           agentName,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
+          style: TextStyle(
+            color: context.ianvs.muted,
             fontWeight: FontWeight.w600,
             fontSize: 11.5,
           ),
@@ -666,7 +669,7 @@ class _ToolbarAction extends StatelessWidget {
     final content = Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         onTap: onPressed,
         child: Container(
           width: label == null ? 34 : null,
@@ -677,21 +680,21 @@ class _ToolbarAction extends StatelessWidget {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: onPressed == null
-                ? AppColors.surfaceRaised
-                : AppColors.surfaceMuted,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
-            border: Border.all(color: AppColors.borderSoft),
+                ? context.ianvs.raised
+                : context.ianvs.chrome,
+            borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+            border: Border.all(color: context.ianvs.separator),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, color: _color, size: 17),
+              Icon(icon, color: _color(context), size: 17),
               if (label != null) ...[
                 const SizedBox(width: 5),
                 Text(
                   label!,
                   style: TextStyle(
-                    color: _color,
+                    color: _color(context),
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
@@ -712,8 +715,8 @@ class _ToolbarAction extends StatelessWidget {
     );
   }
 
-  Color get _color =>
-      onPressed == null ? AppColors.textTertiary : AppColors.textSecondary;
+  Color _color(BuildContext context) =>
+      onPressed == null ? context.ianvs.subtle : context.ianvs.muted;
 }
 
 class _PrimaryToolbarAction extends StatelessWidget {
@@ -725,8 +728,8 @@ class _PrimaryToolbarAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final style = TextButton.styleFrom(
-      foregroundColor: AppColors.accent,
-      disabledForegroundColor: AppColors.textTertiary,
+      foregroundColor: context.ianvs.accent,
+      disabledForegroundColor: context.ianvs.subtle,
       minimumSize: Size(compact ? 34 : 72, 34),
       padding: compact
           ? EdgeInsets.zero
@@ -745,11 +748,13 @@ class _PrimaryToolbarAction extends StatelessWidget {
         : TextButton(
             onPressed: onPressed,
             style: style,
-            child: const Text(
+            child: Text(
               '新会话',
               style: TextStyle(
-                fontFamily: AppTypography.family,
-                fontFamilyFallback: AppTypography.familyFallback,
+                fontFamily: Theme.of(context).textTheme.bodyMedium?.fontFamily,
+                fontFamilyFallback: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.fontFamilyFallback,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
@@ -771,22 +776,22 @@ class _ConnectionBadge extends StatelessWidget {
     final (color, background) = switch (status) {
       app_state.ConnectionStatus.connected ||
       app_state.ConnectionStatus.sessionReady => (
-        const Color(0xff047857),
-        const Color(0xffecfdf5),
+        context.ianvs.success,
+        context.ianvs.success.withValues(alpha: 0.1),
       ),
       app_state.ConnectionStatus.connecting ||
       app_state.ConnectionStatus.reconnecting ||
       app_state.ConnectionStatus.streaming => (
-        const Color(0xff1d4ed8),
-        const Color(0xffeff6ff),
+        context.ianvs.focus,
+        context.ianvs.accent.withValues(alpha: 0.1),
       ),
       app_state.ConnectionStatus.error => (
-        const Color(0xffb91c1c),
-        const Color(0xfffef2f2),
+        context.ianvs.danger,
+        context.ianvs.danger.withValues(alpha: 0.08),
       ),
       app_state.ConnectionStatus.disconnected => (
-        const Color(0xff6b7280),
-        const Color(0xfff3f4f6),
+        context.ianvs.muted,
+        context.ianvs.chrome,
       ),
     };
 
@@ -794,8 +799,8 @@ class _ConnectionBadge extends StatelessWidget {
       height: 24,
       padding: const EdgeInsets.symmetric(horizontal: 5),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        color: context.ianvs.canvas,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -809,7 +814,7 @@ class _ConnectionBadge extends StatelessWidget {
           Text(
             status.label,
             style: TextStyle(
-              color: AppColors.textSecondary,
+              color: context.ianvs.muted,
               fontWeight: FontWeight.w600,
               fontSize: 11,
             ),

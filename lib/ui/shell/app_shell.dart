@@ -6,7 +6,7 @@ import '../../platform/prompt_image_clipboard.dart';
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 
 import '../../acp/acp_input_budget.dart';
@@ -37,7 +37,6 @@ import '../components/session_workspace_review_dialog.dart';
 import '../components/workspace_inspector.dart';
 import '../components/workspace_sidebar.dart';
 import '../image_decode_budget.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'macos_workspace_layout.dart';
 
 typedef AppShellProcessRunner =
@@ -215,7 +214,7 @@ class AppShell extends StatelessWidget {
         final promptAttachmentController = PromptAttachmentController();
 
         return Scaffold(
-          backgroundColor: AppColors.bg,
+          backgroundColor: context.ianvs.chrome,
           body: SafeArea(
             top: false,
             child: Column(
@@ -246,7 +245,7 @@ class AppShell extends StatelessWidget {
                   ),
                 Expanded(
                   child: ColoredBox(
-                    color: AppColors.surface,
+                    color: context.ianvs.canvas,
                     child: MacosWorkspaceLayout(
                       builder: (context, constraints, layout) {
                         final compactWindow = constraints.maxWidth < 780;
@@ -635,8 +634,8 @@ class AppShell extends StatelessWidget {
             FilledButton(
               onPressed: () => Navigator.of(context).pop(true),
               style: FilledButton.styleFrom(
-                foregroundColor: Colors.white,
-                backgroundColor: AppColors.danger,
+                foregroundColor: IanvsTheme.foregroundFor(context.ianvs.danger),
+                backgroundColor: context.ianvs.danger,
               ),
               child: const Text('Log Out'),
             ),
@@ -1100,11 +1099,14 @@ class _CompactPanelSheet extends StatelessWidget {
                           Expanded(
                             child: Text(
                               title,
-                              style: const TextStyle(
-                                color: AppColors.textPrimary,
-                                fontFamily: AppTypography.family,
-                                fontFamilyFallback:
-                                    AppTypography.familyFallback,
+                              style: TextStyle(
+                                color: context.ianvs.text,
+                                fontFamily: Theme.of(
+                                  context,
+                                ).textTheme.bodyMedium?.fontFamily,
+                                fontFamilyFallback: Theme.of(
+                                  context,
+                                ).textTheme.bodyMedium?.fontFamilyFallback,
                                 fontSize: 15,
                                 fontWeight: FontWeight.w600,
                               ),
@@ -1119,7 +1121,7 @@ class _CompactPanelSheet extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const Divider(height: 1, color: AppColors.border),
+                  Divider(height: 1, color: context.ianvs.border),
                   Expanded(child: child),
                 ],
               ),
@@ -1149,7 +1151,7 @@ class _ShellSidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: AppColors.bg,
+      color: context.ianvs.chrome,
       child: Column(
         children: [
           _SidebarBrandHeader(
@@ -1193,9 +1195,12 @@ class _SidebarBrandHeader extends StatelessWidget {
             height: 52,
             child: Padding(
               padding: EdgeInsets.only(left: windowControlsInset > 0 ? 76 : 6),
-              child: const Align(
+              child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('ACP Client', style: AppTypography.sectionTitle),
+                child: Text(
+                  'ACP Client',
+                  style: Theme.of(context).textTheme.titleMedium!,
+                ),
               ),
             ),
           ),
@@ -1232,7 +1237,7 @@ class _SidebarNavItem extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.sm),
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         onTap: onTap,
         child: SizedBox(
           height: 35,
@@ -1240,12 +1245,12 @@ class _SidebarNavItem extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 6),
             child: Row(
               children: [
-                Icon(icon, size: 18, color: AppColors.textSecondary),
+                Icon(icon, size: 18, color: context.ianvs.muted),
                 const SizedBox(width: 10),
                 Text(
                   label,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontSize: 13.5,
                     fontWeight: FontWeight.w500,
                   ),
@@ -1271,8 +1276,8 @@ class _SidebarAccountFooter extends StatelessWidget {
     return Container(
       height: 52,
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AppColors.borderSoft)),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: context.ianvs.separator)),
       ),
       child: Row(
         children: [
@@ -1293,8 +1298,8 @@ class _SidebarAccountFooter extends StatelessWidget {
             child: Text(
               agentName,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
+              style: TextStyle(
+                color: context.ianvs.text,
                 fontSize: 13,
                 fontWeight: FontWeight.w500,
               ),
@@ -1321,12 +1326,12 @@ class _AuthMethodTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       contentPadding: EdgeInsets.zero,
-      leading: const Icon(Icons.login_rounded, color: AppColors.primaryDark),
+      leading: Icon(Icons.login_rounded, color: context.ianvs.focus),
       title: Text(
         name,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: AppColors.textPrimary,
+        style: TextStyle(
+          color: context.ianvs.text,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
@@ -1336,8 +1341,8 @@ class _AuthMethodTile extends StatelessWidget {
           : Text(
               description,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
+              style: TextStyle(
+                color: context.ianvs.muted,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),

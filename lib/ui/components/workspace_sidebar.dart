@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/semantics.dart';
 
 import '../../acp/agent_event.dart';
@@ -11,7 +11,6 @@ import '../../workspace/workspace_sidebar_state_store.dart';
 import 'package:ianvs_agent_chat/ui/components/accessible_text_field.dart';
 import 'session_menu_actions.dart';
 import 'session_time_label.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class WorkspaceSidebar extends StatefulWidget {
   const WorkspaceSidebar({
@@ -115,7 +114,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
     final showSearch =
         widget.workspaces.length >= 7 || _searchController.text.isNotEmpty;
     return Container(
-      color: AppColors.bg,
+      color: context.ianvs.chrome,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -127,7 +126,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   '项目',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w600,
-                    color: AppColors.textSecondary,
+                    color: context.ianvs.muted,
                     fontSize: 12.5,
                     letterSpacing: 0,
                   ),
@@ -138,7 +137,7 @@ class _WorkspaceSidebarState extends State<WorkspaceSidebar> {
                   tooltip: 'Add workspace',
                   onPressed: () => unawaited(_addWorkspace()),
                   icon: const Icon(Icons.create_new_folder_outlined, size: 18),
-                  visualDensity: VisualDensity.compact,
+                  visualDensity: VisualDensity.standard,
                   splashRadius: 18,
                 ),
               ],
@@ -643,51 +642,57 @@ class _WorkspaceSearchField extends StatelessWidget {
                 focusNode: focusNode,
                 onChanged: onChanged,
                 textInputAction: TextInputAction.search,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontSize: 12.5,
                   fontWeight: FontWeight.w400,
                   letterSpacing: 0,
                 ),
                 decoration: InputDecoration(
-                  hint: const ExcludeSemantics(
+                  hint: ExcludeSemantics(
                     child: Text(
                       '搜索项目…',
                       style: TextStyle(
-                        color: AppColors.textSecondary,
+                        color: context.ianvs.muted,
                         fontSize: 12.5,
                         fontWeight: FontWeight.w400,
                         letterSpacing: 0,
                       ),
                     ),
                   ),
-                  prefixIcon: const Icon(
+                  prefixIcon: Icon(
                     Icons.search_rounded,
                     size: 17,
-                    color: AppColors.textSecondary,
+                    color: context.ianvs.muted,
                   ),
                   suffixIcon: controller.text.isEmpty
                       ? null
                       : const SizedBox.shrink(),
                   isDense: true,
                   filled: true,
-                  fillColor: AppColors.surface,
+                  fillColor: context.ianvs.canvas,
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: 8,
                     vertical: 9,
                   ),
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(AppRadius.sm),
-                    borderSide: const BorderSide(color: AppColors.border),
+                    borderRadius: BorderRadius.circular(
+                      context.ianvs.controlRadius,
+                    ),
+                    borderSide: BorderSide(color: context.ianvs.border),
                   ),
                   enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(AppRadius.sm),
-                    borderSide: const BorderSide(color: AppColors.border),
+                    borderRadius: BorderRadius.circular(
+                      context.ianvs.controlRadius,
+                    ),
+                    borderSide: BorderSide(color: context.ianvs.border),
                   ),
                   focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(AppRadius.sm),
-                    borderSide: const BorderSide(
-                      color: AppColors.accent,
+                    borderRadius: BorderRadius.circular(
+                      context.ianvs.controlRadius,
+                    ),
+                    borderSide: BorderSide(
+                      color: context.ianvs.accent,
                       width: 1.3,
                     ),
                   ),
@@ -708,8 +713,8 @@ class _WorkspaceSearchField extends StatelessWidget {
                   onChanged('');
                 },
                 icon: const Icon(Icons.close_rounded, size: 15),
-                color: AppColors.textSecondary,
-                visualDensity: VisualDensity.compact,
+                color: context.ianvs.muted,
+                visualDensity: VisualDensity.standard,
                 splashRadius: 16,
               ),
             ),
@@ -788,7 +793,7 @@ class _WorkspaceGroup extends StatelessWidget {
         key: Key('workspace-group:${workspace.path}'),
         decoration: BoxDecoration(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -951,15 +956,15 @@ class _SessionListToggle extends StatelessWidget {
           key: Key(
             'workspace-session-${expanded ? 'collapse' : 'expand'}:$workspacePath',
           ),
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
           onTap: onPressed,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(4, 5, 4, 4),
             child: Text(
               label,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textTertiary,
+              style: TextStyle(
+                color: context.ianvs.subtle,
                 fontSize: 11.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
@@ -1010,7 +1015,7 @@ class _WorkspaceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final radius = BorderRadius.circular(AppRadius.sm);
+    final radius = BorderRadius.circular(context.ianvs.controlRadius);
     return Semantics(
       button: onPressed != null,
       selected: selected,
@@ -1027,7 +1032,9 @@ class _WorkspaceTile extends StatelessWidget {
               key: Key('workspace-project-strip:${workspace.path}'),
               padding: const EdgeInsets.fromLTRB(7, 6, 5, 6),
               decoration: BoxDecoration(
-                color: hovered ? AppColors.surfaceHover : Colors.transparent,
+                color: hovered
+                    ? context.ianvs.text.withValues(alpha: .06)
+                    : Colors.transparent,
                 borderRadius: radius,
               ),
               child: Row(
@@ -1037,9 +1044,7 @@ class _WorkspaceTile extends StatelessWidget {
                         ? Icons.folder_open_outlined
                         : Icons.folder_outlined,
                     size: 17,
-                    color: selected
-                        ? AppColors.textPrimary
-                        : AppColors.textSecondary,
+                    color: selected ? context.ianvs.text : context.ianvs.muted,
                   ),
                   const SizedBox(width: 5),
                   _WorkspaceDisclosureButton(
@@ -1053,7 +1058,7 @@ class _WorkspaceTile extends StatelessWidget {
                       displayName,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: AppColors.textPrimary,
+                        color: context.ianvs.text,
                         fontSize: 13,
                         fontWeight: selected
                             ? FontWeight.w600
@@ -1096,12 +1101,13 @@ class _WorkspaceTile extends StatelessWidget {
         Offset.zero & overlay.size,
       ),
       surfaceTintColor: Colors.transparent,
-      color: AppColors.surface,
+      color: context.ianvs.canvas,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-        side: const BorderSide(color: AppColors.border),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        side: BorderSide(color: context.ianvs.border),
       ),
       items: _workspaceMenuItems(
+        context,
         pinned: pinned,
         canRevealInFinder: canRevealInFinder,
         canCreatePermanentWorktree: canCreatePermanentWorktree,
@@ -1137,7 +1143,7 @@ class _WorkspaceDisclosureButton extends StatelessWidget {
       child: Tooltip(
         message: tooltip,
         child: InkWell(
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
           onTap: onPressed,
           child: SizedBox(
             width: 18,
@@ -1148,8 +1154,8 @@ class _WorkspaceDisclosureButton extends StatelessWidget {
                   : Icons.chevron_right_rounded,
               size: 17,
               color: onPressed == null
-                  ? AppColors.textTertiary
-                  : AppColors.textSecondary,
+                  ? context.ianvs.subtle
+                  : context.ianvs.muted,
             ),
           ),
         ),
@@ -1230,16 +1236,17 @@ class _WorkspaceMenuButton extends StatelessWidget {
       tooltip: 'Workspace actions',
       padding: EdgeInsets.zero,
       icon: const Icon(Icons.more_horiz_rounded, size: 17),
-      iconColor: AppColors.textSecondary,
+      iconColor: context.ianvs.muted,
       surfaceTintColor: Colors.transparent,
-      color: AppColors.surface,
+      color: context.ianvs.canvas,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-        side: const BorderSide(color: AppColors.border),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        side: BorderSide(color: context.ianvs.border),
       ),
       onSelected: onSelected,
       itemBuilder: (context) {
         return _workspaceMenuItems(
+          context,
           pinned: pinned,
           canRevealInFinder: canRevealInFinder,
           canCreatePermanentWorktree: canCreatePermanentWorktree,
@@ -1253,7 +1260,8 @@ class _WorkspaceMenuButton extends StatelessWidget {
   }
 }
 
-List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
+List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems(
+  BuildContext context, {
   required bool pinned,
   required bool canRevealInFinder,
   required bool canCreatePermanentWorktree,
@@ -1264,12 +1272,14 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
 }) {
   return [
     _workspaceMenuItem(
+      context,
       value: _WorkspaceMenuAction.newSession,
       icon: Icons.edit_square,
       label: 'New Session',
       enabled: canStartNewSession,
     ),
     _workspaceMenuItem(
+      context,
       value: _WorkspaceMenuAction.resumeSession,
       icon: Icons.history_rounded,
       label: 'Resume Session',
@@ -1277,11 +1287,13 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
     ),
     const PopupMenuDivider(height: 8),
     _workspaceMenuItem(
+      context,
       value: _WorkspaceMenuAction.togglePinned,
       icon: pinned ? Icons.push_pin : Icons.push_pin_outlined,
       label: pinned ? 'Unpin Project' : 'Pin Project',
     ),
     _workspaceMenuItem(
+      context,
       value: _WorkspaceMenuAction.revealInFinder,
       icon: Icons.folder_open_outlined,
       label: 'Show in Finder',
@@ -1289,23 +1301,27 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
     ),
     if (canCreatePermanentWorktree)
       _workspaceMenuItem(
+        context,
         value: _WorkspaceMenuAction.createPermanentWorktree,
         icon: Icons.call_split_rounded,
         label: 'Create Permanent Worktree',
       ),
     _workspaceMenuItem(
+      context,
       value: _WorkspaceMenuAction.rename,
       icon: Icons.edit_outlined,
       label: 'Rename Project',
     ),
     const PopupMenuDivider(height: 8),
     _workspaceMenuItem(
+      context,
       value: _WorkspaceMenuAction.archiveConversations,
       icon: Icons.archive_outlined,
       label: 'Archive Conversations',
       enabled: canArchiveConversations,
     ),
     _workspaceMenuItem(
+      context,
       value: _WorkspaceMenuAction.remove,
       icon: Icons.close_rounded,
       label: 'Hide from Sidebar',
@@ -1315,15 +1331,16 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems({
   ];
 }
 
-PopupMenuItem<_WorkspaceMenuAction> _workspaceMenuItem({
+PopupMenuItem<_WorkspaceMenuAction> _workspaceMenuItem(
+  BuildContext context, {
   required _WorkspaceMenuAction value,
   required IconData icon,
   required String label,
   bool enabled = true,
   bool destructive = false,
 }) {
-  final color = destructive ? AppColors.danger : AppColors.textPrimary;
-  final disabledColor = AppColors.textTertiary;
+  final color = destructive ? context.ianvs.danger : context.ianvs.text;
+  final disabledColor = context.ianvs.subtle;
   return PopupMenuItem<_WorkspaceMenuAction>(
     value: value,
     enabled: enabled,
@@ -1428,7 +1445,7 @@ class _SessionTileState extends State<_SessionTile> {
 
   @override
   Widget build(BuildContext context) {
-    final radius = BorderRadius.circular(AppRadius.sm);
+    final radius = BorderRadius.circular(context.ianvs.controlRadius);
     final selected = widget.selected;
     final session = widget.session;
     final onPressed = widget.onPressed;
@@ -1476,9 +1493,9 @@ class _SessionTileState extends State<_SessionTile> {
                 padding: const EdgeInsets.fromLTRB(3, 3, 4, 3),
                 decoration: BoxDecoration(
                   color: selected
-                      ? AppColors.accentSoft
+                      ? context.ianvs.selected
                       : _hovered
-                      ? AppColors.surfaceHover
+                      ? context.ianvs.text.withValues(alpha: .06)
                       : Colors.transparent,
                   borderRadius: radius,
                 ),
@@ -1509,7 +1526,7 @@ class _SessionTileState extends State<_SessionTile> {
     bool showActions, {
     required bool selected,
   }) {
-    final titleColor = AppColors.textPrimary;
+    final titleColor = context.ianvs.text;
     return Row(
       children: [
         Expanded(
@@ -1530,10 +1547,10 @@ class _SessionTileState extends State<_SessionTile> {
           _SessionActionSlot(
             visible: showActions,
             fallback: !selected && widget.availability.canFork
-                ? const Icon(
+                ? Icon(
                     Icons.call_split_rounded,
                     size: 15,
-                    color: AppColors.primary,
+                    color: context.ianvs.accent,
                   )
                 : null,
             child: _SessionInlineActions(
@@ -1649,12 +1666,13 @@ class _SessionTileState extends State<_SessionTile> {
         Offset.zero & overlay.size,
       ),
       surfaceTintColor: Colors.transparent,
-      color: AppColors.surface,
+      color: context.ianvs.canvas,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-        side: const BorderSide(color: AppColors.border),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        side: BorderSide(color: context.ianvs.border),
       ),
       items: _sessionMenuItems(
+        context,
         session: widget.session,
         availability: widget.availability,
         supportsGitWorktrees: widget.supportsGitWorktrees,
@@ -1739,7 +1757,7 @@ class _SessionInlineActionButton extends StatelessWidget {
         tooltip: tooltip,
         onPressed: onPressed,
         icon: Icon(icon, size: 16),
-        color: AppColors.textSecondary,
+        color: context.ianvs.muted,
         padding: EdgeInsets.zero,
         constraints: const BoxConstraints.tightFor(width: 25, height: 24),
         splashRadius: 13,
@@ -1762,10 +1780,10 @@ class _SessionPreviewCard extends StatelessWidget {
         key: Key('workspace-session-preview:${session.id}'),
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
         decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.lg),
-          border: Border.all(color: AppColors.border),
-          boxShadow: AppShadows.floatingPanel,
+          color: context.ianvs.canvas,
+          borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+          border: Border.all(color: context.ianvs.border),
+          boxShadow: kElevationToShadow[8]!,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1776,8 +1794,8 @@ class _SessionPreviewCard extends StatelessWidget {
                   child: Text(
                     session.displayTitle,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
+                    style: TextStyle(
+                      color: context.ianvs.text,
                       fontSize: 14,
                       height: 1.2,
                       fontWeight: FontWeight.w600,
@@ -1788,8 +1806,8 @@ class _SessionPreviewCard extends StatelessWidget {
                 const SizedBox(width: 12),
                 Text(
                   formatRelativeSessionTime(session.displayTime),
-                  style: const TextStyle(
-                    color: AppColors.textTertiary,
+                  style: TextStyle(
+                    color: context.ianvs.subtle,
                     fontSize: 12,
                     height: 1.2,
                     fontWeight: FontWeight.w500,
@@ -1805,7 +1823,7 @@ class _SessionPreviewCard extends StatelessWidget {
             _SessionPreviewRow(icon: data.identityIcon, label: data.identity),
             _SessionPreviewRow(
               icon: Icons.call_split_rounded,
-              iconColor: AppColors.primary,
+              iconColor: context.ianvs.accent,
               label: data.summary,
             ),
             _SessionPreviewRow(
@@ -1823,12 +1841,12 @@ class _SessionPreviewRow extends StatelessWidget {
   const _SessionPreviewRow({
     required this.icon,
     required this.label,
-    this.iconColor = AppColors.textTertiary,
+    this.iconColor,
   });
 
   final IconData icon;
   final String label;
-  final Color iconColor;
+  final Color? iconColor;
 
   @override
   Widget build(BuildContext context) {
@@ -1836,15 +1854,15 @@ class _SessionPreviewRow extends StatelessWidget {
       height: 24,
       child: Row(
         children: [
-          Icon(icon, size: 16, color: iconColor),
+          Icon(icon, size: 16, color: iconColor ?? context.ianvs.subtle),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
+              style: TextStyle(
+                color: context.ianvs.text,
                 fontSize: 13,
                 height: 1.2,
                 fontWeight: FontWeight.w500,
@@ -1937,7 +1955,8 @@ String _singleLineSessionPreview(String value) {
   return '${normalized.substring(0, 157)}...';
 }
 
-List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
+List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems(
+  BuildContext context, {
   required AgentSession session,
   required SessionActionAvailability availability,
   required bool supportsGitWorktrees,
@@ -1954,6 +1973,7 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
     }
     items.add(
       _sessionMenuItem(
+        context,
         value: action,
         icon: action.iconFor(session),
         label: action.labelFor(session),
@@ -1966,7 +1986,8 @@ List<PopupMenuEntry<WorkspaceSessionMenuAction>> _sessionMenuItems({
   return items;
 }
 
-PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem({
+PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem(
+  BuildContext context, {
   required WorkspaceSessionMenuAction value,
   required IconData icon,
   required String label,
@@ -1975,9 +1996,9 @@ PopupMenuItem<WorkspaceSessionMenuAction> _sessionMenuItem({
 }) {
   final color = enabled
       ? destructive
-            ? AppColors.danger
-            : AppColors.textPrimary
-      : AppColors.textTertiary;
+            ? context.ianvs.danger
+            : context.ianvs.text
+      : context.ianvs.subtle;
   return PopupMenuItem<WorkspaceSessionMenuAction>(
     value: value,
     enabled: enabled,
@@ -2020,8 +2041,8 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           DecoratedBox(
-            decoration: const BoxDecoration(
-              border: Border(left: BorderSide(color: AppColors.borderSoft)),
+            decoration: BoxDecoration(
+              border: Border(left: BorderSide(color: context.ianvs.separator)),
             ),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(8, 2, 0, 0),
@@ -2034,8 +2055,8 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
                         : 'No sessions in $workspaceName',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
+                    style: TextStyle(
+                      color: context.ianvs.muted,
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
                       height: 1.25,
@@ -2065,14 +2086,14 @@ class _CountPill extends StatelessWidget {
       alignment: Alignment.center,
       padding: const EdgeInsets.symmetric(horizontal: 6),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.canvas,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Text(
         count.toString(),
-        style: const TextStyle(
-          color: AppColors.textSecondary,
+        style: TextStyle(
+          color: context.ianvs.muted,
           fontSize: 10,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,

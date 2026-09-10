@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_session_settings.dart';
@@ -8,7 +7,7 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
 import 'package:ianvs_acp/ui/components/agent_config_dialog.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_theme.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 void main() {
   testWidgets('renders the settings workspace without exposing secrets', (
@@ -571,7 +570,7 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             key: ValueKey(scenario),
-            theme: AppTheme.light,
+            theme: IanvsTheme.light(),
             builder: (context, child) => MediaQuery(
               data: MediaQuery.of(
                 context,
@@ -1200,8 +1199,8 @@ Future<void> _save(WidgetTester tester) async {
   await tester.pump();
 }
 
-FilledButton _saveButton(WidgetTester tester) =>
-    tester.widget<FilledButton>(find.byKey(const Key('settings-save')));
+IanvsButton _saveButton(WidgetTester tester) =>
+    tester.widget<IanvsButton>(find.byKey(const Key('settings-save')));
 
 String? _text(WidgetTester tester, String key) =>
     _editable(tester, key).controller.text;

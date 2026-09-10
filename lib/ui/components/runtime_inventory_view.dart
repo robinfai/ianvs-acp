@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_agent_capabilities.dart';
 import '../../acp/acp_permission_request.dart';
@@ -8,7 +8,6 @@ import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
 import '../../workspace/workspace.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 import 'capabilities_view.dart';
 
 class RuntimeInventoryView extends StatelessWidget {
@@ -220,23 +219,23 @@ class _RuntimeSummary extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.primaryMist,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.accent.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Row(
         children: [
           Container(
             width: 36,
             height: 36,
-            decoration: const BoxDecoration(
-              color: AppColors.surface,
+            decoration: BoxDecoration(
+              color: context.ianvs.canvas,
               shape: BoxShape.circle,
             ),
-            child: const Icon(
+            child: Icon(
               Icons.account_tree_outlined,
               size: 19,
-              color: AppColors.primaryDark,
+              color: context.ianvs.focus,
             ),
           ),
           const SizedBox(width: 10),
@@ -246,8 +245,8 @@ class _RuntimeSummary extends StatelessWidget {
               children: [
                 Text(
                   _boundedInventoryText(runtimeConfig.agentName),
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
                   ),
@@ -257,10 +256,7 @@ class _RuntimeSummary extends StatelessWidget {
                   '${runtimeConfig.mcpServers.length} MCP · '
                   '${effectiveDirectories.length} extra roots · '
                   '${controller.status.name}',
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 11.5,
-                  ),
+                  style: TextStyle(color: context.ianvs.muted, fontSize: 11.5),
                 ),
               ],
             ),
@@ -295,22 +291,22 @@ class _InventorySection extends StatelessWidget {
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              Icon(icon, size: 17, color: AppColors.primaryDark),
+              Icon(icon, size: 17, color: context.ianvs.focus),
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                   ),
@@ -322,7 +318,7 @@ class _InventorySection extends StatelessWidget {
           for (var index = 0; index < rows.length; index++) ...[
             _InventoryRow(value: rows[index]),
             if (index < rows.length - 1)
-              const Divider(height: 13, color: AppColors.borderSoft),
+              Divider(height: 13, color: context.ianvs.separator),
           ],
         ],
       ),
@@ -344,8 +340,8 @@ class _InventoryRow extends StatelessWidget {
           width: 174,
           child: Text(
             value.label,
-            style: const TextStyle(
-              color: AppColors.textTertiary,
+            style: TextStyle(
+              color: context.ianvs.subtle,
               fontSize: 11.5,
               fontWeight: FontWeight.w600,
             ),
@@ -354,8 +350,8 @@ class _InventoryRow extends StatelessWidget {
         Expanded(
           child: SelectableText(
             _boundedInventoryText(value.value),
-            style: const TextStyle(
-              color: AppColors.textSecondary,
+            style: TextStyle(
+              color: context.ianvs.muted,
               fontSize: 11.5,
               height: 1.35,
             ),
@@ -378,25 +374,27 @@ class _DegradationSection extends StatelessWidget {
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.warning.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.warning.withValues(alpha: 0.25)),
+        color: context.ianvs.warning.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(
+          color: context.ianvs.warning.withValues(alpha: 0.25),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
               Icon(
                 Icons.warning_amber_rounded,
                 size: 17,
-                color: AppColors.warning,
+                color: context.ianvs.warning,
               ),
               SizedBox(width: 7),
               Text(
                 'Degradations',
                 style: TextStyle(
-                  color: AppColors.textPrimary,
+                  color: context.ianvs.text,
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                 ),
@@ -409,8 +407,8 @@ class _DegradationSection extends StatelessWidget {
               padding: const EdgeInsets.only(top: 3),
               child: Text(
                 '• ${_boundedInventoryText(message, maxCodeUnits: 4094)}',
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
+                style: TextStyle(
+                  color: context.ianvs.muted,
                   fontSize: 11.5,
                   height: 1.35,
                 ),

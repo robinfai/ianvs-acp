@@ -1,6 +1,6 @@
+import 'package:ianvs_design/ianvs_design.dart';
 import 'dart:async';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_client.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
@@ -278,7 +278,7 @@ void main() {
     await tester.pump();
     expect(
       tester
-          .widget<FilledButton>(find.byKey(const Key('settings-save')))
+          .widget<IanvsButton>(find.byKey(const Key('settings-save')))
           .onPressed,
       isNotNull,
     );

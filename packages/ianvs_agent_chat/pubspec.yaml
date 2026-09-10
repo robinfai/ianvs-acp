@@ -11,7 +11,9 @@ topics:
   - widgets
 environment:
   sdk: ^3.12.0
+  flutter: '>=3.44.0'
 dependencies:
+  ianvs_design: ^0.2.0
   http: ^1.6.0
   flutter:
     sdk: flutter

@@ -1,7 +1,6 @@
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../config/acp_client_config.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 class AgentDiscoveryDialog extends StatefulWidget {
   const AgentDiscoveryDialog({super.key, required this.agentServers});
@@ -30,10 +29,10 @@ class _AgentDiscoveryDialogState extends State<AgentDiscoveryDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Select the local ACP agents to add to settings.json.',
               style: TextStyle(
-                color: AppColors.textSecondary,
+                color: context.ianvs.muted,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
@@ -88,18 +87,20 @@ class _DiscoveredAgentTile extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         onTap: () => onChanged(!selected),
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: selected ? AppColors.primaryMist : AppColors.surfaceRaised,
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            color: selected
+                ? context.ianvs.accent.withValues(alpha: .08)
+                : context.ianvs.raised,
+            borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
             border: Border.all(
               color: selected
-                  ? AppColors.primary.withValues(alpha: 0.22)
-                  : AppColors.border,
+                  ? context.ianvs.accent.withValues(alpha: 0.22)
+                  : context.ianvs.border,
             ),
           ),
           child: Row(
@@ -107,15 +108,13 @@ class _DiscoveredAgentTile extends StatelessWidget {
               Checkbox(
                 value: selected,
                 onChanged: (value) => onChanged(value ?? false),
-                visualDensity: VisualDensity.compact,
+                visualDensity: VisualDensity.standard,
               ),
               const SizedBox(width: 6),
               Icon(
                 Icons.hub_outlined,
                 size: 20,
-                color: selected
-                    ? AppColors.primaryDark
-                    : AppColors.textTertiary,
+                color: selected ? context.ianvs.focus : context.ianvs.subtle,
               ),
               const SizedBox(width: 9),
               Expanded(
@@ -126,8 +125,8 @@ class _DiscoveredAgentTile extends StatelessWidget {
                     Text(
                       server.name,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
+                      style: TextStyle(
+                        color: context.ianvs.text,
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0,
@@ -137,8 +136,8 @@ class _DiscoveredAgentTile extends StatelessWidget {
                     Text(
                       _serverTarget(server),
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
+                      style: TextStyle(
+                        color: context.ianvs.muted,
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0,

@@ -1,12 +1,11 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_input_budget.dart';
 import '../../acp/acp_session_settings.dart';
 import '../../state/chat_controller.dart';
 import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
-import 'package:ianvs_agent_chat/ui/theme/app_design_tokens.dart';
 
 const int _inlineChoicePreviewItems = 5;
 
@@ -27,7 +26,7 @@ class SessionSettingsDialog extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         return AlertDialog(
-          title: const Text('当前会话参数', style: AppTypography.dialogTitle),
+          title: Text('当前会话参数', style: Theme.of(context).textTheme.titleLarge!),
           content: ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.sizeOf(context).height * 0.62,
@@ -326,18 +325,18 @@ class _ConfigSectionHeading extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          Icon(Icons.tune_rounded, size: 17, color: AppColors.primaryDark),
+          Icon(Icons.tune_rounded, size: 17, color: context.ianvs.focus),
           SizedBox(width: 7),
           Text(
             '其他 Agent 参数',
             style: TextStyle(
-              color: AppColors.textPrimary,
+              color: context.ianvs.text,
               fontWeight: FontWeight.w600,
               letterSpacing: 0,
             ),
@@ -367,9 +366,9 @@ class _SessionHeader extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.primaryMist,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.primarySoft),
+        color: context.ianvs.accent.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.selected),
       ),
       child: Row(
         children: [
@@ -377,12 +376,12 @@ class _SessionHeader extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: AppColors.primarySoft,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
+              color: context.ianvs.selected,
+              borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
             ),
-            child: const Icon(
+            child: Icon(
               Icons.settings_suggest_outlined,
-              color: AppColors.primaryDark,
+              color: context.ianvs.focus,
               size: 16,
             ),
           ),
@@ -394,8 +393,8 @@ class _SessionHeader extends StatelessWidget {
                 Text(
                   '当前会话 · 选择后即时应用',
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
@@ -404,8 +403,8 @@ class _SessionHeader extends StatelessWidget {
                 Text(
                   '$agentName · $sessionId · $cwd',
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
+                  style: TextStyle(
+                    color: context.ianvs.muted,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
@@ -516,7 +515,7 @@ class _ModelDropdown extends StatelessWidget {
     return DropdownButtonFormField<String>(
       isExpanded: true,
       initialValue: selectedValue,
-      decoration: _inputDecoration('模型'),
+      decoration: _inputDecoration(context, '模型'),
       items: option.options
           .map(
             (choice) => DropdownMenuItem<String>(
@@ -569,10 +568,10 @@ class _ReasoningEffortControl extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           '推理强度',
           style: TextStyle(
-            color: AppColors.textPrimary,
+            color: context.ianvs.text,
             fontSize: 13,
             fontWeight: FontWeight.w600,
             letterSpacing: 0,
@@ -592,17 +591,17 @@ class _ReasoningEffortControl extends StatelessWidget {
                         onChanged(choice.value);
                       }
                     : null,
-                selectedColor: AppColors.primarySoft,
-                backgroundColor: AppColors.surface,
+                selectedColor: context.ianvs.selected,
+                backgroundColor: context.ianvs.canvas,
                 side: BorderSide(
                   color: choice.value == option.currentValue
-                      ? AppColors.primary
-                      : AppColors.border,
+                      ? context.ianvs.accent
+                      : context.ianvs.border,
                 ),
                 labelStyle: TextStyle(
                   color: choice.value == option.currentValue
-                      ? AppColors.primaryDark
-                      : AppColors.textSecondary,
+                      ? context.ianvs.focus
+                      : context.ianvs.muted,
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0,
@@ -637,17 +636,17 @@ class _CapabilitySummary extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: AppColors.bg,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.chrome,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Agent 协议能力',
             style: TextStyle(
-              color: AppColors.textTertiary,
+              color: context.ianvs.subtle,
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -719,7 +718,7 @@ class _ModeSection extends StatelessWidget {
           : DropdownButtonFormField<String>(
               isExpanded: true,
               initialValue: selectedValue,
-              decoration: _inputDecoration('当前模式'),
+              decoration: _inputDecoration(context, '当前模式'),
               items: modes
                   .map(
                     (mode) => DropdownMenuItem<String>(
@@ -766,9 +765,9 @@ class _ConfigOptionTile extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.borderSoft),
+        color: context.ianvs.canvas,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.separator),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -784,8 +783,8 @@ class _ConfigOptionTile extends StatelessWidget {
                   children: [
                     Text(
                       option.name.isEmpty ? option.id : option.name,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
+                      style: TextStyle(
+                        color: context.ianvs.text,
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0,
@@ -803,8 +802,8 @@ class _ConfigOptionTile extends StatelessWidget {
                   const SizedBox(height: 5),
                   Text(
                     option.description!,
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
+                    style: TextStyle(
+                      color: context.ianvs.muted,
                       fontSize: 12,
                       height: 1.35,
                       letterSpacing: 0,
@@ -823,7 +822,7 @@ class _ConfigOptionTile extends StatelessWidget {
                     child: Switch.adaptive(
                       value: option.currentBoolValue,
                       onChanged: enabled ? (value) => onChanged(value) : null,
-                      activeThumbColor: AppColors.primaryDark,
+                      activeThumbColor: context.ianvs.focus,
                     ),
                   )
                 : option.options.isEmpty
@@ -844,7 +843,7 @@ class _ConfigOptionTile extends StatelessWidget {
                 : DropdownButtonFormField<String>(
                     isExpanded: true,
                     initialValue: selectedValue,
-                    decoration: _inputDecoration('值'),
+                    decoration: _inputDecoration(context, '值'),
                     items: option.options
                         .map(
                           (choice) => DropdownMenuItem<String>(
@@ -941,8 +940,8 @@ class _LargeChoiceControlState extends State<_LargeChoiceControl> {
       children: [
         Text(
           widget.label,
-          style: const TextStyle(
-            color: AppColors.textPrimary,
+          style: TextStyle(
+            color: context.ianvs.text,
             fontSize: 13,
             fontWeight: FontWeight.w600,
           ),
@@ -1109,7 +1108,7 @@ class _SearchableChoiceDialogState extends State<_SearchableChoiceDialog> {
               controller: _searchController,
               autofocus: true,
               onChanged: _filter,
-              decoration: _inputDecoration('搜索选项'),
+              decoration: _inputDecoration(context, '搜索选项'),
             ),
             const SizedBox(height: 8),
             Expanded(
@@ -1203,8 +1202,8 @@ class _ChoiceListTile extends StatelessWidget {
                 if (preview.omission != null)
                   Text(
                     '部分详情已省略 · ${preview.omission!.resource}',
-                    style: const TextStyle(
-                      color: AppColors.warning,
+                    style: TextStyle(
+                      color: context.ianvs.warning,
                       fontSize: 11,
                     ),
                   ),
@@ -1232,32 +1231,29 @@ class _SettingsIncompleteNotice extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.warning),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.warning),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             '参数信息不完整',
             style: TextStyle(
-              color: AppColors.warning,
+              color: context.ianvs.warning,
               fontWeight: FontWeight.w600,
             ),
           ),
           if (truncated)
-            const Text(
+            Text(
               '部分选项未加载。',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+              style: TextStyle(color: context.ianvs.muted, fontSize: 12),
             ),
           for (final omission in omissions)
             Text(
               '部分详情已省略 · ${omission.resource}',
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 12,
-              ),
+              style: TextStyle(color: context.ianvs.muted, fontSize: 12),
             ),
         ],
       ),
@@ -1278,21 +1274,21 @@ class _Panel extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, size: 17, color: AppColors.primaryDark),
+              Icon(icon, size: 17, color: context.ianvs.focus),
               const SizedBox(width: 7),
               Text(
                 title,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: context.ianvs.text,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0,
                 ),
@@ -1319,15 +1315,15 @@ class _ReadOnlyValue extends StatelessWidget {
       alignment: Alignment.centerLeft,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
-        color: AppColors.bg,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.chrome,
+        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
       child: Text(
         value.isEmpty ? '未设置' : value,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: AppColors.textSecondary,
+        style: TextStyle(
+          color: context.ianvs.muted,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
@@ -1346,13 +1342,13 @@ class _TinyPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
-        color: AppColors.primarySoft,
-        borderRadius: BorderRadius.circular(AppRadius.pill),
+        color: context.ianvs.selected,
+        borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
         label,
-        style: const TextStyle(
-          color: AppColors.primaryDark,
+        style: TextStyle(
+          color: context.ianvs.focus,
           fontSize: 11,
           fontWeight: FontWeight.w600,
           letterSpacing: 0,
@@ -1384,7 +1380,7 @@ class _EmptyState extends StatelessWidget {
       mainAxisSize: inline ? MainAxisSize.max : MainAxisSize.min,
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(icon, color: AppColors.primaryDark, size: inline ? 18 : 24),
+        Icon(icon, color: context.ianvs.focus, size: inline ? 18 : 24),
         const SizedBox(width: 8),
         Flexible(
           child: Column(
@@ -1396,8 +1392,8 @@ class _EmptyState extends StatelessWidget {
               if (title != null) ...[
                 Text(
                   title!,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: context.ianvs.text,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
@@ -1407,8 +1403,8 @@ class _EmptyState extends StatelessWidget {
               Text(
                 message,
                 textAlign: inline ? TextAlign.start : TextAlign.center,
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
+                style: TextStyle(
+                  color: context.ianvs.muted,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
                   height: 1.35,
@@ -1427,33 +1423,33 @@ class _EmptyState extends StatelessWidget {
       alignment: Alignment.center,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: AppColors.surfaceRaised,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.border),
+        color: context.ianvs.raised,
+        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
+        border: Border.all(color: context.ianvs.border),
       ),
       child: child,
     );
   }
 }
 
-InputDecoration _inputDecoration(String label) {
+InputDecoration _inputDecoration(BuildContext context, String label) {
   return InputDecoration(
     labelText: label,
     filled: true,
-    fillColor: AppColors.surface,
+    fillColor: context.ianvs.canvas,
     isDense: true,
     contentPadding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
     border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      borderSide: const BorderSide(color: AppColors.border),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+      borderSide: BorderSide(color: context.ianvs.border),
     ),
     enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      borderSide: const BorderSide(color: AppColors.border),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+      borderSide: BorderSide(color: context.ianvs.border),
     ),
     focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      borderSide: const BorderSide(color: AppColors.primary),
+      borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+      borderSide: BorderSide(color: context.ianvs.accent),
     ),
   );
 }

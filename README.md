@@ -29,6 +29,14 @@ current ACP session.
 The package includes a runnable macOS example and documents native integration
 requirements, theming, tools, approvals and lifecycle ownership.
 
+## Shared design system
+
+The application and chat package use `ianvs_design` for their Material 3 and
+macOS control styles, monospaced text, and resizable panel handle. Appearance
+follows the system; chat reading typography and terminal ANSI palettes remain
+owned by their renderers. See the [integration record](docs/ianvs-design-integration-2026-09-10/README.md)
+for dependency boundaries and verification evidence.
+
 ## Workspaces and sessions
 
 Starting a new session shows connection, creation, settings, and applicable
