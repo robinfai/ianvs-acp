@@ -33,7 +33,7 @@ signing_verifier="${script_dir}/verify_macos_signing_closure.sh"
 [ -x "${signing_verifier}" ] \
   || fail "missing macOS signing closure verifier: ${signing_verifier}"
 info_plist="${app}/Contents/Info.plist"
-executable="${app}/Contents/MacOS/ACP Client"
+executable="${app}/Contents/MacOS/Shift"
 rust_runtime="${app}/Contents/Frameworks/libianvs_acp_ffi.dylib"
 merman_lib="${app}/Contents/Frameworks/libmerman_ffi.dylib"
 merman_framework_binary="${app}/Contents/Frameworks/merman.framework/Versions/A/merman"
@@ -45,7 +45,7 @@ merman_framework_binary="${app}/Contents/Frameworks/merman.framework/Versions/A/
 [ -f "${merman_framework_binary}" ] || fail "missing merman framework binary"
 
 bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${info_plist}")
-[ "${bundle_id}" = 'com.ianvs.acp' ] \
+[ "${bundle_id}" = 'work.ianvs.shift' ] \
   || fail "unexpected bundle identifier: ${bundle_id}"
 
 url_types=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "${info_plist}")

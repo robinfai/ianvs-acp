@@ -1,5 +1,5 @@
 name: ianvs_acp
-description: "A macOS Flutter desktop client for Agent Client Protocol agents."
+description: "Shift：切换工作方式，把任务交给 Agent。基于 Flutter 和 ACP 的 macOS 桌面应用。"
 publish_to: 'none'
 
 version: 1.0.0+1

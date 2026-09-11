@@ -43,7 +43,7 @@ void main() {
       },
       authMethods: [],
       agentInfo: {'name': 'Example Agent', 'version': '2.0.0'},
-      clientInfo: {'name': 'ACP Client', 'version': '1.0.0'},
+      clientInfo: {'name': 'Shift', 'version': '1.0.0'},
     );
 
     await tester.pumpWidget(
@@ -64,7 +64,7 @@ void main() {
     expect(find.text('Protocol version'), findsOneWidget);
     expect(find.text('1'), findsOneWidget);
     expect(find.text('Client'), findsWidgets);
-    expect(find.text('ACP Client 1.0.0'), findsOneWidget);
+    expect(find.text('Shift 1.0.0'), findsOneWidget);
     expect(find.text('Agent'), findsOneWidget);
     expect(find.text('Example Agent 2.0.0'), findsOneWidget);
     expect(find.text('Image'), findsOneWidget);

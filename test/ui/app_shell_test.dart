@@ -845,7 +845,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('ACP Client'), findsOneWidget);
+    expect(find.text('Shift'), findsOneWidget);
     expect(find.text('新会话'), findsOneWidget);
     expect(find.text('New Session'), findsOneWidget);
     expect(find.text('Resume'), findsNothing);

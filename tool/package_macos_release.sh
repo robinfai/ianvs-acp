@@ -13,10 +13,10 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "${script_dir}/.." && pwd)
 cd "${project_root}"
 
-app='build/macos/Build/Products/Release/ACP Client.app'
-archive='build/ACP-Client.zip'
+app='build/macos/Build/Products/Release/Shift.app'
+archive='build/Shift.zip'
 notary_dir=$(mktemp -d "${TMPDIR:-/tmp}/ianvs-acp-notary.XXXXXX")
-notary_archive="${notary_dir}/ACP-Client.zip"
+notary_archive="${notary_dir}/Shift.zip"
 final_archive_dir=
 final_archive_tmp=
 cleanup() {
@@ -38,7 +38,7 @@ flutter build macos --release --no-pub
 SRCROOT="${project_root}/macos" \
 CONFIGURATION=Release \
 TARGET_BUILD_DIR="${project_root}/build/macos/Build/Products/Release" \
-FRAMEWORKS_FOLDER_PATH='ACP Client.app/Contents/Frameworks' \
+FRAMEWORKS_FOLDER_PATH='Shift.app/Contents/Frameworks' \
   "${project_root}/macos/scripts/build_ianvs_acp_rust.sh"
 IANVS_CODESIGN_BIN=/usr/bin/codesign \
   "${script_dir}/sign_macos_bundle.sh" "${app}" "${IANVS_DEVELOPER_ID}"
@@ -51,8 +51,8 @@ IANVS_CODESIGN_BIN=/usr/bin/codesign \
 /usr/bin/xcrun stapler validate "${app}"
 "${script_dir}/verify_macos_bundle.sh" --distribution "${app}"
 /usr/sbin/spctl --assess --type execute --verbose=4 "${app}"
-final_archive_dir=$(mktemp -d 'build/.ACP-Client.zip.XXXXXX')
-final_archive_tmp="${final_archive_dir}/ACP-Client.zip"
+final_archive_dir=$(mktemp -d 'build/.Shift.zip.XXXXXX')
+final_archive_tmp="${final_archive_dir}/Shift.zip"
 /usr/bin/ditto -c -k --keepParent "${app}" "${final_archive_tmp}"
 /bin/mv -f -- "${final_archive_tmp}" "${archive}"
 final_archive_tmp=

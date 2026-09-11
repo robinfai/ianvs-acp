@@ -1089,7 +1089,7 @@ void main() {
     expect(find.widgetWithText(TextButton, 'Open config'), findsOneWidget);
     expect(find.widgetWithText(TextButton, 'Retry'), findsOneWidget);
     expect(find.byTooltip('Copy diagnostics'), findsOneWidget);
-    expect(find.text('ACP Client'), findsOneWidget);
+    expect(find.text('Shift'), findsOneWidget);
 
     final retry = find.widgetWithText(TextButton, 'Retry');
     await tester.ensureVisible(retry);

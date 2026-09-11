@@ -128,7 +128,7 @@ final class _AcpClientBootstrapState extends State<AcpClientBootstrap> {
     }
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'ACP Client',
+      title: 'Shift',
       theme: IanvsTheme.light(),
       darkTheme: IanvsTheme.dark(),
       themeMode: ThemeMode.system,
@@ -216,7 +216,7 @@ final class _KeychainApprovalPrompt extends StatelessWidget {
                   ? 'macOS did not finish unlocking credentials saved by an '
                         'earlier build. Continue without them, then re-enter '
                         'the affected credentials in Settings.'
-                  : 'ACP Client needs your approval to read credentials saved '
+                  : 'Shift needs your approval to read credentials saved '
                         'by an earlier build. The system may ask you to confirm '
                         'access.',
               textAlign: TextAlign.center,

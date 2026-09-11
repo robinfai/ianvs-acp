@@ -100,15 +100,12 @@ void main() {
         'name': 'Example Agent',
         'version': '2.0.0',
       },
-      clientInfo: const <String, dynamic>{
-        'name': 'ACP Client',
-        'version': '1.0.0',
-      },
+      clientInfo: const <String, dynamic>{'name': 'Shift', 'version': '1.0.0'},
     );
 
     expect(capabilities.agentInfo['name'], 'Example Agent');
     expect(capabilities.agentInfo['version'], '2.0.0');
-    expect(capabilities.clientInfo['name'], 'ACP Client');
+    expect(capabilities.clientInfo['name'], 'Shift');
     expect(capabilities.clientInfo['version'], '1.0.0');
   });
 

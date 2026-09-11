@@ -1,6 +1,14 @@
-# ACP Client
+# Shift
 
-A Flutter macOS desktop client for local Agent Client Protocol agents.
+**切换工作方式，把任务交给 Agent。**
+
+Shift 是 Ianvs 产品族中的 macOS 桌面应用，通过 Agent Client Protocol（ACP）
+连接本地 Agent，在工作区中提交任务、查看执行过程并处理需要人工决定的事项。
+名称 Shift 表达工作方式的切换：从亲自执行每一步，转向把任务交给 Agent。
+
+应用显示名称和 macOS 应用包统一为 `Shift` / `Shift.app`，Bundle ID 为
+`work.ianvs.shift`。项目目录 `ianvs-acp`、Dart 包名 `ianvs_acp`、配置与存储路径、
+Keychain 服务及 `ianvs-acp://` 深链接继续沿用，改名不迁移已有配置、凭据和会话数据。
 
 The app launches local stdio ACP agents through its Rust runtime, creates and
 restores sessions, streams prompt turns, renders plans and tool calls, switches
@@ -123,7 +131,7 @@ make package-macos
 The release script fails when either credential is missing. It signs nested
 code from the inside out, verifies the Developer ID signature and secure
 timestamp, submits the archive for notarization, staples and validates the
-ticket, runs Gatekeeper assessment, and produces `build/ACP-Client.zip`.
+ticket, runs Gatekeeper assessment, and produces `build/Shift.zip`.
 
 The ACP integration is hidden behind `AcpAgentClient`, so widget and state tests
 use `FakeAgentClient` instead of launching a real agent.

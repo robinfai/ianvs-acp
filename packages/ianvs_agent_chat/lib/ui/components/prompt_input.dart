@@ -913,9 +913,9 @@ class _PromptInputState extends State<PromptInput> {
             children: [
               Text(
                 attachments.length == 1
-                    ? 'ACP Client needs to read this file once to attach it to '
+                    ? 'This app needs to read this file once to attach it to '
                           'the current prompt.'
-                    : 'ACP Client needs to read these files once to attach '
+                    : 'This app needs to read these files once to attach '
                           'them to the current prompt.',
               ),
               SizedBox(height: 12),

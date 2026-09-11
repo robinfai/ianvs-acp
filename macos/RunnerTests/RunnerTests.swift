@@ -4,7 +4,7 @@ import FlutterMacOS
 import LocalAuthentication
 import Security
 import XCTest
-@testable import ACP_Client
+@testable import Shift
 
 class RunnerTests: XCTestCase {
   private var service: String!
@@ -26,7 +26,7 @@ class RunnerTests: XCTestCase {
   }
 
   func testBundleIdentifierIsProductionIdentifier() {
-    XCTAssertEqual(Bundle.main.bundleIdentifier, "com.ianvs.acp")
+    XCTAssertEqual(Bundle.main.bundleIdentifier, "work.ianvs.shift")
   }
 
   func testMainWindowUsesUnifiedFullSizeChrome() {
@@ -57,8 +57,8 @@ class RunnerTests: XCTestCase {
     let previousMainMenu = NSApp.mainMenu
     defer { NSApp.mainMenu = previousMainMenu }
     let mainMenu = NSMenu(title: "Main Menu")
-    let applicationItem = NSMenuItem(title: "ACP Client", action: nil, keyEquivalent: "")
-    let applicationMenu = NSMenu(title: "ACP Client")
+    let applicationItem = NSMenuItem(title: "Shift", action: nil, keyEquivalent: "")
+    let applicationMenu = NSMenu(title: "Shift")
     let settingsItem = NSMenuItem(title: "Preferences…", action: nil, keyEquivalent: ",")
     applicationMenu.addItem(settingsItem)
     applicationItem.submenu = applicationMenu

@@ -97,4 +97,4 @@ jobs:
       - name: Verify local release bundle
         run: >-
           ./tool/verify_macos_bundle.sh
-          'build/macos/Build/Products/Release/ACP Client.app'
+          'build/macos/Build/Products/Release/Shift.app'

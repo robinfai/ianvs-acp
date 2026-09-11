@@ -769,7 +769,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ACP Client',
+      title: 'Shift',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
       scaffoldMessengerKey: _messengerKey,

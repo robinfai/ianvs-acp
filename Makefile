@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-APP_NAME := ACP Client
+APP_NAME := Shift
 APP_BUNDLE := $(ROOT_DIR)/build/macos/Build/Products/Release/$(APP_NAME).app
 INSTALL_DIR ?= /Applications
 INSTALL_DIR_ABS := $(abspath $(INSTALL_DIR))

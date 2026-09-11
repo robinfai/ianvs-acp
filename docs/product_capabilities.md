@@ -1,9 +1,11 @@
-# Product capabilities
+# Shift 产品能力
 
 Updated: 2026-09-10. Runtime contract: FFI ABI v11.
 
-ianvs is a workspace and local ACP session client. This document is the
-canonical list of capabilities exposed by the main application. Protocol and
+Shift 的含义是“切换工作方式，把任务交给 Agent”。它是 Ianvs 产品族中的
+工作区与本地 ACP 会话应用，产品命名和兼容标识见[项目 README](../README.md)。
+
+This document is the canonical list of capabilities exposed by the main application. Protocol and
 process ownership are described in [Runtime architecture](runtime_architecture.md),
 and the reusable chat package has its own
 [package README](../packages/ianvs_agent_chat/README.md).

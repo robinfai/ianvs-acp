@@ -102,7 +102,7 @@ assert_package_rejects_missing_credentials() {
 assert_failed_release_preserves_previous_archive() {
   fixture_root="${sandbox}/package-fixture"
   fixture_script="${fixture_root}/tool/package_macos_release.sh"
-  fixture_archive="${fixture_root}/build/ACP-Client.zip"
+  fixture_archive="${fixture_root}/build/Shift.zip"
   mkdir -p "${fixture_root}/tool" "${fixture_root}/build" \
     "${sandbox}/package-tmp"
   cp "${package_script}" "${fixture_script}"
@@ -126,7 +126,7 @@ assert_failed_release_preserves_previous_archive() {
 assert_package_starts_with_absent_app_bundle() {
   fixture_root="${sandbox}/clean-build-fixture"
   fixture_script="${fixture_root}/tool/package_macos_release.sh"
-  fixture_app="${fixture_root}/build/macos/Build/Products/Release/ACP Client.app"
+  fixture_app="${fixture_root}/build/macos/Build/Products/Release/Shift.app"
   mkdir -p "${fixture_root}/tool" "${fixture_app}/Contents" \
     "${sandbox}/clean-build-tmp"
   cp "${package_script}" "${fixture_script}"

@@ -1198,7 +1198,7 @@ class _SidebarBrandHeader extends StatelessWidget {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  'ACP Client',
+                  'Shift',
                   style: Theme.of(context).textTheme.titleMedium!,
                 ),
               ),
