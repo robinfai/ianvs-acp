@@ -21,6 +21,7 @@
 | [本地恢复存储](sqlite_storage.md) | 数据清单、实际路径、容量、保留期及维护时机 |
 | [Agent Chat 模块边界](agent_chat_module.md) | 主应用如何接入独立包；首版验收另行标明历史范围 |
 | [共享设计系统](ianvs-design-integration-2026-09-10/README.md) | Ianvs Design 接入、主题边界与本轮验证 |
+| [macOS 细节打磨](macos-polish-2026-09-11/README.md) | 全局截图、ImageGen 参考、字体和间距调整、库与应用责任及验证 |
 | [聊天包 README](../packages/ianvs_agent_chat/README.md) | 包的公开接入、LLM、Mermaid、主题、生命周期和原生集成 |
 | [独立 example](../packages/ianvs_agent_chat/example/README.md) | 离线演示及临时 API 连接的运行方式 |
 | [人工后续项](manual_followups.md) | 尚需产品决策、真实服务或桌面验收的事项 |

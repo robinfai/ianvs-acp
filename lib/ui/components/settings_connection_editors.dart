@@ -142,35 +142,37 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (widget.presets.isNotEmpty) ...[
-          DropdownButtonFormField<String>(
-            style: Theme.of(
-              context,
-            ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
-            key: const Key('agent-preset-field'),
-            isExpanded: true,
-            initialValue: _selectedPreset,
-            decoration: _fieldDecoration(
-              context,
-              label: '连接预设',
-              icon: Icons.smart_toy_outlined,
+          IanvsFieldRow(
+            label: '连接预设',
+            child: DropdownButtonFormField<String>(
+              style: Theme.of(
+                context,
+              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
+              key: const Key('agent-preset-field'),
+              isExpanded: true,
+              initialValue: _selectedPreset,
+              decoration: const InputDecoration(),
+              items: [
+                for (final preset in widget.presets)
+                  DropdownMenuItem(
+                    value: preset.name,
+                    child: Text(preset.name),
+                  ),
+                const DropdownMenuItem(
+                  value: _customPreset,
+                  child: Text('自定义连接'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() {
+                  _selectedPreset = value;
+                  final preset = _presetNamed(value);
+                  if (preset != null) _applyPreset(preset);
+                  _error = null;
+                });
+              },
             ),
-            items: [
-              for (final preset in widget.presets)
-                DropdownMenuItem(value: preset.name, child: Text(preset.name)),
-              const DropdownMenuItem(
-                value: _customPreset,
-                child: Text('自定义连接'),
-              ),
-            ],
-            onChanged: (value) {
-              if (value == null) return;
-              setState(() {
-                _selectedPreset = value;
-                final preset = _presetNamed(value);
-                if (preset != null) _applyPreset(preset);
-                _error = null;
-              });
-            },
           ),
           const SizedBox(height: 16),
         ],
@@ -229,14 +231,9 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                 controller: _cwdController,
                 label: '启动工作目录',
                 hint: '可选',
+                helper: 'Agent 进程的启动目录，留空使用默认值；会话工作区在新建会话时选择。',
               ),
-              Padding(
-                padding: EdgeInsets.only(top: 8, bottom: 16),
-                child: Text(
-                  'Agent 进程的启动目录，留空使用默认值；会话工作区在新建会话时选择。',
-                  style: TextStyle(color: context.ianvs.muted, fontSize: 12),
-                ),
-              ),
+              const SizedBox(height: 16),
               _NameValueListEditor(
                 title: '环境变量',
                 addLabel: '添加变量',
@@ -265,46 +262,45 @@ class _AgentServerEditorDialogState extends State<_AgentServerEditorDialog> {
                     setState(() => _headerControllers.removeAt(i).dispose()),
               ),
             const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              style: Theme.of(
-                context,
-              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
-              key: const Key('agent-type-field'),
-              isExpanded: true,
-              initialValue: _type,
-              decoration: _fieldDecoration(
-                context,
-                label: '连接类型',
-                icon: Icons.cable_rounded,
-              ),
-              items: [
-                const DropdownMenuItem(
-                  value: 'custom',
-                  child: Text('本地进程 · custom'),
-                ),
-                const DropdownMenuItem(
-                  value: 'stdio',
-                  child: Text('本地进程 · stdio'),
-                ),
-                if (_type != 'custom' && _type != 'stdio')
-                  DropdownMenuItem(
-                    value: _type,
-                    enabled: false,
-                    child: Text(
-                      _isRemote ? '$_type（已有配置，当前不可用）' : '本地进程 · $_type',
-                      overflow: TextOverflow.ellipsis,
-                    ),
+            IanvsFieldRow(
+              label: '连接类型',
+              child: DropdownButtonFormField<String>(
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
+                key: const Key('agent-type-field'),
+                isExpanded: true,
+                initialValue: _type,
+                decoration: const InputDecoration(),
+                items: [
+                  const DropdownMenuItem(
+                    value: 'custom',
+                    child: Text('本地进程 · custom'),
                   ),
-              ],
-              onChanged: (value) {
-                if (value != null) {
-                  setState(() {
-                    _type = value;
-                    _selectedPreset = _customPreset;
-                    _error = null;
-                  });
-                }
-              },
+                  const DropdownMenuItem(
+                    value: 'stdio',
+                    child: Text('本地进程 · stdio'),
+                  ),
+                  if (_type != 'custom' && _type != 'stdio')
+                    DropdownMenuItem(
+                      value: _type,
+                      enabled: false,
+                      child: Text(
+                        _isRemote ? '$_type（已有配置，当前不可用）' : '本地进程 · $_type',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      _type = value;
+                      _selectedPreset = _customPreset;
+                      _error = null;
+                    });
+                  }
+                },
+              ),
             ),
             if (widget.initialServer?.permissionReviewAgent.isConfigured ==
                 true) ...[
@@ -637,35 +633,34 @@ class _McpServerEditorDialogState extends State<_McpServerEditorDialog> {
           icon: Icons.extension_outlined,
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          style: Theme.of(
-            context,
-          ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
-          key: const Key('mcp-type-field'),
-          initialValue: _type,
-          decoration: _fieldDecoration(
-            context,
-            label: '连接类型',
-            icon: Icons.cable_rounded,
+        IanvsFieldRow(
+          label: '连接类型',
+          child: DropdownButtonFormField<String>(
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
+            key: const Key('mcp-type-field'),
+            initialValue: _type,
+            decoration: const InputDecoration(),
+            items: [
+              const DropdownMenuItem(value: 'stdio', child: Text('stdio')),
+              const DropdownMenuItem(value: 'http', child: Text('http')),
+              const DropdownMenuItem(value: 'sse', child: Text('sse')),
+              if (_type == 'acp')
+                const DropdownMenuItem(
+                  value: 'acp',
+                  enabled: false,
+                  child: Text('acp (unavailable)'),
+                ),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() {
+                _type = value;
+                _error = null;
+              });
+            },
           ),
-          items: [
-            const DropdownMenuItem(value: 'stdio', child: Text('stdio')),
-            const DropdownMenuItem(value: 'http', child: Text('http')),
-            const DropdownMenuItem(value: 'sse', child: Text('sse')),
-            if (_type == 'acp')
-              const DropdownMenuItem(
-                value: 'acp',
-                enabled: false,
-                child: Text('acp (unavailable)'),
-              ),
-          ],
-          onChanged: (value) {
-            if (value == null) return;
-            setState(() {
-              _type = value;
-              _error = null;
-            });
-          },
         ),
         const SizedBox(height: 12),
         if (_type == 'acp') ...[

@@ -74,7 +74,7 @@ class MacosWorkspaceLayoutState extends State<MacosWorkspaceLayout> {
     }
   }
 
-  Widget get sidebarDivider => IanvsResizeHandle(
+  IanvsResizeHandle get sidebarDivider => IanvsResizeHandle(
     key: const Key('sidebar-resize-handle'),
     value: sidebarWidth,
     min: 220,

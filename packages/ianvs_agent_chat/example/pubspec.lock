@@ -186,11 +186,12 @@ packages:
   ianvs_design:
     dependency: "direct main"
     description:
-      name: ianvs_design
-      sha256: "93116383a192a73da0ccbe2be2ce3eef9f5440195cc111ed3574461be2e1ff26"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.2.0"
+      path: "."
+      ref: e926049e8bbe64b66efb61be5a4c93ed7638c211
+      resolved-ref: e926049e8bbe64b66efb61be5a4c93ed7638c211
+      url: "https://github.com/robinfai/ianvs-design.git"
+    source: git
+    version: "0.4.0"
   leak_tracker:
     dependency: transitive
     description:

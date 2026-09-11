@@ -4502,10 +4502,7 @@ void main() {
     expect(controller.isSessionOperationRunning, isTrue);
     final textField = tester.widget<TextField>(promptField);
     final sendButton = tester.widget<FilledButton>(
-      find.ancestor(
-        of: find.byIcon(Icons.arrow_upward_rounded),
-        matching: find.byType(FilledButton),
-      ),
+      find.byKey(const Key('prompt-action-button')),
     );
     expect(textField.enabled, isFalse);
     expect(textField.controller?.text, 'Keep this draft');
@@ -4675,7 +4672,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Independent LLM chat'), findsOneWidget);
     expect(controller.currentSession!.id, sessionId);
-    await tester.pageBack();
+    await tester.tap(find.byTooltip('返回会话'));
     await tester.pumpAndSettle();
     expect(find.text('Independent LLM chat'), findsNothing);
     expect(controller.currentSession!.id, sessionId);
@@ -4884,10 +4881,6 @@ void main() {
     await tester.tap(find.text('GPT-5'));
     await tester.pumpAndSettle();
     await tester.tap(
-      find.byKey(const Key('prompt-session-config-option-model')),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(
       find.byKey(const Key('prompt-session-config-choice-model-mini')),
     );
     await tester.pumpAndSettle();
@@ -4900,6 +4893,10 @@ void main() {
   testWidgets('AcpClientApp changes reasoning effort from prompt composer', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final fake = FakeAgentClient(
       sessionSettings: const AcpSessionSettings(
         configOptions: [
@@ -4932,16 +4929,18 @@ void main() {
 
     await tester.tap(find.text('Medium'));
     await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(const Key('prompt-session-config-option-reasoning_effort')),
+    tester
+        .widget<MenuItemButton>(
+          find.byKey(const Key('prompt-session-config-advanced')),
+        )
+        .onPressed!();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    final slider = find.byKey(
+      const Key('prompt-session-config-advanced-effort-slider'),
     );
-    await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(
-        const Key('prompt-session-config-choice-reasoning_effort-high'),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await tester.tapAt(tester.getTopRight(slider) + const Offset(-14, 23));
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(fake.lastConfigId, 'reasoning_effort');
     expect(fake.lastConfigValue, 'high');

@@ -321,24 +321,20 @@ class _ConfigSectionHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: context.ianvs.raised,
-        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.border),
-      ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 8, 0, 2),
       child: Row(
         children: [
           Icon(Icons.tune_rounded, size: 17, color: context.ianvs.focus),
           SizedBox(width: 7),
-          Text(
-            '其他 Agent 参数',
-            style: TextStyle(
-              color: context.ianvs.text,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0,
+          Expanded(
+            child: Text(
+              '其他 Agent 参数',
+              style: TextStyle(
+                color: context.ianvs.text,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0,
+              ),
             ),
           ),
         ],
@@ -514,6 +510,7 @@ class _ModelDropdown extends StatelessWidget {
 
     return DropdownButtonFormField<String>(
       isExpanded: true,
+      style: Theme.of(context).textTheme.bodyMedium,
       initialValue: selectedValue,
       decoration: _inputDecoration(context, '模型'),
       items: option.options
@@ -724,6 +721,7 @@ class _ModeSection extends StatelessWidget {
             )
           : DropdownButtonFormField<String>(
               isExpanded: true,
+              style: Theme.of(context).textTheme.bodyMedium,
               initialValue: selectedValue,
               decoration: _inputDecoration(context, '当前模式'),
               items: modes
@@ -776,111 +774,134 @@ class _ConfigOptionTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         border: Border.all(color: context.ianvs.separator),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: _ConfigOptionLayout(
+        label: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 6,
               children: [
-                Wrap(
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    Text(
-                      option.name.isEmpty ? option.id : option.name,
-                      style: TextStyle(
-                        color: context.ianvs.text,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                    _TinyPill(option.type),
-                    if (option.category != null && option.category!.isNotEmpty)
-                      _TinyPill(option.category!),
-                    if (option.group != null && option.group!.isNotEmpty)
-                      _TinyPill(option.group!),
-                  ],
-                ),
-                if (option.description != null &&
-                    option.description!.isNotEmpty) ...[
-                  const SizedBox(height: 5),
-                  Text(
-                    option.description!,
-                    style: TextStyle(
-                      color: context.ianvs.muted,
-                      fontSize: 12,
-                      height: 1.35,
-                      letterSpacing: 0,
-                    ),
+                Text(
+                  option.name.isEmpty ? option.id : option.name,
+                  style: TextStyle(
+                    color: context.ianvs.text,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
                   ),
-                ],
+                ),
+                _TinyPill(option.type),
+                if (option.category != null && option.category!.isNotEmpty)
+                  _TinyPill(option.category!),
+                if (option.group != null && option.group!.isNotEmpty)
+                  _TinyPill(option.group!),
               ],
             ),
-          ),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 180,
-            child: option.isBooleanOption
-                ? Align(
-                    alignment: Alignment.centerLeft,
-                    child: Switch.adaptive(
-                      value: option.currentBoolValue,
-                      onChanged: enabled ? (value) => onChanged(value) : null,
-                      activeThumbColor: context.ianvs.focus,
-                    ),
-                  )
-                : option.options.isEmpty
-                ? _ReadOnlyValue(value: option.currentValue)
-                : option.options.length > _inlineChoicePreviewItems
-                ? _LargeChoiceControl(
-                    label: '值',
-                    sourceIdentity: option.options,
-                    currentValue: option.currentValue,
-                    enabled: enabled,
-                    inputBudget: inputBudget,
-                    itemCount: option.options.length,
-                    valueAt: (index) => option.options[index].value,
-                    labelAt: (index) => option.options[index].label,
-                    descriptionAt: (index) => option.options[index].description,
-                    onChanged: onChanged,
-                  )
-                : DropdownButtonFormField<String>(
-                    isExpanded: true,
-                    initialValue: selectedValue,
-                    decoration: _inputDecoration(context, '值'),
-                    items: option.options
-                        .map(
-                          (choice) => DropdownMenuItem<String>(
-                            value: choice.value,
-                            child: Text(
-                              choice.groupName == null
-                                  ? choice.label
-                                  : '${choice.groupName} · ${choice.label}',
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    hint: option.currentValue.isEmpty
-                        ? null
-                        : Text(
-                            option.currentValue,
+            if (option.description != null &&
+                option.description!.isNotEmpty) ...[
+              const SizedBox(height: 5),
+              Text(
+                option.description!,
+                style: TextStyle(
+                  color: context.ianvs.muted,
+                  fontSize: 12,
+                  height: 1.35,
+                  letterSpacing: 0,
+                ),
+              ),
+            ],
+          ],
+        ),
+        control: Semantics(
+          label: option.name.isEmpty ? option.id : option.name,
+          child: option.isBooleanOption
+              ? Align(
+                  alignment: Alignment.centerLeft,
+                  child: Switch.adaptive(
+                    value: option.currentBoolValue,
+                    onChanged: enabled ? (value) => onChanged(value) : null,
+                    activeThumbColor: context.ianvs.focus,
+                  ),
+                )
+              : option.options.isEmpty
+              ? _ReadOnlyValue(value: option.currentValue)
+              : option.options.length > _inlineChoicePreviewItems
+              ? _LargeChoiceControl(
+                  label: '值',
+                  sourceIdentity: option.options,
+                  currentValue: option.currentValue,
+                  enabled: enabled,
+                  inputBudget: inputBudget,
+                  itemCount: option.options.length,
+                  valueAt: (index) => option.options[index].value,
+                  labelAt: (index) => option.options[index].label,
+                  descriptionAt: (index) => option.options[index].description,
+                  onChanged: onChanged,
+                )
+              : DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  initialValue: selectedValue,
+                  decoration: _inputDecoration(context, '值'),
+                  items: option.options
+                      .map(
+                        (choice) => DropdownMenuItem<String>(
+                          value: choice.value,
+                          child: Text(
+                            choice.groupName == null
+                                ? choice.label
+                                : '${choice.groupName} · ${choice.label}',
                             overflow: TextOverflow.ellipsis,
                           ),
-                    onChanged: enabled
-                        ? (value) {
-                            if (value != null) onChanged(value);
-                          }
-                        : null,
-                  ),
-          ),
-        ],
+                        ),
+                      )
+                      .toList(),
+                  hint: option.currentValue.isEmpty
+                      ? null
+                      : Text(
+                          option.currentValue,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                  onChanged: enabled
+                      ? (value) {
+                          if (value != null) onChanged(value);
+                        }
+                      : null,
+                ),
+        ),
       ),
     );
   }
+}
+
+class _ConfigOptionLayout extends StatelessWidget {
+  const _ConfigOptionLayout({required this.label, required this.control});
+
+  final Widget label;
+  final Widget control;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      if (constraints.maxWidth < 480 ||
+          MediaQuery.textScalerOf(context).scale(13) > 19.5) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [label, const SizedBox(height: 12), control],
+        );
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: label),
+          const SizedBox(width: 16),
+          SizedBox(width: 200, child: control),
+        ],
+      );
+    },
+  );
 }
 
 class _LargeChoiceControl extends StatefulWidget {
@@ -1292,12 +1313,14 @@ class _Panel extends StatelessWidget {
             children: [
               Icon(icon, size: 17, color: context.ianvs.focus),
               const SizedBox(width: 7),
-              Text(
-                title,
-                style: TextStyle(
-                  color: context.ianvs.text,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0,
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    color: context.ianvs.text,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
                 ),
               ),
             ],
@@ -1318,9 +1341,9 @@ class _ReadOnlyValue extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 38,
+      constraints: const BoxConstraints(minHeight: 32),
       alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
@@ -1331,7 +1354,8 @@ class _ReadOnlyValue extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: context.ianvs.muted,
-          fontWeight: FontWeight.w600,
+          fontSize: 13,
+          fontWeight: FontWeight.w400,
           letterSpacing: 0,
         ),
       ),
@@ -1442,6 +1466,7 @@ class _EmptyState extends StatelessWidget {
 InputDecoration _inputDecoration(BuildContext context, String label) {
   return InputDecoration(
     labelText: label,
+    floatingLabelBehavior: FloatingLabelBehavior.always,
     filled: true,
     fillColor: context.ianvs.canvas,
     isDense: true,

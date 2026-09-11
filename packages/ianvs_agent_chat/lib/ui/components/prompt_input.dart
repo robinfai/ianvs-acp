@@ -1,6 +1,7 @@
 import '../../chat_strings.dart';
 import '../../chat_theme.dart';
 import 'dart:async';
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
@@ -413,33 +414,35 @@ class _PromptInputState extends State<PromptInput> {
                     child: AnimatedContainer(
                       key: Key('prompt-input-surface'),
                       duration: Duration(milliseconds: 120),
-                      constraints: BoxConstraints(minHeight: 152),
+                      constraints: BoxConstraints(minHeight: 112),
                       decoration: BoxDecoration(
                         color: _isDraggingAttachments
                             ? ChatTheme.of(context).accentMist
-                            : ChatTheme.of(context).surface,
-                        borderRadius: BorderRadius.circular(
-                          context.ianvs.panelRadius,
-                        ),
+                            : ChatTheme.of(context).surfaceRaised,
+                        borderRadius: BorderRadius.circular(22),
                         border: Border.all(
                           color: _isDraggingAttachments
                               ? ChatTheme.of(context).accent
-                              : ChatTheme.of(context).border,
-                          width: _isDraggingAttachments ? 2 : 1,
+                              : ChatTheme.of(
+                                  context,
+                                ).borderSoft.withValues(alpha: .7),
+                          width: _isDraggingAttachments ? 2 : .75,
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: ChatTheme.of(context).textPrimary.withValues(
-                              alpha: _isDraggingAttachments ? 0.11 : 0.045,
+                            color: Colors.black.withValues(
+                              alpha:
+                                  Theme.of(context).brightness ==
+                                      Brightness.dark
+                                  ? .16
+                                  : (_isDraggingAttachments ? .08 : .035),
                             ),
                             blurRadius: _isDraggingAttachments ? 24 : 18,
-                            offset: Offset(0, 6),
+                            offset: Offset(0, 3),
                           ),
                           BoxShadow(
-                            color: ChatTheme.of(
-                              context,
-                            ).textPrimary.withValues(alpha: 0.025),
-                            blurRadius: 4,
+                            color: Colors.black.withValues(alpha: .02),
+                            blurRadius: 2,
                             offset: Offset(0, 1),
                           ),
                         ],
@@ -535,7 +538,7 @@ class _PromptInputState extends State<PromptInput> {
                                         15,
                                         14,
                                         15,
-                                        24,
+                                        16,
                                       ),
                                       border: InputBorder.none,
                                       enabledBorder: InputBorder.none,
@@ -1732,7 +1735,10 @@ class _AttachmentPickerControl extends StatelessWidget {
           child: IconButton(
             tooltip: tooltip,
             onPressed: enabled ? () => onSelected(kinds.single) : null,
-            icon: Icon(Icons.add_rounded, key: Key('prompt-attachment-picker')),
+            icon: Icon(
+              CupertinoIcons.add,
+              key: Key('prompt-attachment-picker'),
+            ),
             color: ChatTheme.of(context).textSecondary,
             disabledColor: ChatTheme.of(context).textTertiary,
             iconSize: 19,
@@ -1761,7 +1767,7 @@ class _AttachmentPickerControl extends StatelessWidget {
               ),
             ),
         ],
-        icon: Icon(Icons.add_rounded, key: Key('prompt-attachment-picker')),
+        icon: Icon(CupertinoIcons.add, key: Key('prompt-attachment-picker')),
         padding: EdgeInsets.zero,
         color: ChatTheme.of(context).surface,
         iconColor: ChatTheme.of(context).textSecondary,
@@ -2407,6 +2413,9 @@ class _AdaptiveSessionConfigSelectorState
                     child: Material(
                       type: MaterialType.transparency,
                       child: _SessionConfigAdvancedPanel(
+                        modelLabel: model == null
+                            ? ''
+                            : _currentOptionLabel(model),
                         effort: effort,
                         fast: fast,
                         enabled: widget.enabled,
@@ -2438,19 +2447,28 @@ class _AdaptiveSessionConfigSelectorState
           },
           child: MenuAnchor(
             controller: _menuController,
-            style: _sessionConfigMenuStyle(context, width: 246),
-            alignmentOffset: Offset(0, -6),
+            style: _sessionConfigMenuStyle(
+              context,
+              width: 256,
+            ).copyWith(alignment: Alignment.topRight),
+            alignmentOffset: Offset(-256, -6),
             onOpen: _closeAdvancedOverlay,
             menuChildren: [
-              for (final option in primaryOptions) _configSubmenu(option),
+              if (model != null) ...[
+                _SessionConfigSubmenuHeader(label: 'Select model'),
+                ..._choiceMenuEntries(model),
+              ],
+              for (final option in primaryOptions)
+                if (!option.isModelOption && !option.isReasoningEffortOption)
+                  _configSubmenu(option, buttonWidth: 256),
               if (primaryOptions.isNotEmpty && hasAdvancedControls)
                 Divider(height: 9, indent: 10, endIndent: 10),
               if (hasAdvancedControls)
                 MenuItemButton(
                   key: Key('prompt-session-config-advanced'),
-                  style: _sessionConfigButtonStyle(context, width: 246),
+                  style: _sessionConfigButtonStyle(context, width: 256),
                   trailingIcon: Icon(
-                    Icons.keyboard_arrow_up_rounded,
+                    CupertinoIcons.chevron_up,
                     size: 19,
                     color: ChatTheme.of(context).textTertiary,
                   ),
@@ -2467,7 +2485,11 @@ class _AdaptiveSessionConfigSelectorState
                           });
                         }
                       : null,
-                  child: _SessionConfigMenuRow(label: 'Advanced', value: ''),
+                  child: _SessionConfigMenuRow(
+                    label: effort == null ? 'Advanced' : 'Reasoning',
+                    value: effort?.currentChoiceLabel ?? '',
+                    width: 196,
+                  ),
                 ),
             ],
             builder: (context, controller, child) {
@@ -2535,10 +2557,17 @@ class _AdaptiveSessionConfigSelectorState
   Widget _configSubmenu(ChatConfigOption option, {double buttonWidth = 246}) {
     return SubmenuButton(
       key: Key('prompt-session-config-option-${option.id}'),
+      submenuIcon: WidgetStatePropertyAll(
+        Icon(
+          CupertinoIcons.chevron_right,
+          size: 12,
+          color: ChatTheme.of(context).textTertiary,
+        ),
+      ),
       style: _sessionConfigButtonStyle(context, width: buttonWidth),
       menuStyle: _sessionConfigMenuStyle(
         context,
-        width: option.isModelOption ? 286 : 306,
+        width: option.isModelOption ? 256 : 306,
       ),
       hoverOpenDelay: Duration(milliseconds: 90),
       menuChildren: _choiceMenuEntries(option),
@@ -2605,12 +2634,12 @@ class _AdaptiveSessionConfigSelectorState
           key: Key('prompt-session-config-choice-${option.id}-${choice.value}'),
           style: _sessionConfigChoiceButtonStyle(
             context,
-            width: option.isModelOption ? 286 : 306,
+            width: option.isModelOption ? 256 : 306,
           ),
           trailingIcon: choice.value == option.currentValue
               ? Icon(
-                  Icons.check_rounded,
-                  size: 19,
+                  CupertinoIcons.check_mark,
+                  size: 16,
                   color: ChatTheme.of(context).textSecondary,
                 )
               : null,
@@ -2669,6 +2698,7 @@ class _AdaptiveSessionConfigSelectorState
 
 class _SessionConfigAdvancedPanel extends StatefulWidget {
   const _SessionConfigAdvancedPanel({
+    required this.modelLabel,
     required this.effort,
     required this.fast,
     required this.enabled,
@@ -2679,6 +2709,7 @@ class _SessionConfigAdvancedPanel extends StatefulWidget {
     required this.onFastToggle,
   });
 
+  final String modelLabel;
   final ChatConfigOption? effort;
   final ChatConfigOption? fast;
   final bool enabled;
@@ -2708,12 +2739,12 @@ class _SessionConfigAdvancedPanelState
 
     return Container(
       key: Key('prompt-session-config-advanced-panel'),
-      width: 228,
+      width: 248,
       padding: EdgeInsets.fromLTRB(12, 8, 12, 10),
       decoration: BoxDecoration(
-        color: ChatTheme.of(context).surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: ChatTheme.of(context).border),
+        color: ChatTheme.of(context).surfaceRaised,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: ChatTheme.of(context).borderSoft, width: .75),
         boxShadow: [
           BoxShadow(
             color: Color(0x14000000),
@@ -2747,53 +2778,78 @@ class _SessionConfigAdvancedPanelState
                   ),
                 ),
               ] else ...[
+                if (widget.fast != null)
+                  IconButton(
+                    key: Key('prompt-session-config-advanced-fast-toggle'),
+                    tooltip: widget.fast!.isFastEnabled
+                        ? 'Use standard speed'
+                        : 'Use fast speed',
+                    onPressed: widget.enabled ? widget.onFastToggle : null,
+                    constraints: BoxConstraints.tightFor(width: 32, height: 32),
+                    padding: EdgeInsets.zero,
+                    icon: Icon(
+                      CupertinoIcons.bolt,
+                      size: 18,
+                      color: widget.fast!.isFastEnabled
+                          ? ChatTheme.of(context).primaryDark
+                          : ChatTheme.of(context).textTertiary,
+                    ),
+                  )
+                else
+                  SizedBox(width: 32),
                 Expanded(
                   child: InkWell(
                     key: Key('prompt-session-config-advanced-collapse'),
                     borderRadius: BorderRadius.circular(8),
                     onTap: widget.enabled ? widget.onBack : null,
                     child: Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 2, vertical: 4),
-                      child: Row(
+                      padding: EdgeInsets.symmetric(vertical: 6),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            'Advanced',
-                            style: TextStyle(
-                              color: ChatTheme.of(context).textTertiary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  effortChoices.isEmpty
+                                      ? 'Advanced'
+                                      : effortChoices[sliderValue.round()]
+                                            .label,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: ChatTheme.of(context).primaryDark,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              SizedBox(width: 6),
+                              Icon(
+                                CupertinoIcons.chevron_right,
+                                size: 12,
+                                color: ChatTheme.of(context).textTertiary,
+                              ),
+                            ],
+                          ),
+                          if (widget.modelLabel.isNotEmpty) ...[
+                            SizedBox(height: 3),
+                            Text(
+                              widget.modelLabel,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: ChatTheme.of(context).textSecondary,
+                              ),
                             ),
-                          ),
-                          SizedBox(width: 2),
-                          Icon(
-                            Icons.keyboard_arrow_right_rounded,
-                            size: 18,
-                            color: ChatTheme.of(context).textTertiary,
-                          ),
+                          ],
                         ],
                       ),
                     ),
                   ),
                 ),
+                SizedBox(width: 32),
               ],
-              if (!_dragging && widget.fast != null)
-                Tooltip(
-                  message: widget.fast!.isFastEnabled
-                      ? 'Use standard speed'
-                      : 'Use fast speed',
-                  child: IconButton(
-                    key: Key('prompt-session-config-advanced-fast-toggle'),
-                    onPressed: widget.enabled ? widget.onFastToggle : null,
-                    visualDensity: VisualDensity.standard,
-                    constraints: BoxConstraints.tightFor(width: 32, height: 32),
-                    padding: EdgeInsets.zero,
-                    icon: Icon(
-                      Icons.bolt_rounded,
-                      size: 20,
-                      color: ChatTheme.of(context).accent,
-                    ),
-                  ),
-                ),
             ],
           ),
           if (effortChoices.length > 1) ...[
@@ -3028,7 +3084,7 @@ class _ReasoningBalanceSliderPainter extends CustomPainter {
   final Animation<double> particleAnimation;
   final bool enabled;
 
-  Color get _trackColor => theme.border;
+  Color get _trackColor => theme.borderSoft;
   Color get _activeColor => theme.accent;
 
   @override
@@ -3155,7 +3211,7 @@ class _SessionConfigMenuRow extends StatelessWidget {
               style: TextStyle(
                 color: ChatTheme.of(context).textPrimary,
                 fontSize: 13,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w400,
                 letterSpacing: 0,
               ),
             ),
@@ -3196,7 +3252,7 @@ class _SessionConfigSubmenuHeader extends StatelessWidget {
         style: TextStyle(
           color: ChatTheme.of(context).textTertiary,
           fontSize: 12,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w400,
           letterSpacing: 0,
         ),
       ),
@@ -3216,7 +3272,7 @@ class _SessionConfigChoiceLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 238,
+      width: 198,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3226,8 +3282,8 @@ class _SessionConfigChoiceLabel extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: ChatTheme.of(context).textPrimary,
-              fontSize: 13.5,
-              fontWeight: FontWeight.w600,
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
               letterSpacing: 0,
             ),
           ),
@@ -3269,22 +3325,20 @@ class _SessionConfigSummaryButton extends StatelessWidget {
         ? ChatTheme.of(context).textPrimary
         : ChatTheme.of(context).textTertiary;
     return Container(
-      height: 32,
+      height: 28,
       constraints: BoxConstraints(minWidth: 150, maxWidth: 228),
       padding: EdgeInsets.symmetric(horizontal: 11),
       decoration: BoxDecoration(
-        color: ChatTheme.of(context).primaryMist,
+        color: ChatTheme.of(context).surfaceMuted,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            fastEnabled ? Icons.bolt_rounded : Icons.tune_rounded,
-            color: color,
-            size: 17,
-          ),
-          SizedBox(width: 6),
+          if (fastEnabled) ...[
+            Icon(CupertinoIcons.bolt, color: color, size: 15),
+            SizedBox(width: 6),
+          ],
           Flexible(
             child: Text(
               label,
@@ -3292,18 +3346,16 @@ class _SessionConfigSummaryButton extends StatelessWidget {
               style: TextStyle(
                 color: color,
                 fontSize: 13,
-                fontWeight: FontWeight.w500,
+                fontWeight: FontWeight.w400,
                 letterSpacing: 0,
               ),
             ),
           ),
           SizedBox(width: 5),
           Icon(
-            expanded
-                ? Icons.keyboard_arrow_up_rounded
-                : Icons.keyboard_arrow_down_rounded,
+            expanded ? CupertinoIcons.chevron_up : CupertinoIcons.chevron_down,
             color: ChatTheme.of(context).textSecondary,
-            size: 18,
+            size: 13,
           ),
         ],
       ),
@@ -3316,7 +3368,9 @@ MenuStyle _sessionConfigMenuStyle(
   required double width,
 }) {
   return MenuStyle(
-    backgroundColor: WidgetStatePropertyAll(ChatTheme.of(context).surface),
+    backgroundColor: WidgetStatePropertyAll(
+      ChatTheme.of(context).surfaceRaised,
+    ),
     surfaceTintColor: WidgetStatePropertyAll(Colors.transparent),
     shadowColor: WidgetStatePropertyAll(Color(0x18000000)),
     elevation: WidgetStatePropertyAll(10),
@@ -3327,8 +3381,8 @@ MenuStyle _sessionConfigMenuStyle(
     maximumSize: WidgetStatePropertyAll(Size(width, 560)),
     shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: ChatTheme.of(context).border),
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: ChatTheme.of(context).borderSoft, width: .75),
       ),
     ),
   );
@@ -3339,20 +3393,13 @@ ButtonStyle _sessionConfigButtonStyle(
   required double width,
 }) {
   return ButtonStyle(
-    minimumSize: WidgetStatePropertyAll(Size(width - 12, 42)),
-    maximumSize: WidgetStatePropertyAll(Size(width - 12, 42)),
+    minimumSize: WidgetStatePropertyAll(Size(width - 12, 36)),
+    maximumSize: WidgetStatePropertyAll(Size(width - 12, 36)),
     padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
     shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
     ),
     foregroundColor: WidgetStatePropertyAll(ChatTheme.of(context).textPrimary),
-    overlayColor: WidgetStateProperty.resolveWith((states) {
-      if (states.contains(WidgetState.hovered) ||
-          states.contains(WidgetState.focused)) {
-        return ChatTheme.of(context).primaryMist;
-      }
-      return Colors.transparent;
-    }),
   );
 }
 
@@ -3361,22 +3408,15 @@ ButtonStyle _sessionConfigChoiceButtonStyle(
   required double width,
 }) {
   return ButtonStyle(
-    minimumSize: WidgetStatePropertyAll(Size(width - 12, 48)),
+    minimumSize: WidgetStatePropertyAll(Size(width - 12, 28)),
     maximumSize: WidgetStatePropertyAll(Size(width - 12, 56)),
     padding: WidgetStatePropertyAll(
-      EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      EdgeInsets.symmetric(horizontal: 8, vertical: 5),
     ),
     shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
     ),
     foregroundColor: WidgetStatePropertyAll(ChatTheme.of(context).textPrimary),
-    overlayColor: WidgetStateProperty.resolveWith((states) {
-      if (states.contains(WidgetState.hovered) ||
-          states.contains(WidgetState.focused)) {
-        return ChatTheme.of(context).primaryMist;
-      }
-      return Colors.transparent;
-    }),
   );
 }
 
@@ -3536,7 +3576,7 @@ class _ComposerControlButton extends StatelessWidget {
             ),
           ),
           SizedBox(width: 3),
-          Icon(Icons.keyboard_arrow_down_rounded, color: color, size: 16),
+          Icon(CupertinoIcons.chevron_down, color: color, size: 16),
         ],
       ),
     );
@@ -3628,17 +3668,17 @@ class _PromptActionButton extends StatelessWidget {
           key: Key('prompt-action-button'),
           style: FilledButton.styleFrom(
             foregroundColor: IanvsTheme.foregroundFor(
-              ChatTheme.of(context).textPrimary,
+              ChatTheme.of(context).accent,
             ),
             disabledForegroundColor: ChatTheme.of(context).textTertiary,
-            backgroundColor: ChatTheme.of(context).textPrimary,
-            disabledBackgroundColor: ChatTheme.of(context).surfaceRaised,
+            backgroundColor: ChatTheme.of(context).accent,
+            disabledBackgroundColor: ChatTheme.of(context).surfaceMuted,
             elevation: 0,
             padding: EdgeInsets.zero,
             shape: CircleBorder(),
           ),
           child: Icon(
-            isSending ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+            isSending ? CupertinoIcons.stop_fill : CupertinoIcons.arrow_up,
             size: 19,
           ),
         ),
@@ -3669,10 +3709,9 @@ class _PromptActionButton extends StatelessWidget {
 
 IconData _policyIcon(ChatToolCallExecutionPolicy policy) {
   return switch (policy) {
-    ChatToolCallExecutionPolicy.defaultPermissions =>
-      Icons.admin_panel_settings_outlined,
-    ChatToolCallExecutionPolicy.autoReview => Icons.verified_user_outlined,
-    ChatToolCallExecutionPolicy.fullAccess => Icons.all_inclusive_rounded,
+    ChatToolCallExecutionPolicy.defaultPermissions => CupertinoIcons.shield,
+    ChatToolCallExecutionPolicy.autoReview => CupertinoIcons.checkmark_shield,
+    ChatToolCallExecutionPolicy.fullAccess => CupertinoIcons.infinite,
   };
 }
 
@@ -4181,7 +4220,7 @@ class _ImageAttachmentPreviewState extends State<_ImageAttachmentPreview> {
                   decoration: BoxDecoration(
                     color: ChatTheme.of(context).surfaceRaised,
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: ChatTheme.of(context).border),
+                    border: Border.all(color: ChatTheme.of(context).borderSoft),
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(13),
@@ -4208,7 +4247,7 @@ class _ImageAttachmentPreviewState extends State<_ImageAttachmentPreview> {
                       foregroundColor: ChatTheme.of(context).surface,
                     ),
                     iconSize: 16,
-                    icon: Icon(Icons.close_rounded),
+                    icon: Icon(CupertinoIcons.xmark),
                   ),
                 ),
               ),

@@ -593,28 +593,31 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
           ),
           if (_assistantEnabled) ...[
             const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              style: Theme.of(
-                context,
-              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
-              key: const Key('assistant-agent-name-field'),
-              initialValue: selected,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: '辅助 Agent'),
-              items: [
-                for (final name in names)
-                  DropdownMenuItem(value: name, child: Text(name)),
-              ],
-              onChanged: (value) {
-                setState(() {
-                  _assistantAgentName = value;
-                  _assistantModel = null;
-                  _assistantModelOption = null;
-                  _assistantModelsError = null;
-                  _assistantValidationStatus = null;
-                });
-                _loadAssistantAgentModels(value);
-              },
+            IanvsFieldRow(
+              label: '辅助 Agent',
+              child: DropdownButtonFormField<String>(
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
+                key: const Key('assistant-agent-name-field'),
+                initialValue: selected,
+                isExpanded: true,
+                decoration: const InputDecoration(),
+                items: [
+                  for (final name in names)
+                    DropdownMenuItem(value: name, child: Text(name)),
+                ],
+                onChanged: (value) {
+                  setState(() {
+                    _assistantAgentName = value;
+                    _assistantModel = null;
+                    _assistantModelOption = null;
+                    _assistantModelsError = null;
+                    _assistantValidationStatus = null;
+                  });
+                  _loadAssistantAgentModels(value);
+                },
+              ),
             ),
             const SizedBox(height: 16),
             _buildAssistantModelField(selected),
@@ -735,55 +738,60 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
 
     return KeyedSubtree(
       key: const Key('assistant-agent-model-field'),
-      child: DropdownButtonFormField<String>(
-        style: Theme.of(
-          context,
-        ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
-        key: ValueKey((selectedAgent, selectedValue, _assistantModelsLoading)),
-        initialValue: selectedValue,
-        isExpanded: true,
-        decoration: InputDecoration(
-          labelText: '模型（可选）',
-          prefixIcon: const Icon(Icons.memory_outlined),
-          helperText: helperText,
-          errorText: _assistantModelsError,
-          errorMaxLines: 2,
-          suffixIcon: _assistantModelsLoading
-              ? const Padding(
-                  padding: EdgeInsets.all(14),
-                  child: SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-              : selectedAgent != null &&
-                    _assistantEnabled &&
-                    widget.onLoadAssistantAgentModels != null
-              ? IconButton(
-                  tooltip: 'Reload models from $selectedAgent',
-                  onPressed: () => _loadAssistantAgentModels(selectedAgent),
-                  icon: const Icon(Icons.refresh_rounded),
-                )
+      child: IanvsFieldRow(
+        label: '模型（可选）',
+        helper: helperText,
+        child: DropdownButtonFormField<String>(
+          style: Theme.of(
+            context,
+          ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
+          key: ValueKey((
+            selectedAgent,
+            selectedValue,
+            _assistantModelsLoading,
+          )),
+          initialValue: selectedValue,
+          isExpanded: true,
+          decoration: InputDecoration(
+            errorText: _assistantModelsError,
+            errorMaxLines: 2,
+            suffixIcon: _assistantModelsLoading
+                ? const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                : selectedAgent != null &&
+                      _assistantEnabled &&
+                      widget.onLoadAssistantAgentModels != null
+                ? IconButton(
+                    tooltip: 'Reload models from $selectedAgent',
+                    onPressed: () => _loadAssistantAgentModels(selectedAgent),
+                    icon: const Icon(Icons.refresh_rounded),
+                  )
+                : null,
+          ),
+          items: <DropdownMenuItem<String>>[
+            DropdownMenuItem(value: '', child: Text(defaultLabel)),
+            if (configuredModel != null && !hasConfiguredChoice)
+              DropdownMenuItem(
+                value: configuredModel,
+                child: Text('$configuredModel（已配置）'),
+              ),
+            for (final choice in choices)
+              DropdownMenuItem(value: choice.value, child: Text(choice.label)),
+          ],
+          onChanged: canSelect
+              ? (value) {
+                  setState(() {
+                    _assistantModel = _trimmedOrNull(value);
+                    _assistantValidationStatus = null;
+                  });
+                }
               : null,
         ),
-        items: <DropdownMenuItem<String>>[
-          DropdownMenuItem(value: '', child: Text(defaultLabel)),
-          if (configuredModel != null && !hasConfiguredChoice)
-            DropdownMenuItem(
-              value: configuredModel,
-              child: Text('$configuredModel（已配置）'),
-            ),
-          for (final choice in choices)
-            DropdownMenuItem(value: choice.value, child: Text(choice.label)),
-        ],
-        onChanged: canSelect
-            ? (value) {
-                setState(() {
-                  _assistantModel = _trimmedOrNull(value);
-                  _assistantValidationStatus = null;
-                });
-              }
-            : null,
       ),
     );
   }
@@ -923,33 +931,41 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
         ),
         if (_reviewAgentEnabled) ...[
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            style: Theme.of(
-              context,
-            ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
-            key: const Key('review-target-kind'),
-            initialValue: _reviewTargetKind,
-            decoration: const InputDecoration(labelText: '来源类型'),
-            items: [
-              const DropdownMenuItem(
-                value: 'agent',
-                child: Text('已配置的 ACP Agent'),
-              ),
-              const DropdownMenuItem(value: 'mcp', child: Text('已配置的 MCP 服务器')),
-              if (_reviewInlineMcpServer != null)
+          IanvsFieldRow(
+            label: '来源类型',
+            child: DropdownButtonFormField<String>(
+              style: Theme.of(
+                context,
+              ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
+              key: const Key('review-target-kind'),
+              initialValue: _reviewTargetKind,
+              decoration: const InputDecoration(),
+              items: [
                 const DropdownMenuItem(
-                  value: 'inline',
-                  child: Text('配置文件中的内嵌 MCP'),
+                  value: 'agent',
+                  child: Text('已配置的 ACP Agent'),
                 ),
-            ],
-            onChanged: (value) {
-              if (value == null) return;
-              setState(() {
-                _reviewTargetKind = value;
-                if (value != 'agent') _reviewAgentServerNameController.clear();
-                if (value != 'mcp') _reviewServerNameController.clear();
-              });
-            },
+                const DropdownMenuItem(
+                  value: 'mcp',
+                  child: Text('已配置的 MCP 服务器'),
+                ),
+                if (_reviewInlineMcpServer != null)
+                  const DropdownMenuItem(
+                    value: 'inline',
+                    child: Text('配置文件中的内嵌 MCP'),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() {
+                  _reviewTargetKind = value;
+                  if (value != 'agent') {
+                    _reviewAgentServerNameController.clear();
+                  }
+                  if (value != 'mcp') _reviewServerNameController.clear();
+                });
+              },
+            ),
           ),
           const SizedBox(height: 16),
           if (_reviewTargetKind == 'agent')
@@ -1398,7 +1414,7 @@ class _ConfigSwitch extends StatelessWidget {
   @override
   Widget build(BuildContext context) => IanvsSettingsRow(
     title: title,
-    description: subtitle ?? (value ? '已开启' : '已关闭'),
+    description: subtitle,
     value: value,
     onChanged: onChanged,
   );
@@ -1574,23 +1590,28 @@ class _DialogTextField extends StatelessWidget {
     required this.label,
     required this.icon,
     this.obscureText = false,
+    this.inlineLabel = false,
   });
 
   final TextEditingController controller;
   final String label;
   final IconData icon;
   final bool obscureText;
+  final bool inlineLabel;
 
   @override
   Widget build(BuildContext context) {
-    return IanvsTextField(
+    final field = IanvsTextField(
       controller: controller,
       style: Theme.of(
         context,
       ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
       obscureText: obscureText,
-      decoration: _fieldDecoration(context, label: label, icon: icon),
+      decoration: inlineLabel
+          ? _fieldDecoration(context, label: label, icon: icon)
+          : const InputDecoration(),
     );
+    return inlineLabel ? field : IanvsFieldRow(label: label, child: field);
   }
 }
 
@@ -1689,6 +1710,7 @@ class _NameValueListEditor extends StatelessWidget {
                 Expanded(
                   child: _DialogTextField(
                     key: Key('$itemPrefix-name-$index-field'),
+                    inlineLabel: true,
                     controller: controllers[index].nameController,
                     label: 'Name',
                     icon: Icons.label_outline_rounded,
@@ -1698,6 +1720,7 @@ class _NameValueListEditor extends StatelessWidget {
                 Expanded(
                   child: _DialogTextField(
                     key: Key('$itemPrefix-value-$index-field'),
+                    inlineLabel: true,
                     controller: controllers[index].valueController,
                     label: 'Value',
                     icon: Icons.key_rounded,
@@ -1729,24 +1752,22 @@ class _ListEditorFrame extends StatelessWidget {
   final VoidCallback onAdd;
   final List<Widget> children;
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Row(
-        children: [
-          SizedBox(
-            width: 110,
-            child: Text(title, style: Theme.of(context).textTheme.labelLarge!),
-          ),
-          TextButton.icon(
+  Widget build(BuildContext context) => IanvsFieldRow(
+    label: title,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: TextButton.icon(
             onPressed: onAdd,
             icon: const Icon(Icons.add_rounded, size: 18),
             label: Text(addLabel),
           ),
-        ],
-      ),
-      if (children.isNotEmpty) ...[const SizedBox(height: 10), ...children],
-    ],
+        ),
+        if (children.isNotEmpty) ...[const SizedBox(height: 10), ...children],
+      ],
+    ),
   );
 }
 

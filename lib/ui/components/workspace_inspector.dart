@@ -142,6 +142,8 @@ class WorkspaceInspector extends StatelessWidget {
     return showDialog<void>(
       context: context,
       builder: (context) => Dialog(
+        clipBehavior: Clip.antiAlias,
+        insetPadding: const EdgeInsets.all(24),
         child: SizedBox(width: 680, height: 620, child: _detailsBody(context)),
       ),
     );
@@ -162,7 +164,7 @@ class WorkspaceInspector extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+              padding: const EdgeInsets.fromLTRB(24, 16, 16, 12),
               child: Row(
                 children: [
                   Icon(
@@ -175,13 +177,14 @@ class WorkspaceInspector extends StatelessWidget {
                     child: Text(
                       '会话详情',
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: context.ianvs.text,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
+                      style: Theme.of(context).textTheme.titleLarge,
                     ),
+                  ),
+                  const SizedBox(width: 12),
+                  IanvsIconButton(
+                    tooltip: '关闭会话详情',
+                    icon: Icons.close_rounded,
+                    onPressed: () => Navigator.of(context).pop(),
                   ),
                 ],
               ),
@@ -197,16 +200,8 @@ class WorkspaceInspector extends StatelessWidget {
                   insets: EdgeInsets.symmetric(horizontal: 26),
                 ),
                 indicatorSize: TabBarIndicatorSize.tab,
-                labelStyle: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0,
-                ),
-                unselectedLabelStyle: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0,
-                ),
+                labelStyle: Theme.of(context).textTheme.labelLarge,
+                unselectedLabelStyle: Theme.of(context).textTheme.bodyMedium,
                 tabs: const [
                   Tab(text: '概览'),
                   Tab(text: '上下文'),
@@ -448,7 +443,7 @@ class _OverviewPane extends StatelessWidget {
   Widget build(BuildContext context) {
     final recentSessions = workspace.sessions.take(3).toList(growable: false);
     return ListView(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       children: [
         _SectionTitle(icon: Icons.folder_open_rounded, label: '目录'),
         _InfoRow(label: '名称', value: workspace.name),
@@ -505,7 +500,7 @@ class _ContextPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       children: [
         _SectionTitle(icon: Icons.chat_bubble_outline_rounded, label: '当前会话'),
         _InfoRow(label: 'Agent', value: agentName),
@@ -588,7 +583,9 @@ class _UsageRow extends StatelessWidget {
         children: [
           _InfoRow(label: '上下文', value: label),
           Padding(
-            padding: const EdgeInsets.only(left: 80),
+            padding: EdgeInsets.only(
+              left: MediaQuery.textScalerOf(context).scale(13) > 19.5 ? 0 : 108,
+            ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(999),
               child: LinearProgressIndicator(
@@ -629,6 +626,8 @@ class _DiagnosticsSection extends StatelessWidget {
         color: context.ianvs.canvas,
         child: ExpansionTile(
           key: const Key('workspace-diagnostics-section'),
+          shape: const Border(),
+          collapsedShape: const Border(),
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
           minTileHeight: 34,
@@ -693,7 +692,7 @@ class _InspectorActionRow extends StatelessWidget {
                 label,
                 style: TextStyle(
                   color: context.ianvs.text,
-                  fontSize: 11.5,
+                  fontSize: 13,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -747,7 +746,7 @@ class _McpServerRow extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: context.ianvs.text,
-                    fontSize: 12,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
@@ -759,7 +758,7 @@ class _McpServerRow extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: context.ianvs.muted,
-                    fontSize: 11,
+                    fontSize: 12,
                     height: 1.3,
                   ),
                 ),
@@ -799,7 +798,7 @@ class _MiniSessionRow extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: context.ianvs.text,
-                    fontSize: 12,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0,
                   ),
@@ -808,7 +807,7 @@ class _MiniSessionRow extends StatelessWidget {
                 Text(
                   '${session.agentName ?? 'Agent'} - ${formatRelativeSessionTime(session.displayTime)}',
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: context.ianvs.subtle, fontSize: 11),
+                  style: TextStyle(color: context.ianvs.subtle, fontSize: 12),
                 ),
               ],
             ),
@@ -839,7 +838,7 @@ class _SectionTitle extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: context.ianvs.muted,
-                fontSize: 12,
+                fontSize: 13,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0,
               ),
@@ -869,40 +868,36 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final labelWidget = Text(
+      label,
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+    final valueWidget = Text(
+      value,
+      maxLines: maxLines,
+      overflow: TextOverflow.ellipsis,
+      style: Theme.of(context).textTheme.bodyMedium,
+    );
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 72,
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: context.ianvs.subtle,
-                fontSize: 10.5,
-                fontWeight: FontWeight.w500,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              value,
-              maxLines: maxLines,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: context.ianvs.text,
-                fontSize: 12,
-                height: 1.3,
-                fontWeight: FontWeight.w500,
-                letterSpacing: 0,
-              ),
-            ),
-          ),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 400 ||
+              MediaQuery.textScalerOf(context).scale(13) > 19.5) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [labelWidget, const SizedBox(height: 4), valueWidget],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 96, child: labelWidget),
+              const SizedBox(width: 12),
+              Expanded(child: valueWidget),
+            ],
+          );
+        },
       ),
     );
   }

@@ -333,31 +333,32 @@ class _InventoryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 174,
-          child: Text(
-            value.label,
-            style: TextStyle(
-              color: context.ianvs.subtle,
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        Expanded(
-          child: SelectableText(
-            _boundedInventoryText(value.value),
-            style: TextStyle(
-              color: context.ianvs.muted,
-              fontSize: 11.5,
-              height: 1.35,
-            ),
-          ),
-        ),
-      ],
+    final label = Text(
+      value.label,
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+    final content = SelectableText(
+      _boundedInventoryText(value.value),
+      style: Theme.of(context).textTheme.bodyMedium,
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 480 ||
+            MediaQuery.textScalerOf(context).scale(13) > 19.5) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [label, const SizedBox(height: 4), content],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(width: 174, child: label),
+            const SizedBox(width: 12),
+            Expanded(child: content),
+          ],
+        );
+      },
     );
   }
 }

@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
@@ -35,7 +35,7 @@ class ActivityDiagnosticsDialog extends StatelessWidget {
         width: math.min(840, size.width - 32),
         height: math.min(740, size.height - 32),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(24),
           child: DefaultTabController(
             length: DiagnosticsTab.values.length,
             initialIndex: initialTab.index,
@@ -44,17 +44,14 @@ class ActivityDiagnosticsDialog extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Text(
                         'Activity & Diagnostics',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: Theme.of(context).textTheme.titleLarge,
                       ),
                     ),
                     IconButton(
-                      autofocus: true,
+                      iconSize: 18,
                       tooltip: 'Close diagnostics',
                       onPressed: () => Navigator.of(context).pop(),
                       icon: const Icon(Icons.close),
@@ -67,13 +64,15 @@ class ActivityDiagnosticsDialog extends StatelessWidget {
                     '${controller.agentName} · ${controller.currentSession?.displayTitle ?? 'No active session'}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
+                const SizedBox(height: 12),
                 const TabBar(
                   tabs: [
-                    Tab(text: 'Events'),
-                    Tab(text: 'Permissions'),
-                    Tab(text: 'Runtime'),
+                    Tab(text: 'Events', height: 36),
+                    Tab(text: 'Permissions', height: 36),
+                    Tab(text: 'Runtime', height: 36),
                   ],
                 ),
                 const SizedBox(height: 12),

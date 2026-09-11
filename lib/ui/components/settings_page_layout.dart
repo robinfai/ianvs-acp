@@ -319,7 +319,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
                     child: Text(
                       label,
                       style: Theme.of(context).textTheme.labelLarge!.copyWith(
-                        fontSize: 13.5,
+                        fontSize: 13,
                         fontWeight: selected
                             ? FontWeight.w600
                             : FontWeight.w500,
@@ -873,14 +873,17 @@ class _SettingsField extends StatelessWidget {
     required this.controller,
     required this.label,
     this.hint,
+    this.helper,
   });
   final TextEditingController controller;
   final String label;
   final String? hint;
+  final String? helper;
 
   @override
   Widget build(BuildContext context) => IanvsFieldRow(
     label: label,
+    helper: helper,
     child: IanvsTextField(controller: controller, hintText: hint),
   );
 }

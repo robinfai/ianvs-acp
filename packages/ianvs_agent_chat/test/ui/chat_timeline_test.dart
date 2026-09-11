@@ -2253,7 +2253,7 @@ foregroundDecoration: BoxDecoration(
     expect(find.text('Ran commands and searched'), findsOneWidget);
     expect(find.text('exec_command'), findsNothing);
     expect(find.text('web_search'), findsNothing);
-    expect(find.text('call-1'), findsNothing);
+    expect(find.text('Call ID  call-1', findRichText: true), findsNothing);
     var summaryStyle = tester.widget<AnimatedDefaultTextStyle>(
       find.byKey(const ValueKey('tool-call-group-summary')),
     );
@@ -2311,7 +2311,7 @@ foregroundDecoration: BoxDecoration(
       find.byKey(const ValueKey('tool-call-group-details')),
       findsOneWidget,
     );
-    expect(find.text('call-1'), findsNothing);
+    expect(find.text('Call ID  call-1', findRichText: true), findsNothing);
     expect(find.text('exec_command'), findsNothing);
     expect(find.text('web_search'), findsNothing);
     expect(find.text('Ran pwd'), findsOneWidget);
@@ -2846,12 +2846,12 @@ foregroundDecoration: BoxDecoration(
 
     expect(find.text('3 tool calls'), findsNothing);
     expect(find.text('Ran echo hi'), findsOneWidget);
-    expect(find.text('call-1'), findsNothing);
+    expect(find.text('Call ID  call-1', findRichText: true), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
     await tester.pumpAndSettle();
 
-    expect(find.text('call-1'), findsOneWidget);
+    expect(find.text('Call ID  call-1', findRichText: true), findsOneWidget);
     expect(find.textContaining('echo hi'), findsNWidgets(2));
     expect(find.text('hi'), findsOneWidget);
     expect(find.text('{"command"'), findsNothing);
@@ -2890,12 +2890,12 @@ foregroundDecoration: BoxDecoration(
 
     expect(find.text('2 tool calls'), findsNothing);
     expect(find.text('Ran Bash'), findsOneWidget);
-    expect(find.text('call-1'), findsNothing);
+    expect(find.text('Call ID  call-1', findRichText: true), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('tool-activity-toggle-call-1')));
     await tester.pumpAndSettle();
 
-    expect(find.text('call-1'), findsOneWidget);
+    expect(find.text('Call ID  call-1', findRichText: true), findsOneWidget);
     expect(find.text('hi'), findsOneWidget);
   });
 
@@ -2933,14 +2933,14 @@ foregroundDecoration: BoxDecoration(
 
       expect(find.text('2 tool calls'), findsNothing);
       expect(find.text('Ran echo hi'), findsOneWidget);
-      expect(find.text('call-1'), findsNothing);
+      expect(find.text('Call ID  call-1', findRichText: true), findsNothing);
 
       await tester.tap(
         find.byKey(const ValueKey('tool-activity-toggle-call-1')),
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('call-1'), findsOneWidget);
+      expect(find.text('Call ID  call-1', findRichText: true), findsOneWidget);
       expect(find.textContaining('echo hi'), findsNWidgets(2));
       expect(find.text('hi'), findsOneWidget);
     },

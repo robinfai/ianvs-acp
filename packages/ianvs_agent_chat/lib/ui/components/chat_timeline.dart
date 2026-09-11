@@ -3352,10 +3352,20 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
         _DetailBlock(
           entry: _DetailEntry('Locations', parsed.locations.join('\n')),
         ),
-      if (parsed.kind.isNotEmpty)
-        _DetailBlock(entry: _DetailEntry('Kind', parsed.kind)),
-      if (parsed.id.isNotEmpty)
-        _DetailBlock(entry: _DetailEntry('Call ID', parsed.id)),
+      if (parsed.kind.isNotEmpty || parsed.id.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 6,
+            children: [
+              if (parsed.kind.isNotEmpty)
+                _ToolMetadataValue(label: 'Kind', value: parsed.kind),
+              if (parsed.id.isNotEmpty)
+                _ToolMetadataValue(label: 'Call ID', value: parsed.id),
+            ],
+          ),
+        ),
     ];
     return [
       for (var index = 0; index < details.length; index++) ...[
@@ -3367,6 +3377,27 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
 }
 
 enum _ToolGroupStatusKind { pending, inProgress, completed, failed, cancelled }
+
+class _ToolMetadataValue extends StatelessWidget {
+  const _ToolMetadataValue({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => SelectableText.rich(
+    TextSpan(
+      text: '$label  ',
+      style: Theme.of(context).textTheme.bodySmall,
+      children: [
+        TextSpan(
+          text: value,
+          style: context.ianvsTypography.code.copyWith(fontSize: 12),
+        ),
+      ],
+    ),
+  );
+}
 
 class _ToolGroupStatusSummary {
   const _ToolGroupStatusSummary({required this.label, required this.color});
@@ -5065,8 +5096,8 @@ class _DetailBlock extends StatelessWidget {
         color: ChatTheme.of(context).textPrimary,
         fontFamily: context.ianvsTypography.code.fontFamily,
         fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
-        fontSize: 12,
-        height: 1.35,
+        fontSize: 13,
+        height: 1.4,
       ),
     );
     return Container(
@@ -5085,7 +5116,7 @@ class _DetailBlock extends StatelessWidget {
             style: TextStyle(
               color: ChatTheme.of(context).textSecondary,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w500,
               letterSpacing: 0,
             ),
           ),

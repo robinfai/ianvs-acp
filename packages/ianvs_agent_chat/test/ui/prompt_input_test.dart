@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
@@ -125,8 +126,8 @@ void main() {
     );
   }
 
-  Finder sendIcon() => find.byIcon(Icons.arrow_upward_rounded);
-  Finder stopIcon() => find.byIcon(Icons.stop_rounded);
+  Finder sendIcon() => find.byIcon(CupertinoIcons.arrow_up);
+  Finder stopIcon() => find.byIcon(CupertinoIcons.stop_fill);
   Finder primaryAction() => find.byKey(const Key('prompt-action-button'));
   Finder attachFinder() => find.byKey(const Key('prompt-attachment-picker'));
   DropTarget dropTarget(WidgetTester tester) => tester.widget<DropTarget>(
@@ -1928,9 +1929,9 @@ void main() {
     );
     final decoration = surface.decoration as BoxDecoration;
     final border = decoration.border as Border;
-    expect(decoration.color, IanvsTokens.light.canvas);
-    expect(border.top.color, IanvsTokens.light.border);
-    expect(border.top.width, 1);
+    expect(decoration.color, IanvsTokens.light.raised);
+    expect(border.top.color, IanvsTokens.light.separator.withValues(alpha: .7));
+    expect(border.top.width, .75);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Allow Once'));
     await tester.pump();
@@ -2879,23 +2880,17 @@ void main() {
     );
 
     expect(find.text('GPT-5 High'), findsOneWidget);
-    expect(find.byIcon(Icons.tune_rounded), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('Select model'), findsOneWidget);
     expect(find.text('Reasoning'), findsOneWidget);
     expect(find.text('Speed'), findsOneWidget);
-    expect(find.text('Advanced'), findsOneWidget);
-    expect(find.text('GPT-5 Mini'), findsNothing);
+    expect(find.text('Advanced'), findsNothing);
+    expect(find.text('GPT-5 Mini'), findsOneWidget);
     expect(find.text('Low'), findsNothing);
     expect(find.text('Read-only'), findsNothing);
-
-    await tester.tap(
-      find.byKey(const Key('prompt-session-config-option-model')),
-    );
-    await tester.pumpAndSettle();
 
     expect(find.text('GPT-5 Mini'), findsOneWidget);
     expect(find.text('Low'), findsNothing);
@@ -2949,7 +2944,13 @@ void main() {
       const Key('prompt-session-config-advanced-particles'),
     );
     expect(tester.widget<CustomPaint>(particles).painter, isNotNull);
+    final painter = tester.widget<CustomPaint>(particles).painter!;
+    var animationFrames = 0;
+    void recordFrame() => animationFrames++;
+    painter.addListener(recordFrame);
     await tester.pump(const Duration(milliseconds: 160));
+    expect(animationFrames, greaterThan(0));
+    painter.removeListener(recordFrame);
 
     final slider = find.byKey(
       const Key('prompt-session-config-advanced-effort-slider'),
@@ -2985,10 +2986,10 @@ void main() {
       find.byKey(const Key('prompt-session-config-advanced-panel')),
       findsNothing,
     );
-    expect(find.text('Model'), findsOneWidget);
+    expect(find.text('Select model'), findsOneWidget);
     expect(find.text('Reasoning'), findsOneWidget);
     expect(find.text('Speed'), findsOneWidget);
-    expect(find.text('Advanced'), findsOneWidget);
+    expect(find.text('Advanced'), findsNothing);
   });
 
   testWidgets(
@@ -3074,7 +3075,7 @@ void main() {
         find.byKey(const Key('prompt-session-config-advanced-panel')),
         findsNothing,
       );
-      expect(find.text('Model'), findsOneWidget);
+      expect(find.text('Select model'), findsOneWidget);
       expect(find.text('Reasoning'), findsOneWidget);
     },
   );
@@ -3100,7 +3101,7 @@ void main() {
       ),
     );
 
-    expect(find.byIcon(Icons.bolt_rounded), findsOneWidget);
+    expect(find.byIcon(CupertinoIcons.bolt), findsOneWidget);
     await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
     await tester.pumpAndSettle();
     await tester.tap(

@@ -126,6 +126,14 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
     expect(find.text('Activity & Diagnostics'), findsOneWidget);
+    final closeIcon = find.descendant(
+      of: find.byTooltip('Close diagnostics'),
+      matching: find.byIcon(Icons.close),
+    );
+    expect(Focus.of(tester.element(closeIcon)).hasFocus, isFalse);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pumpAndSettle();
+    expect(Focus.of(tester.element(closeIcon)).hasFocus, isTrue);
     for (final tab in ['Permissions', 'Runtime', 'Events']) {
       await tester.tap(find.text(tab));
       await tester.pumpAndSettle();

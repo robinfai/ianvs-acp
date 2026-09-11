@@ -118,6 +118,14 @@ void main() {
     expect(find.text('25%  2K / 8K'), findsOneWidget);
     expect(find.text('/workspace/shared'), findsOneWidget);
     expect(find.text('Filesystem MCP'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Remote MCP'),
+      120,
+      scrollable: find.descendant(
+        of: find.byType(ListView).last,
+        matching: find.byType(Scrollable),
+      ),
+    );
     expect(find.text('Remote MCP'), findsOneWidget);
     expect(find.textContaining('https://mcp.example'), findsOneWidget);
     expect(find.textContaining('user-canary'), findsNothing);
@@ -143,6 +151,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('42 ms'), findsOneWidget);
     expect(find.text('Session settings'), findsNothing);
+    await tester.tap(find.byTooltip('关闭会话详情'));
+    await tester.pumpAndSettle();
+    expect(find.text('会话详情'), findsNothing);
+    expect(find.text('查看会话详情'), findsOneWidget);
   });
 
   testWidgets('WorkspaceInspector shows relative recent session times', (

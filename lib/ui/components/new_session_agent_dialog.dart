@@ -614,22 +614,27 @@ class _PathAutocompleteField extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: InputDecoration(
-            labelText: 'Session working directory',
-            helperText: 'Used as this session’s main workspace.',
-            prefixIcon: const Icon(Icons.folder_open_outlined),
-            errorText: errorText,
-            isDense: true,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        IanvsFieldRow(
+          label: 'Session working directory',
+          helper: 'Used as this session’s main workspace.',
+          breakpoint: double.infinity,
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.folder_open_outlined),
+              errorText: errorText,
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(
+                  context.ianvs.controlRadius,
+                ),
+              ),
             ),
+            textInputAction: TextInputAction.done,
+            onChanged: onChanged,
+            onSubmitted: (_) => onSubmitted(),
           ),
-          textInputAction: TextInputAction.done,
-          onChanged: onChanged,
-          onSubmitted: (_) => onSubmitted(),
         ),
         if (suggestions.isNotEmpty) ...[
           const SizedBox(height: 6),

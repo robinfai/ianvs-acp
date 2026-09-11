@@ -611,7 +611,12 @@ void main() {
           final status = tester.getRect(
             find.byKey(const Key('settings-status-bar')),
           );
-          final cwd = tester.getRect(find.byKey(const Key('agent-cwd-field')));
+          final cwd = tester.getRect(
+            find.descendant(
+              of: find.byKey(const Key('agent-cwd-field')),
+              matching: find.byType(TextField),
+            ),
+          );
           expect(
             cwd.bottom,
             lessThan(status.top),

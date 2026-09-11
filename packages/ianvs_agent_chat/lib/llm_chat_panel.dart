@@ -1,5 +1,5 @@
 import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
-import 'package:flutter/material.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 import 'llm.dart';
 
 /// Optional ready-to-use host for a configurable OpenAI-compatible session.
@@ -98,57 +98,66 @@ class _LlmChatPanelState extends State<LlmChatPanel> {
               children: [
                 Text(
                   'Connect a model',
-                  style: Theme.of(context).textTheme.headlineSmall,
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Use an OpenAI-compatible Chat Completions service.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 24),
-                TextFormField(
-                  key: const Key('llm-endpoint'),
-                  controller: _endpoint,
-                  decoration: const InputDecoration(
-                    labelText: 'Completion endpoint',
-                    hintText: 'https://provider.example/v1/chat/completions',
+                IanvsFieldRow(
+                  label: 'Completion endpoint',
+                  breakpoint: double.infinity,
+                  child: TextFormField(
+                    key: const Key('llm-endpoint'),
+                    controller: _endpoint,
+                    decoration: const InputDecoration(
+                      hintText: 'https://provider.example/v1/chat/completions',
+                    ),
+                    validator: (value) {
+                      final uri = Uri.tryParse(value?.trim() ?? '');
+                      return uri != null &&
+                              uri.hasAuthority &&
+                              ['http', 'https'].contains(uri.scheme) &&
+                              uri.userInfo.isEmpty &&
+                              !uri.hasFragment
+                          ? null
+                          : 'Enter a full HTTP(S) completion endpoint.';
+                    },
                   ),
-                  validator: (value) {
-                    final uri = Uri.tryParse(value?.trim() ?? '');
-                    return uri != null &&
-                            uri.hasAuthority &&
-                            ['http', 'https'].contains(uri.scheme) &&
-                            uri.userInfo.isEmpty &&
-                            !uri.hasFragment
+                ),
+                const SizedBox(height: 16),
+                IanvsFieldRow(
+                  label: 'Model',
+                  breakpoint: double.infinity,
+                  child: TextFormField(
+                    key: const Key('llm-model'),
+                    controller: _model,
+                    decoration: const InputDecoration(),
+                    validator: (value) => value?.trim().isNotEmpty == true
                         ? null
-                        : 'Enter a full HTTP(S) completion endpoint.';
-                  },
+                        : 'Enter a model name.',
+                  ),
                 ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  key: const Key('llm-model'),
-                  controller: _model,
-                  decoration: const InputDecoration(labelText: 'Model'),
-                  validator: (value) => value?.trim().isNotEmpty == true
-                      ? null
-                      : 'Enter a model name.',
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  key: const Key('llm-api-key'),
-                  controller: _apiKey,
-                  obscureText: true,
-                  enableSuggestions: false,
-                  autocorrect: false,
-                  decoration: const InputDecoration(
-                    labelText: 'API key',
-                    helperText:
-                        'Optional for local services. Kept only for this connection.',
+                const SizedBox(height: 16),
+                IanvsFieldRow(
+                  label: 'API key',
+                  breakpoint: double.infinity,
+                  helper:
+                      'Optional for local services. Kept only for this connection.',
+                  child: TextFormField(
+                    key: const Key('llm-api-key'),
+                    controller: _apiKey,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    decoration: const InputDecoration(),
                   ),
                 ),
                 const SizedBox(height: 12),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Model supports images'),
+                IanvsSettingsRow(
+                  title: 'Model supports images',
                   value: _images,
                   onChanged: (value) => setState(() => _images = value),
                 ),
@@ -160,10 +169,13 @@ class _LlmChatPanelState extends State<LlmChatPanel> {
                     ),
                   ),
                 const SizedBox(height: 16),
-                FilledButton(
-                  key: const Key('llm-connect'),
-                  onPressed: _connect,
-                  child: const Text('Start conversation'),
+                Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: FilledButton(
+                    key: const Key('llm-connect'),
+                    onPressed: _connect,
+                    child: const Text('Start conversation'),
+                  ),
                 ),
               ],
             ),

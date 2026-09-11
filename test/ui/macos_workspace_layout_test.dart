@@ -1,6 +1,6 @@
 import 'dart:async';
+import 'dart:ui' show PointerDeviceKind;
 
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -10,8 +10,64 @@ import 'package:ianvs_acp/ui/components/workspace_sidebar.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/ui/shell/macos_workspace_layout.dart';
 import 'package:ianvs_agent_chat/ui/components/accessible_text_field.dart';
+import 'package:ianvs_design/ianvs_design.dart';
 
 void main() {
+  testWidgets(
+    'mouse resize releases its blue highlight without another click',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 700);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = ChatController(
+        client: FakeAgentClient(),
+        cwd: '/workspace',
+      );
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: IanvsTheme.light().copyWith(platform: TargetPlatform.macOS),
+          home: AppShell(controller: controller),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final handle = find.byKey(const Key('sidebar-resize-handle'));
+      final line = find.descendant(
+        of: handle,
+        matching: find.byType(ColoredBox),
+      );
+      final tokens = tester.element(handle).ianvs;
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      final start = tester.getCenter(handle);
+      await mouse.addPointer(location: start);
+      await mouse.down(start);
+      await mouse.moveBy(const Offset(20, 0));
+      await mouse.moveBy(const Offset(20, 0));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getSize(find.byType(WorkspaceSidebar)).width,
+        greaterThan(260),
+      );
+      await mouse.up();
+      await tester.pumpAndSettle();
+      expect(tester.widget<ColoredBox>(line).color, isNot(tokens.focus));
+      expect(tester.getSize(line).width, 1);
+      await mouse.moveTo(const Offset(900, 300));
+      await tester.pumpAndSettle();
+      expect(tester.widget<ColoredBox>(line).color, tokens.separator);
+
+      // The same control still offers visible feedback when using the keyboard.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+      expect(tester.widget<ColoredBox>(line).color, tokens.focus);
+      expect(tester.getSize(line).width, 2);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
   testWidgets('sidebar toggles and resizes without losing the prompt draft', (
     tester,
   ) async {
@@ -28,6 +84,20 @@ void main() {
       MaterialApp(home: AppShell(controller: controller)),
     );
     await tester.pumpAndSettle();
+    void expectFlushSidebarEdge() {
+      final sidebar = tester.getRect(find.byType(WorkspaceSidebar));
+      final workspace = tester.getRect(
+        find.byKey(const ValueKey('conversation-workspace')),
+      );
+      final handle = tester.getRect(
+        find.byKey(const Key('sidebar-resize-handle')),
+      );
+      expect(workspace.left, sidebar.right);
+      expect(handle.center.dx, sidebar.right);
+      expect(handle.width, greaterThanOrEqualTo(8));
+    }
+
+    expectFlushSidebarEdge();
     final field = find
         .descendant(
           of: find.byType(AccessibleTextField),
@@ -48,15 +118,27 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(WorkspaceSidebar), findsOneWidget);
     expect(find.text('Keep my draft'), findsOneWidget);
-    await tester.drag(
-      find.byKey(const Key('sidebar-resize-handle')),
+    expectFlushSidebarEdge();
+    await tester.dragFrom(
+      tester.getCenter(find.byKey(const Key('sidebar-resize-handle'))) +
+          const Offset(3, 0),
       const Offset(40, 0),
     );
     await tester.pumpAndSettle();
+    final resizedWidth = tester.getSize(find.byType(WorkspaceSidebar)).width;
+    expect(resizedWidth, greaterThan(260));
+    expectFlushSidebarEdge();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pumpAndSettle();
     expect(
       tester.getSize(find.byType(WorkspaceSidebar)).width,
-      greaterThan(260),
+      resizedWidth - 20,
     );
+    expectFlushSidebarEdge();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(WorkspaceSidebar)).width, 260);
+    expectFlushSidebarEdge();
     tester.view.physicalSize = const Size(760, 560);
     await tester.pumpAndSettle();
     expect(find.byType(WorkspaceSidebar), findsNothing);

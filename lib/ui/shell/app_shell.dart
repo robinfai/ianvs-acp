@@ -1,5 +1,5 @@
 import '../components/activity_diagnostics_dialog.dart';
-import 'package:ianvs_agent_chat/llm_chat_panel.dart';
+import 'independent_llm_page.dart';
 import 'package:ianvs_agent_chat/agent_chat_view.dart';
 import '../../chat/acp_chat_session.dart';
 import '../../platform/prompt_image_clipboard.dart';
@@ -418,14 +418,8 @@ class AppShell extends StatelessWidget {
                                     onOpenLlmChat: () =>
                                         Navigator.of(context).push<void>(
                                           MaterialPageRoute(
-                                            builder: (_) => Scaffold(
-                                              appBar: AppBar(
-                                                title: const Text(
-                                                  'Independent LLM chat',
-                                                ),
-                                              ),
-                                              body: const LlmChatPanel(),
-                                            ),
+                                            builder: (_) =>
+                                                const IndependentLlmPage(),
                                           ),
                                         ),
                                     sidebarVisible: !hideSidebar,
@@ -526,19 +520,33 @@ class AppShell extends StatelessWidget {
                         );
 
                         final sidebarWidth = layout.sidebarWidth;
-                        return Row(
+                        final sidebarDivider = layout.sidebarDivider;
+                        return Stack(
+                          fit: StackFit.expand,
                           children: [
-                            if (!hideSidebar) ...[
-                              SizedBox(
-                                width: sidebarWidth,
-                                child: buildSidebar(),
-                              ),
-                              layout.sidebarDivider,
-                            ],
-                            Expanded(
-                              key: const ValueKey('conversation-workspace'),
-                              child: previewWorkspace,
+                            Row(
+                              children: [
+                                if (!hideSidebar)
+                                  SizedBox(
+                                    width: sidebarWidth,
+                                    child: buildSidebar(),
+                                  ),
+                                Expanded(
+                                  key: const ValueKey('conversation-workspace'),
+                                  child: previewWorkspace,
+                                ),
+                              ],
                             ),
+                            // Keep the resize target over the shared edge so
+                            // panel backgrounds and borders meet underneath it.
+                            if (!hideSidebar)
+                              PositionedDirectional(
+                                start:
+                                    sidebarWidth - sidebarDivider.hitExtent / 2,
+                                top: 0,
+                                bottom: 0,
+                                child: sidebarDivider,
+                              ),
                           ],
                         );
                       },
