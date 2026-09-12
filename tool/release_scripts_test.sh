@@ -204,15 +204,17 @@ assert_nested_signing_order() {
 
 assert_rust_build_sets_install_name_and_signs_library() {
   fixture_root="${sandbox}/rust-build-fixture"
-  fixture_rust="${fixture_root}/rust"
+  fixture_package="${fixture_root}/runtime package"
+  fixture_rust="${fixture_package}/rust"
   fixture_products="${fixture_root}/products"
   fixture_app="${fixture_products}/Fixture.app"
   fixture_frameworks="${fixture_app}/Contents/Frameworks"
   fixture_bin="${fixture_root}/bin"
   fixture_trace="${fixture_root}/trace"
-  mkdir -p "${fixture_root}/macos" "${fixture_rust}/target/debug" \
+  mkdir -p "${fixture_root}/macos" "${fixture_rust}/target/aarch64-apple-darwin/debug" "${fixture_package}/tool" \
     "${fixture_frameworks}" "${fixture_bin}"
-  cp /bin/echo "${fixture_rust}/target/debug/libianvs_acp_ffi.dylib"
+  cp /bin/echo "${fixture_rust}/target/aarch64-apple-darwin/debug/libianvs_acp_ffi.dylib"
+  cp "${root}/packages/ianvs_acp_runtime/tool/build_macos.sh" "${root}/packages/ianvs_acp_runtime/tool/sign_macos.sh" "${fixture_package}/tool/"
 
   cat >"${fixture_bin}/cargo" <<'FAKE_CARGO'
 #!/bin/sh
@@ -230,6 +232,7 @@ FAKE_RUST_CODESIGN
     "${fixture_bin}/codesign"
 
   PATH="${fixture_bin}:/usr/bin:/bin" \
+    IANVS_ACP_RUNTIME_ROOT="${fixture_package}" IANVS_ACP_ARCHS=arm64 \
     RUST_BUILD_TRACE="${fixture_trace}" \
     SRCROOT="${fixture_root}/macos" \
     CONFIGURATION=Debug \
@@ -245,6 +248,7 @@ FAKE_RUST_CODESIGN
 
   : >"${fixture_trace}"
   PATH="${fixture_bin}:/usr/bin:/bin" \
+    IANVS_ACP_RUNTIME_ROOT="${fixture_package}" IANVS_ACP_ARCHS=arm64 \
     RUST_BUILD_TRACE="${fixture_trace}" \
     SRCROOT="${fixture_root}/macos" \
     CONFIGURATION=Debug \

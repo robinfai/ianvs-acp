@@ -2,9 +2,9 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
+import 'package:ianvs_acp_runtime/ianvs_acp_runtime.dart';
+
 import '../platform/agent_process_environment.dart';
-import '../rust/ianvs_acp_native.dart';
-import '../rust/ianvs_runtime_event.dart';
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_available_commands.dart';

@@ -1,0 +1,5 @@
+# The kernel runner keeps a Dart compiler child alive in the same process as
+# the FFI suite. On macOS dart:io uses wait() for any child, which can reap a
+# Rust-owned PTY and lose its exit status (ECHILD). An executable test host
+# isolates the native children from the runner/compiler's child reaper.
+compilers: [exe]

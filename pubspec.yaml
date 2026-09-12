@@ -11,6 +11,8 @@ environment:
 dependencies:
   cupertino_icons: ^1.0.8
   ianvs_design: ^0.4.0
+  ianvs_acp_runtime:
+    path: packages/ianvs_acp_runtime
   ianvs_agent_chat:
     path: packages/ianvs_agent_chat
   flutter:
@@ -30,6 +32,7 @@ dependencies:
   yaml: ^3.1.3
 
 dev_dependencies:
+  test: ^1.30.0
   desktop_drop: ^0.7.1
   flutter_test:
     sdk: flutter

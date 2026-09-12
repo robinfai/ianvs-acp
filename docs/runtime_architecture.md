@@ -171,3 +171,11 @@ older native library cannot silently ignore the outside-workspace read policy.
 Run `./tool/verify_rust_runtime.sh` to test the Rust workspace, ABI, and Dart
 integration boundary. Desktop release checks remain in
 [Manual follow-ups](manual_followups.md).
+
+## Shared runtime package
+
+The canonical Rust core/FFI and UI-independent Dart bindings live in
+[`packages/ianvs_acp_runtime`](../packages/ianvs_acp_runtime/README.md). The app
+consumes this package; root `rust` and `lib/rust` preserve compatibility for existing
+commands and imports. Package consumers receive all native sources and build
+scripts together, with unchanged ABI v11 and event schema v4.

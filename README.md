@@ -149,3 +149,8 @@ handles and lifecycles. Remote ACP, `session/fork`, MCP-over-ACP, generic
 extensions, and live session-info/usage projection are unavailable in the local
 production runtime. See [Runtime architecture](docs/runtime_architecture.md)
 for ownership and [Product capabilities](docs/product_capabilities.md) for scope.
+
+The shared local ACP runtime is owned by
+[`ianvs_acp_runtime`](packages/ianvs_acp_runtime/README.md), including the Rust
+workspace, ABI v11 Dart bindings, and macOS build/signing scripts. Other desktop
+hosts can consume that package without the Shift application or chat UI.

@@ -12,12 +12,24 @@ run_project() (
   shift
   case "$project_name" in
     app) project_dir="$workspace_root" ;;
+    runtime) project_dir="$workspace_root/packages/ianvs_acp_runtime" ;;
     chat) project_dir="$workspace_root/packages/ianvs_agent_chat" ;;
     example) project_dir="$workspace_root/packages/ianvs_agent_chat/example" ;;
     *) printf 'Unknown project: %s\n' "$project_name" >&2; exit 2 ;;
   esac
   cd "$project_dir"
   printf '\n[%s] %s\n' "$project_name" "$action"
+  if [ "$project_name" = runtime ]; then
+    case "$action" in
+      bootstrap) "${DART:-dart}" pub get "$@" ;;
+      analyze) "${DART:-dart}" analyze "$@" ;;
+      format) "${DART:-dart}" format lib bin test example "$@" ;;
+      format-check) "${DART:-dart}" format --output=none --set-exit-if-changed lib bin test example "$@" ;;
+      test) "${DART:-dart}" test "$@" ;;
+      *) printf 'Unknown action: %s\n' "$action" >&2; exit 2 ;;
+    esac
+    exit
+  fi
   case "$action" in
     bootstrap) "${FLUTTER:-flutter}" pub get "$@" ;;
     analyze) "${FLUTTER:-flutter}" analyze --no-pub "$@" ;;
@@ -27,12 +39,12 @@ run_project() (
       # Live provider tests remain an explicit, separately invoked check.
       RUN_DEEPSEEK_TESTS=0 "$workspace_root/tool/flutter_test_isolated.sh" "$@"
       ;;
-    *) printf 'Usage: %s {bootstrap|analyze|format|format-check|test} [all|app|chat|example] [arguments]\n' "$0" >&2; exit 2 ;;
+    *) printf 'Usage: %s {bootstrap|analyze|format|format-check|test} [all|app|runtime|chat|example] [arguments]\n' "$0" >&2; exit 2 ;;
   esac
 )
 
 if [ "$project" = all ]; then
-  for workspace_project in app chat example; do
+  for workspace_project in app runtime chat example; do
     run_project "$workspace_project" "$@"
   done
 else

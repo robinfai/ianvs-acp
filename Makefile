@@ -13,7 +13,7 @@ DART ?= dart
 export FLUTTER DART
 
 .PHONY: \
-	help bootstrap format format-check analyze test test-app test-chat test-example test-rust \
+	help bootstrap format format-check analyze test test-app test-runtime test-chat test-example test-rust \
 	test-release-scripts verify run run-macos build build-macos \
 	verify-macos install install-macos package package-macos clean
 
@@ -22,12 +22,12 @@ help: ## 显示可用命令。
 		'用法：make <target>' \
 		'' \
 		'开发：' \
-		'  bootstrap            解析应用、聊天包、示例的依赖' \
-		'  format               格式化三个工程的 Dart 源码和测试' \
-		'  format-check         检查三个工程的 Dart 格式' \
-		'  analyze              静态分析应用、聊天包和示例' \
-		'  test                 在隔离 HOME 中运行三个工程的离线测试' \
-		'  test-app/chat/example 单独运行指定工程的离线测试' \
+		'  bootstrap            解析应用、运行时、聊天包、示例的依赖' \
+		'  format               格式化四个工程的 Dart 源码和测试' \
+		'  format-check         检查四个工程的 Dart 格式' \
+		'  analyze              静态分析应用、运行时、聊天包和示例' \
+		'  test                 在隔离 HOME 中运行四个工程的离线测试' \
+		'  test-app/runtime/chat/example 单独运行指定工程的离线测试' \
 		'  test-rust            验证 Rust workspace 和 Flutter/Rust 边界' \
 		'  test-release-scripts 验证 macOS 发布脚本的安全约束' \
 		'  verify               运行格式、分析、发布脚本、Rust 和 Flutter 测试' \
@@ -59,7 +59,7 @@ analyze: ## 运行 Flutter 静态分析。
 test: ## 在隔离 HOME 中运行 Flutter 测试。
 	"$(ROOT_DIR)/tool/flutter_workspace.sh" test
 
-test-app test-chat test-example:
+test-app test-runtime test-chat test-example:
 	"$(ROOT_DIR)/tool/flutter_workspace.sh" test $(patsubst test-%,%,$@)
 
 test-rust: ## 验证 Rust workspace 和 Flutter/Rust 边界。
