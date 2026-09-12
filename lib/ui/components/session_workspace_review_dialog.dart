@@ -60,7 +60,7 @@ class SessionWorkspaceReviewDialog extends StatelessWidget {
                   style: TextStyle(
                     color: context.ianvs.muted,
                     fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w400,
                   ),
                 ),
               ],
@@ -143,7 +143,7 @@ class _WorkspacePath extends StatelessWidget {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: context.ianvs.raised,
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Column(
@@ -154,7 +154,7 @@ class _WorkspacePath extends StatelessWidget {
             style: TextStyle(
               color: context.ianvs.subtle,
               fontSize: 11,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
             ),
           ),
           const SizedBox(height: 4),

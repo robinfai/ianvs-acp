@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_session_settings.dart';
@@ -119,7 +120,7 @@ class WorkspaceInspector extends StatelessWidget {
               const SizedBox(height: 12),
               const _CompactInspectorHeader(
                 label: '详细信息',
-                actionIcon: Icons.add_rounded,
+                actionIcon: CupertinoIcons.add,
                 actionTooltip: '添加来源',
                 onAction: null,
               ),
@@ -183,7 +184,7 @@ class WorkspaceInspector extends StatelessWidget {
                   const SizedBox(width: 12),
                   IanvsIconButton(
                     tooltip: '关闭会话详情',
-                    icon: Icons.close_rounded,
+                    icon: CupertinoIcons.xmark,
                     onPressed: () => Navigator.of(context).pop(),
                   ),
                 ],
@@ -412,8 +413,8 @@ class _InspectorDisclosureState extends State<_InspectorDisclosure> {
                   ),
                   Icon(
                     _expanded
-                        ? Icons.keyboard_arrow_down_rounded
-                        : Icons.chevron_right_rounded,
+                        ? CupertinoIcons.chevron_down
+                        : CupertinoIcons.chevron_right,
                     size: 18,
                     color: context.ianvs.subtle,
                   ),
@@ -642,7 +643,7 @@ class _DiagnosticsSection extends StatelessWidget {
             style: TextStyle(
               color: context.ianvs.muted,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
             ),
           ),
           children: [
@@ -698,7 +699,7 @@ class _InspectorActionRow extends StatelessWidget {
               ),
             ),
             Icon(
-              Icons.chevron_right_rounded,
+              CupertinoIcons.chevron_right,
               size: 15,
               color: context.ianvs.subtle,
             ),
@@ -839,7 +840,7 @@ class _SectionTitle extends StatelessWidget {
               style: TextStyle(
                 color: context.ianvs.muted,
                 fontSize: 13,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w400,
                 letterSpacing: 0,
               ),
             ),

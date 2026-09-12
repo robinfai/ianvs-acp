@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:flutter/foundation.dart';
 import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
@@ -516,7 +517,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     title: '默认附加目录',
     trailing: TextButton.icon(
       onPressed: _saving ? null : _addDirectory,
-      icon: const Icon(Icons.add_rounded),
+      icon: const Icon(CupertinoIcons.add),
       label: const Text('添加目录'),
     ),
     child: Column(
@@ -893,7 +894,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
             ),
             TextButton.icon(
               onPressed: _saving ? null : _addTrustRule,
-              icon: const Icon(Icons.add_rounded),
+              icon: const Icon(CupertinoIcons.add),
               label: const Text('添加规则'),
             ),
           ],
@@ -1660,7 +1661,7 @@ class _StringListEditor extends StatelessWidget {
                   const SizedBox(width: 6),
                   _PanelActionButton(
                     tooltip: '移除$title ${index + 1}',
-                    icon: Icons.close_rounded,
+                    icon: CupertinoIcons.xmark,
                     onPressed: () => onRemove(index),
                   ),
                 ],
@@ -1668,7 +1669,7 @@ class _StringListEditor extends StatelessWidget {
             ),
           TextButton.icon(
             onPressed: onAdd,
-            icon: const Icon(Icons.add_rounded, size: 18),
+            icon: const Icon(CupertinoIcons.add, size: 18),
             label: Text(addLabel),
           ),
         ],
@@ -1761,7 +1762,7 @@ class _ListEditorFrame extends StatelessWidget {
           alignment: AlignmentDirectional.centerStart,
           child: TextButton.icon(
             onPressed: onAdd,
-            icon: const Icon(Icons.add_rounded, size: 18),
+            icon: const Icon(CupertinoIcons.add, size: 18),
             label: Text(addLabel),
           ),
         ),
@@ -1896,7 +1897,7 @@ class _ConfigPathPanel extends StatelessWidget {
         style: TextStyle(
           color: context.ianvs.muted,
           fontSize: 12,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w400,
           letterSpacing: 0,
         ),
       ),

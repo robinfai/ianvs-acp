@@ -6,7 +6,7 @@ environment:
   sdk: ^3.12.0
   flutter: '>=3.44.0'
 dependencies:
-  ianvs_design: ^0.3.1
+  ianvs_design: ^0.4.0
   flutter:
     sdk: flutter
   ianvs_agent_chat:
@@ -19,10 +19,3 @@ flutter:
   config:
     enable-swift-package-manager: false
   uses-material-design: true
-
-# Shared UI polish fixes; use hosted resolution after release.
-dependency_overrides:
-  ianvs_design:
-    git:
-      url: https://github.com/robinfai/ianvs-design.git
-      ref: e926049e8bbe64b66efb61be5a4c93ed7638c211

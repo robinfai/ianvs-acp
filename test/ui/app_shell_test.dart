@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -306,13 +307,13 @@ void main() {
     expect(find.byIcon(Icons.play_circle_outline), findsNothing);
     expect(find.byIcon(Icons.manage_accounts_outlined), findsOneWidget);
     expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
-    expect(find.byIcon(Icons.add_rounded), findsOneWidget);
+    expect(find.byIcon(CupertinoIcons.add), findsOneWidget);
     expect(find.text('Agents'), findsNothing);
     expect(find.text('New Session'), findsNothing);
 
     final newSessionButton = find
         .ancestor(
-          of: find.byIcon(Icons.add_rounded),
+          of: find.byIcon(CupertinoIcons.add),
           matching: find.byType(TextButton),
         )
         .first;

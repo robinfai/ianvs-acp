@@ -1,5 +1,6 @@
 import '../components/activity_diagnostics_dialog.dart';
 import 'independent_llm_page.dart';
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_agent_chat/agent_chat_view.dart';
 import '../../chat/acp_chat_session.dart';
 import '../../platform/prompt_image_clipboard.dart';
@@ -1123,7 +1124,7 @@ class _CompactPanelSheet extends StatelessWidget {
                           IconButton(
                             tooltip: 'Close $title',
                             onPressed: () => Navigator.of(context).pop(),
-                            icon: const Icon(Icons.close_rounded, size: 19),
+                            icon: const Icon(CupertinoIcons.xmark, size: 19),
                           ),
                         ],
                       ),
@@ -1351,7 +1352,7 @@ class _AuthMethodTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: context.ianvs.muted,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w400,
                 letterSpacing: 0,
               ),
             ),

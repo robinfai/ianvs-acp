@@ -74,9 +74,9 @@ class _ActivitySummary extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: context.ianvs.accent.withValues(alpha: .08),
+        color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.separator),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Wrap(
         spacing: 8,
@@ -125,19 +125,18 @@ class _SummaryChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.canvas,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: context.ianvs.separator),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: context.ianvs.focus),
+          Icon(icon, size: 14, color: context.ianvs.muted),
           const SizedBox(width: 5),
           Text(
             label,
             style: TextStyle(
               color: context.ianvs.muted,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
+              fontSize: 12,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ],
@@ -225,7 +224,7 @@ class _ActivityRow extends StatelessWidget {
                         _timeLabel(entry.timestamp),
                         style: TextStyle(
                           color: context.ianvs.subtle,
-                          fontSize: 10.5,
+                          fontSize: 11,
                           fontFeatures: [FontFeature.tabularFigures()],
                         ),
                       ),
@@ -250,8 +249,8 @@ class _ActivityRow extends StatelessWidget {
                       activityMetadata.join(' · '),
                       style: TextStyle(
                         color: context.ianvs.subtle,
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w400,
                       ),
                     ),
                   ],

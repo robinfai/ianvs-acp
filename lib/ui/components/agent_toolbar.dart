@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/agent_session.dart';
@@ -314,7 +315,7 @@ class _AgentMenuItem extends StatelessWidget {
                 style: TextStyle(
                   color: context.ianvs.subtle,
                   fontSize: 11,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w400,
                   letterSpacing: 0,
                 ),
               ),
@@ -633,7 +634,7 @@ class _AgentChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 190),
@@ -642,7 +643,7 @@ class _AgentChip extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
             color: context.ianvs.muted,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w400,
             fontSize: 11.5,
           ),
         ),
@@ -743,7 +744,7 @@ class _PrimaryToolbarAction extends StatelessWidget {
         ? TextButton(
             onPressed: onPressed,
             style: style,
-            child: const Icon(Icons.add_rounded, size: 18),
+            child: const Icon(CupertinoIcons.add, size: 18),
           )
         : TextButton(
             onPressed: onPressed,
@@ -815,7 +816,7 @@ class _ConnectionBadge extends StatelessWidget {
             status.label,
             style: TextStyle(
               color: context.ianvs.muted,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
               fontSize: 11,
             ),
           ),

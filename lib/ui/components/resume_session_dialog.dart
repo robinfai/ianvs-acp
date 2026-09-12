@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_input_budget.dart';
@@ -115,9 +116,6 @@ class _ResumeSessionDialogState extends State<ResumeSessionDialog> {
       titlePadding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
       contentPadding: EdgeInsets.zero,
       actionsPadding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-      ),
       title: Text(
         'Resume ACP Session',
         style: Theme.of(context).textTheme.titleLarge!,
@@ -609,7 +607,7 @@ class _AgentSelectionList extends StatelessWidget {
                             style: TextStyle(
                               color: context.ianvs.subtle,
                               fontSize: 11,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w400,
                             ),
                           ),
                         ],
@@ -857,7 +855,7 @@ class _WorkspaceGroupHeader extends StatelessWidget {
         child: Row(
           children: [
             Icon(
-              Icons.keyboard_arrow_down_rounded,
+              CupertinoIcons.chevron_down,
               size: 16,
               color: context.ianvs.muted,
             ),
@@ -1170,7 +1168,7 @@ InputDecoration _inputDecoration(
         style: TextStyle(
           color: context.ianvs.subtle,
           fontSize: 12,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w400,
           letterSpacing: 0,
         ),
       ),
@@ -1226,7 +1224,7 @@ class _ConversationPreview extends StatelessWidget {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: context.ianvs.raised,
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       child: Column(
@@ -1355,7 +1353,10 @@ class _MetadataPreviewState extends State<_MetadataPreview> {
                       borderRadius: BorderRadius.circular(
                         context.ianvs.controlRadius,
                       ),
-                      border: Border.all(color: context.ianvs.border),
+                      border: Border.all(
+                        color: context.ianvs.separator,
+                        width: .75,
+                      ),
                     ),
                     child: SelectableText(
                       _preview!.text,
@@ -1418,7 +1419,7 @@ class _PreviewRow extends StatelessWidget {
             style: TextStyle(
               color: context.ianvs.muted,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ),
@@ -1468,7 +1469,7 @@ class _PreviewPathRow extends StatelessWidget {
                 style: TextStyle(
                   color: context.ianvs.subtle,
                   fontSize: 11,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w400,
                 ),
               ),
               SelectableText(
@@ -1504,7 +1505,7 @@ class _MessagePanel extends StatelessWidget {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: context.ianvs.raised,
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
       ),
       child: Column(

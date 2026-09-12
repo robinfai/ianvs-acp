@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -663,7 +664,7 @@ class _PreviewTabs extends StatelessWidget {
                         IconButton(
                           tooltip: '关闭 ${tab.name}',
                           onPressed: () => onClose(index),
-                          icon: const Icon(Icons.close_rounded, size: 15),
+                          icon: const Icon(CupertinoIcons.xmark, size: 15),
                           visualDensity: VisualDensity.standard,
                         ),
                       ],
@@ -816,7 +817,7 @@ class _PreviewToolbar extends StatelessWidget {
                             searchController.clear();
                             onSearchChanged();
                           },
-                          icon: const Icon(Icons.close_rounded, size: 15),
+                          icon: const Icon(CupertinoIcons.xmark, size: 15),
                         ),
                 ),
               ),
@@ -849,7 +850,7 @@ class _PreviewToolbar extends StatelessWidget {
           ),
           _ToolbarButton(
             tooltip: '关闭预览',
-            icon: Icons.close_rounded,
+            icon: CupertinoIcons.xmark,
             onPressed: onClose,
           ),
         ],
@@ -1305,7 +1306,7 @@ class _MarkdownOutline extends StatelessWidget {
                           style: TextStyle(
                             color: context.ianvs.muted,
                             fontSize: 11,
-                            fontWeight: FontWeight.w600,
+                            fontWeight: FontWeight.w400,
                           ),
                         ),
                       ),
@@ -1708,7 +1709,7 @@ class _PreviewStatus extends StatelessWidget {
               style: TextStyle(
                 color: context.ianvs.muted,
                 fontSize: 10.5,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w400,
               ),
             ),
           ),

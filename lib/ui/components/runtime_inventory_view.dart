@@ -219,9 +219,9 @@ class _RuntimeSummary extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: context.ianvs.accent.withValues(alpha: .08),
+        color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.separator),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Row(
         children: [
@@ -293,7 +293,7 @@ class _InventorySection extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.separator),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

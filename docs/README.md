@@ -14,6 +14,7 @@
 | 文档 | 负责内容 |
 | --- | --- |
 | [项目 README](../README.md) | 项目简介、开发、构建与发布命令 |
+| [2026-09-12 全应用 UI 一致性复核](ui-consistency-2026-09-12/README.md) | 中性摘要、辅助文字、细线图标与共享弹窗的本轮截图及验证 |
 | [产品能力](product_capabilities.md) | 主应用当前提供的能力及不可用项 |
 | [配置指南](configuration.md) | 设置入口、保存与生效、配置示例、模板继承和已知字段限制 |
 | [运行时架构](runtime_architecture.md) | Rust/FFI/Flutter、并发会话、MCP、终端与恢复的责任边界 |

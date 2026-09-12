@@ -212,7 +212,7 @@ class _SessionScopeNotice extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: context.ianvs.accent.withValues(alpha: .08),
+        color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
         border: Border.all(color: context.ianvs.separator),
       ),
@@ -357,7 +357,7 @@ class _TemplateSummary extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -491,7 +491,7 @@ class _TemplateSummaryRow extends StatelessWidget {
             style: TextStyle(
               color: context.ianvs.subtle,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ),
@@ -643,7 +643,7 @@ class _PathAutocompleteField extends StatelessWidget {
             decoration: BoxDecoration(
               color: context.ianvs.raised,
               borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-              border: Border.all(color: context.ianvs.border),
+              border: Border.all(color: context.ianvs.separator, width: .75),
             ),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 180),
@@ -675,7 +675,7 @@ class _PathAutocompleteField extends StatelessWidget {
                               style: TextStyle(
                                 color: context.ianvs.muted,
                                 fontSize: 12,
-                                fontWeight: FontWeight.w600,
+                                fontWeight: FontWeight.w400,
                                 letterSpacing: 0,
                               ),
                             ),
@@ -819,7 +819,7 @@ class _AgentScopeLabel extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: context.ianvs.accent.withValues(alpha: .08),
+        color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Text(

@@ -79,7 +79,7 @@ class _MarkdownFrontMatterCardState extends State<MarkdownFrontMatterCard> {
                 style: TextStyle(
                   color: context.ianvs.subtle,
                   fontSize: 10.5,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w400,
                 ),
               ),
               if (canExpand) ...[
@@ -158,7 +158,7 @@ class _MetadataEntryTile extends StatelessWidget {
             style: TextStyle(
               color: context.ianvs.subtle,
               fontSize: 9.5,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
             ),
           ),
           const SizedBox(height: 4),

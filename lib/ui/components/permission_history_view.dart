@@ -114,7 +114,7 @@ class _PermissionHistoryEmptyState extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.canvas,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -137,7 +137,7 @@ class _PermissionHistoryEmptyState extends StatelessWidget {
             style: TextStyle(
               color: context.ianvs.muted,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
               letterSpacing: 0,
             ),
           ),
@@ -191,7 +191,7 @@ class _PermissionHistoryRow extends StatelessWidget {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
         color: context.ianvs.canvas,
       ),
       child: Column(
@@ -232,7 +232,7 @@ class _PermissionHistoryRow extends StatelessWidget {
             style: TextStyle(
               color: context.ianvs.muted,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
               letterSpacing: 0,
             ),
           ),
@@ -245,7 +245,7 @@ class _PermissionHistoryRow extends StatelessWidget {
               style: TextStyle(
                 color: context.ianvs.muted,
                 fontSize: 12,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w400,
                 letterSpacing: 0,
               ),
             ),
@@ -309,7 +309,7 @@ class _MetaChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -324,7 +324,7 @@ class _MetaChip extends StatelessWidget {
               style: TextStyle(
                 color: context.ianvs.muted,
                 fontSize: 11,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w400,
                 letterSpacing: 0,
               ),
             ),

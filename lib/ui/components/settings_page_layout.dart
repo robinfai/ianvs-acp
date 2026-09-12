@@ -532,7 +532,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
     final add = TextButton.icon(
       key: const Key('settings-add-agent'),
       onPressed: _saving || _readOnly ? null : _addAgent,
-      icon: const Icon(Icons.add_rounded, size: 18),
+      icon: const Icon(CupertinoIcons.add, size: 18),
       label: const Text('添加'),
     );
     return _connectionLayout(
@@ -666,7 +666,7 @@ extension _SettingsPageLayout on _AgentConfigDialogState {
     final add = TextButton.icon(
       key: const Key('settings-add-mcp'),
       onPressed: _saving || _readOnly ? null : _addMcpServer,
-      icon: const Icon(Icons.add_rounded, size: 18),
+      icon: const Icon(CupertinoIcons.add, size: 18),
       label: const Text('添加'),
     );
     final directories = _settingsScroll(_buildDirectoriesSection());

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:file_picker/file_picker.dart';
 import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/semantics.dart';
@@ -712,7 +713,7 @@ class _WorkspaceSearchField extends StatelessWidget {
                   controller.clear();
                   onChanged('');
                 },
-                icon: const Icon(Icons.close_rounded, size: 15),
+                icon: const Icon(CupertinoIcons.xmark, size: 15),
                 color: context.ianvs.muted,
                 visualDensity: VisualDensity.standard,
                 splashRadius: 16,
@@ -966,7 +967,7 @@ class _SessionListToggle extends StatelessWidget {
               style: TextStyle(
                 color: context.ianvs.subtle,
                 fontSize: 11.5,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w400,
                 letterSpacing: 0,
                 height: 1.1,
               ),
@@ -1101,10 +1102,10 @@ class _WorkspaceTile extends StatelessWidget {
         Offset.zero & overlay.size,
       ),
       surfaceTintColor: Colors.transparent,
-      color: context.ianvs.canvas,
+      color: context.ianvs.raised,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        side: BorderSide(color: context.ianvs.border),
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: context.ianvs.separator, width: .75),
       ),
       items: _workspaceMenuItems(
         context,
@@ -1150,8 +1151,8 @@ class _WorkspaceDisclosureButton extends StatelessWidget {
             height: 28,
             child: Icon(
               expanded
-                  ? Icons.keyboard_arrow_down_rounded
-                  : Icons.chevron_right_rounded,
+                  ? CupertinoIcons.chevron_down
+                  : CupertinoIcons.chevron_right,
               size: 17,
               color: onPressed == null
                   ? context.ianvs.subtle
@@ -1238,10 +1239,10 @@ class _WorkspaceMenuButton extends StatelessWidget {
       icon: const Icon(Icons.more_horiz_rounded, size: 17),
       iconColor: context.ianvs.muted,
       surfaceTintColor: Colors.transparent,
-      color: context.ianvs.canvas,
+      color: context.ianvs.raised,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        side: BorderSide(color: context.ianvs.border),
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: context.ianvs.separator, width: .75),
       ),
       onSelected: onSelected,
       itemBuilder: (context) {
@@ -1323,7 +1324,7 @@ List<PopupMenuEntry<_WorkspaceMenuAction>> _workspaceMenuItems(
     _workspaceMenuItem(
       context,
       value: _WorkspaceMenuAction.remove,
-      icon: Icons.close_rounded,
+      icon: CupertinoIcons.xmark,
       label: 'Hide from Sidebar',
       enabled: canRemove,
       destructive: true,
@@ -1666,10 +1667,10 @@ class _SessionTileState extends State<_SessionTile> {
         Offset.zero & overlay.size,
       ),
       surfaceTintColor: Colors.transparent,
-      color: context.ianvs.canvas,
+      color: context.ianvs.raised,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        side: BorderSide(color: context.ianvs.border),
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: context.ianvs.separator, width: .75),
       ),
       items: _sessionMenuItems(
         context,
@@ -1782,7 +1783,7 @@ class _SessionPreviewCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: context.ianvs.canvas,
           borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-          border: Border.all(color: context.ianvs.border),
+          border: Border.all(color: context.ianvs.separator, width: .75),
           boxShadow: kElevationToShadow[8]!,
         ),
         child: Column(
@@ -2058,7 +2059,7 @@ class _InlineEmptyWorkspaceSessions extends StatelessWidget {
                     style: TextStyle(
                       color: context.ianvs.muted,
                       fontSize: 11,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w400,
                       height: 1.25,
                       letterSpacing: 0,
                     ),
@@ -2095,7 +2096,7 @@ class _CountPill extends StatelessWidget {
         style: TextStyle(
           color: context.ianvs.muted,
           fontSize: 10,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w400,
           letterSpacing: 0,
         ),
       ),

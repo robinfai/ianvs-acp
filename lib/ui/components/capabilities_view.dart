@@ -178,9 +178,9 @@ class _CapabilitySummary extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: context.ianvs.accent.withValues(alpha: .08),
+        color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.separator),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -231,7 +231,7 @@ class _EmptyState extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -335,7 +335,7 @@ class _Pill extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.canvas,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.separator),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -555,7 +555,7 @@ class _RawBlock extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

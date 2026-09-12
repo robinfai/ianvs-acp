@@ -362,9 +362,9 @@ class _SessionHeader extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: context.ianvs.accent.withValues(alpha: .08),
+        color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.selected),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Row(
         children: [
@@ -402,7 +402,7 @@ class _SessionHeader extends StatelessWidget {
                   style: TextStyle(
                     color: context.ianvs.muted,
                     fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w400,
                     letterSpacing: 0,
                   ),
                 ),
@@ -635,7 +635,7 @@ class _CapabilitySummary extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.separator),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
@@ -772,7 +772,7 @@ class _ConfigOptionTile extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.canvas,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.separator),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: _ConfigOptionLayout(
         label: Column(
@@ -1304,7 +1304,7 @@ class _Panel extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1347,7 +1347,7 @@ class _ReadOnlyValue extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.chrome,
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: Text(
         value.isEmpty ? '未设置' : value,
@@ -1437,7 +1437,7 @@ class _EmptyState extends StatelessWidget {
                 style: TextStyle(
                   color: context.ianvs.muted,
                   fontSize: 13,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w400,
                   height: 1.35,
                   letterSpacing: 0,
                 ),
@@ -1456,7 +1456,7 @@ class _EmptyState extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.ianvs.raised,
         borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
       ),
       child: child,
     );

@@ -612,7 +612,7 @@ class _RemoteMarkdownImageConsent extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: context.ianvs.raised,
-          border: Border.all(color: context.ianvs.border),
+          border: Border.all(color: context.ianvs.separator, width: .75),
           borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
         ),
         child: Row(
@@ -634,7 +634,7 @@ class _RemoteMarkdownImageConsent extends StatelessWidget {
                     style: TextStyle(
                       color: context.ianvs.muted,
                       fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
                   const SizedBox(height: 2),
@@ -691,7 +691,7 @@ class _MarkdownImageFailure extends StatelessWidget {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: context.ianvs.raised,
-        border: Border.all(color: context.ianvs.border),
+        border: Border.all(color: context.ianvs.separator, width: .75),
         borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
       ),
       child: Row(

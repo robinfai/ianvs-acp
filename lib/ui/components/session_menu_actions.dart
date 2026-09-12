@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:flutter/material.dart';
 
 import '../../acp/agent_session.dart';
@@ -142,7 +143,7 @@ extension WorkspaceSessionMenuActionPresentation on WorkspaceSessionMenuAction {
       WorkspaceSessionMenuAction.forkToNewWorktree =>
         Icons.account_tree_outlined,
       WorkspaceSessionMenuAction.openInNewWindow => Icons.open_in_new_rounded,
-      WorkspaceSessionMenuAction.close => Icons.close_rounded,
+      WorkspaceSessionMenuAction.close => CupertinoIcons.xmark,
       WorkspaceSessionMenuAction.delete => Icons.delete_outline_rounded,
     };
   }

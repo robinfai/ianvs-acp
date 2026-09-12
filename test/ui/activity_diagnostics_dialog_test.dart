@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'dart:async';
 import 'dart:convert';
 
@@ -128,7 +129,7 @@ void main() {
     expect(find.text('Activity & Diagnostics'), findsOneWidget);
     final closeIcon = find.descendant(
       of: find.byTooltip('Close diagnostics'),
-      matching: find.byIcon(Icons.close),
+      matching: find.byIcon(CupertinoIcons.xmark),
     );
     expect(Focus.of(tester.element(closeIcon)).hasFocus, isFalse);
     await tester.sendKeyEvent(LogicalKeyboardKey.tab);

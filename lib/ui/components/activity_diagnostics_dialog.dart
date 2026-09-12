@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../config/acp_client_config.dart';
@@ -54,7 +55,7 @@ class ActivityDiagnosticsDialog extends StatelessWidget {
                       iconSize: 18,
                       tooltip: 'Close diagnostics',
                       onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.close),
+                      icon: const Icon(CupertinoIcons.xmark),
                     ),
                   ],
                 ),

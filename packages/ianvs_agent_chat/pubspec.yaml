@@ -14,7 +14,7 @@ environment:
   flutter: '>=3.44.0'
 dependencies:
   cupertino_icons: ^1.0.8
-  ianvs_design: ^0.3.1
+  ianvs_design: ^0.4.0
   http: ^1.6.0
   flutter:
     sdk: flutter
@@ -35,10 +35,3 @@ dev_dependencies:
   flutter_lints: ^6.0.0
 flutter:
   uses-material-design: true
-
-# Shared UI polish fixes; use hosted resolution after release.
-dependency_overrides:
-  ianvs_design:
-    git:
-      url: https://github.com/robinfai/ianvs-design.git
-      ref: e926049e8bbe64b66efb61be5a4c93ed7638c211
