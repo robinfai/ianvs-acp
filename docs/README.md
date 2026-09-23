@@ -21,6 +21,8 @@
 | [会话加载架构](conversation_loading_architecture.md) | load/resume 决策、原子可见性、缓存与传输；末尾性能数字为历史实测 |
 | [本地恢复存储](sqlite_storage.md) | 数据清单、实际路径、容量、保留期及维护时机 |
 | [Agent Chat 模块边界](agent_chat_module.md) | 主应用如何接入独立包；首版验收另行标明历史范围 |
+| [ACP / Omnivore 对话组件统一方案](agent-chat-convergence-2026-09-23.md) | 2026-09-23 双方协商的复用边界、最小 API、迁移分工与待实施验收标准 |
+| [Markdown 渲染版本协商](markdown-renderer-alignment-2026-09-23.md) | 三方已确认的 renderer 复用、语法/预算边界、发布顺序与待实施验收标准 |
 | [共享设计系统](ianvs-design-integration-2026-09-10/README.md) | Ianvs Design 接入、主题边界与本轮验证 |
 | [macOS 细节打磨](macos-polish-2026-09-11/README.md) | 全局截图、ImageGen 参考、字体和间距调整、库与应用责任及验证 |
 | [聊天包 README](../packages/ianvs_agent_chat/README.md) | 包的公开接入、LLM、Mermaid、主题、生命周期和原生集成 |
@@ -61,3 +63,5 @@
    仓库内相对链接，机器临时路径只能作为补充出处，不能成为唯一可访问证据。
 6. 测试数量必须附阶段和范围。复用旧验收不等于重跑；文档校准不能宣称真实 Agent、
    Keychain、原生窗口或发布验收通过。
+
+- [Agent Chat 0.2.0 实施与发布记录](agent-chat-release-0.2.0.md)

@@ -72,7 +72,9 @@ class _AgentChatDemoState extends State<AgentChatDemo> {
 
 /// An independent host implementation: no ACP client, application controller,
 /// workspace, database, native app channel or credentials are imported.
-class DemoSession extends ChatSession with ChangeNotifier {
+class DemoSession extends ChatSession
+    with ChangeNotifier
+    implements ChatSubmissionSession {
   final List<ChatMessageView> _messages = [
     ChatMessageData(
       role: ChatMessageRole.assistant,
@@ -93,7 +95,7 @@ class DemoSession extends ChatSession with ChangeNotifier {
     messages: List.unmodifiable(_messages),
     messagesRevision: _revision,
     isSending: _active != null,
-    enabled: _active == null || _permission != null,
+    enabled: !_disposed,
     permission: _permission,
     capabilities: const ChatCapabilities(tools: true, permissions: true),
   );
@@ -101,6 +103,26 @@ class DemoSession extends ChatSession with ChangeNotifier {
     _revision++;
     if (!_disposed) notifyListeners();
   }
+
+  final _submissions = ChatSubmissionLedger();
+  @override
+  Future<ChatSubmitResult> submit(ChatSubmission submission) =>
+      _submissions.submit(submission, () {
+        if (submission.sessionIdentity != state.identity || _disposed) {
+          return const ChatSubmitResult.rejected(
+            'The conversation is unavailable.',
+          );
+        }
+        if (_active != null ||
+            submission.text.trim().isEmpty ||
+            submission.attachments.isNotEmpty) {
+          return const ChatSubmitResult.rejected(
+            'Enter a text message when the demo is idle.',
+          );
+        }
+        unawaited(send(submission.text));
+        return const ChatSubmitResult.accepted();
+      });
 
   @override
   Future<void> send(

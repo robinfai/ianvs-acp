@@ -2677,11 +2677,16 @@ class ChatController extends ChangeNotifier {
 
   ConnectionStatus status = ConnectionStatus.disconnected;
   AgentSession? _currentSession;
+  Object _conversationIdentity = Object();
+  Object get conversationIdentity => _conversationIdentity;
   AgentSession? get currentSession => _currentSession;
-  set currentSession(AgentSession? value) {
+  set currentSession(AgentSession? value) => _setCurrentSession(value);
+
+  void _setCurrentSession(AgentSession? value, {bool preserveDraft = false}) {
     final previousId = _currentSession?.id.trim();
     final nextId = value?.id.trim();
     if (previousId != nextId) {
+      if (!preserveDraft) _conversationIdentity = Object();
       _sessionTemplateWarnings = const <String>[];
     }
     _currentSession = value;
@@ -3052,6 +3057,7 @@ class ChatController extends ChangeNotifier {
   Future<bool> newSession({
     String? cwd,
     SessionTemplateConfig? template,
+    bool preserveDraft = false,
   }) async {
     if (isStreaming || isSessionOperationRunning) return false;
     _finishTurnBudget();
@@ -3103,7 +3109,7 @@ class ChatController extends ChangeNotifier {
           _snapshotCurrentSession();
           _retiredSessionIds.remove(session.id);
           _markPermissionHistoryCompleteForSession(session.id);
-          currentSession = session;
+          _setCurrentSession(session, preserveDraft: preserveDraft);
           _timelineHistoryWasTruncated = false;
           _upsertSession(session);
           _clearMessages();
@@ -4525,7 +4531,7 @@ class ChatController extends ChangeNotifier {
     }
 
     if (currentSession == null) {
-      final created = await newSession();
+      final created = await newSession(preserveDraft: true);
       if (!created || status == ConnectionStatus.error) {
         return ChatPromptSubmissionResult.sessionUnavailable;
       }
@@ -4553,7 +4559,7 @@ class ChatController extends ChangeNotifier {
     if (contentBlocks.isNotEmpty) {
       userMetadata['contentBlocks'] = contentBlocks;
     }
-    _addTurnMessage(
+    final provisionalUser = _addTurnMessage(
       ChatMessage(
         role: ChatMessageRole.user,
         text: prompt,
@@ -4601,6 +4607,9 @@ class ChatController extends ChangeNotifier {
           );
       return ChatPromptSubmissionResult.submitted;
     } catch (error) {
+      // The stream never admitted this request. Do not retain a duplicate user
+      // turn when the preserved composer is retried.
+      _mutateMessages(() => _messages.remove(provisionalUser));
       _handleAgentEvent(
         AgentEvent(type: AgentEventType.error, text: _messageForError(error)),
       );

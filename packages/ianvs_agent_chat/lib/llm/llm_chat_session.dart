@@ -37,7 +37,9 @@ class ChatTool {
 
 /// Each instance owns independent context, cancellation and permissions.
 /// Only completed turns enter future requests. Tools execute in the host.
-class LlmChatSession extends ChatSession with ChangeNotifier {
+class LlmChatSession extends ChatSession
+    with ChangeNotifier
+    implements ChatSubmissionSession {
   LlmChatSession({
     required this.client,
     String? sessionId,
@@ -95,7 +97,7 @@ class LlmChatSession extends ChatSession with ChangeNotifier {
     title: client.model,
     messages: UnmodifiableListView(_messages),
     messagesRevision: _revision,
-    enabled: !_disposed && (_active == null || _permission != null),
+    enabled: !_disposed,
     isSending: _active != null,
     permission: _permission,
     error: _error,
@@ -113,14 +115,35 @@ class LlmChatSession extends ChatSession with ChangeNotifier {
     inputBudget: inputBudget,
   );
 
+  final _submissions = ChatSubmissionLedger();
+
+  @override
+  Future<ChatSubmitResult> submit(ChatSubmission submission) =>
+      _submissions.submit(submission, () {
+        if (submission.sessionIdentity != state.identity) {
+          return const ChatSubmitResult.rejected('The conversation changed.');
+        }
+        if (submission.text.trim().isEmpty && submission.attachments.isEmpty) {
+          return const ChatSubmitResult.rejected('Enter a message.');
+        }
+        try {
+          unawaited(_start(submission.text, submission.attachments));
+          return const ChatSubmitResult.accepted();
+        } catch (error) {
+          return ChatSubmitResult.rejected('$error');
+        }
+      });
+
   @override
   Future<void> send(
     String text, {
     List<PromptAttachment> attachments = const [],
-  }) async {
+  }) async => await _start(text, attachments);
+
+  Future<void> _start(String text, List<PromptAttachment> attachments) {
     if (_disposed) throw StateError('Session is disposed.');
     if (_active != null) throw StateError('A response is already running.');
-    if (text.trim().isEmpty && attachments.isEmpty) return;
+    if (text.trim().isEmpty && attachments.isEmpty) return Future.value();
     final user = _userMessage(text, attachments);
     final system = <Map<String, Object?>>[
       if (systemPrompt.isNotEmpty) {'role': 'system', 'content': systemPrompt},
@@ -156,6 +179,17 @@ class LlmChatSession extends ChatSession with ChangeNotifier {
       ),
     );
     _notify();
+    return _generate(cancellation, turnId, system, history, working, retained);
+  }
+
+  Future<void> _generate(
+    ChatCancellation cancellation,
+    int turnId,
+    List<Map<String, Object?>> system,
+    List<Map<String, Object?>> history,
+    List<Map<String, Object?>> working,
+    List<List<Map<String, Object?>>> retained,
+  ) async {
     try {
       for (var round = 0; round <= maxToolRounds; round++) {
         cancellation.check();

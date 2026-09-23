@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'chat_session.dart';
+import 'chat_submission.dart';
+import 'chat_composer_controller.dart';
 import 'models/chat_message.dart';
 import 'models/chat_permission_request.dart';
 import 'ui/components/bounded_image_preview.dart';
@@ -21,6 +23,7 @@ class AgentChatView extends StatelessWidget {
     this.onTapLink,
     this.onNewSession,
     this.attachmentController,
+    this.composerController,
     this.pickAttachments,
     this.pickAttachmentsForKind,
     this.readClipboardImage,
@@ -33,6 +36,7 @@ class AgentChatView extends StatelessWidget {
     this.showError = true,
   });
   final ChatSession session;
+  final ChatComposerController? composerController;
   final MarkdownTapLinkCallback? onTapLink;
   final VoidCallback? onNewSession;
   final PromptAttachmentController? attachmentController;
@@ -71,6 +75,11 @@ class AgentChatView extends StatelessWidget {
       final composer = PromptInput(
         key: ValueKey(('composer', state.identity)),
         agentName: state.agentName,
+        composerController: composerController,
+        sessionIdentity: state.identity,
+        onSubmit: session is ChatSubmissionSession
+            ? (session as ChatSubmissionSession).submit
+            : null,
         enabled: state.enabled,
         isSending: state.isSending,
         promptAppearsStalled: state.promptAppearsStalled,
@@ -127,23 +136,35 @@ class AgentChatView extends StatelessWidget {
             _run(context, () => session.send(text, attachments: attachments)),
         onStop: () => _run(context, session.stop),
       );
-      return Column(
-        children: [
-          if (showError && state.error != null)
-            MaterialBanner(
-              content: Text(state.error!),
-              actions: [
-                TextButton(
-                  onPressed: () => _run(context, session.stop),
-                  child: const Text('Stop'),
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final composerHeight = constraints.hasBoundedHeight
+              ? constraints.maxHeight * 0.60
+              : 520.0;
+          return Column(
+            children: [
+              if (showError && state.error != null)
+                MaterialBanner(
+                  content: Text(state.error!),
+                  actions: [
+                    TextButton(
+                      onPressed: () => _run(context, session.stop),
+                      child: const Text('Stop'),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          Expanded(
-            child: timelineBuilder?.call(context, state, timeline) ?? timeline,
-          ),
-          composerBuilder?.call(context, state, composer) ?? composer,
-        ],
+              Expanded(
+                child:
+                    timelineBuilder?.call(context, state, timeline) ?? timeline,
+              ),
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: composerHeight),
+                child:
+                    composerBuilder?.call(context, state, composer) ?? composer,
+              ),
+            ],
+          );
+        },
       );
     },
   );

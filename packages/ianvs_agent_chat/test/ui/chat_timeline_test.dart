@@ -70,6 +70,50 @@ void main() {
       )
       .controller!;
 
+  testWidgets('reading older output pauses following until jump to latest', (
+    tester,
+  ) async {
+    final messages = List<_TestChatMessageData>.generate(
+      12,
+      (i) => _TestChatMessageData(
+        role: i.isEven ? ChatMessageRole.user : ChatMessageRole.assistant,
+        text: 'Message $i\n${List.filled(6, 'line').join('\n')}',
+      ),
+    );
+    Widget subject() => MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 420,
+          height: 400,
+          child: ChatTimeline(messages: messages),
+        ),
+      ),
+    );
+    await tester.pumpWidget(subject());
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('chat-timeline-list')),
+      const Offset(0, 220),
+    );
+    await tester.pumpAndSettle();
+    final controller = timelineScrollController(tester);
+    final before = controller.offset;
+    expect(controller.position.extentAfter, greaterThan(24));
+    messages.last.text += '\n${List.filled(15, 'streaming').join('\n')}';
+    messages.last.revision++;
+    await tester.pumpWidget(subject());
+    await tester.pumpAndSettle();
+    expect(controller.offset, moreOrLessEquals(before));
+    await tester.tap(find.byKey(const Key('chat-jump-to-latest')));
+    await tester.pumpAndSettle();
+    expect(controller.position.extentAfter, lessThan(1));
+    messages.last.text += '\nnext token';
+    messages.last.revision++;
+    await tester.pumpWidget(subject());
+    await tester.pumpAndSettle();
+    expect(controller.position.extentAfter, lessThan(1));
+  });
+
   testWidgets('ChatTimeline renders empty state', (tester) async {
     await tester.pumpWidget(timeline(const []));
 

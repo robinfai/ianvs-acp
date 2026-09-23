@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:ianvs_agent_chat/ianvs_agent_chat.dart'
+    show ChatNativeTextFieldScope;
 
 import 'config/acp_client_config.dart';
 import 'startup/acp_client_bootstrap.dart';
@@ -14,6 +16,11 @@ void main(List<String> args) {
     ...args,
   ]);
   runApp(
-    AcpClientBootstrap(configPath: configPath, startupOptions: startupOptions),
+    ChatNativeTextFieldScope(
+      child: AcpClientBootstrap(
+        configPath: configPath,
+        startupOptions: startupOptions,
+      ),
+    ),
   );
 }

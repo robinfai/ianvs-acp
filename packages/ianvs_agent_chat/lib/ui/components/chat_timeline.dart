@@ -6,6 +6,7 @@ import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:ianvs_markdown/ianvs_markdown.dart' as markdown;
 
 import '../../models/chat_input_budget.dart';
 import '../../models/chat_message.dart';
@@ -85,6 +86,8 @@ class _ChatTimelineState extends State<ChatTimeline> {
   late ChatImageDecodeBudgetLedger _imageDecodeLedger;
   int _activeTurnIndex = 0;
   int? _lockedTurnIndex;
+  bool _followingLatest = true;
+  bool _userScrolling = false;
   int _viewportAnchorTurnIndex = 0;
   int? _hoveredOutlineIndex;
   double? _hoveredMarkerGlobalY;
@@ -164,6 +167,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
             builder: (context, constraints) {
               final showNavigator =
                   outlineEntries.length > 1 && constraints.maxWidth >= 700;
+              final margin = constraints.maxWidth < 600 ? 12.0 : 32.0;
               final viewportAnchorTurnIndex = _viewportAnchorTurnIndex.clamp(
                 0,
                 turns.length - 1,
@@ -190,9 +194,9 @@ class _ChatTimelineState extends State<ChatTimeline> {
                       slivers: [
                         SliverPadding(
                           padding: EdgeInsets.fromLTRB(
-                            showNavigator ? 66 : 32,
+                            showNavigator ? 66 : margin,
                             28,
-                            32,
+                            margin,
                             0,
                           ),
                           sliver: SliverList.builder(
@@ -207,9 +211,9 @@ class _ChatTimelineState extends State<ChatTimeline> {
                         SliverPadding(
                           key: _timelineCenterSliverKey,
                           padding: EdgeInsets.fromLTRB(
-                            showNavigator ? 66 : 32,
+                            showNavigator ? 66 : margin,
                             0,
-                            32,
+                            margin,
                             28,
                           ),
                           sliver: SliverList.builder(
@@ -253,6 +257,23 @@ class _ChatTimelineState extends State<ChatTimeline> {
                           outlineEntries[index].turnIndex,
                           turns,
                         ),
+                      ),
+                    ),
+                  if (!_followingLatest || _lockedTurnIndex != null)
+                    Positioned(
+                      right: 16,
+                      bottom: 12,
+                      child: FilledButton.tonalIcon(
+                        key: const Key('chat-jump-to-latest'),
+                        onPressed: () {
+                          setState(() {
+                            _followingLatest = true;
+                            _lockedTurnIndex = null;
+                          });
+                          _scheduleScrollToBottom();
+                        },
+                        icon: const Icon(Icons.arrow_downward, size: 16),
+                        label: const Text('Jump to latest'),
                       ),
                     ),
                   if (showNavigator)
@@ -385,18 +406,38 @@ class _ChatTimelineState extends State<ChatTimeline> {
   }
 
   bool _handleTimelineScrollNotification(ScrollNotification notification) {
-    if (_lockedTurnIndex == null) return false;
-    final isDirectDrag =
+    // Nested code blocks and tool details have their own scroll positions.
+    if (notification.depth != 0) return false;
+    final directDrag =
         notification is ScrollStartNotification &&
         notification.dragDetails != null;
-    final isUserDirection =
+    final userDirection =
         notification is UserScrollNotification &&
         notification.direction != ScrollDirection.idle;
-    if (!isDirectDrag && !isUserDirection) return false;
-    setState(() => _lockedTurnIndex = null);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _syncActiveTurnFromScroll();
-    });
+    if (directDrag || userDirection) _userScrolling = true;
+    if (notification is ScrollEndNotification) _userScrolling = false;
+    if (!_userScrolling) return false;
+    var following = _followingLatest;
+    if (notification is UserScrollNotification) {
+      if (notification.direction == ScrollDirection.forward) following = false;
+      if (notification.direction == ScrollDirection.reverse &&
+          notification.metrics.extentAfter <= 24) {
+        following = true;
+      }
+    }
+    if (notification is ScrollUpdateNotification) {
+      if ((notification.scrollDelta ?? 0) < 0) following = false;
+      if ((notification.scrollDelta ?? 0) > 0 &&
+          notification.metrics.extentAfter <= 24) {
+        following = true;
+      }
+    }
+    if (_lockedTurnIndex != null || following != _followingLatest) {
+      setState(() {
+        _lockedTurnIndex = null;
+        _followingLatest = following;
+      });
+    }
     return false;
   }
 
@@ -405,6 +446,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
     final targetIndex = index.clamp(0, turns.length - 1);
     if (_lockedTurnIndex == targetIndex) return;
     setState(() {
+      _followingLatest = false;
       _viewportAnchorTurnIndex = targetIndex;
       _lockedTurnIndex = targetIndex;
       _activeTurnIndex = targetIndex;
@@ -430,7 +472,7 @@ class _ChatTimelineState extends State<ChatTimeline> {
   void _scheduleScrollToBottom({int remainingPasses = 2}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
-      if (_lockedTurnIndex != null) return;
+      if (_lockedTurnIndex != null || !_followingLatest) return;
       final position = _scrollController.position;
       if (!position.hasContentDimensions) {
         _scheduleScrollToBottom(remainingPasses: remainingPasses);
@@ -1927,9 +1969,53 @@ class _SelectableMessageMarkdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final markdown = MarkdownBody(
+    final colors = ChatTheme.of(context);
+    final budget = _ImageDecodeScope.of(context).inputBudget;
+    final body = markdown.IanvsMarkdown(
       data: data,
+      syntaxPreset: markdown.IanvsMarkdownSyntaxPreset.standard,
       selectable: true,
+      documentSelection: false,
+      fitContent: true,
+      theme: markdown.IanvsMarkdownThemeData(
+        surface: colors.surface,
+        surfaceMuted: colors.surfaceMuted,
+        surfaceRaised: colors.surfaceRaised,
+        surfaceHover: colors.surfaceHover,
+        border: colors.border,
+        borderSoft: colors.borderSoft,
+        textPrimary: colors.textPrimary,
+        textSecondary: colors.textSecondary,
+        textTertiary: colors.textTertiary,
+        accent: colors.accent,
+        accentDark: colors.accentDark,
+        accentSoft: colors.accentSoft,
+        accentMist: colors.accentMist,
+        error: colors.danger,
+        monoFontFamily: context.ianvsTypography.code.fontFamily ?? 'monospace',
+        monoFontFamilyFallback:
+            context.ianvsTypography.code.fontFamilyFallback ?? const [],
+      ),
+      renderBudget: markdown.IanvsMarkdownRenderBudget(
+        maxSyntaxTokens: budget.maxMarkdownSyntaxTokens,
+        maxFallbackBytes: budget.maxMarkdownFallbackBytes,
+      ),
+      fallbackBuilder: (context, decision) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SelectableText(decision.text, style: styleSheet.p),
+          _InputOmissionNotice(
+            user: user,
+            omission: ChatInputOmission(
+              reason: ChatInputOmissionReason.inputLimit,
+              resource: 'markdown syntax tokens',
+              truncated: true,
+              limit: budget.maxMarkdownSyntaxTokens,
+              observedAtLeast: decision.syntaxTokens,
+            ),
+          ),
+        ],
+      ),
       softLineBreak: user,
       styleSheet: styleSheet,
       onTapLink: onTapLink,
@@ -1941,7 +2027,7 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       },
     );
 
-    if (!user) return markdown;
+    if (!user) return body;
 
     return TextSelectionTheme(
       data: TextSelectionTheme.of(context).copyWith(
@@ -1952,7 +2038,7 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       child: DefaultSelectionStyle(
         cursorColor: ChatTheme.of(context).accent,
         selectionColor: ChatTheme.of(context).accent.withValues(alpha: .24),
-        child: markdown,
+        child: body,
       ),
     );
   }

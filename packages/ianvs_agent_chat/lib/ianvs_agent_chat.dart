@@ -1,5 +1,7 @@
 export 'agent_chat_view.dart';
 export 'chat_session.dart';
+export 'chat_composer_controller.dart';
+export 'chat_submission.dart';
 export 'models/chat_capabilities.dart';
 export 'models/chat_input_budget.dart';
 export 'models/chat_message.dart';
@@ -14,3 +16,4 @@ export 'chat_theme.dart';
 export 'models/chat_content.dart';
 export 'callback_chat_session.dart';
 export 'chat_strings.dart';
+export 'ui/components/accessible_text_field.dart' show ChatNativeTextFieldScope;

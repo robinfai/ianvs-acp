@@ -1,4 +1,6 @@
 import '../../chat_strings.dart';
+import '../../chat_composer_controller.dart';
+import '../../chat_submission.dart';
 import '../../chat_theme.dart';
 import 'dart:async';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
@@ -85,7 +87,10 @@ class PromptInput extends StatefulWidget {
     this.enabled = true,
     required this.isSending,
     this.promptAppearsStalled = false,
-    required this.onSend,
+    this.onSend,
+    this.onSubmit,
+    this.composerController,
+    this.sessionIdentity,
     required this.onStop,
     this.showAttachmentControl = true,
     this.showExecutionPolicy = true,
@@ -122,7 +127,7 @@ class PromptInput extends StatefulWidget {
     this.onClearQueuedPrompts,
     this.onReorderQueuedPrompt,
     this.inputBudget = const ChatInputBudget(),
-  });
+  }) : assert(onSend != null || onSubmit != null);
 
   final bool canQueueWhileSending;
   final bool showAttachmentControl;
@@ -131,7 +136,10 @@ class PromptInput extends StatefulWidget {
   final bool enabled;
   final bool isSending;
   final bool promptAppearsStalled;
-  final PromptSendCallback onSend;
+  final PromptSendCallback? onSend;
+  final Future<ChatSubmitResult> Function(ChatSubmission)? onSubmit;
+  final ChatComposerController? composerController;
+  final Object? sessionIdentity;
   final VoidCallback onStop;
   final List<Map<String, Object?>> availableCommands;
   final int availableCommandsRevision;
@@ -171,7 +179,13 @@ class PromptInput extends StatefulWidget {
 }
 
 class _PromptInputState extends State<PromptInput> {
-  final TextEditingController _controller = TextEditingController();
+  late ChatComposerController _draft;
+  TextEditingController get _controller => _draft.editingController;
+  Object get _sessionIdentity => widget.sessionIdentity ?? this;
+  int _clearGeneration = 0;
+  String _lastDraftText = "";
+  String? _pendingSubmission;
+  static int _nextSubmission = 0;
   final List<PromptAttachment> _attachments = <PromptAttachment>[];
   int? _historyIndex;
   bool _isDraggingAttachments = false;
@@ -184,6 +198,7 @@ class _PromptInputState extends State<PromptInput> {
   @override
   void initState() {
     super.initState();
+    _attachDraft();
     widget.attachmentController?._attach(this);
     widget.inputBudget.validate();
     _commandQuery = _scanBoundedCommandQuery(
@@ -193,9 +208,46 @@ class _PromptInputState extends State<PromptInput> {
     _rebuildCommandSearchEntries();
   }
 
+  void _attachDraft() {
+    _draft = widget.composerController ?? ChatComposerController();
+    _draft.bindSession(_sessionIdentity);
+    _clearGeneration = _draft.clearGeneration;
+    _lastDraftText = _draft.text;
+    _draft.addListener(_handleDraftChanged);
+  }
+
+  void _handleDraftChanged() {
+    if (!mounted) return;
+    if (_lastDraftText != _draft.text) {
+      _lastDraftText = _draft.text;
+      _historyIndex = null;
+    }
+    if (_clearGeneration != _draft.clearGeneration) {
+      _clearGeneration = _draft.clearGeneration;
+      _attachments.clear();
+      _historyIndex = null;
+    }
+    _commandQuery = _scanBoundedCommandQuery(
+      _controller.text,
+      budget: widget.inputBudget,
+    );
+    setState(() {});
+  }
+
   @override
   void didUpdateWidget(covariant PromptInput oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.composerController, widget.composerController)) {
+      _draft.removeListener(_handleDraftChanged);
+      if (oldWidget.composerController == null) _draft.dispose();
+      _attachments.clear();
+      _historyIndex = null;
+      _pendingSubmission = null;
+      _attachDraft();
+    } else if (oldWidget.sessionIdentity != widget.sessionIdentity) {
+      _pendingSubmission = null;
+      _draft.bindSession(_sessionIdentity);
+    }
     if (!identical(
       widget.attachmentController,
       oldWidget.attachmentController,
@@ -228,6 +280,7 @@ class _PromptInputState extends State<PromptInput> {
         _attachments.removeWhere(
           (attachment) => attachment.isInline && attachment.isImage,
         );
+        _draft.markDraftChanged();
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -247,6 +300,7 @@ class _PromptInputState extends State<PromptInput> {
   }
 
   bool get _canSend =>
+      _pendingSubmission == null &&
       (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
       widget.enabled &&
       (!widget.isSending || widget.canQueueWhileSending);
@@ -347,253 +401,274 @@ class _PromptInputState extends State<PromptInput> {
   @override
   void dispose() {
     widget.attachmentController?._detach(this);
-    _controller.dispose();
+    _draft.removeListener(_handleDraftChanged);
+    if (widget.composerController == null) _draft.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    final commandSuggestions = _commandSuggestions;
-    final commandParameterPreviews = _parameterPreviewsFor(commandSuggestions);
-    final pendingPermissionRequest = widget.pendingPermissionRequest;
-    final viewportHeight = MediaQuery.sizeOf(context).height;
-    final maximumContentHeight = (viewportHeight * 0.552)
-        .clamp(220.0, 520.0)
-        .toDouble();
-    return Container(
-      color: ChatTheme.of(context).surface,
-      padding: EdgeInsets.fromLTRB(20, 8, 20, 18),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 800,
-            maxHeight: maximumContentHeight,
-          ),
-          child: SingleChildScrollView(
-            key: Key('prompt-input-overflow-scroll'),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (widget.promptAppearsStalled) ...[
-                  _PromptIdleWarning(onStop: widget.onStop),
-                  SizedBox(height: 8),
-                ],
-                if (widget.queuedPrompts.isNotEmpty) ...[
-                  _PromptQueueTray(
-                    prompts: widget.queuedPrompts,
-                    onGuide: widget.onGuideQueuedPrompt,
-                    onRemove: widget.onRemoveQueuedPrompt,
-                    onClear: widget.onClearQueuedPrompts,
-                    onReorder: widget.onReorderQueuedPrompt,
-                  ),
-                  SizedBox(height: 8),
-                ],
-                CallbackShortcuts(
-                  bindings:
-                      widget.promptCapabilities?.image == true && widget.enabled
-                      ? <ShortcutActivator, VoidCallback>{
-                          SingleActivator(
-                            LogicalKeyboardKey.keyV,
-                            meta: true,
-                          ): () =>
-                              unawaited(_pasteClipboardImageOrText()),
-                          SingleActivator(
-                            LogicalKeyboardKey.keyV,
-                            control: true,
-                          ): () =>
-                              unawaited(_pasteClipboardImageOrText()),
-                        }
-                      : <ShortcutActivator, VoidCallback>{},
-                  child: DropTarget(
-                    key: Key('prompt-input-drop-target'),
-                    enable:
-                        widget.attachmentController == null && widget.enabled,
-                    onDragEntered: _handleAttachmentDragEntered,
-                    onDragExited: _handleAttachmentDragExited,
-                    onDragDone: _handleAttachmentDrop,
-                    child: AnimatedContainer(
-                      key: Key('prompt-input-surface'),
-                      duration: Duration(milliseconds: 120),
-                      constraints: BoxConstraints(minHeight: 112),
-                      decoration: BoxDecoration(
-                        color: _isDraggingAttachments
-                            ? ChatTheme.of(context).accentMist
-                            : ChatTheme.of(context).surfaceRaised,
-                        borderRadius: BorderRadius.circular(22),
-                        border: Border.all(
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final commandSuggestions = _commandSuggestions;
+      final commandParameterPreviews = _parameterPreviewsFor(
+        commandSuggestions,
+      );
+      final pendingPermissionRequest = widget.pendingPermissionRequest;
+      final maximumContentHeight = constraints.hasBoundedHeight
+          ? math.max(0.0, math.min(520.0, constraints.maxHeight - 26))
+          : 520.0;
+      final horizontalPadding = constraints.maxWidth < 600 ? 12.0 : 20.0;
+      return Container(
+        color: ChatTheme.of(context).surface,
+        padding: EdgeInsets.fromLTRB(
+          horizontalPadding,
+          8,
+          horizontalPadding,
+          18,
+        ),
+        child: Center(
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: ChatTheme.of(context).contentMaxWidth,
+              maxHeight: maximumContentHeight,
+            ),
+            child: SingleChildScrollView(
+              key: Key('prompt-input-overflow-scroll'),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.promptAppearsStalled) ...[
+                    _PromptIdleWarning(onStop: widget.onStop),
+                    SizedBox(height: 8),
+                  ],
+                  if (widget.queuedPrompts.isNotEmpty) ...[
+                    _PromptQueueTray(
+                      prompts: widget.queuedPrompts,
+                      onGuide: widget.onGuideQueuedPrompt,
+                      onRemove: widget.onRemoveQueuedPrompt,
+                      onClear: widget.onClearQueuedPrompts,
+                      onReorder: widget.onReorderQueuedPrompt,
+                    ),
+                    SizedBox(height: 8),
+                  ],
+                  CallbackShortcuts(
+                    bindings:
+                        widget.promptCapabilities?.image == true &&
+                            widget.enabled
+                        ? <ShortcutActivator, VoidCallback>{
+                            SingleActivator(
+                              LogicalKeyboardKey.keyV,
+                              meta: true,
+                            ): () =>
+                                unawaited(_pasteClipboardImageOrText()),
+                            SingleActivator(
+                              LogicalKeyboardKey.keyV,
+                              control: true,
+                            ): () =>
+                                unawaited(_pasteClipboardImageOrText()),
+                          }
+                        : <ShortcutActivator, VoidCallback>{},
+                    child: DropTarget(
+                      key: Key('prompt-input-drop-target'),
+                      enable:
+                          widget.attachmentController == null && widget.enabled,
+                      onDragEntered: _handleAttachmentDragEntered,
+                      onDragExited: _handleAttachmentDragExited,
+                      onDragDone: _handleAttachmentDrop,
+                      child: AnimatedContainer(
+                        key: Key('prompt-input-surface'),
+                        duration: Duration(milliseconds: 120),
+                        constraints: BoxConstraints(minHeight: 112),
+                        decoration: BoxDecoration(
                           color: _isDraggingAttachments
-                              ? ChatTheme.of(context).accent
-                              : ChatTheme.of(
-                                  context,
-                                ).borderSoft.withValues(alpha: .7),
-                          width: _isDraggingAttachments ? 2 : .75,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(
-                              alpha:
-                                  Theme.of(context).brightness ==
-                                      Brightness.dark
-                                  ? .16
-                                  : (_isDraggingAttachments ? .08 : .035),
+                              ? ChatTheme.of(context).accentMist
+                              : ChatTheme.of(context).surfaceRaised,
+                          borderRadius: BorderRadius.circular(22),
+                          border: Border.all(
+                            color: _isDraggingAttachments
+                                ? ChatTheme.of(context).accent
+                                : ChatTheme.of(
+                                    context,
+                                  ).borderSoft.withValues(alpha: .7),
+                            width: _isDraggingAttachments ? 2 : .75,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(
+                                alpha:
+                                    Theme.of(context).brightness ==
+                                        Brightness.dark
+                                    ? .16
+                                    : (_isDraggingAttachments ? .08 : .035),
+                              ),
+                              blurRadius: _isDraggingAttachments ? 24 : 18,
+                              offset: Offset(0, 3),
                             ),
-                            blurRadius: _isDraggingAttachments ? 24 : 18,
-                            offset: Offset(0, 3),
-                          ),
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: .02),
-                            blurRadius: 2,
-                            offset: Offset(0, 1),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (_isDraggingAttachments)
-                                _AttachmentDropIndicator(
-                                  kinds: _availableAttachmentKinds(
-                                    widget.promptCapabilities,
-                                  ),
-                                ),
-                              if (pendingPermissionRequest != null)
-                                Padding(
-                                  padding: EdgeInsets.fromLTRB(8, 8, 8, 6),
-                                  child: _PromptPermissionCard(
-                                    request: pendingPermissionRequest,
-                                    onAllow: widget.onAllowPermission,
-                                    onDeny: widget.onDenyPermission,
-                                    onCancel: widget.onCancelPermission,
-                                    onSelectOption:
-                                        widget.onSelectPermissionOption,
-                                  ),
-                                ),
-                              if (commandSuggestions.isNotEmpty)
-                                _CommandSuggestionPanel(
-                                  entries: commandSuggestions,
-                                  parameterPreviews: commandParameterPreviews,
-                                  onSelect: _insertCommand,
-                                ),
-                              if (_attachments.isNotEmpty)
-                                _AttachmentTray(
-                                  attachments: _attachments,
-                                  promptCapabilities: widget.promptCapabilities,
-                                  onRemove: _removeAttachment,
-                                ),
-                              if (_attachments.any(
-                                    (attachment) => attachment.isImage,
-                                  ) &&
-                                  widget.imageAttachmentLimitation != null)
-                                _ImageAttachmentLimitationNotice(
-                                  message: widget.imageAttachmentLimitation!,
-                                ),
-                              AccessibleTextField(
-                                label: 'Prompt message for ${widget.agentName}',
-                                description:
-                                    'Write a prompt to ${widget.agentName}',
-                                controller: _controller,
-                                enabled: widget.enabled,
-                                multiline: true,
-                                onChanged: _handlePromptChanged,
-                                builder: (focusNode) => Focus(
-                                  canRequestFocus: false,
-                                  skipTraversal: true,
-                                  onKeyEvent: _handlePromptKeyEvent,
-                                  child: TextField(
-                                    controller: _controller,
-                                    focusNode: focusNode,
-                                    minLines: 1,
-                                    maxLines: 6,
-                                    keyboardType: TextInputType.multiline,
-                                    enabled: widget.enabled,
-                                    onChanged: _handlePromptChanged,
-                                    style: TextStyle(
-                                      color: ChatTheme.of(context).textPrimary,
-                                      fontSize: 15,
-                                      height: 1.48,
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: .02),
+                              blurRadius: 2,
+                              offset: Offset(0, 1),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_isDraggingAttachments)
+                                  _AttachmentDropIndicator(
+                                    kinds: _availableAttachmentKinds(
+                                      widget.promptCapabilities,
                                     ),
-                                    decoration: InputDecoration(
-                                      hint: ExcludeSemantics(
-                                        child: Text(
-                                          ChatStrings.of(
+                                  ),
+                                if (pendingPermissionRequest != null)
+                                  Padding(
+                                    padding: EdgeInsets.fromLTRB(8, 8, 8, 6),
+                                    child: _PromptPermissionCard(
+                                      request: pendingPermissionRequest,
+                                      onAllow: widget.onAllowPermission,
+                                      onDeny: widget.onDenyPermission,
+                                      onCancel: widget.onCancelPermission,
+                                      onSelectOption:
+                                          widget.onSelectPermissionOption,
+                                    ),
+                                  ),
+                                if (commandSuggestions.isNotEmpty)
+                                  _CommandSuggestionPanel(
+                                    entries: commandSuggestions,
+                                    parameterPreviews: commandParameterPreviews,
+                                    onSelect: _insertCommand,
+                                  ),
+                                if (_attachments.isNotEmpty)
+                                  _AttachmentTray(
+                                    attachments: _attachments,
+                                    promptCapabilities:
+                                        widget.promptCapabilities,
+                                    onRemove: _removeAttachment,
+                                  ),
+                                if (_attachments.any(
+                                      (attachment) => attachment.isImage,
+                                    ) &&
+                                    widget.imageAttachmentLimitation != null)
+                                  _ImageAttachmentLimitationNotice(
+                                    message: widget.imageAttachmentLimitation!,
+                                  ),
+                                AccessibleTextField(
+                                  label:
+                                      'Prompt message for ${widget.agentName}',
+                                  description:
+                                      'Write a prompt to ${widget.agentName}',
+                                  controller: _controller,
+                                  focusNode: _draft.focusNode,
+                                  enabled:
+                                      widget.enabled ||
+                                      _pendingSubmission != null,
+                                  multiline: true,
+                                  onChanged: _handlePromptChanged,
+                                  builder: (focusNode) => Focus(
+                                    canRequestFocus: false,
+                                    skipTraversal: true,
+                                    onKeyEvent: _handlePromptKeyEvent,
+                                    child: TextField(
+                                      controller: _controller,
+                                      focusNode: focusNode,
+                                      minLines: 1,
+                                      maxLines: 6,
+                                      keyboardType: TextInputType.multiline,
+                                      enabled:
+                                          widget.enabled ||
+                                          _pendingSubmission != null,
+                                      onChanged: _handlePromptChanged,
+                                      style: TextStyle(
+                                        color: ChatTheme.of(
+                                          context,
+                                        ).textPrimary,
+                                        fontSize: 15,
+                                        height: 1.48,
+                                      ),
+                                      decoration: InputDecoration(
+                                        hint: ExcludeSemantics(
+                                          child: Text(
+                                            ChatStrings.of(context)?.promptHint(
+                                                  widget.agentName,
+                                                ) ??
+                                                '发送消息给 ${widget.agentName}',
+                                            style: TextStyle(
+                                              color: ChatTheme.of(
                                                 context,
-                                              )?.promptHint(widget.agentName) ??
-                                              '发送消息给 ${widget.agentName}',
-                                          style: TextStyle(
-                                            color: ChatTheme.of(
-                                              context,
-                                            ).textTertiary,
-                                            fontSize: 15,
-                                            fontWeight: FontWeight.w400,
+                                              ).textTertiary,
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w400,
+                                            ),
                                           ),
                                         ),
+                                        filled: false,
+                                        isCollapsed: true,
+                                        contentPadding: EdgeInsets.fromLTRB(
+                                          15,
+                                          14,
+                                          15,
+                                          16,
+                                        ),
+                                        border: InputBorder.none,
+                                        enabledBorder: InputBorder.none,
+                                        focusedBorder: InputBorder.none,
+                                        disabledBorder: InputBorder.none,
                                       ),
-                                      filled: false,
-                                      isCollapsed: true,
-                                      contentPadding: EdgeInsets.fromLTRB(
-                                        15,
-                                        14,
-                                        15,
-                                        16,
-                                      ),
-                                      border: InputBorder.none,
-                                      enabledBorder: InputBorder.none,
-                                      focusedBorder: InputBorder.none,
-                                      disabledBorder: InputBorder.none,
                                     ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                          Padding(
-                            padding: EdgeInsets.fromLTRB(10, 0, 10, 10),
-                            child: _ComposerControlBar(
-                              enabled: widget.enabled,
-                              isSending: widget.isSending,
-                              canSend: _canSend,
-                              onPickAttachments: widget.showAttachmentControl
-                                  ? _pickAttachments
-                                  : null,
-                              showExecutionPolicy: widget.showExecutionPolicy,
-                              promptCapabilities: widget.promptCapabilities,
-                              pendingPermissionRequest:
-                                  pendingPermissionRequest,
-                              toolCallExecutionPolicy:
-                                  widget.toolCallExecutionPolicy,
-                              hasPermissionReviewer:
-                                  widget.hasPermissionReviewer,
-                              onToolCallExecutionPolicyChanged:
-                                  widget.onToolCallExecutionPolicyChanged,
-                              modelOption: widget.modelOption,
-                              reasoningEffortOption:
-                                  widget.reasoningEffortOption,
-                              onModelSelected: widget.onModelSelected,
-                              onReasoningEffortSelected:
-                                  widget.onReasoningEffortSelected,
-                              configOptions: widget.configOptions,
-                              onConfigOptionSelected:
-                                  widget.onConfigOptionSelected,
-                              onSend: _submit,
-                              onStop: widget.onStop,
+                              ],
                             ),
-                          ),
-                        ],
+                            Padding(
+                              padding: EdgeInsets.fromLTRB(10, 0, 10, 10),
+                              child: _ComposerControlBar(
+                                enabled: widget.enabled,
+                                isSending: widget.isSending,
+                                canSend: _canSend,
+                                onPickAttachments: widget.showAttachmentControl
+                                    ? _pickAttachments
+                                    : null,
+                                showExecutionPolicy: widget.showExecutionPolicy,
+                                promptCapabilities: widget.promptCapabilities,
+                                pendingPermissionRequest:
+                                    pendingPermissionRequest,
+                                toolCallExecutionPolicy:
+                                    widget.toolCallExecutionPolicy,
+                                hasPermissionReviewer:
+                                    widget.hasPermissionReviewer,
+                                onToolCallExecutionPolicyChanged:
+                                    widget.onToolCallExecutionPolicyChanged,
+                                modelOption: widget.modelOption,
+                                reasoningEffortOption:
+                                    widget.reasoningEffortOption,
+                                onModelSelected: widget.onModelSelected,
+                                onReasoningEffortSelected:
+                                    widget.onReasoningEffortSelected,
+                                configOptions: widget.configOptions,
+                                onConfigOptionSelected:
+                                    widget.onConfigOptionSelected,
+                                onSend: _submit,
+                                onStop: widget.onStop,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
-      ),
-    );
-  }
+      );
+    },
+  );
 
   KeyEventResult _handlePromptKeyEvent(FocusNode node, KeyEvent event) {
     if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
@@ -611,16 +686,44 @@ class _PromptInputState extends State<PromptInput> {
     return KeyEventResult.handled;
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     if (!_canSend) return;
-    final text = _controller.text;
-    final attachments = List<PromptAttachment>.unmodifiable(_attachments);
-    widget.onSend(text, attachments);
-    _controller.clear();
-    _historyIndex = null;
-    _commandQuery = null;
-    _attachments.clear();
-    setState(() {});
+    final submit = widget.onSubmit;
+    if (submit == null) {
+      // Legacy void callback retains its original immediate-clear semantics.
+      widget.onSend!(_controller.text, List.unmodifiable(_attachments));
+      _draft.clear();
+      return;
+    }
+    final draft = _draft;
+    final submission = ChatSubmission(
+      id: 'chat-${DateTime.now().microsecondsSinceEpoch}-${_nextSubmission++}',
+      sessionIdentity: _sessionIdentity,
+      draftRevision: draft.revision,
+      text: draft.text,
+      attachments: _attachments,
+    );
+    setState(() => _pendingSubmission = submission.id);
+    ChatSubmitResult result;
+    try {
+      result = await submit(submission);
+    } catch (error) {
+      result = ChatSubmitResult.rejected('$error');
+    }
+    if (!mounted ||
+        _pendingSubmission != submission.id ||
+        !identical(draft, _draft) ||
+        _sessionIdentity != submission.sessionIdentity) {
+      return;
+    }
+    setState(() => _pendingSubmission = null);
+    if (result.isAccepted) {
+      if (draft.revision == submission.draftRevision) draft.clear();
+    } else {
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text(result.message!)));
+    }
   }
 
   void _insertCommand(_CommandSearchEntry entry) {
@@ -694,10 +797,12 @@ class _PromptInputState extends State<PromptInput> {
   }
 
   void _showHistoryText(String text) {
+    final historyIndex = _historyIndex;
     _controller.value = TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
     );
+    _historyIndex = historyIndex;
     _commandQuery = _scanBoundedCommandQuery(text, budget: widget.inputBudget);
     setState(() {});
   }
@@ -787,6 +892,7 @@ class _PromptInputState extends State<PromptInput> {
 
   void _addAttachments(Iterable<PromptAttachment> selected) {
     if (!mounted || !widget.enabled) return;
+    final before = _attachments.length;
     setState(() {
       for (final attachment in selected) {
         final duplicate = _attachments.any(
@@ -795,12 +901,14 @@ class _PromptInputState extends State<PromptInput> {
         if (!duplicate) _attachments.add(attachment);
       }
     });
+    if (_attachments.length != before) _draft.markDraftChanged();
   }
 
   void _removeAttachment(PromptAttachment attachment) {
     setState(() {
       _attachments.removeWhere((item) => item.identity == attachment.identity);
     });
+    _draft.markDraftChanged();
   }
 
   void _setExternalAttachmentDragging(bool value) {
@@ -2367,6 +2475,7 @@ class _AdaptiveSessionConfigSelectorState
   final OverlayPortalController _advancedOverlayController =
       OverlayPortalController();
   final LayerLink _advancedOverlayLink = LayerLink();
+  final GlobalKey _advancedAnchorKey = GlobalKey();
   final Object _advancedTapRegionGroup = Object();
   bool _advancedExpanded = false;
   double? _effortPreviewIndex;
@@ -2376,11 +2485,10 @@ class _AdaptiveSessionConfigSelectorState
     final model = _firstOption((option) => option.isModelOption);
     final effort = _firstOption((option) => option.isReasoningEffortOption);
     final fast = _firstOption((option) => option.isFastOption);
-    final primaryOptions = <ChatConfigOption?>[
-      model,
-      effort,
-      fast,
-    ].whereType<ChatConfigOption>().toList(growable: false);
+    final menuOptions = <ChatConfigOption>[
+      for (final option in widget.options)
+        if (option.id != model?.id && option.id != effort?.id) option,
+    ];
     final labels = <String>[
       if (model != null) model.currentChoiceLabel,
       if (effort != null) effort.currentChoiceLabel,
@@ -2391,20 +2499,38 @@ class _AdaptiveSessionConfigSelectorState
         (effort != null && effort.options.length > 1) || fast != null;
 
     return CompositedTransformTarget(
+      key: _advancedAnchorKey,
       link: _advancedOverlayLink,
       child: TapRegion(
         groupId: _advancedTapRegionGroup,
         child: OverlayPortal(
           controller: _advancedOverlayController,
           overlayChildBuilder: (context) {
+            final anchor = _advancedAnchorKey.currentContext
+                ?.findRenderObject();
+            final screen = MediaQuery.of(context);
+            final top = anchor is RenderBox
+                ? anchor.localToGlobal(Offset.zero).dy
+                : screen.size.height;
+            final bottom = top + (anchor is RenderBox ? anchor.size.height : 0);
+            final above = math.max(0.0, top - screen.padding.top - 8);
+            final below = math.max(
+              0.0,
+              screen.size.height - screen.viewInsets.bottom - bottom - 8,
+            );
+            final openAbove = above >= 260 || above >= below;
             return Stack(
               children: [
                 CompositedTransformFollower(
                   link: _advancedOverlayLink,
                   showWhenUnlinked: false,
-                  targetAnchor: Alignment.topRight,
-                  followerAnchor: Alignment.bottomRight,
-                  offset: Offset(0, -8),
+                  targetAnchor: openAbove
+                      ? Alignment.topRight
+                      : Alignment.bottomRight,
+                  followerAnchor: openAbove
+                      ? Alignment.bottomRight
+                      : Alignment.topRight,
+                  offset: Offset(0, openAbove ? -8 : 8),
                   child: TapRegion(
                     key: Key('prompt-session-config-advanced-overlay-region'),
                     groupId: _advancedTapRegionGroup,
@@ -2412,32 +2538,41 @@ class _AdaptiveSessionConfigSelectorState
                     onTapOutside: (_) => _closeAdvancedOverlay(),
                     child: Material(
                       type: MaterialType.transparency,
-                      child: _SessionConfigAdvancedPanel(
-                        modelLabel: model == null
-                            ? ''
-                            : _currentOptionLabel(model),
-                        effort: effort,
-                        fast: fast,
-                        enabled: widget.enabled,
-                        effortPreviewIndex: _effortPreviewIndex,
-                        onBack: _showPrimaryMenuFromAdvanced,
-                        onEffortPreviewChanged: (value) {
-                          setState(() => _effortPreviewIndex = value);
-                        },
-                        onEffortChanged: (value) {
-                          if (effort == null || effort.options.isEmpty) return;
-                          final index = value
-                              .round()
-                              .clamp(0, effort.options.length - 1)
-                              .toInt();
-                          widget.onSelected?.call(
-                            effort.id,
-                            effort.options[index].value,
-                          );
-                        },
-                        onFastToggle: fast == null
-                            ? null
-                            : () => _toggleFast(fast),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: openAbove ? above : below,
+                        ),
+                        child: SingleChildScrollView(
+                          child: _SessionConfigAdvancedPanel(
+                            modelLabel: model == null
+                                ? ''
+                                : _currentOptionLabel(model),
+                            effort: effort,
+                            fast: fast,
+                            enabled: widget.enabled,
+                            effortPreviewIndex: _effortPreviewIndex,
+                            onBack: _showPrimaryMenuFromAdvanced,
+                            onEffortPreviewChanged: (value) {
+                              setState(() => _effortPreviewIndex = value);
+                            },
+                            onEffortChanged: (value) {
+                              if (effort == null || effort.options.isEmpty) {
+                                return;
+                              }
+                              final index = value
+                                  .round()
+                                  .clamp(0, effort.options.length - 1)
+                                  .toInt();
+                              widget.onSelected?.call(
+                                effort.id,
+                                effort.options[index].value,
+                              );
+                            },
+                            onFastToggle: fast == null
+                                ? null
+                                : () => _toggleFast(fast),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -2458,10 +2593,10 @@ class _AdaptiveSessionConfigSelectorState
                 _SessionConfigSubmenuHeader(label: 'Select model'),
                 ..._choiceMenuEntries(model),
               ],
-              for (final option in primaryOptions)
-                if (!option.isModelOption && !option.isReasoningEffortOption)
-                  _configSubmenu(option, buttonWidth: 256),
-              if (primaryOptions.isNotEmpty && hasAdvancedControls)
+              for (final option in menuOptions)
+                _configSubmenu(option, buttonWidth: 256),
+              if ((model != null || menuOptions.isNotEmpty) &&
+                  hasAdvancedControls)
                 Divider(height: 9, indent: 10, endIndent: 10),
               if (hasAdvancedControls)
                 MenuItemButton(

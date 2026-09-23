@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_chat/chat_submission.dart';
 import 'package:ianvs_agent_chat/chat_session.dart';
 import 'package:ianvs_agent_chat/models/chat_capabilities.dart';
 import 'package:ianvs_agent_chat/models/chat_permission_request.dart';
@@ -9,9 +10,42 @@ import '../state/chat_controller.dart';
 
 /// Zero-copy bridge over the existing ACP controller. The application retains
 /// controller ownership, replay transactions, queueing, permissions and cache.
-class AcpChatSession extends ChatSession {
+class AcpChatSession extends ChatSession implements ChatSubmissionSession {
   AcpChatSession(this.controller);
   final ChatController controller;
+  static final _ledgers = Expando<ChatSubmissionLedger>();
+
+  @override
+  Future<ChatSubmitResult> submit(ChatSubmission submission) {
+    final ledger = _ledgers[controller] ??= ChatSubmissionLedger();
+    return ledger.submit(submission, () async {
+      if (submission.sessionIdentity != state.identity) {
+        return const ChatSubmitResult.rejected('The conversation changed.');
+      }
+      final result = await controller.submitOrQueuePrompt(
+        submission.text,
+        attachments: submission.attachments,
+      );
+      return switch (result) {
+        ChatPromptSubmissionResult.submitted =>
+          const ChatSubmitResult.accepted(),
+        ChatPromptSubmissionResult.queued => const ChatSubmitResult.queued(),
+        ChatPromptSubmissionResult.empty => const ChatSubmitResult.rejected(
+          'Enter a message or attach a file.',
+        ),
+        ChatPromptSubmissionResult.busy => const ChatSubmitResult.rejected(
+          'The session is busy.',
+        ),
+        ChatPromptSubmissionResult.sessionUnavailable =>
+          ChatSubmitResult.rejected(
+            controller.lastError ?? 'Could not create the session.',
+          ),
+        ChatPromptSubmissionResult.failed => ChatSubmitResult.rejected(
+          controller.lastError ?? 'Could not start the response.',
+        ),
+      };
+    });
+  }
 
   @override
   void addListener(VoidCallback listener) => controller.addListener(listener);
@@ -29,11 +63,7 @@ class AcpChatSession extends ChatSession {
       agentInfo: controller.capabilities?.agentInfo ?? const {},
     );
     return ChatSessionState(
-      identity: (
-        controller.agentName,
-        active?.id,
-        active?.cwd ?? controller.cwd,
-      ),
+      identity: (controller, controller.conversationIdentity),
       agentName: controller.agentName,
       title: active?.displayTitle,
       messages: controller.visibleMessages,

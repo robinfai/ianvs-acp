@@ -66,6 +66,48 @@ Future<void> until(bool Function() condition) async {
 
 void main() {
   test(
+    'submission admits once before stream completes and preserves legacy send timing',
+    () async {
+      final responseGate = Completer<http.StreamedResponse>();
+      var calls = 0;
+      final session = LlmChatSession(
+        client: client(
+          () => WireClient((request) {
+            calls++;
+            return responseGate.future;
+          }),
+        ),
+      );
+      addTearDown(session.dispose);
+      final submission = ChatSubmission(
+        id: 'one',
+        sessionIdentity: session.state.identity,
+        draftRevision: 1,
+        text: 'admit',
+      );
+      expect((await session.submit(submission)).isAccepted, isTrue);
+      expect(session.state.isSending, isTrue);
+      expect((await session.submit(submission)).isAccepted, isTrue);
+      await until(() => calls == 1);
+      responseGate.complete(response(reply('done')));
+      await until(() => !session.state.isSending);
+      expect(
+        session.state.messages.where((m) => m.role == ChatMessageRole.user),
+        hasLength(1),
+      );
+      final invalid = ChatSubmission(
+        id: 'invalid',
+        sessionIdentity: session.state.identity,
+        draftRevision: 2,
+        text: 'bad',
+        attachments: [const PromptAttachment(path: '/file', name: 'file')],
+      );
+      expect((await session.submit(invalid)).status, ChatSubmitStatus.rejected);
+      expect(calls, 1);
+    },
+  );
+
+  test(
     'SSE handles every UTF-8 byte boundary, CRLF, comments and multiline data',
     () async {
       final bytes = utf8.encode(

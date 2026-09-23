@@ -7,6 +7,35 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_agent_chat/ui/components/accessible_text_field.dart';
 
 void main() {
+  testWidgets('macOS hosts without a native factory use Flutter semantics', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final semantics = tester.ensureSemantics();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AccessibleTextField(
+            label: 'Shared prompt',
+            description: 'Type a message',
+            controller: controller,
+            onChanged: (_) {},
+            builder: (focus) =>
+                TextField(controller: controller, focusNode: focus),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byType(AppKitView), findsNothing);
+    expect(find.bySemanticsLabel(RegExp('Shared prompt')), findsWidgets);
+    expect(tester.takeException(), isNull);
+    semantics.dispose();
+    debugDefaultTargetPlatformOverride = null;
+  });
+
   testWidgets(
     'clears native handlers across semantics proxy lifecycles',
     (tester) async {
@@ -17,14 +46,16 @@ void main() {
         var changed = <String>[];
 
         Widget subject() => MaterialApp(
-          home: Scaffold(
-            body: AccessibleTextField(
-              label: 'Search workspaces',
-              description: 'Filter the workspace list',
-              controller: controller,
-              onChanged: changed.add,
-              builder: (focusNode) =>
-                  TextField(controller: controller, focusNode: focusNode),
+          home: ChatNativeTextFieldScope(
+            child: Scaffold(
+              body: AccessibleTextField(
+                label: 'Search workspaces',
+                description: 'Filter the workspace list',
+                controller: controller,
+                onChanged: changed.add,
+                builder: (focusNode) =>
+                    TextField(controller: controller, focusNode: focusNode),
+              ),
             ),
           ),
         );

@@ -7,6 +7,15 @@ import 'package:flutter/services.dart';
 
 typedef AccessibleTextFieldBuilder = Widget Function(FocusNode focusNode);
 
+/// Opt in only in a host that registered the ACP AppKit text-field factory.
+/// Other hosts use ordinary Flutter semantics, including on macOS.
+class ChatNativeTextFieldScope extends InheritedWidget {
+  const ChatNativeTextFieldScope({super.key, required super.child});
+
+  @override
+  bool updateShouldNotify(ChatNativeTextFieldScope oldWidget) => false;
+}
+
 /// Gives a Flutter text field a stable native accessibility name on macOS.
 ///
 /// Flutter's macOS text-input bridge currently replaces editable semantic
@@ -24,6 +33,7 @@ class AccessibleTextField extends StatefulWidget {
     required this.builder,
     this.enabled = true,
     this.multiline = false,
+    this.focusNode,
   });
 
   final String label;
@@ -33,6 +43,7 @@ class AccessibleTextField extends StatefulWidget {
   final AccessibleTextFieldBuilder builder;
   final bool enabled;
   final bool multiline;
+  final FocusNode? focusNode;
 
   @override
   State<AccessibleTextField> createState() => _AccessibleTextFieldState();
@@ -42,7 +53,8 @@ class _AccessibleTextFieldState extends State<AccessibleTextField> {
   static const _viewType = 'com.ianvs.acp/accessible-text-field';
   static const _channelPrefix = 'com.ianvs.acp/accessible-text-field/';
 
-  final FocusNode _focusNode = FocusNode();
+  late FocusNode _focusNode;
+  bool _nativeProxyEnabled = false;
   MethodChannel? _channel;
   int _proxyGeneration = 0;
   bool _nativeProxyReady = false;
@@ -52,6 +64,7 @@ class _AccessibleTextFieldState extends State<AccessibleTextField> {
   @override
   void initState() {
     super.initState();
+    _focusNode = widget.focusNode ?? FocusNode();
     widget.controller.addListener(_scheduleNativeUpdate);
     _focusNode.addListener(_scheduleNativeUpdate);
     SemanticsBinding.instance.addSemanticsEnabledListener(
@@ -61,8 +74,27 @@ class _AccessibleTextFieldState extends State<AccessibleTextField> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final enabled =
+        context
+            .dependOnInheritedWidgetOfExactType<ChatNativeTextFieldScope>() !=
+        null;
+    if (_nativeProxyEnabled != enabled) {
+      _nativeProxyEnabled = enabled;
+      _handleSemanticsEnabledChanged();
+    }
+  }
+
+  @override
   void didUpdateWidget(covariant AccessibleTextField oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.focusNode, widget.focusNode)) {
+      _focusNode.removeListener(_scheduleNativeUpdate);
+      if (oldWidget.focusNode == null) _focusNode.dispose();
+      _focusNode = widget.focusNode ?? FocusNode();
+      _focusNode.addListener(_scheduleNativeUpdate);
+    }
     if (!identical(oldWidget.controller, widget.controller)) {
       oldWidget.controller.removeListener(_scheduleNativeUpdate);
       widget.controller.addListener(_scheduleNativeUpdate);
@@ -79,7 +111,7 @@ class _AccessibleTextFieldState extends State<AccessibleTextField> {
     );
     _proxyGeneration += 1;
     _clearChannel();
-    _focusNode.dispose();
+    if (widget.focusNode == null) _focusNode.dispose();
     super.dispose();
   }
 
@@ -171,7 +203,10 @@ class _AccessibleTextFieldState extends State<AccessibleTextField> {
 
   void _handleSemanticsEnabledChanged() {
     final generation = ++_proxyGeneration;
-    final shouldEnable = _isMacOS && SemanticsBinding.instance.semanticsEnabled;
+    final shouldEnable =
+        _nativeProxyEnabled &&
+        _isMacOS &&
+        SemanticsBinding.instance.semanticsEnabled;
     if (!shouldEnable) {
       _clearChannel();
       if (_nativeProxyReady && mounted) {

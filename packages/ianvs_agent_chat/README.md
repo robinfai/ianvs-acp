@@ -15,7 +15,7 @@ Reusable Flutter **Agent Chat UI** for ACP-powered agents and OpenAI-compatible 
 
 ```yaml
 dependencies:
-  ianvs_agent_chat: ^0.1.0
+  ianvs_agent_chat: ^0.2.0
 ```
 
 Requires Dart 3.12 or later and Flutter. The desktop integration is validated on macOS. Other platforms require testing their file, drag/drop, clipboard and Mermaid integrations; this release does not claim full platform parity.
@@ -109,6 +109,56 @@ Project protocol data into the public models. `ChatToolMessage`, `ChatPlanMessag
 
 The originating Ianvs app uses this boundary in `lib/chat/acp_chat_session.dart`, preserving its ACP replay, storage, permission and queue logic.
 
+## Drafts and submission admission
+
+For quick prompts or host context actions, retain a `ChatComposerController`,
+pass it to `AgentChatView(composerController: draft)`, then call
+`draft.replaceText(...)`, `draft.insertText(...)` or `draft.requestFocus()`.
+It exposes `text`, `selection` and `revision`. `clear()` also clears mounted
+attachments. The host disposes its controller after unmounting the view.
+A different `state.identity` clears a reused controller. Keep identity stable
+through first-send backend initialization, configuration and saved-result version
+changes. Separate controllers can retain separate text drafts across mounts.
+
+Implement `ChatSubmissionSession` alongside `ChatSession` for reliable admission:
+
+```dart
+final receipts = ChatSubmissionLedger();
+
+Future<ChatSubmitResult> submit(ChatSubmission draft) => receipts.submit(
+  draft,
+  () async {
+    if (draft.sessionIdentity != state.identity) {
+      return const ChatSubmitResult.rejected('The conversation changed.');
+    }
+    // Validate the final payload and take ownership/start generation here.
+    // Return before waiting for generation to finish.
+    await admitPrompt(draft.text, draft.attachments);
+    return const ChatSubmitResult.accepted();
+  },
+);
+```
+
+`ChatSubmission` freezes `id`, `sessionIdentity`, `draftRevision`, `text` and
+`attachments`. Accepted or queued results clear only the matching draft revision;
+rejections and thrown admission errors preserve the draft and show a reason.
+Editing while admission is pending is allowed; repeated submits are disabled.
+The ledger deduplicates pending and completed IDs. An intentional retry needs a
+new ID. Preserve one ledger for the adapter's lifetime, including across view
+rebuilds. Validate the captured conversation again after any asynchronous setup
+before admitting it. Failures after acceptance belong in the transcript/error.
+
+`CallbackSubmissionChatSession` provides the same contract through `onSubmit`;
+`CallbackChatSession` and legacy `onSend` callers retain immediate clearing.
+Existing `send` completion timing is unchanged. LLM `submit` returns admission,
+while LLM `send` still waits for generation. Do not call both for one request.
+
+Wrap the default child with `composerBuilder` to show a quote or business action.
+Capture host context and its revision synchronously on submission and clear it
+only after matching acceptance. Keep article fields and save/copy actions in the
+host. Project models, modes and booleans into `configOptions`; all selectable
+options are reachable. Advertise capabilities only for implemented operations.
+
 ## Customize
 
 The app and this package use `ianvs_design` for Material 3 controls, light/dark
@@ -172,9 +222,24 @@ Merman 0.7.0 also contains an absolute dylib install name. The example includes
 the bundled library references and sign the modified library. Existing macOS
 hosts should copy that script and add a **Run Script** phase after **Embed Pods
 Frameworks**, using `"${SRCROOT}/scripts/normalize_merman.sh"`. Set the macOS
-deployment target to 11.0 or later. Without this workaround, compilation can
+deployment target to 12.0 or later. The example also raises older CocoaPods
+deployment targets to 12.0 for current Xcode. Without this workaround, compilation can
 succeed but launching the app can fail. The example is a complete reference
 for these native settings.
+
+The shared input defaults to Flutter semantics, including on macOS. Only a host
+that registers `com.ianvs.acp/accessible-text-field` should wrap its application
+in `ChatNativeTextFieldScope`. The standalone example and ordinary consumers do
+not need that platform view. A supplied composer controller focuses the actual
+editable field.
+
+Markdown uses `ianvs_markdown`'s standard GFM preset with explicit chat typography,
+blocked resource images and the existing chat code/Mermaid builders. It keeps
+block-level selection (`documentSelection: false`); full document copy remains a
+host action. Obsidian comment/block-ID normalization and HTML form controls are
+not enabled. Both preflight and rendering use the same syntax/fallback limits.
+The Markdown dependency also brings `super_native_extensions`; validate the
+complete native dependency graph in the consuming application.
 
 The standard file picker requires the appropriate user-selected file entitlement; API calls require the network-client entitlement. The example includes both.
 

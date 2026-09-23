@@ -320,6 +320,7 @@ void main() {
 
     await tester.pumpWidget(
       input(
+        height: 336, // The parent allocates 60% of its local 560px height.
         isSending: false,
         promptAppearsStalled: true,
         onSend: (_, _) {},
@@ -3077,6 +3078,76 @@ void main() {
       );
       expect(find.text('Select model'), findsOneWidget);
       expect(find.text('Reasoning'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'all typed config options remain reachable, including modes, boolean and grouped choices',
+    (tester) async {
+      String? selectedId;
+      Object? selectedValue;
+      await tester.pumpWidget(
+        input(
+          isSending: false,
+          onSend: (_, _) {},
+          configOptions: const [
+            ChatConfigOption(
+              id: 'mode',
+              name: 'Working mode',
+              type: 'select',
+              currentValue: 'ask',
+              options: [
+                ChatConfigOptionChoice(
+                  value: 'ask',
+                  name: 'Ask',
+                  groupId: 'safe',
+                  groupName: 'Read only',
+                ),
+                ChatConfigOptionChoice(
+                  value: 'edit',
+                  name: 'Edit',
+                  groupId: 'write',
+                  groupName: 'Workspace changes',
+                ),
+              ],
+            ),
+            ChatConfigOption(
+              id: 'web',
+              name: 'Web search',
+              type: 'boolean',
+              currentValue: 'false',
+              options: [],
+            ),
+          ],
+          onConfigOptionSelected: (id, value) {
+            selectedId = id;
+            selectedValue = value;
+          },
+        ),
+      );
+      await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('prompt-session-config-option-mode')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Workspace changes'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('prompt-session-config-choice-mode-edit')),
+      );
+      await tester.pumpAndSettle();
+      expect((selectedId, selectedValue), ('mode', 'edit'));
+      await tester.tap(find.byKey(const Key('prompt-session-config-selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('prompt-session-config-option-web')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('prompt-session-config-choice-web-on')),
+      );
+      await tester.pumpAndSettle();
+      expect((selectedId, selectedValue), ('web', true));
     },
   );
 
