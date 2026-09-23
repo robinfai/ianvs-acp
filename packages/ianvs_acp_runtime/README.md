@@ -20,7 +20,12 @@ fixture agent, and native build/signing scripts. It has no Flutter dependency.
 | CLI example | `example/local_chat.dart` |
 | C ABI | **11**, `libianvs_acp_ffi.dylib`; incompatible versions are rejected |
 | Event schema | **4**, independent of the ABI and ACP wire version |
-| ACP dependency | `agent-client-protocol = 1.2.0`, unchanged; Rust negotiates the wire protocol |
+| ACP Rust SDK | `agent-client-protocol = 2.1.0` in development source; stable ACP v1 wire protocol |
+
+The unreleased source uses Rust SDK 2.1.0. The published
+`ianvs_acp_runtime 0.1.0` archive still pins SDK 1.2.0; existing hosted consumers
+keep that version until a new package release. C ABI 11 and event schema 4 are
+unchanged.
 
 The package directory can be copied or archived as a whole and built outside this
 repository. No source, fixture, or build script depends on files above this

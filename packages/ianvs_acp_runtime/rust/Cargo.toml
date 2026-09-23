@@ -11,7 +11,7 @@ license = "Apache-2.0"
 rust-version = "1.90"
 
 [workspace.dependencies]
-agent-client-protocol = "=1.2.0"
+agent-client-protocol = "=2.1.0"
 async-process = "2.5.0"
 base64 = "=0.22.1"
 futures = "0.3.31"

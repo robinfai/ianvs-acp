@@ -1,3 +1,10 @@
+## Unreleased
+
+- Upgrade the locked ACP Rust SDK from 1.2.0 to 2.1.0 and protocol schema from
+  1.4.0 to 1.7.0. Keep stable ACP v1, C ABI v11, and event schema v4.
+- Wait for the permission flood rejection before granting the admitted requests,
+  so the admission-limit regression test does not depend on scheduler timing.
+
 ## 0.1.0
 
 - Extract the UI-independent Rust stdio ACP core, C FFI and Dart bindings into
