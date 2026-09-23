@@ -12926,8 +12926,9 @@ void main() {
     expect(controller.isStreaming, isFalse);
     expect(controller.status, app_state.ConnectionStatus.error);
     expect(controller.lastError, contains('prompt setup failed'));
+    // A failed stream setup was never admitted: the preserved composer can
+    // retry without a second retained user turn.
     expect(controller.messages.map((message) => message.role), [
-      ChatMessageRole.user,
       ChatMessageRole.error,
     ]);
   });

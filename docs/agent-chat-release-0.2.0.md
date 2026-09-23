@@ -27,9 +27,13 @@
 
 - 共享 chat 全量：311 项通过，2 项真实服务测试按既有开关跳过；analyze 无问题。
 - standalone example：2 项通过；macOS debug app 成功构建，包含 Markdown 新增原生插件。
-- ACP 全仓 analyze 无问题。宿主行为测试仍在完成，后续在此补结果。
-- pub dry-run 仅提示未提交文件，提交后需再次确认干净预检。
+- ACP 全仓 analyze 无问题；controller、admission、shell 与 new-session 共 330 项通过，macOS debug `Shift.app` 构建成功。
+- 发布候选提交 `11718924b524660a28c95ceddba4d886410dcba6`；提交后的 pub dry-run 零警告。
 - 当前 Xcode 要求最低 macOS 12，因此 app/example 与 Pods deployment floor 对齐为 12.0。
-- ACP 测试中的 terminal native hook 遇到本机 Rust/Xcode 生成 proc-macro dylib 的 LINKEDIT 对齐问题；兼容 host linker `-Wl,-ld_classic` 在临时编译副本成功。本地生成缓存修复不改变任何发布源文件或 terminal 包版本。
+- ACP 测试中的 terminal native hook 遇到本机 Rust/Xcode 生成 proc-macro dylib 的 LINKEDIT 对齐问题；兼容 host linker `-Wl,-ld_classic` 在临时编译副本成功。本地生成缓存修复不改变任何发布源文件或 terminal 包版本。复制兼容宏时需保留新的输出时间戳，否则 Cargo 会再次生成不兼容的宏；完成后原始 Flutter host 测试和 build 均已成功。
 
-chat 公共发布、独立纯 hosted 安装/构建/启动和 Omnivore 最终集成待后续补充。预发布临时 `/tmp` 验证副本曾消费本地 Markdown 源码；最终 311 项测试与示例构建已经全部切回正式 pub.dev Markdown。Omnivore 从未使用该临时副本或本地 override。
+- 使用原生 macOS 示例（无 ACP factory）实际输入 hello、Enter 提交，在权限等待期间输入 next draft，再 Allow once。实际界面显示“5 characters”，下一份 next draft 保留；未调用真实模型或网络。
+
+Chat 公共发布被自动审批拒绝：用户先前明确批准的是 Markdown 0.3.1，不覆盖 Chat 0.2.0 的不可撤回公共发布。已在当前任务请求批准具体 Chat 0.2.0 发布并推送分支/tag；尚未上传，不使用任何绕过路径。
+
+chat 公共发布、独立纯 hosted 安装/构建/启动和 Omnivore 最终集成待该批准后完成。预发布临时 `/tmp` 验证副本曾消费本地 Markdown 源码；最终 311 项测试与示例构建已经全部切回正式 pub.dev Markdown。Omnivore 从未使用该临时副本或本地 override。
