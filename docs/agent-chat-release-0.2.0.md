@@ -34,6 +34,29 @@
 
 - 使用原生 macOS 示例（无 ACP factory）实际输入 hello、Enter 提交，在权限等待期间输入 next draft，再 Allow once。实际界面显示“5 characters”，下一份 next draft 保留；未调用真实模型或网络。
 
-Chat 公共发布被自动审批拒绝：用户先前明确批准的是 Markdown 0.3.1，不覆盖 Chat 0.2.0 的不可撤回公共发布。已在当前任务请求批准具体 Chat 0.2.0 发布并推送分支/tag；尚未上传，不使用任何绕过路径。
+## 正式发布
 
-chat 公共发布、独立纯 hosted 安装/构建/启动和 Omnivore 最终集成待该批准后完成。预发布临时 `/tmp` 验证副本曾消费本地 Markdown 源码；最终 311 项测试与示例构建已经全部切回正式 pub.dev Markdown。Omnivore 从未使用该临时副本或本地 override。
+- 用户在 Omnivore 原任务明确授权 Chat 0.2.0 发布并推送分支/tag；核对原始授权及候选包树后执行。
+- [ianvs_agent_chat 0.2.0](https://pub.dev/packages/ianvs_agent_chat/versions/0.2.0) 已于 `2026-09-23T02:55:35.158347Z` 发布。
+- 官方 archive SHA-256：`f037315173ba5b0db309c963d44e282c001a505739790846872d2cd8bcd31bbe`；下载归档后校验哈希，并确认全部 52 个 lib/元数据文件与获授权提交完全一致。
+- 分支 `codex/agent-chat-0.2.0` 已推送；[标签 ianvs_agent_chat-v0.2.0](https://github.com/robinfai/ianvs-acp/tree/ianvs_agent_chat-v0.2.0) 指向 `11718924b524660a28c95ceddba4d886410dcba6`。
+- 独立消费者 `/tmp/ianvs-agent-chat-hosted-0.2.0` 使用精确 hosted `ianvs_agent_chat: 0.2.0`，无 path、git 或 override；lock 和 package config 中 Chat/Markdown/design 均来自 pub.dev，Chat/Markdown 哈希匹配官方归档。
+- 独立消费者 `flutter analyze --no-pub` 无问题，2 项示例测试通过，`flutter build macos --debug --no-pub` 成功。
+- 实际启动该消费者的 macOS app（无 ACP native factory），输入 hello 后提交，在工具审批期间输入 next draft，再允许一次。界面显示 5 characters，next draft 保留；原生插件与输入正常启动。此验证仅使用本地 demo。
+- 已独立只读核验 Omnivore `apps/client/pubspec.yaml`、lockfile 与 package config：Chat 0.2.0、Markdown 0.3.1、design 0.4.0、runtime 0.1.0 均为 hosted pub.dev；两个新版本的归档哈希匹配官方，无 override。
+
+## Omnivore 同步
+
+- 文档助手接入共享 `AgentChatView`、composer/controller 与 typed config 菜单；宿主保留文章引用、Agent 选择、答案另存和文档业务动作。
+- `DocumentChatSession` 实现 opt-in submission；生成自动保存仍等待原有 send 完成。引用快照按 session、正文 revision 与 quote revision 清理。
+- 交互测试覆盖拒绝保稿与引用、IME、接收清理和权限期间下一份草稿；开启 semantics 的 24 种组合（6 个宽度 × 2 个高度 × 2 个主题）通过。
+- 15 项正式 hosted Chat/Markdown 共享契约测试通过，使用相同 contract v1 fixture/hash。
+- macOS arm64 Debug 构建成功。Omnivore 保持原 deployment 配置；为适配本机 Xcode 27，仅此次构建命令覆盖 `MACOSX_DEPLOYMENT_TARGET=12.0`。
+- 客户端全量 `flutter test --no-pub --reporter expanded`：135 项通过、3 项跳过；`flutter analyze --no-pub` 无问题。
+- 6 张宿主截图通过检查：浅色/深色 620 宽、浅色 360 宽的聊天区与配置菜单，位于 Omnivore `docs/agent-chat-acceptance-2026-09-23/`。本任务独立查看浅/深色 620 聊天截图，确认正文、表格、代码、引用、输入及保存入口正常显示。
+- 只读核对两端主题来源一致：hosted example 的 `IanvsTheme.light()/dark()` 调用同一 `IanvsTheme.build`；Omnivore 使用该 build 与默认 `ChatThemeData`（正文 15、内容最大宽度 800、当前 Ianvs tokens）。
+- Omnivore 已完成源码和正式依赖同步；本次未安装或发布 Omnivore 应用。其现有其他工作区改动由原任务保留。
+
+预发布临时 `/tmp` 验证副本曾消费本地 Markdown 源码；最终 311 项测试与示例构建已经全部切回正式 pub.dev Markdown。Omnivore 从未使用该临时副本或本地 override。
+
+验证范围：以上原生交互使用本地 demo，不代表真实模型服务、完整 VoiceOver 或 iOS 真机验收。
