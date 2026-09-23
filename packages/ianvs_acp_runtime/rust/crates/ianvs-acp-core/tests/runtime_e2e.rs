@@ -708,6 +708,16 @@ fn permission_flood_is_rejected_at_the_per_session_admission_limit() {
         };
         permission_ids.push(request.request_id);
     }
+    // Keep all eight slots occupied until the agent observes the overflow
+    // rejection; approving early races with admission of the ninth request.
+    wait_for(&runtime, |event| {
+        matches!(
+            event,
+            RuntimeEvent::RenderUpdate { update }
+                if update.kind == RenderUpdateKind::AssistantText
+                    && update.text == "permission-flood-rejected"
+        )
+    });
     for request_id in permission_ids {
         runtime
             .respond_permission(

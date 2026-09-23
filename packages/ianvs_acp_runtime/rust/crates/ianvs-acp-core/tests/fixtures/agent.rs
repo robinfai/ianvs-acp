@@ -479,24 +479,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             async move {
                                 let mut requests = Vec::with_capacity(permission_count);
                                 for index in 0..permission_count {
-                                    requests.push(
-                                        connection
-                                            .send_request(RequestPermissionRequest::new(
-                                                session_id.clone(),
-                                                ToolCallUpdate::new(
-                                                    format!("fixture-flood-{index}"),
-                                                    ToolCallUpdateFields::new()
-                                                        .title(format!("Flood permission {index}"))
-                                                        .kind(ToolKind::Other),
+                                    let response = connection
+                                        .send_request(RequestPermissionRequest::new(
+                                            session_id.clone(),
+                                            ToolCallUpdate::new(
+                                                format!("fixture-flood-{index}"),
+                                                ToolCallUpdateFields::new()
+                                                    .title(format!("Flood permission {index}"))
+                                                    .kind(ToolKind::Other),
+                                            ),
+                                            vec![PermissionOption::new(
+                                                "allow-once",
+                                                "Allow once",
+                                                PermissionOptionKind::AllowOnce,
+                                            )],
+                                        ))
+                                        .block_task();
+                                    let connection = connection.clone();
+                                    let session_id = session_id.clone();
+                                    requests.push(async move {
+                                        let result = response.await;
+                                        if result.is_err() {
+                                            connection.send_notification(
+                                                SessionNotification::new(
+                                                    session_id,
+                                                    SessionUpdate::AgentMessageChunk(
+                                                        ContentChunk::new(ContentBlock::Text(
+                                                            TextContent::new(
+                                                                "permission-flood-rejected",
+                                                            ),
+                                                        )),
+                                                    ),
                                                 ),
-                                                vec![PermissionOption::new(
-                                                    "allow-once",
-                                                    "Allow once",
-                                                    PermissionOptionKind::AllowOnce,
-                                                )],
-                                            ))
-                                            .block_task(),
-                                    );
+                                            )?;
+                                        }
+                                        result
+                                    });
                                 }
                                 let results = futures::future::join_all(requests).await;
                                 let accepted =
