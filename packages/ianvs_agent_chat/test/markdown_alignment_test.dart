@@ -35,12 +35,31 @@ void main() {
       );
       expect(renderer.documentSelection, isFalse);
       expect(renderer.renderBudget, isNotNull);
-      expect(renderer.builders.keys, containsAll(['pre', 'a']));
+      expect(renderer.theme, isNull);
+      expect(renderer.styleSheet, isNull);
+      expect(renderer.builders, isEmpty);
+      expect(renderer.enableFileLinkChips, isTrue);
+      expect(renderer.diagramBuilder, isNotNull);
       expect(
         tester.widget<MarkdownBody>(find.byType(MarkdownBody)).data,
         source,
       );
-      expect(renderer.styleSheet!.p!.fontSize, 15);
+      final style = tester
+          .widget<MarkdownBody>(find.byType(MarkdownBody))
+          .styleSheet!;
+      expect(style.p!.fontSize, 14.5);
+      expect(
+        style.strong!.color,
+        markdown.IanvsMarkdownThemeData.light.strongForeground,
+      );
+      expect(
+        style.em!.color,
+        markdown.IanvsMarkdownThemeData.light.emphasisForeground,
+      );
+      expect(
+        style.code!.color,
+        markdown.IanvsMarkdownThemeData.light.inlineCodeForeground,
+      );
     },
   );
 

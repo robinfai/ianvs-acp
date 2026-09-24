@@ -172,13 +172,12 @@ ChatTheme(
   data: const ChatThemeData(
     colors: {'userMessageSurface': Color(0xffeef4ff)},
     contentMaxWidth: 900,
-    bodyFontSize: 15,
   ),
   child: AgentChatView(session: session),
 );
 ```
 
-- Use `ChatTheme` for conversation surfaces, semantic status colors, content width and reading font size. Unspecified colors continue to follow the host theme, including after a light/dark switch. Code highlighting and Mermaid rendering also follow host brightness.
+- Use `ChatTheme` for conversation surfaces, semantic status colors and content width. Unspecified colors continue to follow the host theme, including after a light/dark switch. Markdown typography and colors belong to `ianvs_markdown`; the legacy `bodyFontSize` field no longer overrides message rendering. Mermaid rendering follows host brightness.
 - Use `ChatStrings` to override primary composer labels. Full localization is not included in this release.
 - Supply `ToolPresentationRegistry` rules for tool families.
 - Supply `timelineBuilder` or `composerBuilder` to wrap or replace either region.
@@ -233,8 +232,11 @@ in `ChatNativeTextFieldScope`. The standalone example and ordinary consumers do
 not need that platform view. A supplied composer controller focuses the actual
 editable field.
 
-Markdown uses `ianvs_markdown`'s standard GFM preset with explicit chat typography,
-blocked resource images and the existing chat code/Mermaid builders. It keeps
+Markdown uses `ianvs_markdown`'s standard GFM preset, built-in typography, colors,
+code blocks and file-link chips. The renderer resolves its own light/dark palette
+or an ambient `IanvsMarkdownThemeData` extension; `ChatTheme` does not override
+Markdown styling. Chat retains blocked resource images with link copying and
+connects Mermaid through `diagramBuilder`. It keeps
 block-level selection (`documentSelection: false`); full document copy remains a
 host action. Obsidian comment/block-ID normalization and HTML form controls are
 not enabled. Both preflight and rendering use the same syntax/fallback limits.

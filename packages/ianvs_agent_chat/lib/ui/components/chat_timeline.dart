@@ -17,7 +17,6 @@ import '../markdown_render_budget.dart';
 import '../tool_presentation/tool_presentation_registry.dart';
 import 'bounded_image_preview.dart';
 import 'markdown_code_block.dart';
-import 'markdown_inline_link.dart';
 import 'scroll_fade_region.dart';
 
 const List<String> _toolCallIdMetadataKeys = [
@@ -985,7 +984,7 @@ class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
         if (hasCollapsibleProcess) SizedBox(height: 12),
         if (_expanded || !hasCollapsibleProcess)
           for (var index = 0; index < processEntries.length; index++) ...[
-            _buildEntry(processEntries[index], process: true),
+            _buildEntry(processEntries[index]),
             if (index != processEntries.length - 1) SizedBox(height: 10),
           ],
         if ((_expanded || !hasCollapsibleProcess) &&
@@ -1002,7 +1001,7 @@ class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
     );
   }
 
-  Widget _buildEntry(_TimelineEntry entry, {bool process = false}) {
+  Widget _buildEntry(_TimelineEntry entry) {
     if (entry.activityMessages != null) {
       final identity = entry.toolGroupIdentity!;
       return _ToolGroupBubble(
@@ -1019,7 +1018,6 @@ class _TurnSectionBubbleState extends State<_TurnSectionBubble> {
       agentName: widget.agentName,
       inputBudget: widget.inputBudget,
       onTapLink: widget.onTapLink,
-      emphasizeAssistant: process,
     );
   }
 }
@@ -1497,14 +1495,12 @@ class _MessageBubble extends StatelessWidget {
     required this.agentName,
     required this.inputBudget,
     required this.onTapLink,
-    this.emphasizeAssistant = false,
   });
 
   final ChatMessageView message;
   final String agentName;
   final ChatInputBudget inputBudget;
   final MarkdownTapLinkCallback? onTapLink;
-  final bool emphasizeAssistant;
 
   @override
   Widget build(BuildContext context) {
@@ -1552,7 +1548,6 @@ class _MessageBubble extends StatelessWidget {
       ).danger.withValues(alpha: 0.3),
       ChatMessageRole.status => ChatTheme.of(context).border,
     };
-    final textColor = ChatTheme.of(context).textPrimary;
     final displayText = user
         ? userPromptDisplayText(message.text)
         : message.text;
@@ -1608,22 +1603,12 @@ class _MessageBubble extends StatelessWidget {
                           _SelectableMessageMarkdown(
                             data: markdownDecision.text,
                             user: true,
-                            styleSheet: _markdownStyle(
-                              context,
-                              textColor,
-                              true,
-                            ),
                             onTapLink: onTapLink,
                           )
                         else
                           SelectableText(
                             markdownDecision.text,
-                            style: TextStyle(
-                              color: textColor,
-                              fontSize: 14.5,
-                              height: 1.55,
-                              fontWeight: FontWeight.w400,
-                            ),
+                            style: markdown.ianvsMarkdownStyleSheet(context).p,
                           ),
                       for (final omission in omissions)
                         _InputOmissionNotice(omission: omission, user: true),
@@ -1681,23 +1666,12 @@ class _MessageBubble extends StatelessWidget {
                   _SelectableMessageMarkdown(
                     data: markdownDecision.text,
                     user: user,
-                    styleSheet: _markdownStyle(
-                      context,
-                      textColor,
-                      user,
-                      emphasizeAssistant: assistant && emphasizeAssistant,
-                    ),
                     onTapLink: onTapLink,
                   )
                 else
                   SelectableText(
                     markdownDecision.text,
-                    style: TextStyle(
-                      color: textColor,
-                      fontSize: ChatTheme.of(context).bodyFontSize,
-                      height: 1.58,
-                      fontWeight: FontWeight.w400,
-                    ),
+                    style: markdown.ianvsMarkdownStyleSheet(context).p,
                   ),
               ],
               for (final omission in omissions)
@@ -1711,46 +1685,6 @@ class _MessageBubble extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-
-  MarkdownStyleSheet _markdownStyle(
-    BuildContext context,
-    Color textColor,
-    bool user, {
-    bool emphasizeAssistant = false,
-  }) {
-    final baseTextStyle = Theme.of(context).textTheme.bodyLarge!.copyWith(
-      color: textColor,
-      fontSize: ChatTheme.of(context).bodyFontSize,
-      height: 1.58,
-      fontWeight: FontWeight.w400,
-    );
-    final codeBackground = user
-        ? ChatTheme.of(context).surface.withValues(alpha: 0.72)
-        : ChatTheme.of(context).surfaceRaised;
-    return MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-      p: baseTextStyle,
-      a: baseTextStyle.copyWith(
-        color: ChatTheme.of(context).textPrimary,
-        decoration: TextDecoration.underline,
-        decorationColor: ChatTheme.of(context).textTertiary,
-        decorationThickness: 1,
-        fontWeight: FontWeight.w600,
-      ),
-      strong: baseTextStyle.copyWith(fontWeight: FontWeight.w600),
-      em: baseTextStyle.copyWith(fontStyle: FontStyle.italic),
-      code: baseTextStyle.copyWith(
-        fontFamily: context.ianvsTypography.code.fontFamily,
-        fontFamilyFallback: context.ianvsTypography.code.fontFamilyFallback,
-        backgroundColor: codeBackground,
-        fontSize: 13,
-      ),
-      listBullet: baseTextStyle,
-      blockSpacing: 8,
-      listIndent: 24,
-      codeblockPadding: EdgeInsets.zero,
-      codeblockDecoration: BoxDecoration(),
     );
   }
 
@@ -1807,33 +1741,12 @@ class _AssistantSummaryBubble extends StatelessWidget {
             _SelectableMessageMarkdown(
               data: decision.text,
               user: false,
-              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                  .copyWith(
-                    p: TextStyle(
-                      color: ChatTheme.of(context).textPrimary,
-                      fontSize: 14,
-                      height: 1.55,
-                      fontWeight: FontWeight.w400,
-                    ),
-                    listBullet: TextStyle(
-                      color: ChatTheme.of(context).textPrimary,
-                      fontSize: 14,
-                      height: 1.55,
-                    ),
-                    blockSpacing: 8,
-                    listIndent: 22,
-                  ),
               onTapLink: onTapLink,
             )
           else
             SelectableText(
               decision.text,
-              style: TextStyle(
-                color: ChatTheme.of(context).textPrimary,
-                fontSize: 14,
-                height: 1.55,
-                fontWeight: FontWeight.w400,
-              ),
+              style: markdown.ianvsMarkdownStyleSheet(context).p,
             ),
         ],
       ),
@@ -1958,44 +1871,23 @@ class _SelectableMessageMarkdown extends StatelessWidget {
   const _SelectableMessageMarkdown({
     required this.data,
     required this.user,
-    required this.styleSheet,
     required this.onTapLink,
   });
 
   final String data;
   final bool user;
-  final MarkdownStyleSheet styleSheet;
   final MarkdownTapLinkCallback? onTapLink;
 
   @override
   Widget build(BuildContext context) {
-    final colors = ChatTheme.of(context);
     final budget = _ImageDecodeScope.of(context).inputBudget;
-    final body = markdown.IanvsMarkdown(
+    // Let the renderer resolve its own palette, typography and components.
+    return markdown.IanvsMarkdown(
       data: data,
       syntaxPreset: markdown.IanvsMarkdownSyntaxPreset.standard,
       selectable: true,
       documentSelection: false,
       fitContent: true,
-      theme: markdown.IanvsMarkdownThemeData(
-        surface: colors.surface,
-        surfaceMuted: colors.surfaceMuted,
-        surfaceRaised: colors.surfaceRaised,
-        surfaceHover: colors.surfaceHover,
-        border: colors.border,
-        borderSoft: colors.borderSoft,
-        textPrimary: colors.textPrimary,
-        textSecondary: colors.textSecondary,
-        textTertiary: colors.textTertiary,
-        accent: colors.accent,
-        accentDark: colors.accentDark,
-        accentSoft: colors.accentSoft,
-        accentMist: colors.accentMist,
-        error: colors.danger,
-        monoFontFamily: context.ianvsTypography.code.fontFamily ?? 'monospace',
-        monoFontFamilyFallback:
-            context.ianvsTypography.code.fontFamilyFallback ?? const [],
-      ),
       renderBudget: markdown.IanvsMarkdownRenderBudget(
         maxSyntaxTokens: budget.maxMarkdownSyntaxTokens,
         maxFallbackBytes: budget.maxMarkdownFallbackBytes,
@@ -2003,7 +1895,10 @@ class _SelectableMessageMarkdown extends StatelessWidget {
       fallbackBuilder: (context, decision) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SelectableText(decision.text, style: styleSheet.p),
+          SelectableText(
+            decision.text,
+            style: markdown.ianvsMarkdownStyleSheet(context).p,
+          ),
           _InputOmissionNotice(
             user: user,
             omission: ChatInputOmission(
@@ -2017,29 +1912,12 @@ class _SelectableMessageMarkdown extends StatelessWidget {
         ],
       ),
       softLineBreak: user,
-      styleSheet: styleSheet,
+      enableFileLinkChips: true,
       onTapLink: onTapLink,
       imageBuilder: (uri, title, alt) =>
           _blockedMarkdownImage(context, uri, title, alt),
-      builders: <String, MarkdownElementBuilder>{
-        'pre': MarkdownCodeBlockBuilder(user: user),
-        'a': MarkdownInlineLinkBuilder(onTapLink: onTapLink),
-      },
-    );
-
-    if (!user) return body;
-
-    return TextSelectionTheme(
-      data: TextSelectionTheme.of(context).copyWith(
-        cursorColor: ChatTheme.of(context).accent,
-        selectionColor: ChatTheme.of(context).accent.withValues(alpha: .24),
-        selectionHandleColor: ChatTheme.of(context).accent,
-      ),
-      child: DefaultSelectionStyle(
-        cursorColor: ChatTheme.of(context).accent,
-        selectionColor: ChatTheme.of(context).accent.withValues(alpha: .24),
-        child: body,
-      ),
+      diagramBuilder: (context, source) =>
+          MarkdownMermaidBlock(source: source, user: user),
     );
   }
 }
@@ -2050,6 +1928,7 @@ Widget _blockedMarkdownImage(
   String? title,
   String? alt,
 ) {
+  final colors = markdown.IanvsMarkdownThemeData.resolve(context);
   final scheme = uri.scheme.trim().toLowerCase();
   final source = switch (scheme) {
     'http' || 'https' when uri.host.trim().isNotEmpty => uri.host.toLowerCase(),
@@ -2062,9 +1941,9 @@ Widget _blockedMarkdownImage(
     child: Container(
       padding: EdgeInsets.only(left: 8, top: 3, bottom: 3),
       decoration: BoxDecoration(
-        color: ChatTheme.of(context).surface,
-        border: Border.all(color: ChatTheme.of(context).border),
-        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
+        color: colors.surface,
+        border: Border.all(color: colors.border),
+        borderRadius: BorderRadius.circular(colors.smallRadius),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -2078,7 +1957,7 @@ Widget _blockedMarkdownImage(
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: ChatTheme.of(context).textSecondary,
+                color: colors.textSecondary,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),

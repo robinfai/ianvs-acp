@@ -1,3 +1,7 @@
+## Unreleased
+
+* Preserve `ianvs_markdown`'s theme and typography for messages and summaries, and use its built-in code blocks and links. Keep host link handling, Mermaid rendering, blocked-image copying and render budgets.
+
 ## 0.2.0
 
 * Add host-owned `ChatComposerController` and immutable draft submissions with explicit accepted, queued and rejected receipts. Preserve drafts on rejection or stale receipts and prevent concurrent submission.

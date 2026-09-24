@@ -15,9 +15,9 @@ import 'package:ianvs_agent_chat/models/chat_input_budget.dart';
 import 'package:ianvs_agent_chat/models/chat_message.dart';
 import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_agent_chat/ui/components/chat_timeline.dart';
-import 'package:ianvs_agent_chat/ui/components/markdown_code_block.dart';
 import 'package:ianvs_agent_chat/ui/image_decode_budget.dart';
 import 'package:ianvs_design/ianvs_design.dart';
+import 'package:ianvs_markdown/ianvs_markdown.dart' as markdown;
 
 void main() {
   Widget timeline(
@@ -1286,7 +1286,7 @@ Review the screenshot''',
 
     expect(tappedHref, 'docs/readme.md#L4');
     expect(
-      find.byKey(const ValueKey('markdown-file-reference')),
+      find.byKey(const ValueKey('ianvs-markdown-file-reference')),
       findsOneWidget,
     );
   });
@@ -1311,7 +1311,7 @@ Review the screenshot''',
       await tester.pumpAndSettle();
 
       expect(
-        find.byKey(const ValueKey('markdown-file-reference')),
+        find.byKey(const ValueKey('ianvs-markdown-file-reference')),
         findsOneWidget,
       );
       expect(find.text('prompt_input.dart'), findsOneWidget);
@@ -1358,13 +1358,11 @@ Review the screenshot''',
       ]),
     );
 
-    expect(find.byType(MarkdownCodeBlock), findsOneWidget);
-    expect(find.text('DART'), findsOneWidget);
-    expect(find.byTooltip('复制代码'), findsOneWidget);
-    final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
-    expect(markdown.styleSheet!.codeblockPadding, EdgeInsets.zero);
+    expect(find.byType(markdown.IanvsMarkdownCodeBlock), findsOneWidget);
+    final body = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    expect(body.styleSheet!.codeblockPadding, EdgeInsets.zero);
     final wrapperDecoration =
-        markdown.styleSheet!.codeblockDecoration! as BoxDecoration;
+        body.styleSheet!.codeblockDecoration! as BoxDecoration;
     expect(wrapperDecoration.color, isNull);
     expect(wrapperDecoration.border, isNull);
   });
@@ -1729,49 +1727,51 @@ foregroundDecoration: BoxDecoration(
     expect(find.text('Hello, human.'), findsOneWidget);
   });
 
-  testWidgets('ChatTimeline gives user message selections contrast', (
-    tester,
-  ) async {
-    final appSelectionColor = IanvsTokens.light.accent.withValues(alpha: 0.18);
-    final userSelectionColor = IanvsTokens.light.accent.withValues(alpha: .24);
+  testWidgets(
+    'ChatTimeline inherits the host selection colors for all messages',
+    (tester) async {
+      final appSelectionColor = IanvsTokens.light.accent.withValues(
+        alpha: 0.18,
+      );
 
-    await tester.pumpWidget(
-      timeline(
-        [
-          ChatMessageData(role: ChatMessageRole.user, text: 'Pick this text'),
-          ChatMessageData(
-            role: ChatMessageRole.assistant,
-            text: 'Keep default',
-          ),
-        ],
-        theme: ThemeData(
-          textSelectionTheme: TextSelectionThemeData(
-            selectionColor: appSelectionColor,
+      await tester.pumpWidget(
+        timeline(
+          [
+            ChatMessageData(role: ChatMessageRole.user, text: 'Pick this text'),
+            ChatMessageData(
+              role: ChatMessageRole.assistant,
+              text: 'Keep default',
+            ),
+          ],
+          theme: ThemeData(
+            textSelectionTheme: TextSelectionThemeData(
+              selectionColor: appSelectionColor,
+            ),
           ),
         ),
-      ),
-    );
+      );
 
-    final userMarkdown = find.byWidgetPredicate(
-      (widget) => widget is MarkdownBody && widget.data == 'Pick this text',
-    );
-    final assistantMarkdown = find.byWidgetPredicate(
-      (widget) => widget is MarkdownBody && widget.data == 'Keep default',
-    );
+      final userMarkdown = find.byWidgetPredicate(
+        (widget) => widget is MarkdownBody && widget.data == 'Pick this text',
+      );
+      final assistantMarkdown = find.byWidgetPredicate(
+        (widget) => widget is MarkdownBody && widget.data == 'Keep default',
+      );
 
-    expect(
-      TextSelectionTheme.of(tester.element(userMarkdown)).selectionColor,
-      userSelectionColor,
-    );
-    expect(
-      DefaultSelectionStyle.of(tester.element(userMarkdown)).selectionColor,
-      userSelectionColor,
-    );
-    expect(
-      TextSelectionTheme.of(tester.element(assistantMarkdown)).selectionColor,
-      appSelectionColor,
-    );
-  });
+      expect(
+        TextSelectionTheme.of(tester.element(userMarkdown)).selectionColor,
+        appSelectionColor,
+      );
+      expect(
+        DefaultSelectionStyle.of(tester.element(userMarkdown)).selectionColor,
+        appSelectionColor,
+      );
+      expect(
+        TextSelectionTheme.of(tester.element(assistantMarkdown)).selectionColor,
+        appSelectionColor,
+      );
+    },
+  );
 
   testWidgets('ChatTimeline renders streaming text as one assistant message', (
     tester,
