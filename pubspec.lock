@@ -318,14 +318,14 @@ packages:
       path: "packages/ianvs_acp_runtime"
       relative: true
     source: path
-    version: "0.1.0"
+    version: "0.2.0"
   ianvs_agent_chat:
     dependency: "direct main"
     description:
       path: "packages/ianvs_agent_chat"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.0"
   ianvs_agent_core:
     dependency: "direct main"
     description:

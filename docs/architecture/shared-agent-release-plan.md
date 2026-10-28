@@ -83,3 +83,48 @@ whose manifest SHA256 is
 `9a47b3a4f432e244655f43db55fa965a3f86e4047738959debe7e5b1a6a72fd6`.
 No unrelated `.gitignore` edits are part of this release. Git pushes are deferred
 until the Terminal host coordinates the dependency update.
+
+## Published artifacts — 2026-10-28
+
+All three necessary packages passed `pub publish --dry-run` with zero warnings
+and were published successfully. The official version API's archive SHA256 and
+every archived file were checked against the publication candidate.
+
+| Package | Version | Official archive SHA256 | Files compared |
+| --- | --- | --- | --- |
+| ianvs_agent_core | 0.1.0 | `dc8813004ebb1221091ea2516716e3a995d7dbbf7e1896cd14bf7a1613699eca` | 21 |
+| ianvs_acp_runtime | 0.2.0 | `abccdc1349e14e899a04022f74398d42859aca0152cac8f2d50fa71e3674d5f0` | 43 |
+| ianvs_agent_chat | 0.3.0 | `cd8d90e2ca936055517ed85453ece7c2b5f6a5f76419536295ddf6159be8adde` | 89 |
+
+Source commits: `6e3bb3f` prepares the release; `cbe8ced` corrects runtime/chat
+README installation examples to the released versions. Core matches the original
+frozen candidate exactly. Runtime/chat differ from it only in those README edits.
+`tool/prepare_shared_agent_release.py` reproduces the publication manifests from
+these committed versions while keeping workspace development paths intact.
+Mermaid was not published. Official archive URLs use
+`https://pub.dev/api/archives/<package>-<version>.tar.gz`.
+
+### Independent hosted consumer verification
+
+A fresh Flutter macOS application resolved exact hosted versions core 0.1.0,
+runtime 0.2.0 and chat 0.3.0, with no path dependencies, Git dependencies or
+dependency overrides. All three lockfile hashes match the table above and
+package configuration resolves each to the pub.dev hosted cache.
+
+- Five shared host-widget regression tests passed against the hosted package.
+- Consumer static analysis passed with no issues.
+- The public runtime build command compiled the hosted Rust sources to an arm64
+  debug dylib; a Dart smoke test loaded ABI 12 and disposed the runtime successfully.
+- Package-list propagation initially lagged behind version/ archive APIs; ordinary
+  `pub get` succeeded after the index updated, with no dependency workaround.
+
+The workspace and tracked example lockfiles were refreshed only for the new
+local runtime/chat versions. This keeps monorepo development reproducible while
+Terminal separately changes its production dependencies to hosted packages.
+
+The independent Flutter macOS Debug application build also passed. The generated
+Flutter template initially targeted macOS 10.15, rejected by the installed Xcode;
+the verification app and Pods were set to macOS 14.0 and rebuilt successfully.
+This deployment-target adjustment is consumer configuration, not a package patch.
+Validation covers compilation and standalone native loading, not an interactive
+GUI launch or an x86_64 device run.
