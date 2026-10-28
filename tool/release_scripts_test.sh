@@ -387,16 +387,17 @@ assert_static_release_contract() {
   grep -q 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' \
     "${workflow}"
   ! grep -q 'subosito/flutter-action' "${workflow}"
-  grep -q 'flutter_macos_arm64_3[.]44[.]0-stable[.]zip' "${workflow}"
-  grep -q '0d4d1d3f379d18aff392291be6871d63bf090a9e81078d4c4bc84e6208603dca' \
+  grep -q 'flutter_macos_arm64_3[.]44[.]8-stable[.]zip' "${workflow}"
+  grep -q 'c3d6fe95078f7001d947a31d42527de91d5bfe62e4cf444a1493a2e8f1fb199d' \
     "${workflow}"
+  grep -q 'ref: 2fbf85aae1c4db45231d675b251925e1edf0f9ad' "${workflow}"
   grep -q 'curl --fail' "${workflow}"
   grep -q -- "--proto '=https'" "${workflow}"
   grep -q -- '--retry 5' "${workflow}"
   grep -q 'shasum -a 256 -c -' "${workflow}"
   grep -q 'GITHUB_PATH' "${workflow}"
   grep -q 'GITHUB_ENV' "${workflow}"
-  grep -q '559ffa3f75e7402d65a8def9c28389a9b2e6fe42' "${workflow}"
+  grep -q '058e0af2c2b57e369d905a03ac9748b0ebf543c6' "${workflow}"
   grep -q 'flutter --version --machine' "${workflow}"
   grep -q 'contents: read' "${workflow}"
   grep -q 'flutter build macos --config-only --no-pub' "${workflow}"
@@ -407,6 +408,33 @@ assert_static_release_contract() {
   ! grep -Eq 'uses:.*@(main|master|v[0-9]+)([[:space:]]|$)' "${workflow}"
 }
 
+assert_runtime_loader_checks() {
+  loader="${root}/tool/verify_macos_runtime.sh"
+  fixture_library="${sandbox}/runtime-load.dylib"
+  printf '%s\n' 'not a dynamic library' >"${fixture_library}"
+  if sh "${loader}" "${fixture_library}" >/dev/null 2>&1; then
+    printf '%s\n' 'runtime loader accepted an invalid library' >&2
+    exit 1
+  fi
+
+  printf 'int unrelated_symbol(void) { return 0; }\n' \
+    | /usr/bin/xcrun clang -x c -dynamiclib -o "${fixture_library}" -
+  if sh "${loader}" "${fixture_library}" >/dev/null 2>&1; then
+    printf '%s\n' 'runtime loader accepted a library without the ABI symbol' >&2
+    exit 1
+  fi
+
+  for abi in 11 12; do
+    printf '#include <stdint.h>\nuint32_t ianvs_acp_ffi_version(void) { return %s; }\n' "${abi}" \
+      | /usr/bin/xcrun clang -x c -dynamiclib -o "${fixture_library}" -
+    if sh "${loader}" "${fixture_library}" >/dev/null 2>&1; then
+      test "${abi}" -eq 12
+    else
+      test "${abi}" -eq 11
+    fi
+  done
+}
+
 assert_package_rejects_missing_credentials
 assert_failed_release_preserves_previous_archive
 assert_package_starts_with_absent_app_bundle
@@ -415,5 +443,6 @@ assert_nested_signing_order
 assert_rust_build_sets_install_name_and_signs_library
 assert_signing_closure_contract
 assert_static_release_contract
+assert_runtime_loader_checks
 
 printf '%s\n' 'release script contract tests passed'

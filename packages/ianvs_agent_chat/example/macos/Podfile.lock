@@ -8,8 +8,6 @@ PODS:
   - FlutterMacOS (1.0.0)
   - irondash_engine_context (0.0.1):
     - FlutterMacOS
-  - merman (0.7.0):
-    - FlutterMacOS
   - super_native_extensions (0.0.1):
     - FlutterMacOS
 
@@ -19,7 +17,6 @@ DEPENDENCIES:
   - file_picker (from `Flutter/ephemeral/.symlinks/plugins/file_picker/macos`)
   - FlutterMacOS (from `Flutter/ephemeral`)
   - irondash_engine_context (from `Flutter/ephemeral/.symlinks/plugins/irondash_engine_context/macos`)
-  - merman (from `Flutter/ephemeral/.symlinks/plugins/merman/macos`)
   - super_native_extensions (from `Flutter/ephemeral/.symlinks/plugins/super_native_extensions/macos`)
 
 EXTERNAL SOURCES:
@@ -33,8 +30,6 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral
   irondash_engine_context:
     :path: Flutter/ephemeral/.symlinks/plugins/irondash_engine_context/macos
-  merman:
-    :path: Flutter/ephemeral/.symlinks/plugins/merman/macos
   super_native_extensions:
     :path: Flutter/ephemeral/.symlinks/plugins/super_native_extensions/macos
 
@@ -44,9 +39,8 @@ SPEC CHECKSUMS:
   file_picker: 7584aae6fa07a041af2b36a2655122d42f578c1a
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
   irondash_engine_context: 893c7d96d20ce361d7e996f39d360c4c2f9869ba
-  merman: 8a568d42cc12f3c02170bf77ed77cd5e8e92a2b7
   super_native_extensions: c2795d6d9aedf4a79fae25cb6160b71b50549189
 
-PODFILE CHECKSUM: 42a5ad73270960b0681dce4ec77fa203cbffeb53
+PODFILE CHECKSUM: e51b2637e84504d759932501524a6ec278f73163
 
 COCOAPODS: 1.16.2

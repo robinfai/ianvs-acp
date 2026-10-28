@@ -41,6 +41,14 @@ post_install do |installer|
     target.build_configurations.each do |config|
       deployment = config.build_settings['MACOSX_DEPLOYMENT_TARGET'].to_f
       config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '12.0' if deployment < 12.0
+
+      if target.name == 'super_native_extensions'
+        # Older Rust toolchains strip host proc-macros into dylibs that macOS 27
+        # rejects with "mis-aligned LINKEDIT string pool" (rust-lang/rust#157750).
+        # Keep compile-time artifacts intact; the shipped library keeps its profile.
+        config.build_settings['CARGO_PROFILE_DEV_BUILD_OVERRIDE_STRIP'] = 'none'
+        config.build_settings['CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP'] = 'none'
+      end
     end
   end
 end

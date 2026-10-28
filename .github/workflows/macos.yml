@@ -22,9 +22,9 @@ jobs:
     env:
       FLUTTER_SUPPRESS_ANALYTICS: 'true'
       FLUTTER_ARCHIVE_URL: >-
-        https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_3.44.0-stable.zip
-      FLUTTER_ARCHIVE_SHA256: 0d4d1d3f379d18aff392291be6871d63bf090a9e81078d4c4bc84e6208603dca
-      FLUTTER_FRAMEWORK_REVISION: 559ffa3f75e7402d65a8def9c28389a9b2e6fe42
+        https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_3.44.8-stable.zip
+      FLUTTER_ARCHIVE_SHA256: c3d6fe95078f7001d947a31d42527de91d5bfe62e4cf444a1493a2e8f1fb199d
+      FLUTTER_FRAMEWORK_REVISION: 058e0af2c2b57e369d905a03ac9748b0ebf543c6
     steps:
       - name: Check out source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -36,6 +36,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           repository: robinfai/ianvs-terminal
+          ref: 2fbf85aae1c4db45231d675b251925e1edf0f9ad
           path: ianvs-terminal
           persist-credentials: false
 
@@ -43,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/flutter_macos_arm64_3.44.0-stable.zip"
+          archive="$RUNNER_TEMP/flutter_macos_arm64_3.44.8-stable.zip"
           sdk_parent="$RUNNER_TEMP/flutter-sdk"
           curl --fail --proto '=https' --tlsv1.2 --location \
             --retry 5 --retry-all-errors \
@@ -61,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           version_json=$(flutter --version --machine)
-          test "$(printf '%s' "$version_json" | jq -r .frameworkVersion)" = '3.44.0'
+          test "$(printf '%s' "$version_json" | jq -r .frameworkVersion)" = '3.44.8'
           test "$(printf '%s' "$version_json" | jq -r .frameworkRevision)" \
             = "$FLUTTER_FRAMEWORK_REVISION"
 

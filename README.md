@@ -104,6 +104,12 @@ make verify
 Run the app locally with `make run`. The default `make` target only prints the
 available commands and does not build, test, clean, or publish anything.
 
+With Xcode 27, use Flutter 3.44.8 or newer: earlier 3.44 releases fail the
+universal framework architecture check ([Flutter #188346](https://github.com/flutter/flutter/issues/188346)).
+The macOS Podfile and runtime Cargo workspace also disable stripping of
+build-time Rust macros and the FFI library to avoid macOS 27 loader errors in
+older Rust toolchains.
+
 Build and verify a local ad-hoc macOS release:
 
 ```sh
@@ -152,7 +158,7 @@ for ownership and [Product capabilities](docs/product_capabilities.md) for scope
 
 The shared local ACP runtime is owned by
 [`ianvs_acp_runtime`](packages/ianvs_acp_runtime/README.md), including the Rust
-workspace, ABI v11 Dart bindings, and macOS build/signing scripts. Other desktop
+workspace, ABI v12 Dart bindings, and macOS build/signing scripts. Other desktop
 hosts can consume that package without the Shift application or chat UI.
 
 
@@ -163,3 +169,8 @@ The workspace now separates `ianvs_agent_core` (pure Dart content/contracts),
 and optional `ianvs_mermaid` (native diagrams). See the
 [shared API and ownership contract](docs/architecture/shared-agent-contract.md).
 Native and Dart consumers must use matching ABI 12 / event schema 5 sources.
+
+For reproducible sibling-source development, check out `ianvs-terminal` beside
+this repository at `2fbf85aae1c4db45231d675b251925e1edf0f9ad`. CI pins that
+revision too. Publish that Terminal commit before running remote ACP CI; the
+local refactor commits have not been pushed by this task.

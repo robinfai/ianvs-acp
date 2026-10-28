@@ -56,8 +56,11 @@ printf '%s\n' "${url_types}" \
 for binary in \
   "${executable}" "${rust_runtime}" \
   "${merman_lib}" "${merman_framework_binary}"; do
-  /usr/bin/lipo "${binary}" -verify_arch arm64 x86_64 \
-    || fail "binary is not universal: ${binary}"
+  # Xcode 27's lipo rejects multiple architectures in one -verify_arch call.
+  for arch in arm64 x86_64; do
+    /usr/bin/lipo "${binary}" -verify_arch "${arch}" \
+      || fail "binary is missing ${arch}: ${binary}"
+  done
 done
 
 merman_id=$(/usr/bin/otool -D "${merman_lib}" | /usr/bin/awk 'NR == 2 {print; exit}')
@@ -153,5 +156,7 @@ if [ "${distribution}" -eq 1 ]; then
 else
   "${signing_verifier}" "${app}"
 fi
+
+sh "${script_dir}/verify_macos_runtime.sh" "${rust_runtime}"
 
 printf '%s\n' 'macOS bundle verification passed'

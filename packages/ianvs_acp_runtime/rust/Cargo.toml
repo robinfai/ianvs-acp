@@ -5,6 +5,15 @@ members = [
 ]
 resolver = "3"
 
+# Older Rust toolchains can produce misaligned Mach-O libraries when stripping
+# debug info; macOS 27 refuses to load them (rust-lang/rust#157750). This applies
+# to both compile-time proc-macros and the final FFI library.
+[profile.dev]
+strip = false
+
+[profile.release]
+strip = false
+
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
