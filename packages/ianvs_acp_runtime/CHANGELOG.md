@@ -1,4 +1,4 @@
-## Unreleased
+## 0.2.0
 
 - Keep Rust macros and the FFI library unstripped so older toolchains can build
   and load the runtime on macOS 27 without Mach-O alignment errors.

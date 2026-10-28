@@ -2155,7 +2155,11 @@ void main() {
     expect(
       find.descendant(
         of: contextFinder,
-        matching: find.byType(SingleChildScrollView),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is SingleChildScrollView &&
+              widget.scrollDirection == Axis.vertical,
+        ),
       ),
       findsOneWidget,
     );

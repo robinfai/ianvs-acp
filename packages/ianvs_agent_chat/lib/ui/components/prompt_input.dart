@@ -1,3 +1,5 @@
+import 'chat_decision_card.dart';
+import 'chat_code_preview.dart';
 import '../../chat_strings.dart';
 import '../../chat_composer_controller.dart';
 import 'package:ianvs_agent_core/chat_submission.dart';
@@ -82,8 +84,23 @@ class PromptAttachmentController {
 }
 
 class PromptInput extends StatefulWidget {
+  /// Layout-only mode. The host owns its editor subtree, focus, input methods,
+  /// history, submission, stopping and every action. No controller is created.
+  const factory PromptInput.hosted({
+    Key? key,
+    required Widget editor,
+    required Widget actions,
+    Widget? header,
+    Widget? contextStrip,
+    Widget? footer,
+    EdgeInsetsGeometry padding,
+  }) = _HostedPromptInput;
+
   const PromptInput({
     super.key,
+    this.header,
+    this.contextStrip,
+    this.footer,
     this.agentName = 'Codex',
     this.enabled = true,
     required this.isSending,
@@ -130,6 +147,9 @@ class PromptInput extends StatefulWidget {
     this.inputBudget = const ChatInputBudget(),
   }) : assert(onSend != null || onSubmit != null);
 
+  final Widget? header;
+  final Widget? contextStrip;
+  final Widget? footer;
   final bool canQueueWhileSending;
   final bool showAttachmentControl;
   final bool showExecutionPolicy;
@@ -439,6 +459,8 @@ class _PromptInputState extends State<PromptInput> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (widget.header != null) widget.header!,
+                  if (widget.contextStrip != null) widget.contextStrip!,
                   if (widget.promptAppearsStalled) ...[
                     _PromptIdleWarning(onStop: widget.onStop),
                     SizedBox(height: 8),
@@ -481,37 +503,9 @@ class _PromptInputState extends State<PromptInput> {
                         key: Key('prompt-input-surface'),
                         duration: Duration(milliseconds: 120),
                         constraints: BoxConstraints(minHeight: 112),
-                        decoration: BoxDecoration(
-                          color: _isDraggingAttachments
-                              ? ChatTheme.of(context).accentMist
-                              : ChatTheme.of(context).surfaceRaised,
-                          borderRadius: BorderRadius.circular(22),
-                          border: Border.all(
-                            color: _isDraggingAttachments
-                                ? ChatTheme.of(context).accent
-                                : ChatTheme.of(
-                                    context,
-                                  ).borderSoft.withValues(alpha: .7),
-                            width: _isDraggingAttachments ? 2 : .75,
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(
-                                alpha:
-                                    Theme.of(context).brightness ==
-                                        Brightness.dark
-                                    ? .16
-                                    : (_isDraggingAttachments ? .08 : .035),
-                              ),
-                              blurRadius: _isDraggingAttachments ? 24 : 18,
-                              offset: Offset(0, 3),
-                            ),
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: .02),
-                              blurRadius: 2,
-                              offset: Offset(0, 1),
-                            ),
-                          ],
+                        decoration: _promptSurfaceDecoration(
+                          context,
+                          _isDraggingAttachments,
                         ),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -662,6 +656,7 @@ class _PromptInputState extends State<PromptInput> {
                       ),
                     ),
                   ),
+                  if (widget.footer != null) widget.footer!,
                 ],
               ),
             ),
@@ -1435,18 +1430,9 @@ class _PromptPermissionCard extends StatelessWidget {
         .where((choice) => !featuredChoices.contains(choice))
         .toList(growable: false);
     final collapseSecondaryChoices = secondaryChoices.isNotEmpty;
-    return Container(
+    return ChatDecisionCard(
       key: Key('prompt-permission-card'),
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: ChatTheme.of(context).warning.withValues(alpha: .06),
-        borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-        border: Border.all(
-          color: ChatTheme.of(context).warning.withValues(alpha: .30),
-        ),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
+      body: Stack(
         children: [
           Positioned(
             left: 0,
@@ -1735,13 +1721,19 @@ class _PermissionContextViewState extends State<_PermissionContextView> {
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
-                            SelectableText(
-                              entry.value,
-                              style: TextStyle(
-                                color: ChatTheme.of(context).textPrimary,
-                                fontSize: 12,
+                            if (entry.label.toLowerCase() == 'command')
+                              ChatCodePreview(
+                                source: entry.value,
+                                expanded: true,
+                              )
+                            else
+                              SelectableText(
+                                entry.value,
+                                style: TextStyle(
+                                  color: ChatTheme.of(context).textPrimary,
+                                  fontSize: 12,
+                                ),
                               ),
-                            ),
                           ],
                         ),
                       ),
@@ -4491,4 +4483,95 @@ String _attachmentModeTooltip(PromptAttachmentPromptMode mode) {
     PromptAttachmentPromptMode.embeddedResource => 'Embedded as resource data',
     PromptAttachmentPromptMode.resourceLink => 'Sent as a resource link',
   };
+}
+
+BoxDecoration _promptSurfaceDecoration(BuildContext context, bool dragging) =>
+    BoxDecoration(
+      color: dragging
+          ? ChatTheme.of(context).accentMist
+          : ChatTheme.of(context).surfaceRaised,
+      borderRadius: BorderRadius.circular(22),
+      border: Border.all(
+        color: dragging
+            ? ChatTheme.of(context).accent
+            : ChatTheme.of(context).borderSoft.withValues(alpha: .7),
+        width: dragging ? 2 : .75,
+      ),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(
+            alpha: Theme.of(context).brightness == Brightness.dark
+                ? .16
+                : (dragging ? .08 : .035),
+          ),
+          blurRadius: dragging ? 24 : 18,
+          offset: const Offset(0, 3),
+        ),
+        BoxShadow(
+          color: Colors.black.withValues(alpha: .02),
+          blurRadius: 2,
+          offset: const Offset(0, 1),
+        ),
+      ],
+    );
+
+void _unusedHostedSend(String text, List<PromptAttachment> attachments) {}
+void _unusedHostedStop() {}
+
+class _HostedPromptInput extends PromptInput {
+  const _HostedPromptInput({
+    super.key,
+    required this.editor,
+    required this.actions,
+    super.header,
+    super.contextStrip,
+    super.footer,
+    this.padding = const EdgeInsets.all(12),
+  }) : super(
+         isSending: false,
+         onSend: _unusedHostedSend,
+         onStop: _unusedHostedStop,
+       );
+  final Widget editor;
+  final Widget actions;
+  final EdgeInsetsGeometry padding;
+
+  @override
+  State<PromptInput> createState() => _HostedPromptInputState();
+}
+
+class _HostedPromptInputState extends State<PromptInput> {
+  @override
+  Widget build(BuildContext context) {
+    final hosted = widget as _HostedPromptInput;
+    return Align(
+      heightFactor: 1,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: ChatTheme.of(context).contentMaxWidth,
+        ),
+        child: Container(
+          padding: hosted.padding,
+          decoration: _promptSurfaceDecoration(context, false),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (hosted.header != null) hosted.header!,
+              if (hosted.contextStrip != null) hosted.contextStrip!,
+              KeyedSubtree(
+                key: const ValueKey('hosted-prompt-editor'),
+                child: hosted.editor,
+              ),
+              KeyedSubtree(
+                key: const ValueKey('hosted-prompt-actions'),
+                child: hosted.actions,
+              ),
+              if (hosted.footer != null) hosted.footer!,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

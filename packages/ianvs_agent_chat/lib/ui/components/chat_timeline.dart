@@ -1,3 +1,4 @@
+import 'chat_message_frame.dart';
 import '../../chat_theme.dart';
 import 'dart:async';
 import '../../platform/chat_platform.dart';
@@ -1526,28 +1527,6 @@ class _MessageBubble extends StatelessWidget {
 
     final user = message.role == ChatMessageRole.user;
     final assistant = message.role == ChatMessageRole.assistant;
-    final color = switch (message.role) {
-      ChatMessageRole.user => ChatTheme.of(context).userMessageSurface,
-      ChatMessageRole.assistant => Colors.transparent,
-      ChatMessageRole.tool => ChatTheme.of(
-        context,
-      ).warning.withValues(alpha: 0.08),
-      ChatMessageRole.error => ChatTheme.of(
-        context,
-      ).danger.withValues(alpha: 0.08),
-      ChatMessageRole.status => ChatTheme.of(context).surfaceRaised,
-    };
-    final borderColor = switch (message.role) {
-      ChatMessageRole.user => Colors.transparent,
-      ChatMessageRole.assistant => Colors.transparent,
-      ChatMessageRole.tool => ChatTheme.of(
-        context,
-      ).warning.withValues(alpha: 0.3),
-      ChatMessageRole.error => ChatTheme.of(
-        context,
-      ).danger.withValues(alpha: 0.3),
-      ChatMessageRole.status => ChatTheme.of(context).border,
-    };
     final displayText = user
         ? userPromptDisplayText(message.text)
         : message.text;
@@ -1559,159 +1538,54 @@ class _MessageBubble extends StatelessWidget {
       markdownDecision?.omission,
     );
 
-    if (user) {
-      final hasContentBlocks =
-          _lazyMapCount(message.metadata['contentBlocks']) > 0;
-      final imagePaths = hasContentBlocks
-          ? <String>[]
-          : textImagePaths(message.text);
-      final hasImages = hasContentBlocks || imagePaths.isNotEmpty;
-      return Align(
-        alignment: Alignment.centerRight,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: 720),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (hasContentBlocks)
-                _ContentBlocksPreview(
-                  message: message,
-                  inputBudget: inputBudget,
-                  previewRevision: message.revision,
-                  beforeText: true,
-                  compactImages: true,
-                ),
-              if (imagePaths.isNotEmpty)
-                _TextImageThumbnails(paths: imagePaths),
-              if (hasImages &&
-                  (markdownDecision != null || omissions.isNotEmpty))
-                SizedBox(height: 8),
-              if (markdownDecision != null || omissions.isNotEmpty)
-                Container(
-                  padding: EdgeInsets.symmetric(horizontal: 15, vertical: 11),
-                  decoration: BoxDecoration(
-                    color: ChatTheme.of(context).userMessageSurface,
-                    borderRadius: BorderRadius.circular(
-                      context.ianvs.panelRadius,
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (markdownDecision != null)
-                        if (markdownDecision.useMarkdown)
-                          _SelectableMessageMarkdown(
-                            data: markdownDecision.text,
-                            user: true,
-                            onTapLink: onTapLink,
-                          )
-                        else
-                          SelectableText(
-                            markdownDecision.text,
-                            style: markdown.ianvsMarkdownStyleSheet(context).p,
-                          ),
-                      for (final omission in omissions)
-                        _InputOmissionNotice(omission: omission, user: true),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: 820),
-        child: Container(
-          width: double.infinity,
-          padding: assistant
-              ? EdgeInsets.symmetric(vertical: 6)
-              : EdgeInsets.all(11),
-          decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.circular(context.ianvs.controlRadius),
-            border: Border.all(color: borderColor),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!user && !assistant)
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    Icon(
-                      _iconForRole(message.role),
-                      size: 14,
-                      color: _labelColor(context, message.role),
-                    ),
-                    Text(
-                      _labelForRole(message.role),
-                      style: TextStyle(
-                        color: _labelColor(context, message.role),
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12,
-                        letterSpacing: 0,
-                      ),
-                    ),
-                  ],
-                ),
-              if (markdownDecision != null) ...[
-                if (!user && !assistant) SizedBox(height: 6),
-                if (markdownDecision.useMarkdown)
-                  _SelectableMessageMarkdown(
-                    data: markdownDecision.text,
-                    user: user,
-                    onTapLink: onTapLink,
-                  )
-                else
-                  SelectableText(
-                    markdownDecision.text,
-                    style: markdown.ianvsMarkdownStyleSheet(context).p,
-                  ),
-              ],
-              for (final omission in omissions)
-                _InputOmissionNotice(omission: omission, user: user),
-              _ContentBlocksPreview(
-                message: message,
-                inputBudget: inputBudget,
-                previewRevision: message.revision,
+    final hasContentBlocks =
+        user && _lazyMapCount(message.metadata['contentBlocks']) > 0;
+    final imagePaths = user && !hasContentBlocks
+        ? textImagePaths(message.text)
+        : <String>[];
+    return ChatMessageFrame(
+      role: message.role,
+      roleLabel: assistant ? agentName : null,
+      showRole: !user && !assistant,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (hasContentBlocks)
+            _ContentBlocksPreview(
+              message: message,
+              inputBudget: inputBudget,
+              previewRevision: message.revision,
+              beforeText: true,
+              compactImages: true,
+            ),
+          if (imagePaths.isNotEmpty) _TextImageThumbnails(paths: imagePaths),
+          if ((hasContentBlocks || imagePaths.isNotEmpty) &&
+              markdownDecision != null)
+            const SizedBox(height: 8),
+          if (markdownDecision != null)
+            if (markdownDecision.useMarkdown)
+              _SelectableMessageMarkdown(
+                data: markdownDecision.text,
+                user: user,
+                onTapLink: onTapLink,
+              )
+            else
+              SelectableText(
+                markdownDecision.text,
+                style: markdown.ianvsMarkdownStyleSheet(context).p,
               ),
-            ],
-          ),
-        ),
+          for (final omission in omissions)
+            _InputOmissionNotice(omission: omission, user: user),
+          if (!user)
+            _ContentBlocksPreview(
+              message: message,
+              inputBudget: inputBudget,
+              previewRevision: message.revision,
+            ),
+        ],
       ),
     );
   }
-
-  IconData _iconForRole(ChatMessageRole role) => switch (role) {
-    ChatMessageRole.user => Icons.person_outline,
-    ChatMessageRole.assistant => Icons.smart_toy_outlined,
-    ChatMessageRole.tool => Icons.build_outlined,
-    ChatMessageRole.error => Icons.error_outline,
-    ChatMessageRole.status => Icons.info_outline,
-  };
-
-  String _labelForRole(ChatMessageRole role) => switch (role) {
-    ChatMessageRole.user => 'User',
-    ChatMessageRole.assistant => 'Agent',
-    ChatMessageRole.tool => 'Tool',
-    ChatMessageRole.error => 'Error',
-    ChatMessageRole.status => 'Status',
-  };
-
-  Color _labelColor(BuildContext context, ChatMessageRole role) =>
-      switch (role) {
-        ChatMessageRole.user => ChatTheme.of(context).textPrimary,
-        ChatMessageRole.assistant => ChatTheme.of(context).primaryDark,
-        ChatMessageRole.tool => ChatTheme.of(context).warning,
-        ChatMessageRole.error => ChatTheme.of(context).danger,
-        ChatMessageRole.status => ChatTheme.of(context).textSecondary,
-      };
 }
 
 class _AssistantSummaryBubble extends StatelessWidget {
@@ -2044,24 +1918,102 @@ Widget _blockedMarkdownImage(
   );
 }
 
-class ChatToolCard extends StatelessWidget {
+/// A tool call's protocol status is not the exit status of a host operation.
+/// Supply [details] and disable [showDetails] for live execution records.
+class ChatToolCard extends StatefulWidget {
   const ChatToolCard({
     super.key,
     required this.message,
     this.inputBudget = const ChatInputBudget(),
+    this.showDetails = true,
+    this.details,
+    this.footer,
+    this.expanded,
+    this.onExpandedChanged,
+  });
+  final ChatMessageView message;
+  final ChatInputBudget inputBudget;
+  final bool showDetails;
+  final Widget? details;
+  final Widget? footer;
+  final bool? expanded;
+  final ValueChanged<bool>? onExpandedChanged;
+  @override
+  State<ChatToolCard> createState() => _ChatToolCardState();
+}
+
+class _ChatToolCardState extends State<ChatToolCard> {
+  late ChatImageDecodeBudgetLedger ledger;
+  @override
+  void initState() {
+    super.initState();
+    widget.inputBudget.validate();
+    ledger = ChatImageDecodeBudgetLedger(budget: widget.inputBudget);
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatToolCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.inputBudget, widget.inputBudget)) {
+      widget.inputBudget.validate();
+      ledger = ChatImageDecodeBudgetLedger(budget: widget.inputBudget);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _ChatToolCardContent(
+          message: widget.message,
+          inputBudget: widget.inputBudget,
+          showDetails: widget.showDetails,
+          expanded: widget.expanded,
+          onExpandedChanged: widget.onExpandedChanged,
+        ),
+        if (widget.details != null) widget.details!,
+        if (widget.footer != null) widget.footer!,
+      ],
+    );
+    if (context.dependOnInheritedWidgetOfExactType<_ImageDecodeScope>() !=
+        null) {
+      return content;
+    }
+    return _ImageDecodeScope(
+      ledger: ledger,
+      decoder: const DartUiBoundedImageDecoder(),
+      inputBudget: widget.inputBudget,
+      child: content,
+    );
+  }
+}
+
+class _ChatToolCardContent extends StatelessWidget {
+  const _ChatToolCardContent({
+    required this.message,
+    required this.inputBudget,
+    required this.showDetails,
+    this.expanded,
+    this.onExpandedChanged,
   });
 
   final ChatMessageView message;
   final ChatInputBudget inputBudget;
+  final bool showDetails;
+  final bool? expanded;
+  final ValueChanged<bool>? onExpandedChanged;
 
   @override
   Widget build(BuildContext context) {
     final parsed = ToolPresentationSource.fromMessage(message);
     final images = _toolImageBlocks(parsed.content);
     final diffs = _toolDiffs(parsed.content);
-    if (images.isNotEmpty || diffs.isNotEmpty) {
+    Widget? richDetails;
+    if (showDetails && (images.isNotEmpty || diffs.isNotEmpty)) {
       final statusSummary = _ToolGroupStatusSummary.from(context, [parsed]);
-      return Column(
+      richDetails = Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (images.isNotEmpty)
@@ -2072,6 +2024,9 @@ class ChatToolCard extends StatelessWidget {
         ],
       );
     }
+    if (richDetails != null && expanded == null && onExpandedChanged == null) {
+      return richDetails;
+    }
     return _ToolActivityRow(
       key: parsed.id.isEmpty
           ? ObjectKey(message)
@@ -2079,6 +2034,10 @@ class ChatToolCard extends StatelessWidget {
       parsed: parsed,
       presentation: ToolPresentationScope.of(context).resolve(parsed),
       inputBudget: inputBudget,
+      showDetails: showDetails,
+      detailsContent: richDetails,
+      expanded: expanded,
+      onExpandedChanged: onExpandedChanged,
     );
   }
 }
@@ -3183,11 +3142,19 @@ class _ToolActivityRow extends StatefulWidget {
     required this.parsed,
     required this.presentation,
     required this.inputBudget,
+    this.showDetails = true,
+    this.detailsContent,
+    this.expanded,
+    this.onExpandedChanged,
   });
 
   final ToolPresentationSource parsed;
   final ToolActivityPresentation presentation;
   final ChatInputBudget inputBudget;
+  final bool showDetails;
+  final Widget? detailsContent;
+  final bool? expanded;
+  final ValueChanged<bool>? onExpandedChanged;
 
   @override
   State<_ToolActivityRow> createState() => _ToolActivityRowState();
@@ -3201,18 +3168,20 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
   Widget build(BuildContext context) {
     final parsed = widget.parsed;
     final presentation = widget.presentation;
+    final expanded = widget.expanded ?? _expanded;
     final hasDetails =
-        parsed.id.isNotEmpty ||
-        parsed.kind.isNotEmpty ||
-        parsed.locations.isNotEmpty ||
-        _hasMetadataDetail(parsed.content) ||
-        _hasMetadataDetail(parsed.input) ||
-        _hasMetadataDetail(parsed.output);
+        widget.showDetails &&
+        (parsed.id.isNotEmpty ||
+            parsed.kind.isNotEmpty ||
+            parsed.locations.isNotEmpty ||
+            _hasMetadataDetail(parsed.content) ||
+            _hasMetadataDetail(parsed.input) ||
+            _hasMetadataDetail(parsed.output));
     final statusKind = _toolGroupStatusKind(parsed.status);
     final statusLabel = statusKind == _ToolGroupStatusKind.completed
         ? null
         : _humanizeStatus(parsed.status);
-    final foreground = _hovered && !_expanded
+    final foreground = _hovered && !expanded
         ? ChatTheme.of(context).textPrimary
         : ChatTheme.of(context).textSecondary;
     return MouseRegion(
@@ -3221,7 +3190,7 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
       child: Semantics(
         container: true,
         button: hasDetails,
-        expanded: hasDetails ? _expanded : null,
+        expanded: hasDetails ? expanded : null,
         label: presentation.semanticLabel,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -3236,8 +3205,16 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
                 hoverColor: Colors.transparent,
                 splashColor: Colors.transparent,
                 highlightColor: Colors.transparent,
-                onTap: hasDetails
-                    ? () => setState(() => _expanded = !_expanded)
+                onTap:
+                    hasDetails &&
+                        (widget.expanded == null ||
+                            widget.onExpandedChanged != null)
+                    ? () {
+                        if (widget.expanded == null) {
+                          setState(() => _expanded = !expanded);
+                        }
+                        widget.onExpandedChanged?.call(!expanded);
+                      }
                     : null,
                 child: Padding(
                   padding: EdgeInsets.symmetric(vertical: 3),
@@ -3262,7 +3239,7 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
                                 color: foreground,
                                 fontSize: 13,
                                 height: 1.35,
-                                fontWeight: _hovered && !_expanded
+                                fontWeight: _hovered && !expanded
                                     ? FontWeight.w600
                                     : FontWeight.w500,
                               ),
@@ -3317,7 +3294,7 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
                             key: ValueKey('tool-activity-chevron-${parsed.id}'),
                             duration: Duration(milliseconds: 160),
                             curve: Curves.easeOutCubic,
-                            turns: _expanded ? 0.25 : 0,
+                            turns: expanded ? 0.25 : 0,
                             child: Icon(
                               Icons.chevron_right_rounded,
                               size: 17,
@@ -3335,14 +3312,16 @@ class _ToolActivityRowState extends State<_ToolActivityRow> {
               duration: Duration(milliseconds: 180),
               curve: Curves.easeOutCubic,
               alignment: Alignment.topCenter,
-              child: _expanded
+              child: hasDetails && expanded
                   ? Padding(
                       key: ValueKey('tool-activity-details-${parsed.id}'),
                       padding: EdgeInsets.fromLTRB(26, 5, 0, 3),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: _buildDetails(parsed),
-                      ),
+                      child:
+                          widget.detailsContent ??
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: _buildDetails(parsed),
+                          ),
                     )
                   : SizedBox.shrink(
                       key: ValueKey(

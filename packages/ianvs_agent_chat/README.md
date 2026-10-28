@@ -242,3 +242,47 @@ Implementation references: [OpenAI Chat Completions](https://developers.openai.c
 ## License
 
 Apache-2.0.
+
+
+## Embedding in a mixed timeline
+
+Import the presentation widgets from `package:ianvs_agent_chat/ianvs_agent_chat.dart`
+and message roles/models from `package:ianvs_agent_core/ianvs_agent_core.dart`.
+
+- `ChatMessageFrame(role:, child:, roleLabel:, leading:, actions:, footer:)`
+  owns only visual framing. It puts roles above content below 600px and uses a
+  bounded role column on wider layouts. Every role uses the same 12px content inset.
+- `ChatDecisionCard(title:, description:, body:, actions:)` accepts Widgets,
+  including the host's existing keyed/focused buttons. It never grants permission.
+  `ChatPermissionCard` adapts an ACP permission request to that surface.
+- `ChatCodePreview(source:, onCopy:, expanded:, onExpandedChanged:)` renders literal
+  text with horizontal scrolling and a bounded preview. CRLF and CR normalize only
+  for display. Copy is absent unless explicitly enabled, and receives the complete
+  original source. Expanded previews delegate vertical scrolling to their parent.
+- `ChatToolCard(message:, showDetails: false, footer:)` keeps the tool summary but
+  suppresses default output/content, including images and diffs. A host may inject
+  `details` and a link to its original execution record; optional `expanded` and
+  `onExpandedChanged` keep disclosure state in the host. Tool completion does not
+  establish a command exit status.
+- `ChatPlanCard(message:)` remains independently embeddable.
+
+```dart
+PromptInput.hosted(
+  editor: existingComposerEditor, // Own controller, FocusNode, IME and history.
+  header: modeSelector,
+  contextStrip: contextSelection,
+  actions: existingActionRow, // Own submit / stop-generation / interrupt actions.
+  footer: targetStatus,
+)
+```
+
+Hosted mode creates no text/focus/controller objects and disposes none of the
+host's objects. Editor and action slots have stable keyed subtrees. It adds no
+keyboard shortcuts or send/stop controls. The host owns keyboard insets, safe
+areas, height bounds, mode switching and PTY input ownership. Regular `PromptInput`
+also accepts `header`, `contextStrip` and `footer`; its managed submission behavior
+is unchanged. Both modes share the composer surface styling.
+
+These APIs are release candidates; published chat 0.2.0 does not contain them.
+See the repository's `docs/architecture/shared-agent-release-plan.md` for the
+candidate versions, dependency order and hosted-consumer verification gate.

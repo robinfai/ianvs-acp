@@ -9,3 +9,6 @@ export 'chat_strings.dart';
 export 'ui/components/accessible_text_field.dart' show ChatNativeTextFieldScope;
 export 'chat_session_binding.dart';
 export 'ui/components/chat_permission_card.dart';
+export 'ui/components/chat_message_frame.dart';
+export 'ui/components/chat_decision_card.dart';
+export 'ui/components/chat_code_preview.dart';

@@ -1,4 +1,9 @@
-## Unreleased
+## 0.3.0
+
+* Extract pure Dart models and sessions into `ianvs_agent_core`; move native diagrams into optional `ianvs_mermaid`.
+* Share message frames, literal code previews and presentation-only decision cards with mixed timelines. Tool cards support hidden default details, host footers and controlled expansion.
+* Add `PromptInput.hosted` for host-owned editor/action subtrees without creating input controllers or sending/stopping actions. Keep editor composition, selection and focus through slot changes.
+* Use the same frames and decision surfaces in the built-in conversation and permission UI, with consistent role padding and compact layouts.
 
 * Preserve `ianvs_markdown`'s theme and typography for messages and summaries, and use its built-in code blocks and links. Keep host link handling, Mermaid rendering, blocked-image copying and render budgets.
 

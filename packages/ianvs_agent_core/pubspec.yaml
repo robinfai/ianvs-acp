@@ -2,6 +2,7 @@ name: ianvs_agent_core
 description: UI independent agent conversation contracts and content projection.
 version: 0.1.0
 publish_to: none
+repository: https://github.com/robinfai/ianvs-acp
 environment:
   sdk: ^3.12.0
 dependencies:
