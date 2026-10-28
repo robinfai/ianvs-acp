@@ -15,7 +15,7 @@ Reusable Flutter **Agent Chat UI** for ACP-powered agents and OpenAI-compatible 
 
 ```yaml
 dependencies:
-  ianvs_agent_chat: ^0.2.0
+  ianvs_agent_chat: ^0.3.0
 ```
 
 Requires Dart 3.12 or later and Flutter. The desktop integration is validated on macOS. Other platforms require testing their file, drag/drop, clipboard and Mermaid integrations; this release does not claim full platform parity.
@@ -283,6 +283,6 @@ areas, height bounds, mode switching and PTY input ownership. Regular `PromptInp
 also accepts `header`, `contextStrip` and `footer`; its managed submission behavior
 is unchanged. Both modes share the composer surface styling.
 
-These APIs are release candidates; published chat 0.2.0 does not contain them.
+These APIs are available starting with chat 0.3.0; chat 0.2.0 does not contain them.
 See the repository's `docs/architecture/shared-agent-release-plan.md` for the
 candidate versions, dependency order and hosted-consumer verification gate.

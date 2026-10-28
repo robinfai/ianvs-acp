@@ -32,7 +32,7 @@ Add the hosted dependency, then run `flutter pub get` / `dart pub get`:
 
 ```yaml
 dependencies:
-  ianvs_acp_runtime: ^0.1.0
+  ianvs_acp_runtime: ^0.2.0
 ```
 
 For local development a path dependency on the complete package directory also
