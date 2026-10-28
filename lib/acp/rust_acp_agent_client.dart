@@ -150,6 +150,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   AcpAgentCapabilities? _capabilities;
   int _nextRequestId = 1;
   bool _connected = false;
+  String? _handledRuntimeFailure;
   bool _disposed = false;
 
   IanvsRustRuntime get _runtimeInstance {
@@ -822,7 +823,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
 
   void _handleStatus(IanvsRuntimeEvent event) {
     switch (event.status) {
+      case 'starting':
+        _handledRuntimeFailure = null;
       case 'ready':
+        _handledRuntimeFailure = null;
         _connected = true;
         _capabilities = _capabilitiesFromProjection(event.data['capabilities']);
         final completer = _connecting;
@@ -833,9 +837,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
         _invalidateAllPermissions(
           ChatPermissionInvalidationReason.connectionClosed,
         );
-        final error = StateError(
-          event.data['detail'] as String? ?? 'Rust ACP runtime failed.',
-        );
+        final detail =
+            event.data['detail'] as String? ?? 'Rust ACP runtime failed.';
+        _handledRuntimeFailure = detail;
+        final error = StateError(detail);
         final completer = _connecting;
         if (completer != null) _completeConnectionError(completer, error);
         _failPendingOperations(error);
@@ -1251,6 +1256,17 @@ final class RustAcpAgentClient implements AcpAgentClient {
   }
 
   void _handleRuntimeError(IanvsRuntimeEvent event) {
+    // Rust reports a terminal launch failure as a failed status followed by
+    // its diagnostic error. A caller may retry between those stream events;
+    // the old diagnostic must not reject that new connection attempt.
+    if (event.requestId == null &&
+        (event.errorCode == 'agent_runtime_failed' ||
+            event.errorCode == 'session_store_failed') &&
+        _handledRuntimeFailure != null &&
+        event.errorMessage == _handledRuntimeFailure) {
+      _handledRuntimeFailure = null;
+      return;
+    }
     final error = StateError(
       '${event.errorCode ?? 'rust_runtime_error'}: '
       '${event.errorMessage ?? 'Unknown Rust runtime error'}',

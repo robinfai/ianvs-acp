@@ -344,6 +344,70 @@ void main() {
     expect(await client.sessionAvailableCommands(session.id), isNull);
   });
 
+  test(
+    'trailing startup diagnostic cannot fail a new connection attempt',
+    () async {
+      final native = _ClientFakeNative()..emitReadyOnStart = false;
+      final client = RustAcpAgentClient(
+        agentName: 'fixture',
+        agentCommand: 'fixture-agent',
+        runtime: IanvsRustRuntime(
+          native: native,
+          pollInterval: const Duration(milliseconds: 1),
+        ),
+      );
+      addTearDown(client.dispose);
+      final failed = expectLater(client.connect(), throwsA(isA<StateError>()));
+      native.emit('status_changed', {
+        'status': 'failed',
+        'detail': 'unsupported MCP',
+      });
+      await failed;
+      final retry = client.connect();
+      final succeeded = expectLater(retry, completes);
+      native.emit('runtime_error', {
+        'code': 'agent_runtime_failed',
+        'message': 'unsupported MCP',
+        'recoverable': false,
+      });
+      native.emit('status_changed', {'status': 'starting'});
+      native.emitReady();
+      await succeeded;
+      expect(native.startCalls, 2);
+    },
+  );
+
+  test(
+    'a new start still reports an independent matching runtime error',
+    () async {
+      final native = _ClientFakeNative()..emitReadyOnStart = false;
+      final client = RustAcpAgentClient(
+        agentName: 'fixture',
+        agentCommand: 'fixture-agent',
+        runtime: IanvsRustRuntime(
+          native: native,
+          pollInterval: const Duration(milliseconds: 1),
+        ),
+      );
+      addTearDown(client.dispose);
+      final first = expectLater(client.connect(), throwsA(isA<StateError>()));
+      native.emit('status_changed', {
+        'status': 'failed',
+        'detail': 'unsupported MCP',
+      });
+      await first;
+      final second = expectLater(client.connect(), throwsA(isA<StateError>()));
+      native.emit('status_changed', {'status': 'starting'});
+      native.emit('runtime_error', {
+        'code': 'agent_runtime_failed',
+        'message': 'unsupported MCP',
+        'recoverable': false,
+      });
+      await second;
+      expect(native.startCalls, 2);
+    },
+  );
+
   test('connection timeout does not start a second runtime', () async {
     final native = _ClientFakeNative()..emitReadyOnStart = false;
     final client = RustAcpAgentClient(
