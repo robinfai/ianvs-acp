@@ -17,6 +17,7 @@ Future<void> main(List<String> arguments) async {
   final events = StreamIterator<IanvsRuntimeEvent>(runtime.events);
   try {
     runtime.startAgent(
+      environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
       agentName: 'Example assistant',
       command: arguments.first,
       args: arguments.skip(1).toList(),

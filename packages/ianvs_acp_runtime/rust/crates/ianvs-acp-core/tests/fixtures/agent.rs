@@ -88,6 +88,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 async move |request: InitializeRequest,
                             responder,
                             connection: ConnectionTo<Client>| {
+                    if std::env::var("IANVS_FIXTURE_HOLD_INITIALIZE").as_deref() == Ok("1") {
+                        eprintln!("fixture holding initialize");
+                        std::future::pending::<()>().await;
+                    }
                     let prompt_attachments =
                         std::env::var("IANVS_FIXTURE_PROMPT_ATTACHMENTS").as_deref() == Ok("1");
                     if std::env::var("IANVS_FIXTURE_USE_TERMINAL").as_deref() == Ok("1")
@@ -345,6 +349,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 async move |request: PromptRequest, responder, connection: ConnectionTo<Client>| {
                     FIXTURE_PROMPT_CANCELLED.store(false, Ordering::Release);
                     let session_id = request.session_id.clone();
+                    if std::env::var("IANVS_FIXTURE_RESULT_META").as_deref() == Ok("1") {
+                        let mut response = PromptResponse::new(StopReason::EndTurn);
+                        response.meta = Some(
+                            serde_json::from_value(serde_json::json!({
+                                "quota": {"remaining": 42},
+                                "parentHomePresent": std::env::var_os("HOME").is_some(),
+                                "allowedValue": std::env::var("IANVS_ALLOWED").ok(),
+                            }))
+                            .unwrap(),
+                        );
+                        return responder.respond(response);
+                    }
+
                     if std::env::var("IANVS_FIXTURE_PROMPT_ATTACHMENTS").as_deref() == Ok("1") {
                         let kinds = request
                             .prompt

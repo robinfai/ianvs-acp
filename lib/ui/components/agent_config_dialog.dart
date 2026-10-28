@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 
-import '../../acp/acp_permission_request.dart';
-import '../../acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import '../../config/acp_client_config.dart';
 import '../../config/config_reference_updates.dart';
 import '../../config/assistant_agent_config.dart';
@@ -20,7 +20,7 @@ typedef AcpConfigSaveCallback =
 typedef AssistantAgentValidationCallback =
     Future<void> Function(AssistantAgentConfig config);
 typedef AssistantAgentModelsLoadCallback =
-    Future<AcpConfigOption?> Function(String agentName);
+    Future<ChatConfigOption?> Function(String agentName);
 
 class AgentConfigDialog extends StatefulWidget {
   const AgentConfigDialog({
@@ -79,7 +79,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   late bool _filesystemOutside =
       widget.clientProviders.filesystem.allowReadOutsideWorkspace;
   late bool _terminalEnabled = widget.clientProviders.terminal.enabled;
-  late final List<AcpPermissionTrustRule> _trustRules = List.of(
+  late final List<ChatPermissionTrustRule> _trustRules = List.of(
     widget.clientProviders.permissions.trustRules,
   );
   late bool _reviewAgentEnabled =
@@ -130,7 +130,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   late bool _assistantCollapseProcess =
       widget.assistantAgent.collapseExecutionProcess;
   late String? _assistantModel = widget.assistantAgent.model;
-  AcpConfigOption? _assistantModelOption;
+  ChatConfigOption? _assistantModelOption;
   bool _assistantModelsLoading = false;
   String? _assistantModelsError;
   int _assistantModelLoadGeneration = 0;
@@ -703,8 +703,8 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
 
   Widget _buildAssistantModelField(String? selectedAgent) {
     final option = _assistantModelOption;
-    final choicesByValue = <String, AcpConfigOptionChoice>{};
-    for (final choice in option?.options ?? const <AcpConfigOptionChoice>[]) {
+    final choicesByValue = <String, ChatConfigOptionChoice>{};
+    for (final choice in option?.options ?? const <ChatConfigOptionChoice>[]) {
       if (choice.value.trim().isEmpty) continue;
       choicesByValue.putIfAbsent(choice.value, () => choice);
     }
@@ -1224,7 +1224,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
   }
 
   Future<void> _addTrustRule() async {
-    final rule = await showDialog<AcpPermissionTrustRule>(
+    final rule = await showDialog<ChatPermissionTrustRule>(
       context: context,
       builder: (context) => const _TrustRuleEditorDialog(),
     );
@@ -1239,7 +1239,7 @@ class _AgentConfigDialogState extends State<AgentConfigDialog> {
     });
   }
 
-  void _deleteTrustRule(AcpPermissionTrustRule rule) {
+  void _deleteTrustRule(ChatPermissionTrustRule rule) {
     setState(() {
       _trustRules.remove(rule);
       _error = null;
@@ -1491,7 +1491,7 @@ class _TrustRuleEditorDialog extends StatefulWidget {
 class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
   final TextEditingController _toolNameController = TextEditingController();
   final TextEditingController _toolKindController = TextEditingController();
-  AcpPermissionDecision _decision = AcpPermissionDecision.allow;
+  ChatPermissionDecision _decision = ChatPermissionDecision.allow;
   String? _error;
 
   @override
@@ -1525,7 +1525,7 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
               icon: Icons.category_outlined,
             ),
             const SizedBox(height: 10),
-            DropdownButtonFormField<AcpPermissionDecision>(
+            DropdownButtonFormField<ChatPermissionDecision>(
               style: Theme.of(
                 context,
               ).textTheme.labelLarge!.copyWith(fontWeight: FontWeight.w400),
@@ -1538,11 +1538,11 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
               ),
               items: const [
                 DropdownMenuItem(
-                  value: AcpPermissionDecision.allow,
+                  value: ChatPermissionDecision.allow,
                   child: Text('allow'),
                 ),
                 DropdownMenuItem(
-                  value: AcpPermissionDecision.deny,
+                  value: ChatPermissionDecision.deny,
                   child: Text('deny'),
                 ),
               ],
@@ -1575,7 +1575,7 @@ class _TrustRuleEditorDialogState extends State<_TrustRuleEditorDialog> {
       return;
     }
     Navigator.of(context).pop(
-      AcpPermissionTrustRule(
+      ChatPermissionTrustRule(
         toolName: toolName,
         toolKind: _trimmedOrNull(_toolKindController.text),
         decision: _decision,
@@ -1874,7 +1874,7 @@ List<_NameValueControllers> _nameValueControllersFromList(
   ];
 }
 
-String _permissionTrustRuleLabel(AcpPermissionTrustRule rule) {
+String _permissionTrustRuleLabel(ChatPermissionTrustRule rule) {
   final kind = rule.toolKind?.trim();
   final target = kind == null || kind.isEmpty
       ? rule.toolName.trim()

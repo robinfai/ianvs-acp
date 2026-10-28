@@ -22,11 +22,11 @@ help: ## 显示可用命令。
 		'用法：make <target>' \
 		'' \
 		'开发：' \
-		'  bootstrap            解析应用、运行时、聊天包、示例的依赖' \
-		'  format               格式化四个工程的 Dart 源码和测试' \
-		'  format-check         检查四个工程的 Dart 格式' \
+		'  bootstrap            解析应用、核心、运行时、聊天包、Mermaid、示例的依赖' \
+		'  format               格式化所有工程的 Dart 源码和测试' \
+		'  format-check         检查所有工程的 Dart 格式' \
 		'  analyze              静态分析应用、运行时、聊天包和示例' \
-		'  test                 在隔离 HOME 中运行四个工程的离线测试' \
+		'  test                 在隔离 HOME 中运行所有工程的离线测试' \
 		'  test-app/runtime/chat/example 单独运行指定工程的离线测试' \
 		'  test-rust            验证 Rust workspace 和 Flutter/Rust 边界' \
 		'  test-release-scripts 验证 macOS 发布脚本的安全约束' \

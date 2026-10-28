@@ -1,8 +1,8 @@
-/* ianvs ACP C ABI v11. Implementation: rust/crates/ianvs-acp-ffi/src/lib.rs.
+/* ianvs ACP C ABI v12. Implementation: rust/crates/ianvs-acp-ffi/src/lib.rs.
  * Strings passed in are borrowed NUL-terminated UTF-8, valid for the call.
  * Returned strings are owned and must be freed with ianvs_acp_string_free.
  * Poll from one consumer only; never use a handle concurrently with free.
- * Command true means queued; completion/failure arrives in schema-v4 events.
+ * Command true means queued; completion/failure arrives in schema-v5 events.
  */
 #ifndef IANVS_ACP_H
 #define IANVS_ACP_H

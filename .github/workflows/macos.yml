@@ -16,6 +16,9 @@ jobs:
   verify:
     runs-on: macos-15
     timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ianvs-acp
     env:
       FLUTTER_SUPPRESS_ANALYTICS: 'true'
       FLUTTER_ARCHIVE_URL: >-
@@ -26,6 +29,14 @@ jobs:
       - name: Check out source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
+          path: ianvs-acp
+
+      - name: Check out sibling terminal core
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: robinfai/ianvs-terminal
+          path: ianvs-terminal
           persist-credentials: false
 
       - name: Install Flutter
@@ -79,7 +90,7 @@ jobs:
         run: make test
 
       - name: Build standalone chat example
-        working-directory: packages/ianvs_agent_chat/example
+        working-directory: ianvs-acp/packages/ianvs_agent_chat/example
         run: flutter build macos --debug --no-pub
 
       - name: Test native macOS host

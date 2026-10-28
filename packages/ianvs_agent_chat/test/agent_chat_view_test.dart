@@ -1,8 +1,9 @@
+import 'package:ianvs_agent_core/ianvs_agent_core.dart';
 import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class MemorySession extends ChatSession with ChangeNotifier {
+class MemorySession extends ChatSession {
   MemorySession(this.identity, {this.capabilities = const ChatCapabilities()});
   final String identity;
   final ChatCapabilities capabilities;
@@ -33,14 +34,14 @@ class MemorySession extends ChatSession with ChangeNotifier {
       ),
     );
     revision++;
-    notifyListeners();
+    notifySessionChanged();
   }
 
   @override
   Future<void> stop() async {
     stops++;
     sending = false;
-    notifyListeners();
+    notifySessionChanged();
   }
 }
 

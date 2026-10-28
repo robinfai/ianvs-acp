@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/app.dart';
@@ -108,16 +108,16 @@ final AcpClientConfig auditSeedConfig = AcpClientConfig.fromJson({
   },
 }, configPath: '/Users/robinfai/.config/ianvs-acp/settings.json');
 
-const AcpSessionSettings auditSeedSettings = AcpSessionSettings(
-  modes: AcpSessionModeInfo(
+const ChatSessionSettings auditSeedSettings = ChatSessionSettings(
+  modes: ChatSessionModeInfo(
     currentModeId: 'ask',
     availableModes: [
-      AcpSessionMode(id: 'ask', name: 'Ask'),
-      AcpSessionMode(id: 'edit', name: 'Edit'),
+      ChatSessionMode(id: 'ask', name: 'Ask'),
+      ChatSessionMode(id: 'edit', name: 'Edit'),
     ],
   ),
   configOptions: [
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'model',
       name: 'Model',
       type: 'select',
@@ -125,11 +125,11 @@ const AcpSessionSettings auditSeedSettings = AcpSessionSettings(
       description: 'Controls the active model for this session.',
       group: 'Model',
       options: [
-        AcpConfigOptionChoice(value: 'gpt-5-codex', name: 'GPT-5 Codex'),
-        AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+        ChatConfigOptionChoice(value: 'gpt-5-codex', name: 'GPT-5 Codex'),
+        ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
       ],
     ),
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'reasoning_effort',
       name: 'Reasoning effort',
       type: 'select',
@@ -137,12 +137,12 @@ const AcpSessionSettings auditSeedSettings = AcpSessionSettings(
       description: 'Controls how much reasoning the agent applies.',
       group: 'Model',
       options: [
-        AcpConfigOptionChoice(value: 'low', name: 'Low'),
-        AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
-        AcpConfigOptionChoice(value: 'high', name: 'High'),
+        ChatConfigOptionChoice(value: 'low', name: 'Low'),
+        ChatConfigOptionChoice(value: 'medium', name: 'Medium'),
+        ChatConfigOptionChoice(value: 'high', name: 'High'),
       ],
     ),
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'approval',
       name: 'Approval mode',
       type: 'select',
@@ -150,8 +150,8 @@ const AcpSessionSettings auditSeedSettings = AcpSessionSettings(
       description: 'Controls how the agent asks before changing files.',
       group: 'Safety',
       options: [
-        AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
-        AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+        ChatConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
+        ChatConfigOptionChoice(value: 'auto', name: 'Auto apply'),
       ],
     ),
   ],
@@ -289,7 +289,7 @@ gh auth login -h github.com
   ),
 ];
 
-final AcpPermissionRequest auditSeedPermissionRequest = AcpPermissionRequest(
+final ChatPermissionRequest auditSeedPermissionRequest = ChatPermissionRequest(
   id: 'perm-1',
   title: 'Run shell command?',
   rationale:

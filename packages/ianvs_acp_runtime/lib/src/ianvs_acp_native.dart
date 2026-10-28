@@ -8,6 +8,8 @@ import 'package:ffi/ffi.dart';
 
 import 'ianvs_runtime_event.dart';
 
+enum AcpEnvironmentPolicy { inheritAndOverride, replace }
+
 abstract interface class IanvsAcpNativeApi {
   int get ffiVersion;
 
@@ -160,9 +162,9 @@ final class IanvsRustRuntime {
     });
   }
 
-  // ABI 11 forwards the explicit outside-workspace read policy. Reject older
-  // libraries instead of silently ignoring an enabled permission setting.
-  static const int expectedFfiVersion = 11;
+  // ABI 12 requires environment policy and bounded prompt result metadata.
+  // Reject old libraries rather than silently weakening host isolation.
+  static const int expectedFfiVersion = 12;
   static const int maxNativeEventsPerPoll = 4096;
   static const int maxNativeBytesPerPoll = 64 * 1024 * 1024;
   static const int _backgroundDecodeThresholdBytes = 128 * 1024;
@@ -185,6 +187,8 @@ final class IanvsRustRuntime {
   Stream<IanvsRuntimeEvent> get events => _events.stream;
 
   void startAgent({
+    required AcpEnvironmentPolicy environmentPolicy,
+    int maxRestartAttempts = 0,
     required String agentName,
     required String command,
     String? persistenceIdentity,
@@ -207,9 +211,14 @@ final class IanvsRustRuntime {
     int? terminalMaxOutputByteLimit,
   }) {
     _ensureOpen();
+    if (maxRestartAttempts < 0) {
+      throw ArgumentError.value(maxRestartAttempts, 'maxRestartAttempts');
+    }
     _check(
       _native.startAgent(_runtime, <String, Object?>{
         'agentName': agentName,
+        'environmentPolicy': environmentPolicy.name,
+        'maxRestartAttempts': maxRestartAttempts,
         if (persistenceIdentity?.trim().isNotEmpty == true)
           'persistenceIdentity': persistenceIdentity!.trim(),
         if (persistenceAliases.isNotEmpty)

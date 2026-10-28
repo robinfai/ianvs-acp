@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/painting.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
-import '../models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'bounded_file_snapshot.dart';
 
 ImageProvider<Object> platformImageForPath(String path) =>

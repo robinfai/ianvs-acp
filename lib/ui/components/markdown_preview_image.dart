@@ -7,7 +7,7 @@ import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as p;
 
-import '../../acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import '../../platform/file_manager.dart';
 import '../../platform/secure_file_reader.dart';
 import '../image_decode_budget.dart';
@@ -239,7 +239,7 @@ class MarkdownPreviewImage extends StatefulWidget {
     required this.additionalDirectories,
     this.alt,
     this.openExternalUri,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
     this.loadBudgetLedger,
@@ -256,7 +256,7 @@ class MarkdownPreviewImage extends StatefulWidget {
   final List<String> additionalDirectories;
   final String? alt;
   final MarkdownExternalUriOpener? openExternalUri;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
   final MarkdownImageLoadBudgetLedger? loadBudgetLedger;

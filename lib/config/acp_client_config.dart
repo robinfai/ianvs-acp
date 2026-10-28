@@ -5,7 +5,7 @@ import 'package:crypto/crypto.dart';
 
 import '../acp/acp_adapter_packages.dart';
 import '../acp/acp_endpoint_validator.dart';
-import '../acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 import '../storage/sqlite_storage_config.dart';
 import 'assistant_agent_config.dart';
@@ -701,11 +701,11 @@ class AcpClientProviderConfig {
 
 class AcpPermissionProviderConfig {
   const AcpPermissionProviderConfig({
-    this.trustRules = const <AcpPermissionTrustRule>[],
+    this.trustRules = const <ChatPermissionTrustRule>[],
     this.reviewAgent = const AcpPermissionReviewAgentConfig(),
   });
 
-  final List<AcpPermissionTrustRule> trustRules;
+  final List<ChatPermissionTrustRule> trustRules;
   final AcpPermissionReviewAgentConfig reviewAgent;
 
   bool get hasTrustRules => trustRules.isNotEmpty;
@@ -906,7 +906,7 @@ class AcpPermissionReviewAgentConfig {
   }
 }
 
-AcpPermissionTrustRule _permissionTrustRule(Object? raw) {
+ChatPermissionTrustRule _permissionTrustRule(Object? raw) {
   if (raw is! Map) {
     throw const FormatException(
       'client_providers.permissions.trust_rules entries must be JSON objects.',
@@ -927,22 +927,22 @@ AcpPermissionTrustRule _permissionTrustRule(Object? raw) {
     fieldName: 'client_providers.permissions.trust_rules[].decision',
   );
   final toolKind = _stringValue(map['tool_kind'] ?? map['toolKind']);
-  return AcpPermissionTrustRule(
+  return ChatPermissionTrustRule(
     toolName: toolName,
     toolKind: toolKind,
     decision: decision,
   );
 }
 
-Map<String, Object?> _permissionTrustRuleJson(AcpPermissionTrustRule rule) {
+Map<String, Object?> _permissionTrustRuleJson(ChatPermissionTrustRule rule) {
   return <String, Object?>{
     'tool_name': rule.toolName.trim(),
     if (rule.toolKind?.trim().isNotEmpty == true)
       'tool_kind': rule.toolKind!.trim(),
     'decision': switch (rule.decision) {
-      AcpPermissionDecision.allow => 'allow',
-      AcpPermissionDecision.deny => 'deny',
-      AcpPermissionDecision.cancel => 'cancel',
+      ChatPermissionDecision.allow => 'allow',
+      ChatPermissionDecision.deny => 'deny',
+      ChatPermissionDecision.cancel => 'cancel',
     },
   };
 }
@@ -956,14 +956,14 @@ McpServerConfig _permissionReviewMcpServer(Object? raw) {
   return McpServerConfig.fromJson(index: 0, json: raw);
 }
 
-AcpPermissionDecision _permissionTrustDecision(
+ChatPermissionDecision _permissionTrustDecision(
   Object? raw, {
   required String fieldName,
 }) {
   final value = _stringValue(raw)?.toLowerCase();
   return switch (value) {
-    'allow' || 'allowed' => AcpPermissionDecision.allow,
-    'deny' || 'denied' || 'reject' || 'rejected' => AcpPermissionDecision.deny,
+    'allow' || 'allowed' => ChatPermissionDecision.allow,
+    'deny' || 'denied' || 'reject' || 'rejected' => ChatPermissionDecision.deny,
     _ => throw FormatException('$fieldName must be allow or deny.'),
   };
 }

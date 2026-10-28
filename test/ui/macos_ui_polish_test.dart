@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_design/ianvs_design.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
@@ -57,9 +57,9 @@ void main() {
     addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
     final controller = ChatController(
       client: FakeAgentClient(
-        sessionSettings: const AcpSessionSettings(
+        sessionSettings: const ChatSessionSettings(
           configOptions: [
-            AcpConfigOption(
+            ChatConfigOption(
               id: 'workspace-check',
               name: 'Check the active workspace before running tools',
               description:

@@ -4,14 +4,14 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mcp_dart/mcp_dart.dart' as mcp;
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/acp/no_redirect_mcp_http_transport.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 
 void main() {
@@ -250,14 +250,14 @@ void main() {
 
       expect(initializeCalls, 1);
       releaseInitialize.complete();
-      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+      final results = await Future.wait(<Future<ChatPermissionReviewResult?>>[
         first,
         second,
       ]).timeout(const Duration(seconds: 3));
 
       expect(
         results.map((result) => result?.decision),
-        everyElement(AcpPermissionDecision.allow),
+        everyElement(ChatPermissionDecision.allow),
       );
       expect(initializeCalls, 1);
       expect(toolCalls, 2);
@@ -271,7 +271,7 @@ void main() {
 
   test('permission review payload includes command context and model', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -309,7 +309,7 @@ void main() {
   test('permission review ignores untrusted workspace metadata', () {
     const untrustedDirectory = '/untrusted-permission-review-canary';
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-workspace-boundary',
         title: 'Run list command',
         rationale: 'Requested by agent',
@@ -359,7 +359,7 @@ void main() {
       'rsync report.md example.com:/tmp/report.md',
     ]) {
       final payload = acpPermissionReviewPayload(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-$commandLine',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -393,7 +393,7 @@ void main() {
 
   test('permission review still flags generic pipe-to-shell execution', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-pipe-shell',
         title: 'Run command',
         rationale: 'Requested by agent',
@@ -419,7 +419,7 @@ void main() {
 
   test('permission review payload flags risky commands outside workspace', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -449,7 +449,7 @@ void main() {
     'permission review payload treats additional directories as workspace',
     () {
       final payload = acpPermissionReviewPayload(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Create terminal',
           rationale: 'Requested by agent',
@@ -488,7 +488,7 @@ void main() {
     'permission review payload extracts command from nested tool call input',
     () {
       final payload = acpPermissionReviewPayload(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Bash',
           rationale: 'Requested by agent',
@@ -525,7 +525,7 @@ void main() {
 
   test('permission review payload extracts command from JSON raw input', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'exec_command',
         rationale: 'Requested by agent',
@@ -556,7 +556,7 @@ void main() {
 
   test('permission review payload extracts command from permission title', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Running: ls -la',
         rationale: 'Requested by agent',
@@ -580,7 +580,7 @@ void main() {
   test('permission review redacts environment and unknown raw values', () {
     const secret = 'permission-review-secret-canary';
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-redaction',
         title: secret,
         rationale: secret,
@@ -588,8 +588,8 @@ void main() {
         toolName: 'terminal',
         toolKind: 'execute',
         options: const <String>[secret],
-        choices: const <AcpPermissionChoice>[
-          AcpPermissionChoice(
+        choices: const <ChatPermissionChoice>[
+          ChatPermissionChoice(
             optionId: 'allow-once',
             name: secret,
             kind: 'allow_once',
@@ -658,7 +658,7 @@ void main() {
         'BASH_ENV',
       ]) {
         final payload = acpPermissionReviewPayload(
-          AcpPermissionRequest(
+          ChatPermissionRequest(
             id: 'permission-env-$name',
             title: 'Run list command',
             rationale: 'Requested by agent',
@@ -717,7 +717,7 @@ void main() {
           'environment': ?environment,
         };
         final payload = acpPermissionReviewPayload(
-          AcpPermissionRequest(
+          ChatPermissionRequest(
             id: 'permission-malformed-env',
             title: 'Run list command',
             rationale: 'Requested by agent',
@@ -748,7 +748,7 @@ void main() {
 
   test('permission review fails closed for malformed raw input', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-malformed-input',
         title: 'Running: ls',
         rationale: 'Requested by agent',
@@ -770,7 +770,7 @@ void main() {
 
   test('permission review fails closed for unknown raw input fields', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-unknown-input',
         title: 'Run list command',
         rationale: 'Requested by agent',
@@ -803,7 +803,7 @@ void main() {
   test('permission review validates and redacts filesystem input', () {
     const preview = 'filesystem-preview-secret-canary';
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-filesystem',
         title: 'Write file',
         rationale: 'Requested by agent',
@@ -844,7 +844,7 @@ void main() {
 
   test('permission review rejects filesystem paths outside workspace', () {
     final payload = acpPermissionReviewPayload(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-filesystem-outside',
         title: 'Write file',
         rationale: 'Requested by agent',
@@ -875,7 +875,7 @@ void main() {
   test('permission review handles Windows workspace boundaries', () {
     Map<String, Object?> analysisFor(String path) {
       final payload = acpPermissionReviewPayload(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-windows-path',
           title: 'Read file',
           rationale: 'Requested by agent',
@@ -916,16 +916,16 @@ void main() {
       final fake = _ReviewFakeAgentClient(
         reviewText:
             '{"decision":"allow","risk":"low","rationale":"Read-only list command."}',
-        sessionSettings: const AcpSessionSettings(
+        sessionSettings: const ChatSessionSettings(
           configOptions: [
-            AcpConfigOption(
+            ChatConfigOption(
               id: 'model',
               name: 'Model',
               type: 'select',
               currentValue: 'primary-model',
               options: [
-                AcpConfigOptionChoice(value: 'primary-model', name: 'Primary'),
-                AcpConfigOptionChoice(value: 'review-model', name: 'Review'),
+                ChatConfigOptionChoice(value: 'primary-model', name: 'Primary'),
+                ChatConfigOptionChoice(value: 'review-model', name: 'Review'),
               ],
             ),
           ],
@@ -940,7 +940,7 @@ void main() {
       expect(reviewer.canAutoApprove, isFalse);
 
       final result = await reviewer.review(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Running: ls -la',
           rationale: 'Requested by agent',
@@ -955,7 +955,7 @@ void main() {
         model: 'primary-model',
       );
 
-      expect(result?.decision, AcpPermissionDecision.allow);
+      expect(result?.decision, ChatPermissionDecision.allow);
       expect(result?.risk, 'low');
       expect(result?.reviewer, 'Kimi Code Dev');
       expect(result?.model, 'review-model');
@@ -991,7 +991,7 @@ void main() {
       workspaceRoot: '/workspace',
     );
 
-    expect(result?.decision, AcpPermissionDecision.allow);
+    expect(result?.decision, ChatPermissionDecision.allow);
     expect(result?.risk, 'low');
   });
 
@@ -1053,7 +1053,7 @@ void main() {
         expect(failed?.risk, 'unknown');
         expect(failed?.details, containsPair('failure', 'remote_failure'));
         expect(oversized.disposed, isTrue);
-        expect(next?.decision, AcpPermissionDecision.allow);
+        expect(next?.decision, ChatPermissionDecision.allow);
         expect(factoryCalls, 2);
       }
     },
@@ -1134,20 +1134,20 @@ void main() {
       expect(client.promptCalls, 1);
 
       client.releaseFirstPrompt();
-      final accepted = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+      final accepted = await Future.wait(<Future<ChatPermissionReviewResult?>>[
         first,
         second,
       ]).timeout(const Duration(seconds: 2));
       expect(
         accepted.map((result) => result?.decision),
-        everyElement(AcpPermissionDecision.allow),
+        everyElement(ChatPermissionDecision.allow),
       );
 
       final recovered = await reviewer.review(
         _reviewRequest('capacity-recovered'),
         workspaceRoot: '/same-root',
       );
-      expect(recovered?.decision, AcpPermissionDecision.allow);
+      expect(recovered?.decision, ChatPermissionDecision.allow);
       expect(factoryCalls, 1);
       expect(client.promptCalls, 3);
     },
@@ -1201,7 +1201,7 @@ void main() {
         workspaceRoot: '/root-b',
       );
 
-      expect(recovered?.decision, AcpPermissionDecision.allow);
+      expect(recovered?.decision, ChatPermissionDecision.allow);
       expect(factoryCalls, 2);
     },
   );
@@ -1266,14 +1266,14 @@ void main() {
       );
       addTearDown(reviewer.dispose);
 
-      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+      final results = await Future.wait(<Future<ChatPermissionReviewResult?>>[
         reviewer.review(_reviewRequest('root-a'), workspaceRoot: '/root-a'),
         reviewer.review(_reviewRequest('root-b'), workspaceRoot: '/root-b'),
       ]);
 
       expect(
         results.map((result) => result?.decision),
-        everyElement(AcpPermissionDecision.allow),
+        everyElement(ChatPermissionDecision.allow),
       );
       expect(clients, hasLength(2));
       expect(clients.map((client) => client.sessionCount), everyElement(1));
@@ -1330,8 +1330,8 @@ void main() {
         workspaceRoot: '/root-b',
       );
 
-      expect(first?.decision, AcpPermissionDecision.allow);
-      expect(second?.decision, AcpPermissionDecision.allow);
+      expect(first?.decision, ChatPermissionDecision.allow);
+      expect(second?.decision, ChatPermissionDecision.allow);
       expect(clients, hasLength(2));
       expect(
         records,
@@ -1375,7 +1375,7 @@ void main() {
       );
       await reviewer.dispose().timeout(const Duration(milliseconds: 100));
 
-      expect(first?.decision, AcpPermissionDecision.allow);
+      expect(first?.decision, ChatPermissionDecision.allow);
       expect(switching?.risk, 'unknown');
       expect(afterFailure?.risk, 'unknown');
       expect(client.stillActive, isTrue);
@@ -1415,13 +1415,13 @@ void main() {
       await _pumpTestEventQueue();
       firstClient.releaseFirstPrompt();
 
-      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+      final results = await Future.wait(<Future<ChatPermissionReviewResult?>>[
         first,
         second,
       ]).timeout(const Duration(seconds: 2));
 
       expect(results.first?.risk, 'unknown');
-      expect(results.last?.decision, AcpPermissionDecision.allow);
+      expect(results.last?.decision, ChatPermissionDecision.allow);
       expect(clients, hasLength(2));
       expect(firstClient.disposed, isTrue);
       expect(secondClient.disposed, isFalse);
@@ -1462,13 +1462,13 @@ void main() {
         _reviewRequest('timeout-b'),
         workspaceRoot: '/root-b',
       );
-      final results = await Future.wait(<Future<AcpPermissionReviewResult?>>[
+      final results = await Future.wait(<Future<ChatPermissionReviewResult?>>[
         first,
         second,
       ]).timeout(const Duration(seconds: 2));
 
       expect(results.first?.risk, 'unknown');
-      expect(results.last?.decision, AcpPermissionDecision.allow);
+      expect(results.last?.decision, ChatPermissionDecision.allow);
       expect(
         events.indexOf('first:dispose'),
         lessThan(events.indexOf('second:connect')),
@@ -1654,10 +1654,10 @@ void main() {
         expect(encoded, isNot(contains(tokenCanary)));
         expect(encoded, isNot(contains(pathCanary)));
         final history =
-            acpPermissionAuditEntriesToJson(<AcpPermissionAuditEntry>[
-              AcpPermissionAuditEntry(
+            chatPermissionAuditEntriesToJson(<ChatPermissionAuditEntry>[
+              ChatPermissionAuditEntry(
                 request: _reviewRequest('mcp-error-history'),
-                status: AcpPermissionAuditStatus.pending,
+                status: ChatPermissionAuditStatus.pending,
                 recordedAt: DateTime.utc(2026, 7, 15),
                 reviewResult: result,
               ),
@@ -1736,7 +1736,7 @@ void main() {
     final reviewer = _localMcpReviewer(server.port);
 
     try {
-      final results = <AcpPermissionReviewResult?>[];
+      final results = <ChatPermissionReviewResult?>[];
       for (var index = 0; index < toolResults.length; index += 1) {
         results.add(
           await reviewer.review(
@@ -1837,7 +1837,7 @@ void main() {
 
     try {
       final result = await reviewer.review(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-redirect',
           title: 'Read status',
           rationale: 'Requested by agent',
@@ -1902,7 +1902,7 @@ void main() {
 
     try {
       final result = await reviewer.review(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-risk-floor',
           title: 'Run list command',
           rationale: 'Requested by agent',
@@ -1924,7 +1924,7 @@ void main() {
         workspaceRoot: '/workspace',
       );
 
-      expect(result?.decision, AcpPermissionDecision.allow);
+      expect(result?.decision, ChatPermissionDecision.allow);
       expect(result?.risk, 'high');
       expect(result?.details['localRiskFloor'], 'high');
       final localAnalysis =
@@ -1935,7 +1935,7 @@ void main() {
       );
 
       final benignOverride = await reviewer.review(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-medium-risk-floor',
           title: 'Run list command',
           rationale: 'Requested by agent',
@@ -1956,7 +1956,7 @@ void main() {
         ),
         workspaceRoot: '/workspace',
       );
-      expect(benignOverride?.decision, AcpPermissionDecision.allow);
+      expect(benignOverride?.decision, ChatPermissionDecision.allow);
       expect(benignOverride?.risk, 'medium');
       expect(benignOverride?.details['localRiskFloor'], 'medium');
 
@@ -1969,7 +1969,7 @@ void main() {
         },
       ]) {
         final filesystem = await reviewer.review(
-          AcpPermissionRequest(
+          ChatPermissionRequest(
             id: 'permission-filesystem-risk-floor',
             title: 'Write file',
             rationale: 'Requested by agent',
@@ -1982,7 +1982,7 @@ void main() {
           ),
           workspaceRoot: '/workspace',
         );
-        expect(filesystem?.decision, AcpPermissionDecision.allow);
+        expect(filesystem?.decision, ChatPermissionDecision.allow);
         expect(filesystem?.risk, 'medium', reason: '$rawInput');
         expect(
           filesystem?.details['localRiskFloor'],
@@ -1993,7 +1993,7 @@ void main() {
 
       const preview = 'filesystem-write-secret-canary';
       final completeFilesystem = await reviewer.review(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-filesystem-content-risk-floor',
           title: 'Write file',
           rationale: 'Requested by agent',
@@ -2013,7 +2013,7 @@ void main() {
         ),
         workspaceRoot: '/workspace',
       );
-      expect(completeFilesystem?.decision, AcpPermissionDecision.allow);
+      expect(completeFilesystem?.decision, ChatPermissionDecision.allow);
       expect(completeFilesystem?.risk, 'medium');
       expect(completeFilesystem?.details['localRiskFloor'], 'medium');
       final filesystemAnalysis =
@@ -2024,7 +2024,7 @@ void main() {
       );
 
       final outsideFilesystem = await reviewer.review(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-filesystem-outside-risk-floor',
           title: 'Write file',
           rationale: 'Requested by agent',
@@ -2044,7 +2044,7 @@ void main() {
         ),
         workspaceRoot: '/workspace',
       );
-      expect(outsideFilesystem?.decision, AcpPermissionDecision.allow);
+      expect(outsideFilesystem?.decision, ChatPermissionDecision.allow);
       expect(outsideFilesystem?.risk, 'high');
       expect(outsideFilesystem?.details['localRiskFloor'], 'high');
     } finally {
@@ -2120,7 +2120,7 @@ void main() {
           workspaceRoot: '/workspace',
         );
 
-        expect(result?.decision, AcpPermissionDecision.allow);
+        expect(result?.decision, ChatPermissionDecision.allow);
         expect(result?.risk, 'low');
         expect(
           methods,
@@ -2192,7 +2192,7 @@ void main() {
         workspaceRoot: '/workspace',
       );
 
-      expect(result?.decision, AcpPermissionDecision.allow);
+      expect(result?.decision, ChatPermissionDecision.allow);
       expect(result?.risk, 'low');
     } finally {
       await reviewer.dispose();
@@ -2218,8 +2218,8 @@ McpPermissionReviewAgent _localMcpReviewer(
   );
 }
 
-AcpPermissionRequest _reviewRequest(String id) {
-  return AcpPermissionRequest(
+ChatPermissionRequest _reviewRequest(String id) {
+  return ChatPermissionRequest(
     id: 'permission-$id',
     title: 'Read status',
     rationale: 'Requested by agent',

@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/ui/components/permission_history_view.dart';
 
 void main() {
@@ -11,8 +11,8 @@ void main() {
   ) async {
     String? exportedFileName;
     String? exportedJson;
-    final entry = AcpPermissionAuditEntry(
-      request: AcpPermissionRequest(
+    final entry = ChatPermissionAuditEntry(
+      request: ChatPermissionRequest(
         id: 'permission-1',
         title: 'Read file',
         rationale: 'Requested by agent',
@@ -22,10 +22,10 @@ void main() {
         options: const ['Allow', 'Deny'],
         requestedAt: DateTime.utc(2026, 5, 31, 12),
       ),
-      status: AcpPermissionAuditStatus.allowed,
+      status: ChatPermissionAuditStatus.allowed,
       recordedAt: DateTime.utc(2026, 5, 31, 12),
       resolvedAt: DateTime.utc(2026, 5, 31, 12, 1),
-      decisionSource: AcpPermissionDecisionSource.trustRule,
+      decisionSource: ChatPermissionDecisionSource.trustRule,
     );
 
     await tester.pumpWidget(

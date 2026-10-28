@@ -1,7 +1,8 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import 'dart:async';
 import 'dart:io';
 
-import 'package:ianvs_acp/acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:flutter/gestures.dart';
 import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
@@ -11,12 +12,12 @@ import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
 import 'package:ianvs_acp/app.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart'
     show AcpAgentPermissionReviewer;
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/startup/deep_link_request.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
@@ -105,7 +106,7 @@ void main() {
   testWidgets('AcpClientApp validates and forwards the same input budget', (
     tester,
   ) async {
-    const budget = AcpInputBudget(
+    const budget = ChatInputBudget(
       maxMarkdownSyntaxTokens: 3,
       maxMetadataPreviewChars: 7,
       maxMetadataPreviewBytes: 9,
@@ -128,7 +129,7 @@ void main() {
     await tester.pumpWidget(
       AcpClientApp(
         controller: controller,
-        inputBudget: const AcpInputBudget(maxMarkdownSyntaxTokens: 0),
+        inputBudget: const ChatInputBudget(maxMarkdownSyntaxTokens: 0),
       ),
     );
     expect(tester.takeException(), isArgumentError);
@@ -137,7 +138,7 @@ void main() {
   testWidgets('AcpClientApp owns and forwards one image decode budget chain', (
     tester,
   ) async {
-    const budget = AcpInputBudget();
+    const budget = ChatInputBudget();
     final ledger = AcpImageDecodeBudgetLedger(budget: budget);
     const decoder = DartUiBoundedImageDecoder();
     final controller = ChatController(
@@ -275,26 +276,26 @@ void main() {
   ) async {
     final runtimeConfigs = <AcpClientConfig>[];
     final clients = <FakeAgentClient>[];
-    const settings = AcpSessionSettings(
+    const settings = ChatSessionSettings(
       configOptions: [
-        AcpConfigOption(
+        ChatConfigOption(
           id: 'model',
           name: 'Model',
           type: 'select',
           currentValue: 'balanced',
           options: [
-            AcpConfigOptionChoice(value: 'balanced', name: 'Balanced'),
-            AcpConfigOptionChoice(value: 'fast', name: 'Fast'),
+            ChatConfigOptionChoice(value: 'balanced', name: 'Balanced'),
+            ChatConfigOptionChoice(value: 'fast', name: 'Fast'),
           ],
         ),
-        AcpConfigOption(
+        ChatConfigOption(
           id: 'reasoning_effort',
           name: 'Reasoning effort',
           type: 'select',
           currentValue: 'low',
           options: [
-            AcpConfigOptionChoice(value: 'low', name: 'Low'),
-            AcpConfigOptionChoice(value: 'high', name: 'High'),
+            ChatConfigOptionChoice(value: 'low', name: 'Low'),
+            ChatConfigOptionChoice(value: 'high', name: 'High'),
           ],
         ),
       ],
@@ -4839,7 +4840,7 @@ void main() {
 
     expect(
       controller.toolCallExecutionPolicy,
-      AcpToolCallExecutionPolicy.defaultPermissions,
+      ChatToolCallExecutionPolicy.defaultPermissions,
     );
     await tester.tap(find.text('默认权限'));
     await tester.pumpAndSettle();
@@ -4848,7 +4849,7 @@ void main() {
 
     expect(
       controller.toolCallExecutionPolicy,
-      AcpToolCallExecutionPolicy.fullAccess,
+      ChatToolCallExecutionPolicy.fullAccess,
     );
   });
 
@@ -4856,16 +4857,16 @@ void main() {
     tester,
   ) async {
     final fake = FakeAgentClient(
-      sessionSettings: const AcpSessionSettings(
+      sessionSettings: const ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
             currentValue: 'gpt-5',
             options: [
-              AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
-              AcpConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
+              ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+              ChatConfigOptionChoice(value: 'mini', name: 'GPT-5 Mini'),
             ],
           ),
         ],
@@ -4898,23 +4899,23 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final fake = FakeAgentClient(
-      sessionSettings: const AcpSessionSettings(
+      sessionSettings: const ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
             currentValue: 'gpt-5',
-            options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+            options: [ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
           ),
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'reasoning_effort',
             name: 'Reasoning Effort',
             type: 'select',
             currentValue: 'medium',
             options: [
-              AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
-              AcpConfigOptionChoice(value: 'high', name: 'High'),
+              ChatConfigOptionChoice(value: 'medium', name: 'Medium'),
+              ChatConfigOptionChoice(value: 'high', name: 'High'),
             ],
           ),
         ],
@@ -4956,7 +4957,7 @@ void main() {
 
     await tester.pumpWidget(AcpClientApp(controller: controller));
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Read file',
         rationale: 'Requested by agent',
@@ -4976,7 +4977,7 @@ void main() {
     await tester.pump();
 
     expect(fake.lastPermissionRequestId, 'permission-1');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
     expect(find.text('Read file'), findsNothing);
 
     await tester.tap(find.text('活动与诊断'));

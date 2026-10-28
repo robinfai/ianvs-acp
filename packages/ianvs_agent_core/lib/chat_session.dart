@@ -1,11 +1,11 @@
-import 'package:flutter/foundation.dart';
+import 'dart:async';
 
-import 'models/chat_capabilities.dart';
-import 'models/chat_input_budget.dart';
-import 'models/chat_message.dart';
-import 'models/chat_permission_request.dart';
-import 'models/chat_session_settings.dart';
-import 'models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/chat_capabilities.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 /// Features advertised by a particular conversation, not assumed from a brand.
 class ChatCapabilities {
@@ -84,7 +84,17 @@ class ChatSessionState {
 
 /// A session is owned by the host. Widgets only subscribe/unsubscribe; they
 /// never close agent connections, destroy history, or dispose this object.
-abstract class ChatSession implements Listenable {
+abstract class ChatSession {
+  final _changes = StreamController<ChatSessionState>.broadcast(sync: true);
+  Stream<ChatSessionState> get changes => _changes.stream;
+  void notifySessionChanged() {
+    if (!_changes.isClosed) _changes.add(state);
+  }
+
+  void dispose() {
+    unawaited(_changes.close());
+  }
+
   ChatSessionState get state;
   Future<void> send(
     String text, {

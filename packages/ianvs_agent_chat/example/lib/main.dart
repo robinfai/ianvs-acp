@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_core/ianvs_agent_core.dart';
 import 'dart:async';
 import 'package:ianvs_agent_chat/llm.dart';
 import 'package:ianvs_agent_chat/llm_chat_panel.dart';
@@ -72,9 +73,7 @@ class _AgentChatDemoState extends State<AgentChatDemo> {
 
 /// An independent host implementation: no ACP client, application controller,
 /// workspace, database, native app channel or credentials are imported.
-class DemoSession extends ChatSession
-    with ChangeNotifier
-    implements ChatSubmissionSession {
+class DemoSession extends ChatSession implements ChatSubmissionSession {
   final List<ChatMessageView> _messages = [
     ChatMessageData(
       role: ChatMessageRole.assistant,
@@ -101,7 +100,7 @@ class DemoSession extends ChatSession
   );
   void _notify() {
     _revision++;
-    if (!_disposed) notifyListeners();
+    if (!_disposed) notifySessionChanged();
   }
 
   final _submissions = ChatSubmissionLedger();

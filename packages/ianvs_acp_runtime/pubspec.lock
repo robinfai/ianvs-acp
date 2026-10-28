@@ -129,6 +129,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.1.2"
+  ianvs_agent_core:
+    dependency: "direct main"
+    description:
+      path: "../ianvs_agent_core"
+      relative: true
+    source: path
+    version: "0.1.0"
   io:
     dependency: transitive
     description:

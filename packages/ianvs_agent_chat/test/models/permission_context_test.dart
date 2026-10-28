@@ -2,8 +2,8 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/models/chat_permission_request.dart';
-import 'package:ianvs_agent_chat/models/permission_context.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/permission_context.dart';
 
 void main() {
   group('permission display context', () {

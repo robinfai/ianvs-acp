@@ -1,5 +1,5 @@
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/startup/deep_link_request.dart';
@@ -132,8 +132,8 @@ void main() {
             padding: const EdgeInsets.all(24),
             child: PermissionHistoryView(
               entries: [
-                AcpPermissionAuditEntry(
-                  request: AcpPermissionRequest(
+                ChatPermissionAuditEntry(
+                  request: ChatPermissionRequest(
                     id: 'read-1',
                     title: 'Read project configuration',
                     rationale:
@@ -144,9 +144,9 @@ void main() {
                     options: const ['Allow', 'Deny'],
                     requestedAt: DateTime(2026, 9, 12, 10),
                   ),
-                  status: AcpPermissionAuditStatus.allowed,
+                  status: ChatPermissionAuditStatus.allowed,
                   recordedAt: DateTime(2026, 9, 12, 10),
-                  decisionSource: AcpPermissionDecisionSource.trustRule,
+                  decisionSource: ChatPermissionDecisionSource.trustRule,
                 ),
               ],
             ),

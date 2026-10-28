@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/storage/sqlite_storage_config.dart';
@@ -30,10 +30,10 @@ void main() {
               model: 'review-model',
             ),
             trustRules: [
-              AcpPermissionTrustRule(
+              ChatPermissionTrustRule(
                 toolName: 'read_text_file',
                 toolKind: 'read',
-                decision: AcpPermissionDecision.allow,
+                decision: ChatPermissionDecision.allow,
               ),
             ],
           ),
@@ -226,8 +226,8 @@ void main() {
   testWidgets('Assistant ignores stale model results after Agent switch', (
     tester,
   ) async {
-    final codex = Completer<AcpConfigOption?>();
-    final pi = Completer<AcpConfigOption?>();
+    final codex = Completer<ChatConfigOption?>();
+    final pi = Completer<ChatConfigOption?>();
     await _pump(
       tester,
       AgentConfigDialog(
@@ -1240,17 +1240,17 @@ DropdownButton<T> _dropdownButton<T>(WidgetTester tester, String key) =>
       ),
     );
 
-AcpConfigOption _modelOption(
+ChatConfigOption _modelOption(
   String value,
   String name, {
   (String, String)? extra,
-}) => AcpConfigOption(
+}) => ChatConfigOption(
   id: 'model',
   name: 'Model',
   type: 'select',
   currentValue: value,
   options: [
-    AcpConfigOptionChoice(value: value, name: name),
-    if (extra != null) AcpConfigOptionChoice(value: extra.$1, name: extra.$2),
+    ChatConfigOptionChoice(value: value, name: name),
+    if (extra != null) ChatConfigOptionChoice(value: extra.$1, name: extra.$2),
   ],
 );

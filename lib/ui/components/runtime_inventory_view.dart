@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_agent_capabilities.dart';
-import '../../acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
 import '../../state/chat_controller.dart';
@@ -721,9 +721,9 @@ String _filesystemLabel(AcpClientConfig config) {
 
 String _permissionPolicyLabel(ChatController controller) {
   return switch (controller.toolCallExecutionPolicy) {
-    AcpToolCallExecutionPolicy.defaultPermissions => 'manual confirmation',
-    AcpToolCallExecutionPolicy.autoReview => 'automatic review',
-    AcpToolCallExecutionPolicy.fullAccess => 'full access',
+    ChatToolCallExecutionPolicy.defaultPermissions => 'manual confirmation',
+    ChatToolCallExecutionPolicy.autoReview => 'automatic review',
+    ChatToolCallExecutionPolicy.fullAccess => 'full access',
   };
 }
 

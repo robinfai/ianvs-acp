@@ -1,6 +1,6 @@
+import 'package:ianvs_agent_core/ianvs_agent_core.dart';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
 import 'package:ianvs_agent_chat/llm.dart';
 
 // Explicit opt-in: ordinary test runs never spend API credits.
@@ -73,7 +73,7 @@ void main() {
       );
       addTearDown(session.dispose);
       String? lastRequest;
-      session.addListener(() {
+      session.changes.listen((_) {
         final request = session.state.permission;
         if (request != null && request.id != lastRequest) {
           lastRequest = request.id;

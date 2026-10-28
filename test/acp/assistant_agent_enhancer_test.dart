@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/assistant_agent_enhancer.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 
 void main() {
@@ -15,16 +15,16 @@ void main() {
 
   test('discovers the helper model selector through an ACP session', () async {
     final client = FakeAgentClient(
-      sessionSettings: const AcpSessionSettings(
+      sessionSettings: const ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
             currentValue: 'model-a',
             options: [
-              AcpConfigOptionChoice(value: 'model-a', name: 'Model A'),
-              AcpConfigOptionChoice(value: 'model-b', name: 'Model B'),
+              ChatConfigOptionChoice(value: 'model-a', name: 'Model A'),
+              ChatConfigOptionChoice(value: 'model-b', name: 'Model B'),
             ],
           ),
         ],

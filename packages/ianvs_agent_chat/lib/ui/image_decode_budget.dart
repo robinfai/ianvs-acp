@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 
-import '../models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 
 abstract interface class ChatImageDecodeReservation {
   bool get decodeFinished;

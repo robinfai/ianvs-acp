@@ -1,4 +1,4 @@
-import 'chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
 
 /// Typed construction helpers keep backend protocol keys out of host UI code.
 /// Existing ACP projections continue to use ChatMessageView without copying.

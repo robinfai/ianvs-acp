@@ -1,8 +1,9 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
-import 'package:ianvs_acp/acp/acp_input_budget.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
@@ -50,7 +51,7 @@ void main() {
         ),
       );
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Write report',
           rationale: 'Save the review output',
@@ -61,7 +62,7 @@ void main() {
         ),
       );
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-unscoped',
           title: 'Unscoped invalid request',
           rationale: 'Must not enter a session trajectory',
@@ -264,7 +265,7 @@ Review the screenshot''',
       ),
     );
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.fullAccess,
+      ChatToolCallExecutionPolicy.fullAccess,
     );
     await tester.pump();
 
@@ -380,9 +381,9 @@ Review the screenshot''',
         ChatMessage(
           role: ChatMessageRole.status,
           text: '',
-          omissions: <AcpInputOmission>[
-            AcpInputOmission(
-              reason: AcpInputOmissionReason.inputLimit,
+          omissions: <ChatInputOmission>[
+            ChatInputOmission(
+              reason: ChatInputOmissionReason.inputLimit,
               resource: 'timeline history',
               truncated: true,
               limit: 1,
@@ -393,7 +394,7 @@ Review the screenshot''',
       );
       for (var index = 0; index < 2; index += 1) {
         client.emitPermissionRequest(
-          AcpPermissionRequest(
+          ChatPermissionRequest(
             id: 'permission-$index',
             title: 'Permission $index',
             rationale: 'Test eviction',
@@ -417,7 +418,7 @@ Review the screenshot''',
     final controller = ChatController(
       client: FakeAgentClient(),
       cwd: '/workspace/app',
-      inputBudget: const AcpInputBudget(maxTimelineItems: 1),
+      inputBudget: const ChatInputBudget(maxTimelineItems: 1),
     );
     addTearDown(controller.dispose);
     await controller.newSession();
@@ -456,7 +457,7 @@ Review the screenshot''',
     final firstSessionId = controller.currentSession!.id;
     for (var index = 0; index < 2; index += 1) {
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'first-session-permission-$index',
           title: 'Permission $index',
           rationale: 'Test session-scoped eviction',
@@ -496,7 +497,7 @@ Review the screenshot''',
     await controller.newSession();
     for (var index = 0; index < 2; index += 1) {
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'late-permission-$index',
           title: 'Late permission $index',
           rationale: 'Arrived before the session catalog',
@@ -510,7 +511,7 @@ Review the screenshot''',
     expect(controller.permissionHistory, hasLength(1));
     final currentSessionId = controller.currentSession!.id;
     client.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'current-permission',
         title: 'Current permission',
         rationale: 'Evicts the final retained late-session audit',
@@ -554,7 +555,7 @@ Review the screenshot''',
     await controller.newSession();
     for (final sessionId in <String>['late-a', 'late-b', 'late-c']) {
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-$sessionId',
           title: 'Permission for $sessionId',
           rationale: 'Arrived before the session catalog',
@@ -573,7 +574,7 @@ Review the screenshot''',
 
     void emitSecondPermission(String sessionId) {
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'second-permission-$sessionId',
           title: 'Second permission for $sessionId',
           rationale: 'Exercises marker eviction after an exemption',
@@ -631,7 +632,7 @@ Review the screenshot''',
     await controller.newSession();
     for (final sessionId in <String>['late-a', 'late-b', 'late-c']) {
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'overflow-$sessionId',
           title: 'Overflow $sessionId',
           rationale: 'Create provenance overflow before the fork',
@@ -649,7 +650,7 @@ Review the screenshot''',
 
     for (final sessionId in <String>[forkId, 'late-d']) {
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'fork-$sessionId',
           title: 'Fork permission $sessionId',
           rationale: 'Truncate the new fork permission history',
@@ -677,7 +678,7 @@ Review the screenshot''',
       final sessionId = controller.currentSession!.id;
       for (var index = 0; index < 2; index += 1) {
         client.emitPermissionRequest(
-          AcpPermissionRequest(
+          ChatPermissionRequest(
             id: 'closing-permission-$index',
             title: 'Closing permission $index',
             rationale: 'Test terminal lifecycle cleanup',
@@ -695,7 +696,7 @@ Review the screenshot''',
 
       await controller.closeCurrentSession();
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'late-retired-permission',
           title: 'Late retired permission',
           rationale: 'Arrived after terminal cleanup',
@@ -739,7 +740,7 @@ Review the screenshot''',
         await controller.closeCurrentSession();
       }
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'late-after-retirement-overflow',
           title: 'Late permission',
           rationale: 'Arrived after retired session provenance overflowed',
@@ -754,7 +755,7 @@ Review the screenshot''',
       expect(controller.pendingPermissionRequest, isNull);
       expect(controller.permissionHistory, isEmpty);
       expect(client.lastPermissionRequestId, 'late-after-retirement-overflow');
-      expect(client.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(client.lastPermissionDecision, ChatPermissionDecision.cancel);
     },
   );
 }

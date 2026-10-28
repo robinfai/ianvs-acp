@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/models/chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
 import 'package:ianvs_agent_chat/ui/tool_presentation/tool_presentation_registry.dart';
 
 void main() {

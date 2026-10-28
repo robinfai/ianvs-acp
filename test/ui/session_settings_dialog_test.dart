@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:collection';
 
 import 'package:flutter/material.dart';
-import 'package:ianvs_acp/acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/components/session_settings_dialog.dart';
@@ -14,7 +14,7 @@ void main() {
   testWidgets('SessionSettingsDialog accepts the injected input budget', (
     tester,
   ) async {
-    const budget = AcpInputBudget(
+    const budget = ChatInputBudget(
       maxMetadataPreviewChars: 7,
       maxMetadataPreviewBytes: 9,
     );
@@ -37,10 +37,10 @@ void main() {
   testWidgets('SessionSettingsDialog lazily builds 1024 config options', (
     tester,
   ) async {
-    final settings = AcpSessionSettings(
-      configOptions: List<AcpConfigOption>.generate(
+    final settings = ChatSessionSettings(
+      configOptions: List<ChatConfigOption>.generate(
         1024,
-        (index) => AcpConfigOption(
+        (index) => ChatConfigOption(
           id: 'option-$index',
           name: 'Option $index',
           type: 'boolean',
@@ -109,10 +109,10 @@ void main() {
   testWidgets(
     'SessionSettingsDialog does not rescan unchanged config options',
     (tester) async {
-      final options = _CountingList<AcpConfigOption>(
-        List<AcpConfigOption>.generate(
+      final options = _CountingList<ChatConfigOption>(
+        List<ChatConfigOption>.generate(
           1024,
-          (index) => AcpConfigOption(
+          (index) => ChatConfigOption(
             id: 'option-$index',
             name: 'Option $index',
             type: 'boolean',
@@ -123,7 +123,7 @@ void main() {
       );
       final controller = ChatController(
         client: FakeAgentClient(
-          sessionSettings: AcpSessionSettings(configOptions: options),
+          sessionSettings: ChatSessionSettings(configOptions: options),
         ),
         cwd: '/workspace',
       );
@@ -147,10 +147,10 @@ void main() {
   testWidgets(
     'SessionSettingsDialog projection depends only on config option identity',
     (tester) async {
-      final options = _CountingList<AcpConfigOption>(
-        List<AcpConfigOption>.generate(
+      final options = _CountingList<ChatConfigOption>(
+        List<ChatConfigOption>.generate(
           1024,
-          (index) => AcpConfigOption(
+          (index) => ChatConfigOption(
             id: 'option-$index',
             name: 'Option $index',
             type: 'boolean',
@@ -159,7 +159,7 @@ void main() {
           ),
         ),
       );
-      final initialSettings = AcpSessionSettings(configOptions: options);
+      final initialSettings = ChatSessionSettings(configOptions: options);
       final controller = ChatController(
         client: FakeAgentClient(sessionSettings: initialSettings),
         cwd: '/workspace',
@@ -167,7 +167,7 @@ void main() {
       addTearDown(controller.dispose);
       await controller.newSession();
 
-      Widget app(AcpInputBudget budget) => MaterialApp(
+      Widget app(ChatInputBudget budget) => MaterialApp(
         home: Scaffold(
           body: SessionSettingsDialog(
             controller: controller,
@@ -177,12 +177,12 @@ void main() {
       );
 
       await tester.pumpWidget(
-        app(const AcpInputBudget(maxMetadataPreviewChars: 16)),
+        app(const ChatInputBudget(maxMetadataPreviewChars: 16)),
       );
       expect(options.itemReads, greaterThanOrEqualTo(1024));
 
-      final omission = AcpInputOmission(
-        reason: AcpInputOmissionReason.inputLimit,
+      final omission = ChatInputOmission(
+        reason: ChatInputOmissionReason.inputLimit,
         resource: 'session settings',
         truncated: false,
         limit: 1024,
@@ -199,7 +199,7 @@ void main() {
       options.resetReads();
 
       await tester.pumpWidget(
-        app(const AcpInputBudget(maxMetadataPreviewChars: 24)),
+        app(const ChatInputBudget(maxMetadataPreviewChars: 24)),
       );
 
       expect(options.itemReads, lessThan(128));
@@ -211,9 +211,9 @@ void main() {
   testWidgets('SessionSettingsDialog searches large choices lazily', (
     tester,
   ) async {
-    final choices = List<AcpConfigOptionChoice>.generate(
+    final choices = List<ChatConfigOptionChoice>.generate(
       1024,
-      (index) => AcpConfigOptionChoice(
+      (index) => ChatConfigOptionChoice(
         value: 'model-$index',
         name: 'Model $index',
         description: index == 1023
@@ -222,9 +222,9 @@ void main() {
       ),
     );
     final fake = FakeAgentClient(
-      sessionSettings: AcpSessionSettings(
+      sessionSettings: ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
@@ -243,7 +243,7 @@ void main() {
         home: Scaffold(
           body: SessionSettingsDialog(
             controller: controller,
-            inputBudget: const AcpInputBudget(
+            inputBudget: const ChatInputBudget(
               maxMetadataPreviewChars: 12,
               maxMetadataPreviewBytes: 12,
             ),
@@ -296,15 +296,15 @@ void main() {
   testWidgets('large choice dialog closes when settings become disabled', (
     tester,
   ) async {
-    final choices = List<AcpConfigOptionChoice>.generate(
+    final choices = List<ChatConfigOptionChoice>.generate(
       1024,
       (index) =>
-          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+          ChatConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
     );
     final fake = _DelayedForkAgentClient(
-      sessionSettings: AcpSessionSettings(
+      sessionSettings: ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
@@ -356,15 +356,15 @@ void main() {
   testWidgets('large choice dialog closes when its parent unmounts', (
     tester,
   ) async {
-    final choices = List<AcpConfigOptionChoice>.generate(
+    final choices = List<ChatConfigOptionChoice>.generate(
       1024,
       (index) =>
-          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+          ChatConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
     );
     final fake = FakeAgentClient(
-      sessionSettings: AcpSessionSettings(
+      sessionSettings: ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
@@ -408,15 +408,15 @@ void main() {
   testWidgets('large choice late builder closes after immediate disable', (
     tester,
   ) async {
-    final choices = List<AcpConfigOptionChoice>.generate(
+    final choices = List<ChatConfigOptionChoice>.generate(
       1024,
       (index) =>
-          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+          ChatConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
     );
     final fake = _DelayedForkAgentClient(
-      sessionSettings: AcpSessionSettings(
+      sessionSettings: ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
@@ -458,15 +458,15 @@ void main() {
   testWidgets('large choice late builder closes after immediate unmount', (
     tester,
   ) async {
-    final choices = List<AcpConfigOptionChoice>.generate(
+    final choices = List<ChatConfigOptionChoice>.generate(
       1024,
       (index) =>
-          AcpConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
+          ChatConfigOptionChoice(value: 'model-$index', name: 'Model $index'),
     );
     final fake = FakeAgentClient(
-      sessionSettings: AcpSessionSettings(
+      sessionSettings: ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
@@ -505,8 +505,8 @@ void main() {
   testWidgets('SessionSettingsDialog keeps incomplete settings visible', (
     tester,
   ) async {
-    final omission = AcpInputOmission(
-      reason: AcpInputOmissionReason.inputLimit,
+    final omission = ChatInputOmission(
+      reason: ChatInputOmissionReason.inputLimit,
       resource: 'session settings',
       truncated: false,
       limit: 1024,
@@ -514,7 +514,7 @@ void main() {
     );
     final controller = ChatController(
       client: FakeAgentClient(
-        sessionSettings: AcpSessionSettings(
+        sessionSettings: ChatSessionSettings(
           omissions: [omission],
           truncated: true,
         ),
@@ -775,29 +775,29 @@ void main() {
   });
 }
 
-const _settingsWithModel = AcpSessionSettings(
-  modes: AcpSessionModeInfo(
+const _settingsWithModel = ChatSessionSettings(
+  modes: ChatSessionModeInfo(
     currentModeId: 'ask',
     availableModes: [
-      AcpSessionMode(id: 'ask', name: 'Ask'),
-      AcpSessionMode(id: 'edit', name: 'Edit'),
+      ChatSessionMode(id: 'ask', name: 'Ask'),
+      ChatSessionMode(id: 'edit', name: 'Edit'),
     ],
   ),
   configOptions: [
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'model',
       name: 'Model',
       type: 'select',
       currentValue: 'gpt-5',
       options: [
-        AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
-        AcpConfigOptionChoice(
+        ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+        ChatConfigOptionChoice(
           value: 'claude-sonnet-4',
           name: 'Claude Sonnet 4',
         ),
       ],
     ),
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'approval',
       name: 'Approval mode',
       type: 'select',
@@ -805,82 +805,82 @@ const _settingsWithModel = AcpSessionSettings(
       description: 'Controls how the agent asks before changing files.',
       group: 'Safety',
       options: [
-        AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
-        AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+        ChatConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
+        ChatConfigOptionChoice(value: 'auto', name: 'Auto apply'),
       ],
     ),
   ],
 );
 
-const _settingsWithModesOnly = AcpSessionSettings(
-  modes: AcpSessionModeInfo(
+const _settingsWithModesOnly = ChatSessionSettings(
+  modes: ChatSessionModeInfo(
     currentModeId: 'ask',
     availableModes: [
-      AcpSessionMode(id: 'ask', name: 'Ask'),
-      AcpSessionMode(id: 'edit', name: 'Edit'),
+      ChatSessionMode(id: 'ask', name: 'Ask'),
+      ChatSessionMode(id: 'edit', name: 'Edit'),
     ],
   ),
 );
 
-const _settingsWithReasoning = AcpSessionSettings(
+const _settingsWithReasoning = ChatSessionSettings(
   configOptions: [
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'model',
       name: 'Model',
       type: 'select',
       currentValue: 'gpt-5',
-      options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+      options: [ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
     ),
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'reasoning_effort',
       name: 'Reasoning Effort',
       type: 'select',
       currentValue: 'high',
       options: [
-        AcpConfigOptionChoice(value: 'low', name: 'Low'),
-        AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
-        AcpConfigOptionChoice(value: 'high', name: 'High'),
+        ChatConfigOptionChoice(value: 'low', name: 'Low'),
+        ChatConfigOptionChoice(value: 'medium', name: 'Medium'),
+        ChatConfigOptionChoice(value: 'high', name: 'High'),
       ],
     ),
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'approval',
       name: 'Approval mode',
       type: 'select',
       currentValue: 'suggest',
       options: [
-        AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
-        AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+        ChatConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
+        ChatConfigOptionChoice(value: 'auto', name: 'Auto apply'),
       ],
     ),
   ],
 );
 
-const _settingsWithModelAndReasoning = AcpSessionSettings(
+const _settingsWithModelAndReasoning = ChatSessionSettings(
   configOptions: [
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'model',
       name: 'Model',
       type: 'select',
       currentValue: 'gpt-5',
-      options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+      options: [ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
     ),
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'reasoning_effort',
       name: 'Reasoning Effort',
       type: 'select',
       currentValue: 'medium',
       options: [
-        AcpConfigOptionChoice(value: 'low', name: 'Low'),
-        AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
-        AcpConfigOptionChoice(value: 'high', name: 'High'),
+        ChatConfigOptionChoice(value: 'low', name: 'Low'),
+        ChatConfigOptionChoice(value: 'medium', name: 'Medium'),
+        ChatConfigOptionChoice(value: 'high', name: 'High'),
       ],
     ),
   ],
 );
 
-const _settingsWithBoolean = AcpSessionSettings(
+const _settingsWithBoolean = ChatSessionSettings(
   configOptions: [
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'read_only',
       name: 'Read only',
       type: 'boolean',

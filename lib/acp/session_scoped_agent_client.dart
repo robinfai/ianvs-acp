@@ -5,12 +5,12 @@ import 'dart:typed_data';
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_available_commands.dart';
-import 'acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'acp_session_catalog.dart';
-import 'acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 /// Shares one authoritative ACP connection across isolated conversation
 /// controllers. Each lease receives permission events only for sessions that
@@ -64,8 +64,8 @@ final class SessionScopedAgentClientPool {
       LinkedHashMap<String, _PermissionCancellationIdentity>();
   final Map<String, _PermissionRequestBinding> _respondingPermissionBindings =
       <String, _PermissionRequestBinding>{};
-  final LinkedHashMap<String, AcpPermissionRequest>
-  _deferredPermissionRequests = LinkedHashMap<String, AcpPermissionRequest>();
+  final LinkedHashMap<String, ChatPermissionRequest>
+  _deferredPermissionRequests = LinkedHashMap<String, ChatPermissionRequest>();
   final Set<_SessionScopedAgentClient> _leases = <_SessionScopedAgentClient>{};
   final StreamController<AcpAgentLifecycleEvent> _lifecycleEvents =
       StreamController<AcpAgentLifecycleEvent>.broadcast(sync: true);
@@ -81,9 +81,9 @@ final class SessionScopedAgentClientPool {
   bool _permissionInvalidationsDone = false;
   int _queuedSetupOperations = 0;
   Future<void> _setupTail = Future<void>.value();
-  late final StreamSubscription<AcpPermissionRequest>
+  late final StreamSubscription<ChatPermissionRequest>
   _permissionRequestsSubscription;
-  late final StreamSubscription<AcpPermissionInvalidation>
+  late final StreamSubscription<ChatPermissionInvalidation>
   _permissionInvalidationsSubscription;
 
   bool get isClosed => _closed;
@@ -495,7 +495,7 @@ final class SessionScopedAgentClientPool {
     }
   }
 
-  void _dispatchPermissionRequest(AcpPermissionRequest request) {
+  void _dispatchPermissionRequest(ChatPermissionRequest request) {
     if (!_isBoundedIdentity(request.id) ||
         !_isBoundedIdentity(request.sessionId) ||
         request.lifecycleId.length > _maxIdentityCodeUnits) {
@@ -579,7 +579,7 @@ final class SessionScopedAgentClientPool {
       _revokePermissionBindingLocally(
         requestId,
         existing,
-        AcpPermissionInvalidationReason.promptCancelled,
+        ChatPermissionInvalidationReason.promptCancelled,
       );
     }
     _permissionRequestOwners.remove(requestId);
@@ -594,7 +594,7 @@ final class SessionScopedAgentClientPool {
     }
   }
 
-  void _dispatchPermissionInvalidation(AcpPermissionInvalidation event) {
+  void _dispatchPermissionInvalidation(ChatPermissionInvalidation event) {
     final deferred = _deferredPermissionRequests[event.requestId];
     if (deferred != null &&
         deferred.sessionId == event.sessionId &&
@@ -680,11 +680,11 @@ final class SessionScopedAgentClientPool {
     }
   }
 
-  void _cancelUnownedPermission(AcpPermissionRequest request) {
+  void _cancelUnownedPermission(ChatPermissionRequest request) {
     _cancelPermissionRequest(request);
   }
 
-  void _cancelPermissionRequest(AcpPermissionRequest request) {
+  void _cancelPermissionRequest(ChatPermissionRequest request) {
     _cancelPermissionId(
       request.id,
       identity: _PermissionCancellationIdentity(
@@ -721,7 +721,7 @@ final class SessionScopedAgentClientPool {
       _runAgentOperation(
         () => _client.respondToPermissionRequest(
           id: id,
-          decision: AcpPermissionDecision.cancel,
+          decision: ChatPermissionDecision.cancel,
         ),
       ).catchError((Object _) {}).whenComplete(() {
         _centralCancellationIds.remove(id);
@@ -746,7 +746,7 @@ final class SessionScopedAgentClientPool {
   Future<void> _respondToPermissionRequest(
     _SessionScopedAgentClient lease, {
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     final binding = _permissionRequestOwners[id];
@@ -828,7 +828,7 @@ final class SessionScopedAgentClientPool {
     _revokePermissionBindingLocally(
       requestId,
       binding,
-      AcpPermissionInvalidationReason.sessionClosed,
+      ChatPermissionInvalidationReason.sessionClosed,
     );
     _cancelPermissionId(
       requestId,
@@ -839,7 +839,7 @@ final class SessionScopedAgentClientPool {
   void _revokePermissionBindingLocally(
     String requestId,
     _PermissionRequestBinding binding,
-    AcpPermissionInvalidationReason reason,
+    ChatPermissionInvalidationReason reason,
   ) {
     final owner = binding.owner;
     if (!_leases.contains(owner) ||
@@ -848,7 +848,7 @@ final class SessionScopedAgentClientPool {
       return;
     }
     owner._permissionInvalidations.add(
-      AcpPermissionInvalidation(
+      ChatPermissionInvalidation(
         requestId: requestId,
         lifecycleId: binding.lifecycleId,
         sessionId: binding.sessionId,
@@ -998,10 +998,10 @@ final class _SessionScopedAgentClient
   final AcpAgentClient _client;
   final Set<String> _sessionIds = <String>{};
   final LinkedHashSet<String> _knownSessionIds = LinkedHashSet<String>();
-  final StreamController<AcpPermissionRequest> _permissionRequests =
-      StreamController<AcpPermissionRequest>.broadcast(sync: true);
-  final StreamController<AcpPermissionInvalidation> _permissionInvalidations =
-      StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
+  final StreamController<ChatPermissionRequest> _permissionRequests =
+      StreamController<ChatPermissionRequest>.broadcast(sync: true);
+  final StreamController<ChatPermissionInvalidation> _permissionInvalidations =
+      StreamController<ChatPermissionInvalidation>.broadcast(sync: true);
   bool _disposed = false;
 
   @override
@@ -1015,11 +1015,11 @@ final class _SessionScopedAgentClient
   bool get supportsConcurrentPrompts => _client.supportsConcurrentPrompts;
 
   @override
-  Stream<AcpPermissionRequest> get permissionRequests =>
+  Stream<ChatPermissionRequest> get permissionRequests =>
       _permissionRequests.stream;
 
   @override
-  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
+  Stream<ChatPermissionInvalidation> get permissionInvalidations =>
       _permissionInvalidations.stream;
 
   @override
@@ -1119,7 +1119,7 @@ final class _SessionScopedAgentClient
   }
 
   @override
-  Future<AcpSessionSettings> sessionSettings(String sessionId) {
+  Future<ChatSessionSettings> sessionSettings(String sessionId) {
     _ensureOpen();
     final normalizedSessionId = _normalizedSessionId(sessionId);
     _pool._claimSessionIfUnowned(this, normalizedSessionId);
@@ -1147,7 +1147,7 @@ final class _SessionScopedAgentClient
   }
 
   @override
-  Future<List<AcpConfigOption>> setConfigOption({
+  Future<List<ChatConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
     required Object value,
@@ -1319,7 +1319,7 @@ final class _SessionScopedAgentClient
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     _ensureOpen();
@@ -1486,7 +1486,7 @@ final class _PermissionRequestBinding {
     );
   }
 
-  bool matches(AcpPermissionInvalidation event) {
+  bool matches(ChatPermissionInvalidation event) {
     return event.sessionId == sessionId && event.lifecycleId == lifecycleId;
   }
 }
@@ -1513,7 +1513,7 @@ final class _PermissionCancellationIdentity {
   final String? sessionId;
   final String? lifecycleId;
 
-  bool matches(AcpPermissionInvalidation event) {
+  bool matches(ChatPermissionInvalidation event) {
     return id == event.requestId &&
         sessionId == event.sessionId &&
         lifecycleId == event.lifecycleId;

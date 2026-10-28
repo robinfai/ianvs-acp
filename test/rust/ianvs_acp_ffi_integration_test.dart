@@ -4,27 +4,22 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/app.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/rust_acp_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
-import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
-
-import '../../packages/ianvs_acp_runtime/test/ianvs_acp_ffi_integration_test.dart'
-    as shared;
+import 'package:ianvs_acp_runtime/ianvs_acp_runtime.dart';
 
 void main() {
   final root = Directory.current.path;
   final libraryPath =
       Platform.environment['IANVS_ACP_RUST_LIBRARY'] ??
-      '$root/rust/target/debug/libianvs_acp_ffi.dylib';
+      '$root/packages/ianvs_acp_runtime/rust/target/debug/libianvs_acp_ffi.dylib';
   final agentPath =
       Platform.environment['IANVS_ACP_FIXTURE_AGENT'] ??
-      '$root/rust/target/debug/ianvs-acp-fixture-agent';
+      '$root/packages/ianvs_acp_runtime/rust/target/debug/ianvs-acp-fixture-agent';
   final artifactsAvailable =
       File(libraryPath).existsSync() && File(agentPath).existsSync();
-
-  shared.main();
 
   test(
     'client retries native startup failure and connects after MCP cleanup',
@@ -150,7 +145,7 @@ void main() {
           );
           expect(output.existsSync(), isFalse);
           await controller.resolvePermissionRequest(
-            AcpPermissionDecision.allow,
+            ChatPermissionDecision.allow,
           );
           expect(
             await permissions.moveNext().timeout(const Duration(seconds: 5)),
@@ -159,7 +154,7 @@ void main() {
           expect(permissions.current.toolKind, 'edit');
           expect(output.existsSync(), isFalse);
           await controller.resolvePermissionRequest(
-            AcpPermissionDecision.allow,
+            ChatPermissionDecision.allow,
           );
           await prompt.timeout(const Duration(seconds: 5));
           await turnCompleted.future.timeout(const Duration(seconds: 5));

@@ -59,7 +59,7 @@ impl IanvsRuntime {
 /// ABI version for compatibility checks before any other call.
 #[unsafe(no_mangle)]
 pub extern "C" fn ianvs_acp_ffi_version() -> u32 {
-    11
+    12
 }
 
 /// Allocate a new, stopped runtime.

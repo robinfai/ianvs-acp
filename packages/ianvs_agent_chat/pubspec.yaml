@@ -1,6 +1,7 @@
 name: ianvs_agent_chat
 description: Reusable Flutter agent chat UI with streaming messages, tools, permissions, ACP integration contracts and an OpenAI-compatible LLM adapter.
 version: 0.2.0
+publish_to: none
 repository: https://github.com/robinfai/ianvs-acp
 issue_tracker: https://github.com/robinfai/ianvs-acp/issues
 topics:
@@ -13,6 +14,8 @@ environment:
   sdk: ^3.12.0
   flutter: '>=3.44.0'
 dependencies:
+  ianvs_agent_core:
+    path: ../ianvs_agent_core
   cupertino_icons: ^1.0.8
   ianvs_design: ^0.4.0
   ianvs_markdown: ^0.3.1
@@ -23,8 +26,6 @@ dependencies:
   file_picker: ^10.2.0
   flutter_markdown_plus: ^1.0.12
   mime: ^2.0.0
-  merman: ^0.7.0
-  flutter_svg: ^2.3.0
   crypto: ^3.0.7
   markdown: ^7.3.1
   path: ^1.9.1

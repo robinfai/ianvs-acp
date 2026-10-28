@@ -7,8 +7,8 @@ import 'package:path/path.dart' as p;
 import '../config/acp_client_config.dart';
 import 'acp_agent_client.dart';
 import 'acp_endpoint_validator.dart';
-import 'acp_input_budget.dart' as acp;
-import 'acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
 import 'bounded_utf8_accumulator.dart';
@@ -18,8 +18,8 @@ import 'no_redirect_mcp_http_transport.dart';
 abstract class AcpPermissionReviewer {
   bool get canAutoApprove => false;
 
-  Future<AcpPermissionReviewResult?> review(
-    AcpPermissionRequest request, {
+  Future<ChatPermissionReviewResult?> review(
+    ChatPermissionRequest request, {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,
@@ -79,8 +79,8 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
   var _quarantined = false;
 
   @override
-  Future<AcpPermissionReviewResult?> review(
-    AcpPermissionRequest request, {
+  Future<ChatPermissionReviewResult?> review(
+    ChatPermissionRequest request, {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,
@@ -94,12 +94,12 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
       model: effectiveModel,
     );
     if (_disposed || _quarantined) {
-      return Future<AcpPermissionReviewResult?>.value(
+      return Future<ChatPermissionReviewResult?>.value(
         _failedReview(category: 'unavailable', effectiveModel: effectiveModel),
       );
     }
     if (_pendingReviews.length >= maxPendingReviews) {
-      return Future<AcpPermissionReviewResult?>.value(
+      return Future<ChatPermissionReviewResult?>.value(
         _failedReview(category: 'capacity', effectiveModel: effectiveModel),
       );
     }
@@ -193,7 +193,7 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     }
   }
 
-  Future<AcpPermissionReviewResult> _performReview({
+  Future<ChatPermissionReviewResult> _performReview({
     required String workspaceRoot,
     required List<String> additionalDirectories,
     required String? effectiveModel,
@@ -210,8 +210,8 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     );
     _requireOwnedContext(context);
     final data = _reviewDataFromText(response);
-    return sanitizeAcpPermissionReviewResult(
-      AcpPermissionReviewResult(
+    return sanitizeChatPermissionReviewResult(
+      ChatPermissionReviewResult(
         decision: _reviewDecisionFromData(data),
         risk:
             _reviewStringField(data, const ['risk', 'riskLevel', 'severity']) ??
@@ -232,12 +232,12 @@ class AcpAgentPermissionReviewer extends AcpPermissionReviewer {
     );
   }
 
-  AcpPermissionReviewResult _failedReview({
+  ChatPermissionReviewResult _failedReview({
     required String category,
     required String? effectiveModel,
   }) {
-    return sanitizeAcpPermissionReviewResult(
-      AcpPermissionReviewResult(
+    return sanitizeChatPermissionReviewResult(
+      ChatPermissionReviewResult(
         risk: 'unknown',
         rationale: 'Permission review agent failed.',
         reviewer: agentName,
@@ -523,8 +523,8 @@ final class _QueuedAgentReview {
   final List<String> additionalDirectories;
   final String? effectiveModel;
   final Map<String, dynamic> payload;
-  final Completer<AcpPermissionReviewResult?> result =
-      Completer<AcpPermissionReviewResult?>();
+  final Completer<ChatPermissionReviewResult?> result =
+      Completer<ChatPermissionReviewResult?>();
   var started = false;
 }
 
@@ -545,7 +545,7 @@ final class _AcpAgentReviewContext {
 }
 
 final class _AgentReviewOutcome {
-  const _AgentReviewOutcome.success(AcpPermissionReviewResult this.result)
+  const _AgentReviewOutcome.success(ChatPermissionReviewResult this.result)
     : error = null,
       stackTrace = null,
       timedOut = false;
@@ -556,7 +556,7 @@ final class _AgentReviewOutcome {
     this.timedOut = false,
   }) : result = null;
 
-  final AcpPermissionReviewResult? result;
+  final ChatPermissionReviewResult? result;
   final Object? error;
   final StackTrace? stackTrace;
   final bool timedOut;
@@ -589,8 +589,8 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   bool get canAutoApprove => true;
 
   @override
-  Future<AcpPermissionReviewResult?> review(
-    AcpPermissionRequest request, {
+  Future<ChatPermissionReviewResult?> review(
+    ChatPermissionRequest request, {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,
@@ -618,8 +618,8 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
       }()).timeout(config.timeout);
     } catch (error) {
       await _resetClient();
-      return sanitizeAcpPermissionReviewResult(
-        AcpPermissionReviewResult(
+      return sanitizeChatPermissionReviewResult(
+        ChatPermissionReviewResult(
           risk: 'unknown',
           rationale: 'Permission review service failed.',
           reviewer: mcpServer.name,
@@ -754,14 +754,14 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
     return result.isEmpty ? null : result;
   }
 
-  AcpPermissionReviewResult _resultFromToolCall(
+  ChatPermissionReviewResult _resultFromToolCall(
     mcp.CallToolResult result, {
     String? model,
     required Map<String, Object?> localAnalysis,
   }) {
     if (result.isError) {
-      return sanitizeAcpPermissionReviewResult(
-        AcpPermissionReviewResult(
+      return sanitizeChatPermissionReviewResult(
+        ChatPermissionReviewResult(
           risk: 'unknown',
           rationale: 'Permission review service returned a tool error.',
           reviewer: mcpServer.name,
@@ -773,8 +773,8 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
     final Map<String, Object?> data;
     try {
       data = _structuredResult(result);
-    } on acp.AcpInputLimitExceeded {
-      return const AcpPermissionReviewResult(
+    } on acp.ChatInputLimitExceeded {
+      return const ChatPermissionReviewResult(
         risk: 'unknown',
         rationale:
             'Permission review result omitted because it exceeded safety limits.',
@@ -782,8 +782,8 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
         details: <String, Object?>{'omission': 'size_limit'},
       );
     } on Object {
-      return sanitizeAcpPermissionReviewResult(
-        AcpPermissionReviewResult(
+      return sanitizeChatPermissionReviewResult(
+        ChatPermissionReviewResult(
           risk: 'unknown',
           rationale: 'Permission review service returned an invalid result.',
           reviewer: mcpServer.name,
@@ -792,8 +792,8 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
         ),
       );
     }
-    final remoteResult = sanitizeAcpPermissionReviewResult(
-      AcpPermissionReviewResult(
+    final remoteResult = sanitizeChatPermissionReviewResult(
+      ChatPermissionReviewResult(
         decision: _decisionFromReview(data),
         risk:
             _stringField(data, const ['risk', 'riskLevel', 'severity']) ??
@@ -808,8 +808,8 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   }
 
   Map<String, Object?> _structuredResult(mcp.CallToolResult result) {
-    final guard = acp.AcpStructuredUpdateGuard(
-      budget: const acp.AcpInputBudget(
+    final guard = acp.ChatStructuredUpdateGuard(
+      budget: const acp.ChatInputBudget(
         maxMetadataBytes: defaultPermissionReviewResultEncodedByteLimit,
         maxStructuredUpdateBytes: defaultPermissionReviewResultEncodedByteLimit,
         maxStructuredStringBytes: defaultPermissionReviewResultEncodedByteLimit,
@@ -855,7 +855,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
     return null;
   }
 
-  AcpPermissionDecision? _decisionFromReview(Map<String, Object?> data) {
+  ChatPermissionDecision? _decisionFromReview(Map<String, Object?> data) {
     final value = _stringField(data, const [
       'decision',
       'outcome',
@@ -867,15 +867,15 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
       'allowed' ||
       'approve' ||
       'approved' ||
-      'yes' => AcpPermissionDecision.allow,
+      'yes' => ChatPermissionDecision.allow,
       'deny' ||
       'denied' ||
       'reject' ||
       'rejected' ||
       'block' ||
       'blocked' ||
-      'no' => AcpPermissionDecision.deny,
-      'cancel' || 'cancelled' || 'canceled' => AcpPermissionDecision.cancel,
+      'no' => ChatPermissionDecision.deny,
+      'cancel' || 'cancelled' || 'canceled' => ChatPermissionDecision.cancel,
       _ => null,
     };
   }
@@ -928,7 +928,7 @@ class McpPermissionReviewAgent extends AcpPermissionReviewer {
   }
 }
 
-AcpPermissionDecision? _reviewDecisionFromData(Map<String, Object?> data) {
+ChatPermissionDecision? _reviewDecisionFromData(Map<String, Object?> data) {
   final value = _reviewStringField(data, const [
     'decision',
     'outcome',
@@ -940,15 +940,15 @@ AcpPermissionDecision? _reviewDecisionFromData(Map<String, Object?> data) {
     'allowed' ||
     'approve' ||
     'approved' ||
-    'yes' => AcpPermissionDecision.allow,
+    'yes' => ChatPermissionDecision.allow,
     'deny' ||
     'denied' ||
     'reject' ||
     'rejected' ||
     'block' ||
     'blocked' ||
-    'no' => AcpPermissionDecision.deny,
-    'cancel' || 'cancelled' || 'canceled' => AcpPermissionDecision.cancel,
+    'no' => ChatPermissionDecision.deny,
+    'cancel' || 'cancelled' || 'canceled' => ChatPermissionDecision.cancel,
     _ => null,
   };
 }
@@ -961,8 +961,8 @@ String? _reviewStringField(Map<String, Object?> data, List<String> keys) {
   return null;
 }
 
-AcpPermissionReviewResult _applyLocalRiskFloor(
-  AcpPermissionReviewResult remote,
+ChatPermissionReviewResult _applyLocalRiskFloor(
+  ChatPermissionReviewResult remote,
   Map<String, Object?> localAnalysis,
 ) {
   final localRisk = localAnalysis['risk'];
@@ -972,8 +972,8 @@ AcpPermissionReviewResult _applyLocalRiskFloor(
       localRank != null && remoteRank != null && localRank > remoteRank
       ? (localRisk as String).trim().toLowerCase()
       : remote.risk;
-  return sanitizeAcpPermissionReviewResult(
-    AcpPermissionReviewResult(
+  return sanitizeChatPermissionReviewResult(
+    ChatPermissionReviewResult(
       decision: remote.decision,
       risk: effectiveRisk,
       rationale: remote.rationale,
@@ -996,7 +996,7 @@ int? _knownRiskRank(String value) => switch (value.trim().toLowerCase()) {
 };
 
 Map<String, dynamic> acpPermissionReviewPayload(
-  AcpPermissionRequest request, {
+  ChatPermissionRequest request, {
   required String workspaceRoot,
   List<String> additionalDirectories = const <String>[],
   String? model,
@@ -1044,7 +1044,7 @@ Map<String, dynamic> acpPermissionReviewPayload(
 }
 
 Map<String, Object?> _permissionReviewRequestProjection(
-  AcpPermissionRequest request,
+  ChatPermissionRequest request,
   _PermissionCommandContext commandContext,
 ) {
   final choices = request.choices.take(64).toList(growable: false);
@@ -1158,7 +1158,7 @@ final RegExp _permissionContentHashPattern = RegExp(
 );
 
 Map<String, Object?> _localPermissionAnalysis(
-  AcpPermissionRequest request, {
+  ChatPermissionRequest request, {
   required String workspaceRoot,
   required List<String> additionalDirectories,
   required String commandLine,
@@ -1258,7 +1258,7 @@ Map<String, Object?> _localPermissionAnalysis(
   };
 }
 
-bool _isExecutionPermission(AcpPermissionRequest request) {
+bool _isExecutionPermission(ChatPermissionRequest request) {
   final kind = request.toolKind?.trim().toLowerCase();
   final tool = request.toolName.trim().toLowerCase();
   return const <String>{
@@ -1277,7 +1277,7 @@ bool _isExecutionPermission(AcpPermissionRequest request) {
       }.contains(tool);
 }
 
-bool _isContentMutatingPermission(AcpPermissionRequest request) {
+bool _isContentMutatingPermission(ChatPermissionRequest request) {
   final kind = request.toolKind?.trim().toLowerCase();
   final tool = request.toolName.trim().toLowerCase();
   return const <String>{'write', 'edit'}.contains(kind) ||
@@ -1370,7 +1370,7 @@ const Set<String> _dangerousPermissionEnvironmentNames = <String>{
 };
 
 _PermissionCommandContext _commandContextFromPermission(
-  AcpPermissionRequest request,
+  ChatPermissionRequest request,
 ) {
   final metadata = request.metadata;
   final rawInput = _firstPresentValue(metadata, const [

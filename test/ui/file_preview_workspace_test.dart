@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -5,7 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_agent_chat/ui/components/chat_timeline.dart';
@@ -62,7 +63,7 @@ void main() {
     FilePreviewTargetResolver resolveTarget = resolveFilePreviewTarget,
     FilePreviewImageDimensionInspector imageDimensionInspector =
         inspectFilePreviewImageDimensions,
-    AcpInputBudget inputBudget = const AcpInputBudget(),
+    ChatInputBudget inputBudget = const ChatInputBudget(),
     AcpImageDecodeBudgetLedger? imageDecodeLedger,
     BoundedImageDecoder boundedImageDecoder = const DartUiBoundedImageDecoder(),
     MarkdownImageLoadBudgetLedger? markdownImageLoadBudgetLedger,
@@ -950,7 +951,7 @@ Readable body.
       );
       final decoder = _RejectingBoundedImageDecoder();
       final decodeLedger = AcpImageDecodeBudgetLedger(
-        budget: const AcpInputBudget(),
+        budget: const ChatInputBudget(),
       );
       var reads = 0;
 
@@ -1024,7 +1025,7 @@ Readable body.
       );
       final decoder = _RejectingBoundedImageDecoder();
       final decodeLedger = AcpImageDecodeBudgetLedger(
-        budget: const AcpInputBudget(),
+        budget: const ChatInputBudget(),
       );
       final uri = Uri.parse('data:image/png;base64,AQIDBA==');
 
@@ -1076,7 +1077,7 @@ Readable body.
     );
     final decoder = _RejectingBoundedImageDecoder();
     final decodeLedger = AcpImageDecodeBudgetLedger(
-      budget: const AcpInputBudget(),
+      budget: const ChatInputBudget(),
     );
     final uri = Uri.parse('data:image/png;base64,AQIDBA==');
 

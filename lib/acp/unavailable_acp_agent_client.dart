@@ -1,12 +1,12 @@
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_available_commands.dart';
-import 'acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'acp_session_catalog.dart';
-import 'acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 class UnavailableAcpAgentClient implements AcpAgentClient {
   const UnavailableAcpAgentClient({required this.message});
@@ -24,12 +24,12 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   bool get supportsConcurrentPrompts => false;
 
   @override
-  Stream<AcpPermissionRequest> get permissionRequests =>
-      const Stream<AcpPermissionRequest>.empty();
+  Stream<ChatPermissionRequest> get permissionRequests =>
+      const Stream<ChatPermissionRequest>.empty();
 
   @override
-  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
-      const Stream<AcpPermissionInvalidation>.empty();
+  Stream<ChatPermissionInvalidation> get permissionInvalidations =>
+      const Stream<ChatPermissionInvalidation>.empty();
 
   @override
   Stream<AcpAvailableCommandsUpdate> get availableCommandsUpdates =>
@@ -84,7 +84,7 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) => _failure<void>();
 
@@ -105,11 +105,11 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   }) => Stream<AgentEvent>.error(_error);
 
   @override
-  Future<List<AcpConfigOption>> setConfigOption({
+  Future<List<ChatConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
     required Object value,
-  }) => _failure<List<AcpConfigOption>>();
+  }) => _failure<List<ChatConfigOption>>();
 
   @override
   Future<bool> setSessionMode({
@@ -118,6 +118,6 @@ class UnavailableAcpAgentClient implements AcpAgentClient {
   }) => _failure<bool>();
 
   @override
-  Future<AcpSessionSettings> sessionSettings(String sessionId) =>
-      _failure<AcpSessionSettings>();
+  Future<ChatSessionSettings> sessionSettings(String sessionId) =>
+      _failure<ChatSessionSettings>();
 }

@@ -1,5 +1,5 @@
 import 'package:flutter/widgets.dart';
-import '../models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'chat_platform_stub.dart'
     if (dart.library.io) 'chat_platform_io.dart'
     as platform;

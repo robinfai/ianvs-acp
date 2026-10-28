@@ -178,4 +178,15 @@ The canonical Rust core/FFI and UI-independent Dart bindings live in
 [`packages/ianvs_acp_runtime`](../packages/ianvs_acp_runtime/README.md). The app
 consumes this package; root `rust` and `lib/rust` preserve compatibility for existing
 commands and imports. Package consumers receive all native sources and build
-scripts together, with unchanged ABI v11 and event schema v4.
+scripts together, with ABI v12 and event schema v5.
+
+
+## Shared packages (2026-10-28)
+
+The authoritative cross-host contract is [shared-agent-contract.md](architecture/shared-agent-contract.md).
+Core contains pure Dart models, controlled buffered content and replay projection.
+Runtime owns ACP lifecycle and implements a core session adapter; Flutter chat
+subscribes to streams without owning the session. Native Mermaid is optional.
+There are no app-level native re-export wrappers or ACP aliases for shared models.
+Host transcript caches are derived projections; runtime recovery storage retains
+its own protocol recovery mechanism and host-controlled location/retention.

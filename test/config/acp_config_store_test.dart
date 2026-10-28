@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/config/acp_agent_discovery.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/config/acp_config_store.dart';
@@ -188,10 +188,10 @@ void main() {
         terminal: AcpTerminalProviderConfig(enabled: true),
         permissions: AcpPermissionProviderConfig(
           trustRules: [
-            AcpPermissionTrustRule(
+            ChatPermissionTrustRule(
               toolName: 'read_text_file',
               toolKind: 'read',
-              decision: AcpPermissionDecision.allow,
+              decision: ChatPermissionDecision.allow,
             ),
           ],
           reviewAgent: AcpPermissionReviewAgentConfig(

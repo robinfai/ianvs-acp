@@ -1,6 +1,6 @@
 import 'package:ianvs_markdown/ianvs_markdown.dart' as markdown;
 
-import '../models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 
 final class MarkdownRenderDecision {
   const MarkdownRenderDecision({

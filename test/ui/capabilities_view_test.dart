@@ -1,6 +1,6 @@
 import 'dart:collection';
 
-import 'package:ianvs_acp/acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
@@ -95,7 +95,7 @@ void main() {
   testWidgets(
     'CapabilitiesView caches raw previews across rebuilds and collapse',
     (tester) async {
-      final budget = AcpInputBudget(
+      final budget = ChatInputBudget(
         maxMetadataPreviewChars: 24,
         maxMetadataPreviewBytes: 24,
       );
@@ -160,7 +160,7 @@ void main() {
       expect(authMethod.valueReads, 0);
 
       replacementRaw.valueReads = 0;
-      final replacementBudget = AcpInputBudget(
+      final replacementBudget = ChatInputBudget(
         maxMetadataPreviewChars: 24,
         maxMetadataPreviewBytes: 24,
       );
@@ -185,7 +185,7 @@ void main() {
         deferredRaw,
         authMethods: authMethods,
       );
-      final deferredBudget = AcpInputBudget(
+      final deferredBudget = ChatInputBudget(
         maxMetadataPreviewChars: 20,
         maxMetadataPreviewBytes: 20,
       );
@@ -236,7 +236,7 @@ void main() {
           home: Scaffold(
             body: CapabilitiesView(
               capabilities: _capabilities(<String, Object?>{'v': 'é'}),
-              inputBudget: const AcpInputBudget(
+              inputBudget: const ChatInputBudget(
                 maxMetadataPreviewChars: 9,
                 maxMetadataPreviewBytes: 10,
               ),
@@ -255,7 +255,7 @@ void main() {
             body: CapabilitiesView(
               key: const ValueKey('char-plus-one'),
               capabilities: _capabilities(<String, Object?>{'v': 'éa'}),
-              inputBudget: const AcpInputBudget(
+              inputBudget: const ChatInputBudget(
                 maxMetadataPreviewChars: 9,
                 maxMetadataPreviewBytes: 64,
               ),
@@ -273,7 +273,7 @@ void main() {
             body: CapabilitiesView(
               key: const ValueKey('byte-plus-one'),
               capabilities: _capabilities(<String, Object?>{'v': 'éa'}),
-              inputBudget: const AcpInputBudget(
+              inputBudget: const ChatInputBudget(
                 maxMetadataPreviewChars: 64,
                 maxMetadataPreviewBytes: 10,
               ),
@@ -312,7 +312,7 @@ void main() {
 
 Widget _app({
   required AcpAgentCapabilities capabilities,
-  required AcpInputBudget inputBudget,
+  required ChatInputBudget inputBudget,
 }) {
   return MaterialApp(
     home: Scaffold(

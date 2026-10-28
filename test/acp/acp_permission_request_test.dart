@@ -1,13 +1,13 @@
 import 'dart:convert';
 import 'dart:collection';
 
-import 'package:ianvs_acp/acp/acp_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 
 void main() {
-  AcpPermissionRequest request(List<String> options) {
-    return AcpPermissionRequest(
+  ChatPermissionRequest request(List<String> options) {
+    return ChatPermissionRequest(
       id: 'permission-1',
       title: 'Review action',
       rationale: 'Requested by agent',
@@ -40,7 +40,7 @@ void main() {
   });
 
   test('permission requests preserve structured agent choices', () {
-    final item = AcpPermissionRequest(
+    final item = ChatPermissionRequest(
       id: 'permission-1',
       title: 'Review action',
       rationale: 'Requested by agent',
@@ -48,12 +48,12 @@ void main() {
       toolName: 'tool',
       options: const ['Allow this time', 'Reject this time'],
       choices: const [
-        AcpPermissionChoice(
+        ChatPermissionChoice(
           optionId: 'allow-once',
           name: 'Allow this time',
           kind: 'allow_once',
         ),
-        AcpPermissionChoice(
+        ChatPermissionChoice(
           optionId: 'reject-once',
           name: 'Reject this time',
           kind: 'reject_once',
@@ -79,7 +79,7 @@ void main() {
   });
 
   test('permission fingerprints sort maps but preserve metadata strings', () {
-    final first = AcpPermissionRequest(
+    final first = ChatPermissionRequest(
       id: 'permission-a',
       title: ' Run command ',
       rationale: ' Requested by agent ',
@@ -93,7 +93,7 @@ void main() {
         'nested': {'b': 2, 'a': 'one'},
       },
     );
-    final second = AcpPermissionRequest(
+    final second = ChatPermissionRequest(
       id: 'permission-b',
       title: 'Run command',
       rationale: 'Requested by agent',
@@ -109,7 +109,7 @@ void main() {
     );
 
     expect(first.contentFingerprint, second.contentFingerprint);
-    final trailingPath = AcpPermissionRequest(
+    final trailingPath = ChatPermissionRequest(
       id: first.id,
       title: first.title,
       rationale: first.rationale,
@@ -120,7 +120,7 @@ void main() {
       requestedAt: first.requestedAt,
       metadata: const {'path': '/workspace/report '},
     );
-    final exactPath = AcpPermissionRequest(
+    final exactPath = ChatPermissionRequest(
       id: first.id,
       title: first.title,
       rationale: first.rationale,
@@ -131,7 +131,7 @@ void main() {
       requestedAt: first.requestedAt,
       metadata: const {'path': '/workspace/report'},
     );
-    final leadingValue = AcpPermissionRequest(
+    final leadingValue = ChatPermissionRequest(
       id: first.id,
       title: first.title,
       rationale: first.rationale,
@@ -142,7 +142,7 @@ void main() {
       requestedAt: first.requestedAt,
       metadata: const {'key': ' value'},
     );
-    final exactValue = AcpPermissionRequest(
+    final exactValue = ChatPermissionRequest(
       id: first.id,
       title: first.title,
       rationale: first.rationale,
@@ -169,17 +169,17 @@ void main() {
   });
 
   test('persistent choices without kind are not treated as single use', () {
-    const choice = AcpPermissionChoice(
+    const choice = ChatPermissionChoice(
       optionId: 'allow-always',
       name: 'Always allow',
     );
 
-    expect(choice.decision, AcpPermissionDecision.allow);
+    expect(choice.decision, ChatPermissionDecision.allow);
     expect(choice.isSingleUse, isFalse);
   });
 
   test('permission lifecycle identity survives copies without leaking', () {
-    final request = AcpPermissionRequest(
+    final request = ChatPermissionRequest(
       id: 'permission-1',
       lifecycleId: 'lifecycle-1',
       title: 'Read',
@@ -199,7 +199,7 @@ void main() {
     );
     expect(generated.contentFingerprint, request.contentFingerprint);
 
-    final unscoped = AcpPermissionRequest(
+    final unscoped = ChatPermissionRequest(
       id: 'unscoped',
       title: '',
       rationale: '',
@@ -219,41 +219,41 @@ void main() {
   });
 
   test('explicit permission decisions use kind without name fallback', () {
-    const explicitAllow = AcpPermissionChoice(
+    const explicitAllow = ChatPermissionChoice(
       optionId: 'allow-once',
       name: 'Custom approval',
       kind: 'allow_once',
     );
-    const explicitDeny = AcpPermissionChoice(
+    const explicitDeny = ChatPermissionChoice(
       optionId: 'reject-once',
       name: 'Custom rejection',
       kind: 'reject_once',
     );
-    const nameOnly = AcpPermissionChoice(
+    const nameOnly = ChatPermissionChoice(
       optionId: 'fallback-reject',
       name: 'Reject',
     );
-    const nameOnlyAllow = AcpPermissionChoice(
+    const nameOnlyAllow = ChatPermissionChoice(
       optionId: 'fallback-allow',
       name: 'Allow',
     );
-    const unknownKind = AcpPermissionChoice(
+    const unknownKind = ChatPermissionChoice(
       optionId: 'unknown',
       name: 'Allow',
       kind: 'ask_later',
     );
 
-    expect(explicitAllow.explicitDecision, AcpPermissionDecision.allow);
-    expect(explicitDeny.explicitDecision, AcpPermissionDecision.deny);
+    expect(explicitAllow.explicitDecision, ChatPermissionDecision.allow);
+    expect(explicitDeny.explicitDecision, ChatPermissionDecision.deny);
     expect(nameOnly.explicitDecision, isNull);
-    expect(nameOnly.decision, AcpPermissionDecision.deny);
+    expect(nameOnly.decision, ChatPermissionDecision.deny);
     expect(nameOnlyAllow.explicitDecision, isNull);
-    expect(nameOnlyAllow.decision, AcpPermissionDecision.allow);
+    expect(nameOnlyAllow.decision, ChatPermissionDecision.allow);
     expect(unknownKind.explicitDecision, isNull);
   });
 
   test('transient policy context affects binding but is never serialized', () {
-    AcpPermissionRequest item(String secret) => AcpPermissionRequest(
+    ChatPermissionRequest item(String secret) => ChatPermissionRequest(
       id: 'permission-env',
       title: 'Create terminal',
       rationale: 'Requested by agent',
@@ -284,8 +284,8 @@ void main() {
 
   test('generated and audit requests detach and deeply freeze collections', () {
     final options = <String>['Allow', 'Deny'];
-    final choices = <AcpPermissionChoice>[
-      const AcpPermissionChoice(
+    final choices = <ChatPermissionChoice>[
+      const ChatPermissionChoice(
         optionId: 'allow-once',
         name: 'Allow',
         kind: 'allow_once',
@@ -302,7 +302,7 @@ void main() {
     final auditMetadata = <String, Object?>{
       'nested': <String, Object?>{'items': auditItems},
     };
-    final request = AcpPermissionRequest(
+    final request = ChatPermissionRequest(
       id: 'permission-frozen',
       title: 'Review action',
       rationale: 'Requested by agent',
@@ -321,17 +321,17 @@ void main() {
     final generatedContextFingerprint =
         generated.transientPolicyContextFingerprint;
     final generatedJson = jsonEncode(generated.toJson());
-    final auditEntry = AcpPermissionAuditEntry(
+    final auditEntry = ChatPermissionAuditEntry(
       request: audit,
-      status: AcpPermissionAuditStatus.pending,
+      status: ChatPermissionAuditStatus.pending,
       recordedAt: DateTime.utc(2026, 7, 15),
     );
     final auditJson = jsonEncode(audit.toJson());
-    final auditBytes = acpPermissionAuditEntryEncodedBytes(auditEntry);
+    final auditBytes = chatPermissionAuditEntryEncodedBytes(auditEntry);
 
     options.add('Late option');
     choices.add(
-      const AcpPermissionChoice(optionId: 'late', name: 'Late choice'),
+      const ChatPermissionChoice(optionId: 'late', name: 'Late choice'),
     );
     metadataItems.add('late metadata item');
     metadataNested['late'] = true;
@@ -345,7 +345,7 @@ void main() {
       generatedContextFingerprint,
     );
     expect(jsonEncode(audit.toJson()), auditJson);
-    expect(acpPermissionAuditEntryEncodedBytes(auditEntry), auditBytes);
+    expect(chatPermissionAuditEntryEncodedBytes(auditEntry), auditBytes);
     expect(() => generated.options.add('blocked'), throwsUnsupportedError);
     expect(() => generated.choices.add(choices.first), throwsUnsupportedError);
     expect(() => generated.metadata['late'] = false, throwsUnsupportedError);
@@ -381,8 +381,8 @@ void main() {
   });
 
   test('permission review encoded budget accepts exact and omits plus one', () {
-    final result = AcpPermissionReviewResult(
-      decision: AcpPermissionDecision.allow,
+    final result = ChatPermissionReviewResult(
+      decision: ChatPermissionDecision.allow,
       risk: 'low',
       rationale: List<String>.filled(512, 'r').join(),
       reviewer: 'reviewer',
@@ -392,14 +392,14 @@ void main() {
     );
     final encodedBytes = utf8.encode(jsonEncode(result.toJson())).length;
 
-    final exact = sanitizeAcpPermissionReviewResult(
+    final exact = sanitizeChatPermissionReviewResult(
       result,
-      inputBudget: const acp.AcpInputBudget(),
+      inputBudget: const acp.ChatInputBudget(),
       maxEncodedBytes: encodedBytes,
     );
-    final plusOne = sanitizeAcpPermissionReviewResult(
+    final plusOne = sanitizeChatPermissionReviewResult(
       result,
-      inputBudget: const acp.AcpInputBudget(),
+      inputBudget: const acp.ChatInputBudget(),
       maxEncodedBytes: encodedBytes - 1,
     );
 
@@ -419,14 +419,14 @@ void main() {
   test(
     'permission review minimum encoded budget accepts exact and rejects minus one',
     () {
-      final oversized = AcpPermissionReviewResult(
+      final oversized = ChatPermissionReviewResult(
         rationale: List<String>.filled(1024, 'x').join(),
         details: <String, Object?>{
           'raw': List<String>.filled(1024, 'y').join(),
         },
       );
 
-      final omitted = sanitizeAcpPermissionReviewResult(
+      final omitted = sanitizeChatPermissionReviewResult(
         oversized,
         maxEncodedBytes: minimumPermissionReviewResultEncodedByteLimit,
       );
@@ -439,7 +439,7 @@ void main() {
         lessThanOrEqualTo(minimumPermissionReviewResultEncodedByteLimit),
       );
       expect(
-        () => sanitizeAcpPermissionReviewResult(
+        () => sanitizeChatPermissionReviewResult(
           oversized,
           maxEncodedBytes: minimumPermissionReviewResultEncodedByteLimit - 1,
         ),
@@ -450,8 +450,8 @@ void main() {
 
   test('permission review structure and string limits omit raw values', () {
     const canary = 'token-canary-/private/reviewer/path';
-    const result = AcpPermissionReviewResult(
-      decision: AcpPermissionDecision.allow,
+    const result = ChatPermissionReviewResult(
+      decision: ChatPermissionDecision.allow,
       risk: 'low',
       rationale: canary,
       reviewer: 'reviewer',
@@ -462,9 +462,9 @@ void main() {
       },
     );
 
-    final bounded = sanitizeAcpPermissionReviewResult(
+    final bounded = sanitizeChatPermissionReviewResult(
       result,
-      inputBudget: const acp.AcpInputBudget(maxStructuredStringBytes: 8),
+      inputBudget: const acp.ChatInputBudget(maxStructuredStringBytes: 8),
       maxEncodedBytes: 1024,
     );
     final encoded = jsonEncode(bounded.toJson());
@@ -483,15 +483,15 @@ void main() {
         for (var index = 0; index < 2048; index += 1) '$canary-$index': canary,
       };
 
-      AcpPermissionAuditEntry entry({
+      ChatPermissionAuditEntry entry({
         required String id,
         String title = 'Read file',
         List<String> options = const <String>['Allow', 'Deny'],
         Map<String, Object?> metadata = const <String, Object?>{},
         Map<String, Object?> transientPolicyContext = const <String, Object?>{},
       }) {
-        return AcpPermissionAuditEntry(
-          request: AcpPermissionRequest(
+        return ChatPermissionAuditEntry(
+          request: ChatPermissionRequest(
             id: id,
             title: title,
             rationale: 'Requested by agent',
@@ -503,12 +503,12 @@ void main() {
             generation: 1,
             requestedAt: DateTime.utc(2026, 7, 15),
           ),
-          status: AcpPermissionAuditStatus.pending,
+          status: ChatPermissionAuditStatus.pending,
           recordedAt: DateTime.utc(2026, 7, 15),
         );
       }
 
-      final oversized = <AcpPermissionAuditEntry>[
+      final oversized = <ChatPermissionAuditEntry>[
         entry(
           id: 'huge-title',
           title: huge,
@@ -527,12 +527,12 @@ void main() {
       ];
       final compatible = entry(id: 'compatible');
       for (final candidate in oversized) {
-        final emptyExport = acpPermissionAuditEntriesToJson(
-          <AcpPermissionAuditEntry>[candidate],
+        final emptyExport = chatPermissionAuditEntriesToJson(
+          <ChatPermissionAuditEntry>[candidate],
           maxEncodedBytes: 4096,
         );
-        final prefixedExport = acpPermissionAuditEntriesToJson(
-          <AcpPermissionAuditEntry>[compatible, candidate, compatible],
+        final prefixedExport = chatPermissionAuditEntriesToJson(
+          <ChatPermissionAuditEntry>[compatible, candidate, compatible],
           maxEncodedBytes: 4096,
         );
         final emptyEntries =
@@ -559,7 +559,7 @@ void main() {
   test(
     'permission history v1 export preserves bounded generated fingerprint',
     () {
-      final request = AcpPermissionRequest(
+      final request = ChatPermissionRequest(
         id: 'permission-fingerprint',
         title: 'Read report',
         rationale: 'Requested by agent',
@@ -567,8 +567,8 @@ void main() {
         toolName: 'read_text_file',
         toolKind: 'read',
         options: const <String>['Allow', 'Deny'],
-        choices: const <AcpPermissionChoice>[
-          AcpPermissionChoice(
+        choices: const <ChatPermissionChoice>[
+          ChatPermissionChoice(
             optionId: 'allow-once',
             name: 'Allow',
             kind: 'allow_once',
@@ -585,10 +585,10 @@ void main() {
       );
       final expectedFingerprint = request.toJson()['contentFingerprint'];
       final exported =
-          acpPermissionAuditEntriesToJson(<AcpPermissionAuditEntry>[
-            AcpPermissionAuditEntry(
+          chatPermissionAuditEntriesToJson(<ChatPermissionAuditEntry>[
+            ChatPermissionAuditEntry(
               request: request,
-              status: AcpPermissionAuditStatus.pending,
+              status: ChatPermissionAuditStatus.pending,
               recordedAt: DateTime.utc(2026, 7, 15),
             ),
           ]);

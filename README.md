@@ -154,3 +154,12 @@ The shared local ACP runtime is owned by
 [`ianvs_acp_runtime`](packages/ianvs_acp_runtime/README.md), including the Rust
 workspace, ABI v11 Dart bindings, and macOS build/signing scripts. Other desktop
 hosts can consume that package without the Shift application or chat UI.
+
+
+### Shared agent packages
+
+The workspace now separates `ianvs_agent_core` (pure Dart content/contracts),
+`ianvs_acp_runtime` (Rust ACP + Dart FFI), `ianvs_agent_chat` (Flutter components),
+and optional `ianvs_mermaid` (native diagrams). See the
+[shared API and ownership contract](docs/architecture/shared-agent-contract.md).
+Native and Dart consumers must use matching ABI 12 / event schema 5 sources.

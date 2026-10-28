@@ -10,7 +10,7 @@ import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/ui/shell/app_shell.dart';
 import 'package:ianvs_acp/workspace/workspace_sidebar_state_store.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 void main() {
   testWidgets(

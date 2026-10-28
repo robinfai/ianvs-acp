@@ -1,9 +1,10 @@
-import 'package:ianvs_agent_chat/models/chat_message.dart';
-export 'package:ianvs_agent_chat/models/chat_message.dart'
+import 'package:ianvs_agent_core/content_mutation.dart';
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
+export 'package:ianvs_agent_core/models/chat_message.dart'
     show ChatMessageRole, ChatQueuedPrompt;
 import 'dart:async';
 import 'dart:collection';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -11,21 +12,21 @@ import '../acp/acp_agent_capabilities.dart';
 import '../acp/acp_agent_client.dart';
 import '../acp/acp_available_commands.dart';
 import '../acp/assistant_agent_enhancer.dart';
-import '../acp/acp_input_budget.dart' as acp;
-import '../acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import '../acp/acp_permission_reviewer.dart';
 import '../acp/acp_session_catalog.dart';
-import '../acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import '../acp/acp_session_usage.dart';
 import '../acp/agent_event.dart';
 import '../acp/agent_session.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import '../acp/session_title.dart';
 import '../config/assistant_agent_config.dart';
 import '../config/acp_client_config.dart' show SessionTemplateConfig;
 import '../storage/session_transcript_cache.dart';
 import 'connection_state.dart';
-import 'package:ianvs_agent_chat/models/permission_context.dart';
+import 'package:ianvs_agent_core/models/permission_context.dart';
 
 enum ChatPermissionEventType { requested, resolved }
 
@@ -84,33 +85,15 @@ typedef ChatAgentEventObserver =
 typedef ChatPermissionEventObserver =
     FutureOr<void> Function(ChatPermissionEvent event);
 
-const List<String> _toolCallIdMetadataKeys = [
-  'toolCallId',
-  'tool_call_id',
-  'id',
-  'callId',
-  'call_id',
-];
 // Conservative carrier accounting: every typed model includes at least a
 // 64-byte model node plus 32 bytes per field and space for fixed labels. Real
 // List/Map containers and their references are added separately below.
-const int _chatMessageHostRetainedBytes = 512;
 const int _sessionSnapshotHostRetainedBytes = 2048;
-const int _retainedListHostBytes = 64;
-const int _retainedListItemHostBytes = 32;
 const int _agentEventHostRetainedBytes = 320;
-const int _typedConfigMetadataHostRetainedBytes = 192;
 const int _sessionModeHostRetainedBytes = 160;
-const int _configOptionHostRetainedBytes = 448;
-const int _configChoiceHostRetainedBytes = 224;
-const int _inputOmissionHostRetainedBytes = 320;
 const int _sessionUsageHostRetainedBytes = 224;
 const int _sessionSettingsStateHostRetainedBytes = 512;
 const int _sessionInfoStateHostRetainedBytes = 320;
-const int _contentBlockMetadataHostRetainedBytes = 256;
-const int _contentBlockHostRetainedBytes = 320;
-const int _thoughtMetadataHostRetainedBytes = 128;
-const int _maxSafeRetainedBytes = 0x1fffffffffffff;
 const String _genericErrorMessage = 'An unexpected error occurred.';
 const int _maxAuthErrorTraversalDepth = 16;
 const int _maxAuthErrorTraversalNodes = 256;
@@ -308,1383 +291,12 @@ final class _AuthRequiredDetector {
   }
 }
 
-final class _GuardedChatMetadata {
-  const _GuardedChatMetadata({
-    required this.metadata,
-    this.omission,
-    this.localOmissions = const <acp.AcpInputOmission>[],
-  });
-
-  final Map<String, Object?> metadata;
-  final acp.AcpInputOmission? omission;
-  final List<acp.AcpInputOmission> localOmissions;
-}
-
-class ChatMessage implements ChatMessageView {
-  factory ChatMessage({
-    required ChatMessageRole role,
-    required String text,
-    DateTime? timestamp,
-    Map<String, Object?> metadata = const <String, Object?>{},
-    List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
-    acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
-  }) {
-    inputBudget.validate();
-    final guarded = _guardChatMessageMetadata(metadata, inputBudget);
-    var boundedOmissions = _boundedChatMessageOmissions(
-      omissions,
-      guarded.omission,
-      inputBudget.maxCollectionItems,
-    );
-    for (final omission in guarded.localOmissions) {
-      boundedOmissions = _boundedChatMessageOmissions(
-        boundedOmissions,
-        omission,
-        inputBudget.maxCollectionItems,
-      );
-    }
-    return ChatMessage._(
-      role: role,
-      text: text,
-      timestamp: timestamp ?? DateTime.now(),
-      metadata: guarded.metadata,
-      omissions: boundedOmissions,
-      maxOmissions: inputBudget.maxCollectionItems,
-      inputBudget: inputBudget,
-      frozen: false,
-    );
-  }
-
-  factory ChatMessage._guarded({
-    required ChatMessageRole role,
-    required String text,
-    DateTime? timestamp,
-    required Map<String, Object?> metadata,
-    required List<acp.AcpInputOmission> omissions,
-    required acp.AcpInputBudget inputBudget,
-  }) {
-    inputBudget.validate();
-    return ChatMessage._(
-      role: role,
-      text: text,
-      timestamp: timestamp ?? DateTime.now(),
-      metadata: metadata,
-      omissions: List<acp.AcpInputOmission>.unmodifiable(omissions),
-      maxOmissions: inputBudget.maxCollectionItems,
-      inputBudget: inputBudget,
-      frozen: false,
-    );
-  }
-
-  ChatMessage._({
-    required this.role,
-    required String text,
-    required this.timestamp,
-    required this.metadata,
-    required this._omissions,
-    required this._maxOmissions,
-    required this._inputBudget,
-    required this._frozen,
-    this._revision = 0,
-    int? acceptedUtf8Bytes,
-    this._retainedBytes,
-    int? turnId,
-  }) : _textBuffer = StringBuffer(text),
-       _materializedText = text,
-       _acceptedUtf8Bytes = acceptedUtf8Bytes ?? utf8.encode(text).length,
-       // The private named constructor keeps a readable `turnId` argument.
-       // ignore: prefer_initializing_formals
-       _turnId = turnId {
-    final preview = _boundedChatMessagePreview(text);
-    _previewText = preview.text;
-    _previewTextTruncated = preview.truncated;
-  }
-
-  @override
-  final ChatMessageRole role;
-  StringBuffer _textBuffer;
-  String? _materializedText;
-  late String _previewText;
-  late bool _previewTextTruncated;
-  int _revision;
-  int _materializationCount = 0;
-  int _acceptedUtf8Bytes;
-  final bool _frozen;
-  final acp.AcpInputBudget _inputBudget;
-  int? _retainedBytes;
-  int? _turnId;
-  Object? _ownerToken;
-
-  @override
-  int? get turnId => _turnId;
-
-  void _claimOwnership(Object ownerToken, int turnId) {
-    if (_frozen || _ownerToken != null || _turnId != null) {
-      throw StateError('Chat message is already owned.');
-    }
-    _ownerToken = ownerToken;
-    _turnId = turnId;
-  }
-
-  void _requireOwner(Object ownerToken) {
-    if (!identical(_ownerToken, ownerToken)) {
-      throw StateError('Chat message is not owned by this controller.');
-    }
-  }
-
-  @override
-  String get text {
-    final cached = _materializedText;
-    if (cached != null) return cached;
-    final materialized = _textBuffer.toString();
-    _materializedText = materialized;
-    _materializationCount += 1;
-    return materialized;
-  }
-
-  /// A stable bounded prefix for compact UI projections that must not
-  /// materialize a multi-megabyte streaming response on every text delta.
-  @override
-  String get previewText =>
-      _previewTextTruncated ? '$_previewText…' : _previewText;
-
-  set text(String value) {
-    _requireActive();
-    _setText(value);
-  }
-
-  void _setTextForOwner(Object ownerToken, String value) {
-    _requireOwner(ownerToken);
-    _setText(value);
-  }
-
-  void _setText(String value) {
-    _textBuffer = StringBuffer(value);
-    _materializedText = value;
-    final preview = _boundedChatMessagePreview(value);
-    _previewText = preview.text;
-    _previewTextTruncated = preview.truncated;
-    _acceptedUtf8Bytes = utf8.encode(value).length;
-    _revision += 1;
-    _retainedBytes = null;
-  }
-
-  @override
-  int get revision => _revision;
-
-  int get acceptedUtf8Bytes => _acceptedUtf8Bytes;
-
-  int get retainedBytes {
-    final cached = _retainedBytes;
-    if (cached != null) return cached;
-    final retained = _estimateChatMessageRetainedBytes(
-      metadata: metadata,
-      omissions: _omissions,
-      acceptedUtf8Bytes: _acceptedUtf8Bytes,
-      inputBudget: _inputBudget,
-    );
-    _retainedBytes = retained;
-    return retained;
-  }
-
-  @visibleForTesting
-  int get materializationCount => _materializationCount;
-
-  void appendAcceptedText(String value, {required int acceptedUtf8Bytes}) {
-    _requireActive();
-    _appendAcceptedText(value, acceptedUtf8Bytes: acceptedUtf8Bytes);
-  }
-
-  void _appendAcceptedTextForOwner(
-    Object ownerToken,
-    String value, {
-    required int acceptedUtf8Bytes,
-  }) {
-    _requireOwner(ownerToken);
-    _appendAcceptedText(value, acceptedUtf8Bytes: acceptedUtf8Bytes);
-  }
-
-  void _appendAcceptedText(String value, {required int acceptedUtf8Bytes}) {
-    if (acceptedUtf8Bytes < 0) {
-      throw ArgumentError.value(
-        acceptedUtf8Bytes,
-        'acceptedUtf8Bytes',
-        'must not be negative',
-      );
-    }
-    final actualUtf8Bytes = utf8.encode(value).length;
-    if (acceptedUtf8Bytes != actualUtf8Bytes) {
-      throw ArgumentError.value(
-        acceptedUtf8Bytes,
-        'acceptedUtf8Bytes',
-        'must match the accepted text UTF-8 length',
-      );
-    }
-    if (value.isEmpty) return;
-    _textBuffer.write(value);
-    _materializedText = null;
-    if (!_previewTextTruncated) {
-      final remaining = _chatMessagePreviewCodeUnits - _previewText.length;
-      if (remaining <= 0) {
-        _previewTextTruncated = true;
-      } else {
-        final appended = _boundedChatMessagePreview(value, limit: remaining);
-        _previewText += appended.text;
-        _previewTextTruncated = appended.truncated;
-      }
-    }
-    _acceptedUtf8Bytes += acceptedUtf8Bytes;
-    _revision += 1;
-    _retainedBytes = null;
-  }
-
-  @override
-  final DateTime timestamp;
-  @override
-  final Map<String, Object?> metadata;
-  List<acp.AcpInputOmission> _omissions;
-  final int _maxOmissions;
-
-  @override
-  List<acp.AcpInputOmission> get omissions => _omissions;
-
-  bool addOmission(acp.AcpInputOmission omission) {
-    _requireActive();
-    return _addOmission(omission);
-  }
-
-  bool _addOmissionForOwner(Object ownerToken, acp.AcpInputOmission omission) {
-    _requireOwner(ownerToken);
-    return _addOmission(omission);
-  }
-
-  bool _addOmission(acp.AcpInputOmission omission) {
-    if (_omissions.length >= _maxOmissions ||
-        _omissions.any(
-          (existing) =>
-              existing.resource == omission.resource &&
-              existing.reason == omission.reason,
-        )) {
-      return false;
-    }
-    _omissions = List<acp.AcpInputOmission>.unmodifiable([
-      ..._omissions,
-      omission,
-    ]);
-    _revision += 1;
-    _retainedBytes = null;
-    return true;
-  }
-
-  ChatMessage freeze() => _copyWithFrozenState(frozen: true);
-
-  ChatMessage thaw() => _copyWithFrozenState(frozen: false);
-
-  ChatMessage _copyForBudget(
-    acp.AcpInputBudget inputBudget, {
-    required bool frozen,
-    bool preserveTurnId = true,
-  }) {
-    inputBudget.validate();
-    final materializedText = text;
-    final isThought =
-        role == ChatMessageRole.status && metadata['kind'] == 'thought';
-    final counter = acp.AcpUtf8LineBudgetCounter(
-      maxBytes: isThought
-          ? inputBudget.maxThoughtTextBytes
-          : inputBudget.maxMessageTextBytes,
-      maxLines: inputBudget.maxMessageTextLines,
-      resource: isThought ? 'thought text' : 'message text',
-    );
-    final appended = counter.append(materializedText);
-    final finished = counter.finish();
-    final copiedText = '${appended.safePrefix}${finished.safePrefix}';
-    final copiedAcceptedUtf8Bytes =
-        appended.acceptedBytes + finished.acceptedBytes;
-    final textOmission = appended.omission ?? finished.omission;
-    final guarded = _guardOwnedChatMessageMetadata(metadata, inputBudget);
-    var copiedBoundedOmissions = _boundedChatMessageOmissions(
-      _omissions,
-      textOmission,
-      inputBudget.maxCollectionItems,
-    );
-    copiedBoundedOmissions = _boundedChatMessageOmissions(
-      copiedBoundedOmissions,
-      guarded.omission,
-      inputBudget.maxCollectionItems,
-    );
-    for (final omission in guarded.localOmissions) {
-      copiedBoundedOmissions = _boundedChatMessageOmissions(
-        copiedBoundedOmissions,
-        omission,
-        inputBudget.maxCollectionItems,
-      );
-    }
-    final copiedOmissions = List<acp.AcpInputOmission>.unmodifiable(
-      copiedBoundedOmissions.map(_copyInputOmission),
-    );
-    return ChatMessage._(
-      role: role,
-      text: copiedText,
-      timestamp: timestamp,
-      metadata: guarded.metadata,
-      omissions: copiedOmissions,
-      maxOmissions: inputBudget.maxCollectionItems,
-      inputBudget: inputBudget,
-      frozen: frozen,
-      revision: _revision,
-      acceptedUtf8Bytes: copiedAcceptedUtf8Bytes,
-      turnId: preserveTurnId ? _turnId : null,
-    );
-  }
-
-  ChatMessage _copyWithFrozenState({required bool frozen}) {
-    final copiedMetadata = _guardOwnedChatMessageMetadata(
-      metadata,
-      _inputBudget,
-    ).metadata;
-    final copiedOmissions = List<acp.AcpInputOmission>.unmodifiable(
-      _omissions.map(_copyInputOmission),
-    );
-    return ChatMessage._(
-      role: role,
-      text: text,
-      timestamp: timestamp,
-      metadata: copiedMetadata,
-      omissions: copiedOmissions,
-      maxOmissions: _maxOmissions,
-      inputBudget: _inputBudget,
-      frozen: frozen,
-      revision: _revision,
-      acceptedUtf8Bytes: _acceptedUtf8Bytes,
-      retainedBytes: retainedBytes,
-      turnId: _turnId,
-    );
-  }
-
-  void _requireActive() {
-    if (_frozen) {
-      throw StateError('Frozen chat message is immutable.');
-    }
-    if (_ownerToken != null) {
-      throw StateError('Controller-owned chat message is immutable.');
-    }
-  }
-}
-
-const int _chatMessagePreviewCodeUnits = 4096;
-
-({String text, bool truncated}) _boundedChatMessagePreview(
-  String value, {
-  int limit = _chatMessagePreviewCodeUnits,
-}) {
-  if (value.length <= limit) return (text: value, truncated: false);
-  var end = limit;
-  if (end > 0) {
-    final last = value.codeUnitAt(end - 1);
-    if (last >= 0xD800 && last <= 0xDBFF) end -= 1;
-  }
-  return (text: value.substring(0, end), truncated: true);
-}
-
-acp.AcpInputOmission _copyInputOmission(acp.AcpInputOmission omission) {
-  return acp.AcpInputOmission(
-    reason: omission.reason,
-    resource: omission.resource,
-    truncated: omission.truncated,
-    limit: omission.limit,
-    observedAtLeast: omission.observedAtLeast,
-  );
-}
-
-int _estimateChatMessageRetainedBytes({
-  required Map<String, Object?> metadata,
-  required List<acp.AcpInputOmission> omissions,
-  required int acceptedUtf8Bytes,
-  required acp.AcpInputBudget inputBudget,
-}) {
-  final estimator = acp.AcpRetainedSizeEstimator(budget: inputBudget);
-  var retained = _checkedRetainedAdd(
-    _chatMessageHostRetainedBytes,
-    acceptedUtf8Bytes,
-  );
-  retained = _checkedRetainedAdd(
-    retained,
-    _estimateChatMetadataRetainedBytes(estimator, metadata),
-  );
-  return _addInputOmissionsRetainedBytes(retained, estimator, omissions);
-}
-
-int _estimateChatMetadataRetainedBytes(
-  acp.AcpRetainedSizeEstimator estimator,
-  Map<String, Object?> metadata,
-) {
-  final kind = metadata['kind'];
-  if (metadata.length == 1 && kind is String && kind == 'thought') {
-    return _thoughtMetadataHostRetainedBytes;
-  }
-  final contentBlocks = metadata['contentBlocks'];
-  if (contentBlocks is List) {
-    return _estimateContentBlockMetadataRetainedBytes(
-      estimator,
-      metadata,
-      contentBlocks,
-    );
-  }
-  final options = metadata['configOptions'];
-  if (kind is! String || kind != 'config_option_update' || options is! List) {
-    return estimator.estimate(metadata);
-  }
-  final typedOptions = options.whereType<AcpConfigOption>().toList(
-    growable: false,
-  );
-  var retained = _typedConfigMetadataHostRetainedBytes;
-  return _addConfigOptionsRetainedBytes(retained, estimator, typedOptions);
-}
-
-int _estimateContentBlockMetadataRetainedBytes(
-  acp.AcpRetainedSizeEstimator estimator,
-  Map<String, Object?> metadata,
-  List contentBlocks,
-) {
-  var retained = _addRetainedListHostBytes(
-    _contentBlockMetadataHostRetainedBytes,
-    contentBlocks.length,
-  );
-  for (final entry in metadata.entries) {
-    if (entry.key == 'contentBlocks' ||
-        (entry.key == 'kind' &&
-            entry.value is String &&
-            entry.value == 'thought')) {
-      continue;
-    }
-    retained = _addDynamicRetainedEntry(
-      retained,
-      estimator,
-      entry.key,
-      entry.value,
-    );
-  }
-  for (final rawBlock in contentBlocks) {
-    if (rawBlock is! Map<String, Object?>) {
-      throw const FormatException('Invalid retained content block.');
-    }
-    final rawType = rawBlock['type'];
-    if (rawType is! String) {
-      throw const FormatException('Invalid retained content block type.');
-    }
-    final type = rawType;
-    if (type != 'image' &&
-        type != 'audio' &&
-        type != 'resource' &&
-        type != 'omitted') {
-      retained = _addEstimatedRetainedBytes(retained, estimator, rawBlock);
-      continue;
-    }
-    retained = _checkedRetainedAdd(retained, _contentBlockHostRetainedBytes);
-    if (type == 'image' || type == 'audio') {
-      final mimeType = rawBlock['mimeType'];
-      if (mimeType != null) {
-        retained = _addEstimatedRetainedBytes(retained, estimator, mimeType);
-      }
-      final data = rawBlock['data'];
-      if (data is String) {
-        // ACP Base64 is ASCII, so encoded code units equal retained UTF-8 bytes.
-        retained = _checkedRetainedAdd(retained, data.length);
-      }
-      final uri = rawBlock['uri'];
-      if (uri != null) {
-        retained = _addEstimatedRetainedBytes(retained, estimator, uri);
-      }
-      continue;
-    }
-    if (type == 'resource') {
-      final resource = rawBlock['resource'];
-      if (resource is! Map<String, Object?>) {
-        throw const FormatException('Invalid retained resource block.');
-      }
-      retained = _checkedRetainedAdd(retained, _contentBlockHostRetainedBytes);
-      for (final entry in resource.entries) {
-        retained = _checkedRetainedAdd(retained, _retainedListItemHostBytes);
-        retained = _addEstimatedRetainedBytes(retained, estimator, entry.key);
-        if (entry.key == 'blob' && entry.value is String) {
-          retained = _checkedRetainedAdd(
-            retained,
-            (entry.value! as String).length,
-          );
-        } else {
-          retained = _addEstimatedRetainedBytes(
-            retained,
-            estimator,
-            entry.value,
-          );
-        }
-      }
-      continue;
-    }
-    if (type == 'omitted') {
-      final resource = rawBlock['resource'];
-      if (resource is String) {
-        retained = _checkedRetainedAdd(retained, utf8.encode(resource).length);
-      }
-      for (final key in const <String>['limit', 'observedAtLeast']) {
-        if (rawBlock[key] != null) {
-          retained = _addEstimatedRetainedBytes(
-            retained,
-            estimator,
-            rawBlock[key],
-          );
-        }
-      }
-      continue;
-    }
-    for (final entry in rawBlock.entries) {
-      if (entry.key == 'type') continue;
-      retained = _addEstimatedRetainedBytes(retained, estimator, entry.value);
-    }
-  }
-  return retained;
-}
-
-int _addDynamicRetainedEntry(
-  int retained,
-  acp.AcpRetainedSizeEstimator estimator,
-  String key,
-  Object? value,
-) {
-  retained = _checkedRetainedAdd(retained, _retainedListItemHostBytes);
-  retained = _addEstimatedRetainedBytes(retained, estimator, key);
-  return _addEstimatedRetainedBytes(retained, estimator, value);
-}
-
-int _checkedRetainedAdd(int current, int increment) {
-  if (current < 0 ||
-      increment < 0 ||
-      current > _maxSafeRetainedBytes - increment) {
-    throw acp.AcpInputLimitExceeded(
-      resource: 'chat retained state bytes',
-      limit: _maxSafeRetainedBytes,
-      observedAtLeast: _maxSafeRetainedBytes + 1,
-    );
-  }
-  return current + increment;
-}
-
-int _addEstimatedRetainedBytes(
-  int retained,
-  acp.AcpRetainedSizeEstimator estimator,
-  Object? value,
-) {
-  return _checkedRetainedAdd(retained, estimator.estimate(value));
-}
-
-int _addRetainedListHostBytes(int retained, int length) {
-  if (length < 0 ||
-      length > _maxSafeRetainedBytes ~/ _retainedListItemHostBytes) {
-    throw acp.AcpInputLimitExceeded(
-      resource: 'chat retained state bytes',
-      limit: _maxSafeRetainedBytes,
-      observedAtLeast: _maxSafeRetainedBytes + 1,
-    );
-  }
-  retained = _checkedRetainedAdd(retained, _retainedListHostBytes);
-  return _checkedRetainedAdd(retained, length * _retainedListItemHostBytes);
-}
-
-int _addInputOmissionsRetainedBytes(
-  int retained,
-  acp.AcpRetainedSizeEstimator estimator,
-  List<acp.AcpInputOmission> omissions,
-) {
-  retained = _addRetainedListHostBytes(retained, omissions.length);
-  for (final omission in omissions) {
-    retained = _checkedRetainedAdd(retained, _inputOmissionHostRetainedBytes);
-    // Omission resources are typed host labels. Their actual retained UTF-8
-    // bytes count, but host-fixed labels must not consume the untrusted
-    // maxStructuredStringBytes budget.
-    retained = _checkedRetainedAdd(
-      retained,
-      utf8.encode(omission.resource).length,
-    );
-    if (omission.reason == acp.AcpInputOmissionReason.inputLimit) {
-      retained = _addEstimatedRetainedBytes(
-        retained,
-        estimator,
-        omission.limit,
-      );
-      retained = _addEstimatedRetainedBytes(
-        retained,
-        estimator,
-        omission.observedAtLeast,
-      );
-    }
-  }
-  return retained;
-}
-
-int _addConfigOptionsRetainedBytes(
-  int retained,
-  acp.AcpRetainedSizeEstimator estimator,
-  List<AcpConfigOption> options,
-) {
-  retained = _addRetainedListHostBytes(retained, options.length);
-  for (final option in options) {
-    retained = _checkedRetainedAdd(retained, _configOptionHostRetainedBytes);
-    for (final value in <Object?>[
-      option.id,
-      option.name,
-      option.type,
-      option.currentValue,
-      if (option.description != null) option.description,
-      if (option.category != null) option.category,
-      if (option.group != null) option.group,
-    ]) {
-      retained = _addEstimatedRetainedBytes(retained, estimator, value);
-    }
-    retained = _addRetainedListHostBytes(retained, option.options.length);
-    for (final choice in option.options) {
-      retained = _checkedRetainedAdd(retained, _configChoiceHostRetainedBytes);
-      retained = _addEstimatedRetainedBytes(retained, estimator, choice.value);
-      retained = _addEstimatedRetainedBytes(retained, estimator, choice.name);
-      if (choice.description != null) {
-        retained = _addEstimatedRetainedBytes(
-          retained,
-          estimator,
-          choice.description,
-        );
-      }
-    }
-  }
-  return retained;
-}
-
-_GuardedChatMetadata _guardChatMessageMetadata(
-  Map<String, Object?> metadata,
-  acp.AcpInputBudget budget,
-) => _guardChatMessageMetadataImpl(metadata, budget);
-
-_GuardedChatMetadata _guardOwnedChatMessageMetadata(
-  Map<String, Object?> metadata,
-  acp.AcpInputBudget budget,
-) => _guardChatMessageMetadataImpl(
-  metadata,
-  budget,
-  preserveOwnedOmittedProjections: true,
-);
-
-_GuardedChatMetadata _guardChatMessageMetadataImpl(
-  Map<String, Object?> metadata,
-  acp.AcpInputBudget budget, {
-  bool preserveOwnedOmittedProjections = false,
-}) {
-  final snapshot = _snapshotChatMessageMetadata(metadata, budget);
-  final stableMetadata = snapshot.metadata;
-  if (stableMetadata == null) return _invalidChatMessageMetadata();
-  if (stableMetadata['contentBlocks'] is List) {
-    if (snapshot.limit case final limit?) {
-      return _limitedChatMessageMetadata(limit);
-    }
-    try {
-      return _copyContentBlockMetadata(
-        stableMetadata,
-        budget,
-        preserveOwnedOmittedProjections: preserveOwnedOmittedProjections,
-      );
-    } on acp.AcpInputLimitExceeded catch (error) {
-      return _limitedChatMessageMetadata(error);
-    } on Object {
-      return _invalidChatMessageMetadata();
-    }
-  }
-  final typed = _guardRecognizedTypedConfigUpdateMetadata(
-    stableMetadata,
-    budget,
-  );
-  if (typed != null) {
-    final topLevelLimit = snapshot.limit;
-    if (topLevelLimit == null) return typed;
-    return _failedTypedConfigUpdateMetadata(
-      acp.AcpInputOmission(
-        reason: acp.AcpInputOmissionReason.inputLimit,
-        resource: 'chat message metadata',
-        truncated: false,
-        limit: topLevelLimit.limit,
-        observedAtLeast: topLevelLimit.observedAtLeast,
-      ),
-    );
-  }
-  if (snapshot.limit case final limit?) {
-    return _limitedChatMessageMetadata(limit);
-  }
-  try {
-    final guarded = acp.AcpStructuredUpdateGuard(
-      budget: budget,
-      resource: 'chat message metadata',
-    ).copyMetadata(stableMetadata, field: 'metadata');
-    return _GuardedChatMetadata(metadata: guarded);
-  } on acp.AcpInputLimitExceeded catch (error) {
-    return _limitedChatMessageMetadata(error);
-  } on Object {
-    return _invalidChatMessageMetadata();
-  }
-}
-
-_GuardedChatMetadata _copyContentBlockMetadata(
-  Map<String, Object?> metadata,
-  acp.AcpInputBudget budget, {
-  bool preserveOwnedOmittedProjections = false,
-}) {
-  final rawBlocks = metadata['contentBlocks'];
-  if (rawBlocks is! List) {
-    throw const FormatException('Invalid content blocks.');
-  }
-  final guard = acp.AcpStructuredUpdateGuard(
-    budget: budget,
-    resource: 'chat content blocks',
-  );
-  guard.consumeContainerNode(field: 'metadata');
-  final copiedMetadata = <String, Object?>{};
-  for (final entry in metadata.entries) {
-    if (entry.key == 'contentBlocks') continue;
-    guard.consumeEntry(field: 'metadata entry');
-    if (entry.key == 'kind' &&
-        entry.value is String &&
-        entry.value == 'thought') {
-      copiedMetadata['kind'] = 'thought';
-      continue;
-    }
-    guard.copyString(entry.key, field: 'metadata key');
-    copiedMetadata[entry.key] = guard.copyJsonValue(
-      entry.value,
-      field: 'metadata value',
-    );
-  }
-  final blockCount = guard.checkCollection(rawBlocks, field: 'content blocks');
-  guard.consumeContainerNode(field: 'content blocks');
-  final copiedBlocks = <Map<String, Object?>>[];
-  final localOmissions = <acp.AcpInputOmission>[];
-  void addLocalOmission(acp.AcpInputOmission omission) {
-    if (localOmissions.any(
-      (existing) =>
-          existing.resource == omission.resource &&
-          existing.reason == omission.reason,
-    )) {
-      return;
-    }
-    localOmissions.add(omission);
-  }
-
-  for (var index = 0; index < blockCount; index += 1) {
-    final rawBlock = rawBlocks[index];
-    if (rawBlock is! Map<String, Object?>) {
-      throw const FormatException('Invalid content block.');
-    }
-    guard.consumeEntry(field: 'content block');
-    final rawType = rawBlock['type'];
-    if (rawType is! String) {
-      throw const FormatException('Invalid content block type.');
-    }
-    final type = rawType;
-    if (type == 'image' || type == 'audio') {
-      final copied = <String, Object?>{'type': type};
-      final mimeType = rawBlock['mimeType'];
-      if (mimeType != null) {
-        copied['mimeType'] = guard.copyString(
-          mimeType,
-          field: 'media mime type',
-        );
-      }
-      final data = rawBlock['data'];
-      if (data != null) {
-        if (data is! String) {
-          final blockOmission = acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidStructure,
-            resource: type == 'image' ? 'image_data' : 'audio_data',
-            truncated: false,
-          );
-          addLocalOmission(blockOmission);
-          copiedBlocks.add(_mediaOmissionProjection(blockOmission));
-          continue;
-        }
-        try {
-          acp.scanAcpBase64(
-            data,
-            maxDecodedBytes: budget.maxEmbeddedMediaBytes,
-            resource: type == 'image' ? 'image_data' : 'audio_data',
-          );
-          copied['data'] = data;
-        } on acp.AcpInputLimitExceeded catch (error) {
-          final blockOmission = acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.inputLimit,
-            resource: type == 'image' ? 'image_data' : 'audio_data',
-            truncated: false,
-            limit: error.limit,
-            observedAtLeast: error.observedAtLeast,
-          );
-          addLocalOmission(blockOmission);
-          copiedBlocks.add(_mediaOmissionProjection(blockOmission));
-          continue;
-        } on FormatException {
-          final blockOmission = acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidEncoding,
-            resource: type == 'image' ? 'image_data' : 'audio_data',
-            truncated: false,
-          );
-          addLocalOmission(blockOmission);
-          copiedBlocks.add(_mediaOmissionProjection(blockOmission));
-          continue;
-        }
-      }
-      final uri = rawBlock['uri'];
-      if (uri != null) {
-        copied['uri'] = guard.copyString(uri, field: 'audio uri');
-      }
-      copiedBlocks.add(Map<String, Object?>.unmodifiable(copied));
-      continue;
-    }
-    if (type == 'resource') {
-      final rawResource = rawBlock['resource'];
-      if (rawResource is! Map<String, Object?>) {
-        throw const FormatException('Invalid resource content block.');
-      }
-      final snapshot = _snapshotChatMessageMetadata(rawResource, budget);
-      final stableResource = snapshot.metadata;
-      if (stableResource == null) {
-        throw const FormatException('Invalid resource content block map.');
-      }
-      if (snapshot.limit case final limit?) throw limit;
-      guard.consumeContainerNode(field: 'resource');
-      final resource = <String, Object?>{};
-      acp.AcpInputOmission? blockOmission;
-      for (final entry in stableResource.entries) {
-        guard.consumeEntry(field: 'resource field');
-        final copiedKey = guard.copyString(entry.key, field: 'resource key');
-        if (copiedKey == 'blob' && entry.value != null) {
-          final blob = entry.value;
-          if (blob is! String) {
-            blockOmission = acp.AcpInputOmission(
-              reason: acp.AcpInputOmissionReason.invalidStructure,
-              resource: 'resource_blob',
-              truncated: false,
-            );
-            break;
-          }
-          try {
-            acp.scanAcpBase64(
-              blob,
-              maxDecodedBytes: budget.maxEmbeddedMediaBytes,
-              resource: 'resource_blob',
-            );
-            resource[copiedKey] = blob;
-          } on acp.AcpInputLimitExceeded catch (error) {
-            blockOmission = acp.AcpInputOmission(
-              reason: acp.AcpInputOmissionReason.inputLimit,
-              resource: 'resource_blob',
-              truncated: false,
-              limit: error.limit,
-              observedAtLeast: error.observedAtLeast,
-            );
-            break;
-          } on FormatException {
-            blockOmission = acp.AcpInputOmission(
-              reason: acp.AcpInputOmissionReason.invalidEncoding,
-              resource: 'resource_blob',
-              truncated: false,
-            );
-            break;
-          }
-        } else if (entry.value is String) {
-          resource[copiedKey] = guard.copyString(
-            entry.value,
-            field: 'resource string',
-          );
-        } else {
-          resource[copiedKey] = guard.copyScalar(
-            entry.value,
-            field: 'resource scalar',
-          );
-        }
-      }
-      if (blockOmission != null) {
-        addLocalOmission(blockOmission);
-        copiedBlocks.add(_mediaOmissionProjection(blockOmission));
-      } else {
-        copiedBlocks.add(
-          Map<String, Object?>.unmodifiable(<String, Object?>{
-            'type': 'resource',
-            'resource': Map<String, Object?>.unmodifiable(resource),
-          }),
-        );
-      }
-      continue;
-    }
-    if (type == 'omitted') {
-      copiedBlocks.add(
-        preserveOwnedOmittedProjections
-            ? _copyOwnedOmittedProjection(rawBlock)
-            : _externalOmittedProjection(),
-      );
-      continue;
-    }
-    copiedBlocks.add(
-      guard.copyJsonValue(rawBlock, field: 'content block')!
-          as Map<String, Object?>,
-    );
-  }
-  if (rawBlocks.length != blockCount) {
-    throw const FormatException('Invalid content block count.');
-  }
-  copiedMetadata['contentBlocks'] = List<Map<String, Object?>>.unmodifiable(
-    copiedBlocks,
-  );
-  return _GuardedChatMetadata(
-    metadata: Map<String, Object?>.unmodifiable(copiedMetadata),
-    localOmissions: List<acp.AcpInputOmission>.unmodifiable(localOmissions),
-  );
-}
-
-Map<String, Object?> _externalOmittedProjection() {
-  return Map<String, Object?>.unmodifiable(<String, Object?>{
-    'type': 'omitted',
-    'reason': 'invalid_structure',
-    'resource': 'external_omitted',
-    'truncated': false,
-  });
-}
-
-Map<String, Object?> _copyOwnedOmittedProjection(
-  Map<String, Object?> rawBlock,
-) {
-  final resource = rawBlock['resource'];
-  final reason = rawBlock['reason'];
-  final truncated = rawBlock['truncated'];
-  final limit = rawBlock['limit'];
-  final observedAtLeast = rawBlock['observedAtLeast'];
-  final knownResource =
-      resource == 'image_data' ||
-      resource == 'audio_data' ||
-      resource == 'resource_blob' ||
-      resource == 'turn_media' ||
-      resource == 'external_omitted';
-  final knownReason =
-      reason == 'input_limit' ||
-      reason == 'invalid_encoding' ||
-      reason == 'invalid_image' ||
-      reason == 'invalid_structure';
-  final validCapacity = reason == 'input_limit'
-      ? limit is int && observedAtLeast is int
-      : limit == null && observedAtLeast == null;
-  if (!knownResource || !knownReason || truncated is! bool || !validCapacity) {
-    return _externalOmittedProjection();
-  }
-  return Map<String, Object?>.unmodifiable(<String, Object?>{
-    'type': 'omitted',
-    'reason': reason,
-    'resource': resource,
-    'truncated': truncated,
-    'limit': ?limit,
-    'observedAtLeast': ?observedAtLeast,
-  });
-}
-
-Map<String, Object?> _mediaOmissionProjection(acp.AcpInputOmission omission) {
-  return Map<String, Object?>.unmodifiable(<String, Object?>{
-    'type': 'omitted',
-    'reason': switch (omission.reason) {
-      acp.AcpInputOmissionReason.inputLimit => 'input_limit',
-      acp.AcpInputOmissionReason.invalidEncoding => 'invalid_encoding',
-      acp.AcpInputOmissionReason.invalidImage => 'invalid_image',
-      acp.AcpInputOmissionReason.invalidStructure => 'invalid_structure',
-    },
-    'resource': omission.resource,
-    'truncated': omission.truncated,
-    if (omission.limit != null) 'limit': omission.limit,
-    if (omission.observedAtLeast != null)
-      'observedAtLeast': omission.observedAtLeast,
-  });
-}
-
-int _validatedAcpBase64DecodedBytes(String encoded) {
-  if (encoded.isEmpty) return 0;
-  var padding = 0;
-  if (encoded.codeUnitAt(encoded.length - 1) == 0x3d) padding += 1;
-  if (encoded.length > 1 && encoded.codeUnitAt(encoded.length - 2) == 0x3d) {
-    padding += 1;
-  }
-  return encoded.length ~/ 4 * 3 - padding;
-}
-
-({Map<String, Object?>? metadata, acp.AcpInputLimitExceeded? limit})
-_snapshotChatMessageMetadata(
-  Map<String, Object?> raw,
-  acp.AcpInputBudget budget,
-) {
-  final int reportedLength;
-  try {
-    reportedLength = raw.length;
-  } on Object {
-    return (metadata: null, limit: null);
-  }
-  if (reportedLength < 0) return (metadata: null, limit: null);
-  final entryLimit = budget.maxCollectionItems < budget.maxMetadataEntries
-      ? budget.maxCollectionItems
-      : budget.maxMetadataEntries;
-  final hasLimit = reportedLength > entryLimit;
-  final snapshotLength = hasLimit ? entryLimit + 1 : reportedLength;
-  final Iterator<MapEntry<String, Object?>> iterator;
-  try {
-    iterator = raw.entries.iterator;
-  } on Object {
-    return (metadata: null, limit: null);
-  }
-  final snapshot = <String, Object?>{};
-  for (var index = 0; index < snapshotLength; index += 1) {
-    final bool hasNext;
-    try {
-      hasNext = iterator.moveNext();
-    } on Object {
-      return (metadata: null, limit: null);
-    }
-    if (!hasNext) return (metadata: null, limit: null);
-    final MapEntry<String, Object?> entry;
-    try {
-      entry = iterator.current;
-    } on Object {
-      return (metadata: null, limit: null);
-    }
-    if (snapshot.containsKey(entry.key)) {
-      return (metadata: null, limit: null);
-    }
-    snapshot[entry.key] = entry.value;
-  }
-  if (!hasLimit) {
-    final bool hasUnexpectedEntry;
-    try {
-      hasUnexpectedEntry = iterator.moveNext();
-    } on Object {
-      return (metadata: null, limit: null);
-    }
-    if (hasUnexpectedEntry) return (metadata: null, limit: null);
-  }
-  return (
-    metadata: Map<String, Object?>.unmodifiable(snapshot),
-    limit: hasLimit
-        ? acp.AcpInputLimitExceeded(
-            resource: 'chat message metadata entries',
-            limit: entryLimit,
-            observedAtLeast: reportedLength,
-          )
-        : null,
-  );
-}
-
-_GuardedChatMetadata _limitedChatMessageMetadata(
-  acp.AcpInputLimitExceeded error,
-) => _GuardedChatMetadata(
-  metadata: const <String, Object?>{},
-  omission: acp.AcpInputOmission(
-    reason: acp.AcpInputOmissionReason.inputLimit,
-    resource: 'chat message metadata',
-    truncated: false,
-    limit: error.limit,
-    observedAtLeast: error.observedAtLeast,
-  ),
-);
-
-_GuardedChatMetadata _invalidChatMessageMetadata() => _GuardedChatMetadata(
-  metadata: const <String, Object?>{},
-  omission: acp.AcpInputOmission(
-    reason: acp.AcpInputOmissionReason.invalidStructure,
-    resource: 'chat message metadata',
-    truncated: false,
-  ),
-);
-
-_GuardedChatMetadata? _guardRecognizedTypedConfigUpdateMetadata(
-  Map<String, Object?> metadata,
-  acp.AcpInputBudget budget,
-) {
-  if (!_isRecognizedTypedConfigUpdateMetadata(metadata)) return null;
-  try {
-    final copied = _copyTypedConfigUpdateMetadata(metadata, budget);
-    if (copied == null) return null;
-    return _GuardedChatMetadata(metadata: copied);
-  } on acp.AcpInputLimitExceeded catch (error) {
-    return _failedTypedConfigUpdateMetadata(
-      acp.AcpInputOmission(
-        reason: acp.AcpInputOmissionReason.inputLimit,
-        resource: 'chat message metadata',
-        truncated: false,
-        limit: error.limit,
-        observedAtLeast: error.observedAtLeast,
-      ),
-    );
-  } on Object {
-    return _failedTypedConfigUpdateMetadata(
-      acp.AcpInputOmission(
-        reason: acp.AcpInputOmissionReason.invalidStructure,
-        resource: 'chat message metadata',
-        truncated: false,
-      ),
-    );
-  }
-}
-
-bool _isRecognizedTypedConfigUpdateMetadata(Map<String, Object?> metadata) {
-  try {
-    if (metadata.length != 2) return false;
-    Object? kind;
-    Object? options;
-    var count = 0;
-    for (final entry in metadata.entries) {
-      count += 1;
-      if (count > 2) return false;
-      if (entry.key == 'kind') {
-        kind = entry.value;
-      } else if (entry.key == 'configOptions') {
-        options = entry.value;
-      } else {
-        return false;
-      }
-    }
-    return count == 2 &&
-        kind is String &&
-        kind == 'config_option_update' &&
-        options is List;
-  } on Object {
-    return false;
-  }
-}
-
-_GuardedChatMetadata _failedTypedConfigUpdateMetadata(
-  acp.AcpInputOmission omission,
-) => _GuardedChatMetadata(
-  metadata: const <String, Object?>{
-    'kind': 'config_option_update',
-    'configOptions': <AcpConfigOption>[],
-  },
-  omission: omission,
-);
-
-Map<String, Object?>? _copyTypedConfigUpdateMetadata(
-  Map<String, Object?> metadata,
-  acp.AcpInputBudget budget, {
-  acp.AcpStructuredUpdateGuard? structuredGuard,
-}) {
-  final entryLimit = budget.maxMetadataEntries;
-  final int metadataLength;
-  try {
-    metadataLength = metadata.length;
-  } on Object {
-    throw const FormatException(
-      'Invalid chat message metadata collection access.',
-    );
-  }
-  if (metadataLength > entryLimit) {
-    throw acp.AcpInputLimitExceeded(
-      resource: 'chat message metadata entries',
-      limit: entryLimit,
-      observedAtLeast: metadataLength,
-    );
-  }
-  if (metadataLength != 2) return null;
-
-  Object? rawKind;
-  Object? rawOptions;
-  var observedEntries = 0;
-  try {
-    for (final entry in metadata.entries) {
-      observedEntries += 1;
-      if (observedEntries > metadataLength) {
-        throw const FormatException(
-          'Invalid chat message metadata entry count.',
-        );
-      }
-      if (entry.key == 'kind') {
-        rawKind = entry.value;
-      } else if (entry.key == 'configOptions') {
-        rawOptions = entry.value;
-      } else {
-        return null;
-      }
-    }
-  } on acp.AcpInputLimitExceeded {
-    rethrow;
-  } on Object {
-    throw const FormatException(
-      'Invalid chat message metadata collection access.',
-    );
-  }
-  if (observedEntries != metadataLength ||
-      rawKind is! String ||
-      rawKind != 'config_option_update' ||
-      rawOptions is! List) {
-    return null;
-  }
-
-  final guard =
-      structuredGuard ??
-      acp.AcpStructuredUpdateGuard(
-        budget: budget,
-        resource: 'chat message metadata',
-      );
-  guard.consumeContainerNode(field: 'metadata');
-  final copiedOptions = _copyConfigOptionsWithGuard(
-    rawOptions,
-    guard,
-    field: 'config options',
-  );
-  return Map<String, Object?>.unmodifiable(<String, Object?>{
-    'kind': 'config_option_update',
-    'configOptions': copiedOptions,
-  });
-}
-
-List<AcpConfigOption> _copyConfigOptionsWithGuard(
-  Object? rawOptions,
-  acp.AcpStructuredUpdateGuard guard, {
-  required String field,
-}) {
-  if (rawOptions is! List) {
-    throw const FormatException('Invalid config options collection.');
-  }
-  final optionCount = guard.checkCollection(rawOptions, field: field);
-  guard.consumeContainerNode(field: field);
-  final copiedOptions = <AcpConfigOption>[];
-  for (var optionIndex = 0; optionIndex < optionCount; optionIndex += 1) {
-    final Object? rawOption;
-    try {
-      rawOption = rawOptions[optionIndex];
-    } on Object {
-      throw const FormatException('Invalid chat message config option access.');
-    }
-    if (rawOption is! AcpConfigOption) {
-      throw const FormatException('Invalid chat message config option.');
-    }
-    guard.consumeEntry(field: 'config option');
-    final rawChoices = rawOption.options;
-    final choiceCount = guard.checkCollection(
-      rawChoices,
-      field: 'config option choices',
-    );
-    guard.consumeContainerNode(field: 'config option choices');
-    final copiedChoices = <AcpConfigOptionChoice>[];
-    for (var choiceIndex = 0; choiceIndex < choiceCount; choiceIndex += 1) {
-      final choice = rawChoices[choiceIndex];
-      guard.consumeEntry(field: 'config option choice');
-      copiedChoices.add(
-        AcpConfigOptionChoice(
-          value: guard.copyString(
-            choice.value,
-            field: 'config option choice value',
-          ),
-          name: guard.copyString(
-            choice.name,
-            field: 'config option choice name',
-          ),
-          description: choice.description == null
-              ? null
-              : guard.copyString(
-                  choice.description,
-                  field: 'config option choice description',
-                ),
-        ),
-      );
-    }
-    if (rawChoices.length != choiceCount) {
-      throw const FormatException('Invalid config option choice count.');
-    }
-    copiedOptions.add(
-      AcpConfigOption(
-        id: guard.copyString(rawOption.id, field: 'config option id'),
-        name: guard.copyString(rawOption.name, field: 'config option name'),
-        type: guard.copyString(rawOption.type, field: 'config option type'),
-        currentValue: guard.copyString(
-          rawOption.currentValue,
-          field: 'config option current value',
-        ),
-        options: List<AcpConfigOptionChoice>.unmodifiable(copiedChoices),
-        description: rawOption.description == null
-            ? null
-            : guard.copyString(
-                rawOption.description,
-                field: 'config option description',
-              ),
-        category: rawOption.category == null
-            ? null
-            : guard.copyString(
-                rawOption.category,
-                field: 'config option category',
-              ),
-        group: rawOption.group == null
-            ? null
-            : guard.copyString(rawOption.group, field: 'config option group'),
-      ),
-    );
-  }
-  if (rawOptions.length != optionCount) {
-    throw const FormatException('Invalid config option count.');
-  }
-  return List<AcpConfigOption>.unmodifiable(copiedOptions);
-}
-
-Map<String, Object?> _copyChatMessageMetadataWithGuard(
-  Map<String, Object?> metadata,
-  acp.AcpInputBudget budget,
-  acp.AcpStructuredUpdateGuard guard,
-) {
-  final snapshot = _snapshotChatMessageMetadata(metadata, budget);
-  final stableMetadata = snapshot.metadata;
-  if (stableMetadata == null) {
-    throw const FormatException('Invalid session event metadata.');
-  }
-  if (snapshot.limit case final limit?) throw limit;
-  if (_isRecognizedTypedConfigUpdateMetadata(stableMetadata)) {
-    final typed = _copyTypedConfigUpdateMetadata(
-      stableMetadata,
-      budget,
-      structuredGuard: guard,
-    );
-    if (typed == null) {
-      throw const FormatException('Invalid typed session event metadata.');
-    }
-    return typed;
-  }
-  return guard.copyMetadata(stableMetadata, field: 'event metadata');
-}
-
-List<acp.AcpInputOmission> _boundedChatMessageOmissions(
-  List<acp.AcpInputOmission> trusted,
-  acp.AcpInputOmission? local,
-  int limit,
-) {
-  final bounded = <acp.AcpInputOmission>[];
-  for (final omission in trusted) {
-    if (bounded.length >= limit) break;
-    final duplicate = bounded.any(
-      (existing) =>
-          existing.resource == omission.resource &&
-          existing.reason == omission.reason,
-    );
-    if (!duplicate) bounded.add(omission);
-  }
-  if (local != null && bounded.length < limit) {
-    final duplicate = bounded.any(
-      (existing) =>
-          existing.resource == local.resource &&
-          existing.reason == local.reason,
-    );
-    if (!duplicate) bounded.add(local);
-  }
-  return List<acp.AcpInputOmission>.unmodifiable(bounded);
-}
-
 class ChatPermissionEvent {
   const ChatPermissionEvent.requested(this.request)
     : type = ChatPermissionEventType.requested,
       decision = null,
       decisionSource = null,
-      status = AcpPermissionAuditStatus.pending;
+      status = ChatPermissionAuditStatus.pending;
 
   const ChatPermissionEvent.resolved(
     this.request, {
@@ -1694,10 +306,10 @@ class ChatPermissionEvent {
   }) : type = ChatPermissionEventType.resolved;
 
   final ChatPermissionEventType type;
-  final AcpPermissionRequest request;
-  final AcpPermissionDecision? decision;
-  final AcpPermissionDecisionSource? decisionSource;
-  final AcpPermissionAuditStatus status;
+  final ChatPermissionRequest request;
+  final ChatPermissionDecision? decision;
+  final ChatPermissionDecisionSource? decisionSource;
+  final ChatPermissionAuditStatus status;
 }
 
 class ArchivedSessionSnapshot {
@@ -1708,13 +320,13 @@ class ArchivedSessionSnapshot {
     required List<Map<String, Object?>> availableCommands,
     required Duration? lastLatency,
     required String? lastError,
-    required AcpSessionSettings sessionSettings,
+    required ChatSessionSettings sessionSettings,
     required AcpSessionUsage? sessionUsage,
     required bool sessionSettingsLoading,
     required ConnectionStatus status,
     required int? activeSessionSettingsLoadId,
     bool timelineHistoryWasTruncated = false,
-    acp.AcpInputBudget inputBudget = const acp.AcpInputBudget(),
+    acp.ChatInputBudget inputBudget = const acp.ChatInputBudget(),
   }) : this._prepared(
          _prepareArchivedSessionSnapshot(
            session: session,
@@ -1759,7 +371,7 @@ class ArchivedSessionSnapshot {
   final List<Map<String, Object?>> availableCommands;
   final Duration? lastLatency;
   final String? lastError;
-  final AcpSessionSettings sessionSettings;
+  final ChatSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final bool sessionSettingsLoading;
   final ConnectionStatus status;
@@ -1831,7 +443,7 @@ final class _PreparedArchivedSessionSnapshot {
   final List<Map<String, Object?>> availableCommands;
   final Duration? lastLatency;
   final String? lastError;
-  final AcpSessionSettings sessionSettings;
+  final ChatSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final bool sessionSettingsLoading;
   final ConnectionStatus status;
@@ -1847,13 +459,13 @@ _PreparedArchivedSessionSnapshot _prepareArchivedSessionSnapshot({
   required List<Map<String, Object?>> availableCommands,
   required Duration? lastLatency,
   required String? lastError,
-  required AcpSessionSettings sessionSettings,
+  required ChatSessionSettings sessionSettings,
   required AcpSessionUsage? sessionUsage,
   required bool sessionSettingsLoading,
   required ConnectionStatus status,
   required int? activeSessionSettingsLoadId,
   required bool timelineHistoryWasTruncated,
-  required acp.AcpInputBudget inputBudget,
+  required acp.ChatInputBudget inputBudget,
 }) {
   inputBudget.validate();
   final prepared = _SessionViewSnapshot(
@@ -1894,13 +506,13 @@ class _SessionViewSnapshot {
     required List<Map<String, Object?>> availableCommands,
     required Duration? lastLatency,
     required String? lastError,
-    required AcpSessionSettings sessionSettings,
+    required ChatSessionSettings sessionSettings,
     required AcpSessionUsage? sessionUsage,
     required bool sessionSettingsLoading,
     required ConnectionStatus status,
     required int? activeSessionSettingsLoadId,
     bool timelineHistoryWasTruncated = false,
-    required acp.AcpInputBudget inputBudget,
+    required acp.ChatInputBudget inputBudget,
   }) {
     final frozenMessages = _freezeSnapshotMessages(messages, inputBudget);
     final copiedCommands = _copyAvailableCommands(
@@ -1956,7 +568,7 @@ class _SessionViewSnapshot {
   final List<Map<String, Object?>> availableCommands;
   final Duration? lastLatency;
   final String? lastError;
-  final AcpSessionSettings sessionSettings;
+  final ChatSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final bool sessionSettingsLoading;
   final ConnectionStatus status;
@@ -1967,7 +579,7 @@ class _SessionViewSnapshot {
 
 List<ChatMessage> _freezeSnapshotMessages(
   List<ChatMessage> source,
-  acp.AcpInputBudget inputBudget,
+  acp.ChatInputBudget inputBudget,
 ) {
   try {
     final length = source.length;
@@ -1981,7 +593,7 @@ List<ChatMessage> _freezeSnapshotMessages(
     if (source.length != length) return const <ChatMessage>[];
     return List<ChatMessage>.unmodifiable(
       snapshot.map(
-        (message) => message._copyForBudget(inputBudget, frozen: true),
+        (message) => message.projectionCopyForBudget(inputBudget, frozen: true),
       ),
     );
   } on Object {
@@ -1991,7 +603,7 @@ List<ChatMessage> _freezeSnapshotMessages(
 
 AgentSession _copyAgentSession(
   AgentSession session,
-  acp.AcpInputBudget inputBudget,
+  acp.ChatInputBudget inputBudget,
 ) {
   try {
     return _copyAgentSessionStrict(session, inputBudget);
@@ -2016,9 +628,9 @@ AgentSession _copyAgentSession(
 
 AgentSession _copyAgentSessionStrict(
   AgentSession session,
-  acp.AcpInputBudget inputBudget,
+  acp.ChatInputBudget inputBudget,
 ) {
-  final guard = acp.AcpStructuredUpdateGuard(
+  final guard = acp.ChatStructuredUpdateGuard(
     budget: inputBudget,
     resource: 'session snapshot',
   );
@@ -2045,7 +657,7 @@ AgentSession _copyAgentSessionStrict(
   if (rawDirectories.length != directoryCount) {
     throw const FormatException('Invalid session directory count.');
   }
-  final eventsGuard = acp.AcpStructuredUpdateGuard(
+  final eventsGuard = acp.ChatStructuredUpdateGuard(
     budget: inputBudget,
     resource: 'session initial events',
   )..consumeContainerNode(field: 'session');
@@ -2079,7 +691,7 @@ AgentSession _copyAgentSessionStrict(
   );
   _addAgentSessionRetainedBytes(
     0,
-    acp.AcpRetainedSizeEstimator(
+    acp.ChatRetainedSizeEstimator(
       budget: _retainedAccountingBudget(inputBudget),
     ),
     copied,
@@ -2089,8 +701,8 @@ AgentSession _copyAgentSessionStrict(
 
 List<AgentEvent> _copyInitialEvents(
   List<AgentEvent> source,
-  acp.AcpInputBudget inputBudget,
-  acp.AcpStructuredUpdateGuard guard,
+  acp.ChatInputBudget inputBudget,
+  acp.ChatStructuredUpdateGuard guard,
 ) {
   final length = guard.checkCollection(source, field: 'initial events');
   guard.consumeContainerNode(field: 'initial events');
@@ -2118,7 +730,7 @@ List<AgentEvent> _copyInitialEvents(
             timestampMicros,
             isUtc: eventTimestampIsUtc,
           );
-    final metadata = _copyChatMessageMetadataWithGuard(
+    final metadata = projectionCopyChatMessageMetadataWithGuard(
       eventMetadata,
       inputBudget,
       guard,
@@ -2128,7 +740,7 @@ List<AgentEvent> _copyInitialEvents(
       field: 'event omissions',
     );
     guard.consumeContainerNode(field: 'event omissions');
-    final omissions = <acp.AcpInputOmission>[];
+    final omissions = <acp.ChatInputOmission>[];
     for (
       var omissionIndex = 0;
       omissionIndex < omissionCount;
@@ -2154,7 +766,7 @@ List<AgentEvent> _copyInitialEvents(
                 )
                 as int;
       omissions.add(
-        acp.AcpInputOmission(
+        acp.ChatInputOmission(
           reason: omission.reason,
           resource: resource,
           truncated: truncated,
@@ -2172,7 +784,7 @@ List<AgentEvent> _copyInitialEvents(
         text: text,
         timestamp: timestamp,
         metadata: metadata,
-        omissions: List<acp.AcpInputOmission>.unmodifiable(omissions),
+        omissions: List<acp.ChatInputOmission>.unmodifiable(omissions),
       ),
     );
   }
@@ -2184,10 +796,10 @@ List<AgentEvent> _copyInitialEvents(
 
 List<Map<String, Object?>> _copyAvailableCommands(
   List<Map<String, Object?>> commands,
-  acp.AcpInputBudget inputBudget,
+  acp.ChatInputBudget inputBudget,
 ) {
   try {
-    final copied = acp.AcpStructuredUpdateGuard(
+    final copied = acp.ChatStructuredUpdateGuard(
       budget: inputBudget,
       resource: 'available commands snapshot',
     ).copyJsonValue(commands, field: 'commands');
@@ -2205,12 +817,12 @@ List<Map<String, Object?>> _copyAvailableCommands(
   }
 }
 
-AcpSessionSettings _copySessionSettings(
-  AcpSessionSettings settings,
-  acp.AcpInputBudget inputBudget,
+ChatSessionSettings _copySessionSettings(
+  ChatSessionSettings settings,
+  acp.ChatInputBudget inputBudget,
 ) {
   try {
-    final guard = acp.AcpStructuredUpdateGuard(
+    final guard = acp.ChatStructuredUpdateGuard(
       budget: inputBudget,
       resource: 'session settings snapshot',
     );
@@ -2219,12 +831,12 @@ AcpSessionSettings _copySessionSettings(
     final rawModes = modesInfo.availableModes;
     final modeCount = guard.checkCollection(rawModes, field: 'modes');
     guard.consumeContainerNode(field: 'modes');
-    final modes = <AcpSessionMode>[];
+    final modes = <ChatSessionMode>[];
     for (var index = 0; index < modeCount; index += 1) {
       final mode = rawModes[index];
       guard.consumeEntry(field: 'mode');
       modes.add(
-        AcpSessionMode(
+        ChatSessionMode(
           id: guard.copyString(mode.id, field: 'mode id'),
           name: guard.copyString(mode.name, field: 'mode name'),
         ),
@@ -2234,7 +846,7 @@ AcpSessionSettings _copySessionSettings(
       throw const FormatException('Invalid session mode count.');
     }
 
-    final copiedOptions = _copyConfigOptionsWithGuard(
+    final copiedOptions = projectionCopyConfigOptionsWithGuard(
       settings.configOptions,
       guard,
       field: 'config options',
@@ -2246,7 +858,7 @@ AcpSessionSettings _copySessionSettings(
       field: 'omissions',
     );
     guard.consumeContainerNode(field: 'omissions');
-    final omissions = <acp.AcpInputOmission>[];
+    final omissions = <acp.ChatInputOmission>[];
     for (var index = 0; index < omissionCount; index += 1) {
       guard.consumeEntry(field: 'omission');
       final omission = rawOmissions[index];
@@ -2264,7 +876,7 @@ AcpSessionSettings _copySessionSettings(
                 )
                 as int;
       omissions.add(
-        acp.AcpInputOmission(
+        acp.ChatInputOmission(
           reason: omission.reason,
           resource: guard.copyString(
             omission.resource,
@@ -2283,19 +895,19 @@ AcpSessionSettings _copySessionSettings(
     final truncated =
         guard.copyScalar(settings.truncated, field: 'settings truncated')
             as bool;
-    return AcpSessionSettings(
-      modes: AcpSessionModeInfo(
+    return ChatSessionSettings(
+      modes: ChatSessionModeInfo(
         currentModeId: currentModeId == null
             ? null
             : guard.copyString(currentModeId, field: 'current mode id'),
-        availableModes: List<AcpSessionMode>.unmodifiable(modes),
+        availableModes: List<ChatSessionMode>.unmodifiable(modes),
       ),
       configOptions: copiedOptions,
-      omissions: List<acp.AcpInputOmission>.unmodifiable(omissions),
+      omissions: List<acp.ChatInputOmission>.unmodifiable(omissions),
       truncated: truncated,
     );
   } on Object {
-    return const AcpSessionSettings();
+    return const ChatSessionSettings();
   }
 }
 
@@ -2315,12 +927,12 @@ int _estimateTimelineRetainedBytes(
   List<ChatMessage> messages, {
   int? precomputedMessageRetainedBytes,
 }) {
-  var retained = _addRetainedListHostBytes(0, messages.length);
+  var retained = projectionAddRetainedListHostBytes(0, messages.length);
   if (precomputedMessageRetainedBytes case final messageBytes?) {
-    return _checkedRetainedAdd(retained, messageBytes);
+    return projectionCheckedRetainedAdd(retained, messageBytes);
   }
   for (final message in messages) {
-    retained = _checkedRetainedAdd(retained, message.retainedBytes);
+    retained = projectionCheckedRetainedAdd(retained, message.retainedBytes);
   }
   return retained;
 }
@@ -2328,34 +940,42 @@ int _estimateTimelineRetainedBytes(
 int _estimateSessionViewRetainedBytes({
   required List<ChatMessage> messages,
   required List<Map<String, Object?>> availableCommands,
-  required AcpSessionSettings sessionSettings,
+  required ChatSessionSettings sessionSettings,
   required AcpSessionUsage? sessionUsage,
   required AgentSession session,
   required Duration? lastLatency,
   required String? lastError,
   required int? activeSessionSettingsLoadId,
-  required acp.AcpInputBudget inputBudget,
+  required acp.ChatInputBudget inputBudget,
   int? precomputedTimelineRetainedBytes,
 }) {
-  final estimator = acp.AcpRetainedSizeEstimator(
+  final estimator = acp.ChatRetainedSizeEstimator(
     budget: _retainedAccountingBudget(inputBudget),
   );
-  var retained = _checkedRetainedAdd(
+  var retained = projectionCheckedRetainedAdd(
     _sessionSnapshotHostRetainedBytes,
     precomputedTimelineRetainedBytes ??
         _estimateTimelineRetainedBytes(messages),
   );
   retained = _addAgentSessionRetainedBytes(retained, estimator, session);
-  retained = _addEstimatedRetainedBytes(retained, estimator, availableCommands);
+  retained = projectionAddEstimatedRetainedBytes(
+    retained,
+    estimator,
+    availableCommands,
+  );
   if (lastLatency != null) {
-    retained = _addEstimatedRetainedBytes(
+    retained = projectionAddEstimatedRetainedBytes(
       retained,
       estimator,
       lastLatency.inMicroseconds,
     );
   }
   if (lastError != null) {
-    retained = _addEstimatedRetainedBytes(retained, estimator, lastError);
+    retained = projectionAddEstimatedRetainedBytes(
+      retained,
+      estimator,
+      lastError,
+    );
   }
   retained = _addSessionSettingsRetainedBytes(
     retained,
@@ -2364,7 +984,7 @@ int _estimateSessionViewRetainedBytes({
   );
   retained = _addSessionUsageRetainedBytes(retained, estimator, sessionUsage);
   if (activeSessionSettingsLoadId != null) {
-    retained = _addEstimatedRetainedBytes(
+    retained = projectionAddEstimatedRetainedBytes(
       retained,
       estimator,
       activeSessionSettingsLoadId,
@@ -2373,13 +993,13 @@ int _estimateSessionViewRetainedBytes({
   return retained;
 }
 
-acp.AcpInputBudget _retainedAccountingBudget(acp.AcpInputBudget inputBudget) {
-  const defaults = acp.AcpInputBudget();
+acp.ChatInputBudget _retainedAccountingBudget(acp.ChatInputBudget inputBudget) {
+  const defaults = acp.ChatInputBudget();
   int atLeastDefault(int value, int fallback) {
     return value < fallback ? fallback : value;
   }
 
-  return acp.AcpInputBudget(
+  return acp.ChatInputBudget(
     maxMetadataDepth: atLeastDefault(
       inputBudget.maxMetadataDepth,
       defaults.maxMetadataDepth,
@@ -2405,7 +1025,7 @@ acp.AcpInputBudget _retainedAccountingBudget(acp.AcpInputBudget inputBudget) {
 
 int _addAgentSessionRetainedBytes(
   int retained,
-  acp.AcpRetainedSizeEstimator estimator,
+  acp.ChatRetainedSizeEstimator estimator,
   AgentSession session,
 ) {
   for (final value in <Object?>[
@@ -2420,24 +1040,34 @@ int _addAgentSessionRetainedBytes(
     if (session.sessionTemplateId != null) session.sessionTemplateId,
     if (session.sessionTemplateVersion != null) session.sessionTemplateVersion,
   ]) {
-    retained = _addEstimatedRetainedBytes(retained, estimator, value);
+    retained = projectionAddEstimatedRetainedBytes(retained, estimator, value);
   }
-  retained = _addRetainedListHostBytes(retained, session.initialEvents.length);
+  retained = projectionAddRetainedListHostBytes(
+    retained,
+    session.initialEvents.length,
+  );
   for (final event in session.initialEvents) {
-    retained = _checkedRetainedAdd(retained, _agentEventHostRetainedBytes);
-    retained = _addEstimatedRetainedBytes(retained, estimator, event.text);
+    retained = projectionCheckedRetainedAdd(
+      retained,
+      _agentEventHostRetainedBytes,
+    );
+    retained = projectionAddEstimatedRetainedBytes(
+      retained,
+      estimator,
+      event.text,
+    );
     if (event.timestamp != null) {
-      retained = _addEstimatedRetainedBytes(
+      retained = projectionAddEstimatedRetainedBytes(
         retained,
         estimator,
         event.timestamp!.microsecondsSinceEpoch,
       );
     }
-    retained = _checkedRetainedAdd(
+    retained = projectionCheckedRetainedAdd(
       retained,
-      _estimateChatMetadataRetainedBytes(estimator, event.metadata),
+      projectionEstimateChatMetadataRetainedBytes(estimator, event.metadata),
     );
-    retained = _addInputOmissionsRetainedBytes(
+    retained = projectionAddInputOmissionsRetainedBytes(
       retained,
       estimator,
       event.omissions,
@@ -2448,31 +1078,42 @@ int _addAgentSessionRetainedBytes(
 
 int _addSessionSettingsRetainedBytes(
   int retained,
-  acp.AcpRetainedSizeEstimator estimator,
-  AcpSessionSettings settings,
+  acp.ChatRetainedSizeEstimator estimator,
+  ChatSessionSettings settings,
 ) {
   if (settings.modes.currentModeId != null) {
-    retained = _addEstimatedRetainedBytes(
+    retained = projectionAddEstimatedRetainedBytes(
       retained,
       estimator,
       settings.modes.currentModeId,
     );
   }
-  retained = _addRetainedListHostBytes(
+  retained = projectionAddRetainedListHostBytes(
     retained,
     settings.modes.availableModes.length,
   );
   for (final mode in settings.modes.availableModes) {
-    retained = _checkedRetainedAdd(retained, _sessionModeHostRetainedBytes);
-    retained = _addEstimatedRetainedBytes(retained, estimator, mode.id);
-    retained = _addEstimatedRetainedBytes(retained, estimator, mode.name);
+    retained = projectionCheckedRetainedAdd(
+      retained,
+      _sessionModeHostRetainedBytes,
+    );
+    retained = projectionAddEstimatedRetainedBytes(
+      retained,
+      estimator,
+      mode.id,
+    );
+    retained = projectionAddEstimatedRetainedBytes(
+      retained,
+      estimator,
+      mode.name,
+    );
   }
-  retained = _addConfigOptionsRetainedBytes(
+  retained = projectionAddConfigOptionsRetainedBytes(
     retained,
     estimator,
     settings.configOptions,
   );
-  retained = _addInputOmissionsRetainedBytes(
+  retained = projectionAddInputOmissionsRetainedBytes(
     retained,
     estimator,
     settings.omissions,
@@ -2482,34 +1123,56 @@ int _addSessionSettingsRetainedBytes(
 
 int _addSessionUsageRetainedBytes(
   int retained,
-  acp.AcpRetainedSizeEstimator estimator,
+  acp.ChatRetainedSizeEstimator estimator,
   AcpSessionUsage? usage,
 ) {
   if (usage == null) return retained;
-  retained = _checkedRetainedAdd(retained, _sessionUsageHostRetainedBytes);
-  retained = _addEstimatedRetainedBytes(retained, estimator, usage.used);
-  retained = _addEstimatedRetainedBytes(retained, estimator, usage.size);
+  retained = projectionCheckedRetainedAdd(
+    retained,
+    _sessionUsageHostRetainedBytes,
+  );
+  retained = projectionAddEstimatedRetainedBytes(
+    retained,
+    estimator,
+    usage.used,
+  );
+  retained = projectionAddEstimatedRetainedBytes(
+    retained,
+    estimator,
+    usage.size,
+  );
   final cost = usage.cost;
   if (cost == null) return retained;
-  retained = _checkedRetainedAdd(retained, _sessionUsageHostRetainedBytes);
-  retained = _addEstimatedRetainedBytes(retained, estimator, cost.amount);
-  return _addEstimatedRetainedBytes(retained, estimator, cost.currency);
+  retained = projectionCheckedRetainedAdd(
+    retained,
+    _sessionUsageHostRetainedBytes,
+  );
+  retained = projectionAddEstimatedRetainedBytes(
+    retained,
+    estimator,
+    cost.amount,
+  );
+  return projectionAddEstimatedRetainedBytes(
+    retained,
+    estimator,
+    cost.currency,
+  );
 }
 
 class _TurnBudgetState {
-  _TurnBudgetState(acp.AcpInputBudget budget)
+  _TurnBudgetState(acp.ChatInputBudget budget)
     : maxItems = budget.maxTurnItems,
       maxRetainedBytes = budget.maxTurnRetainedBytes,
       normalItemLimit = budget.maxTurnItems > 1 ? budget.maxTurnItems - 1 : 0,
       normalRetainedByteLimit = budget.maxTurnRetainedBytes > 1024
           ? budget.maxTurnRetainedBytes - 1024
           : 0,
-      text = acp.AcpUtf8LineBudgetCounter(
+      text = acp.ChatUtf8LineBudgetCounter(
         maxBytes: budget.maxMessageTextBytes,
         maxLines: budget.maxMessageTextLines,
         resource: 'message text',
       ),
-      thought = acp.AcpUtf8LineBudgetCounter(
+      thought = acp.ChatUtf8LineBudgetCounter(
         maxBytes: budget.maxThoughtTextBytes,
         maxLines: budget.maxMessageTextLines,
         resource: 'thought text',
@@ -2519,8 +1182,8 @@ class _TurnBudgetState {
   final int maxRetainedBytes;
   final int normalItemLimit;
   final int normalRetainedByteLimit;
-  final acp.AcpUtf8LineBudgetCounter text;
-  final acp.AcpUtf8LineBudgetCounter thought;
+  final acp.ChatUtf8LineBudgetCounter text;
+  final acp.ChatUtf8LineBudgetCounter thought;
   int items = 0;
   int retainedBytes = 0;
   bool overflowed = false;
@@ -2552,31 +1215,6 @@ class _PendingHighSurrogate {
   final int codeUnit;
 }
 
-class _TurnTextAppend {
-  const _TurnTextAppend({
-    required this.target,
-    required this.text,
-    required this.acceptedUtf8Bytes,
-  });
-
-  final ChatMessage target;
-  final String text;
-  final int acceptedUtf8Bytes;
-}
-
-class _TurnMessageProjection {
-  _TurnMessageProjection({
-    required this.message,
-    required this.previousRetained,
-  }) : acceptedUtf8Bytes = message.acceptedUtf8Bytes,
-       omissions = <acp.AcpInputOmission>[...message.omissions];
-
-  final ChatMessage message;
-  final int previousRetained;
-  int acceptedUtf8Bytes;
-  final List<acp.AcpInputOmission> omissions;
-}
-
 class ChatController extends ChangeNotifier {
   ChatController({
     required this.client,
@@ -2590,9 +1228,9 @@ class ChatController extends ChangeNotifier {
         defaultPermissionReviewResultEncodedByteLimit,
     this.permissionHistoryEncodedByteLimit =
         defaultPermissionHistoryEncodedByteLimit,
-    this.inputBudget = const acp.AcpInputBudget(),
-    List<AcpPermissionTrustRule> permissionTrustRules =
-        const <AcpPermissionTrustRule>[],
+    this.inputBudget = const acp.ChatInputBudget(),
+    List<ChatPermissionTrustRule> permissionTrustRules =
+        const <ChatPermissionTrustRule>[],
     this.permissionReviewer,
     this.assistantAgentConfig = const AssistantAgentConfig(),
     this.assistantAgentEnhancer,
@@ -2666,8 +1304,8 @@ class ChatController extends ChangeNotifier {
   final int permissionHistoryLimit;
   final int permissionReviewResultEncodedByteLimit;
   final int permissionHistoryEncodedByteLimit;
-  final acp.AcpInputBudget inputBudget;
-  final List<AcpPermissionTrustRule> permissionTrustRules;
+  final acp.ChatInputBudget inputBudget;
+  final List<ChatPermissionTrustRule> permissionTrustRules;
   final AcpPermissionReviewer? permissionReviewer;
   final AssistantAgentConfig assistantAgentConfig;
   final AssistantAgentEnhancer? assistantAgentEnhancer;
@@ -2723,7 +1361,7 @@ class ChatController extends ChangeNotifier {
   String? _pendingEnhancementPrompt;
   String? _pendingEnhancementSessionId;
   final Set<String> _titleEnhancementStartedSessionIds = <String>{};
-  int _activeTimelineRetainedBytes = _retainedListHostBytes;
+  int _activeTimelineRetainedBytes = projectionRetainedListHostBytes;
   bool _enforcingTimelineBudget = false;
   List<Map<String, Object?>> _availableCommands =
       const <Map<String, Object?>>[];
@@ -2735,9 +1373,9 @@ class ChatController extends ChangeNotifier {
   int _availableCommandsRevision = 0;
   int get availableCommandsRevision => _availableCommandsRevision;
   AcpAgentCapabilities? capabilities;
-  AcpSessionSettings _sessionSettings = const AcpSessionSettings();
-  AcpSessionSettings get sessionSettings => _sessionSettings;
-  set sessionSettings(AcpSessionSettings value) {
+  ChatSessionSettings _sessionSettings = const ChatSessionSettings();
+  ChatSessionSettings get sessionSettings => _sessionSettings;
+  set sessionSettings(ChatSessionSettings value) {
     _tryReplaceSessionSettings(value);
   }
 
@@ -2747,11 +1385,11 @@ class ChatController extends ChangeNotifier {
     _tryReplaceSessionUsage(value);
   }
 
-  AcpPermissionRequest? pendingPermissionRequest;
-  AcpToolCallExecutionPolicy toolCallExecutionPolicy =
-      AcpToolCallExecutionPolicy.defaultPermissions;
-  final List<AcpPermissionAuditEntry> _permissionHistory =
-      <AcpPermissionAuditEntry>[];
+  ChatPermissionRequest? pendingPermissionRequest;
+  ChatToolCallExecutionPolicy toolCallExecutionPolicy =
+      ChatToolCallExecutionPolicy.defaultPermissions;
+  final List<ChatPermissionAuditEntry> _permissionHistory =
+      <ChatPermissionAuditEntry>[];
   final List<int> _permissionHistoryEntryEncodedBytes = <int>[];
   int _permissionHistoryEncodedBytes = 0;
   int _permissionHistoryRevision = 0;
@@ -2819,10 +1457,10 @@ class ChatController extends ChangeNotifier {
   String _eventAcceptedText = '';
   bool _eventHasMessageProjection = false;
   Map<String, Object?> _eventAcceptedMetadata = const <String, Object?>{};
-  List<acp.AcpInputOmission> _eventAcceptedOmissions =
-      const <acp.AcpInputOmission>[];
-  acp.AcpInputOmission? _eventAcceptedTextOmission;
-  acp.AcpInputOmission? _eventRootOmission;
+  List<acp.ChatInputOmission> _eventAcceptedOmissions =
+      const <acp.ChatInputOmission>[];
+  acp.ChatInputOmission? _eventAcceptedTextOmission;
+  acp.ChatInputOmission? _eventRootOmission;
 
   bool get supportsSessionClose => capabilities?.session.close == true;
 
@@ -2859,8 +1497,8 @@ class ChatController extends ChangeNotifier {
       List<String>.unmodifiable(_sessionViewSnapshots.keys);
 
   @visibleForTesting
-  int get debugUiStateRetainedBytes => _checkedRetainedAdd(
-    _checkedRetainedAdd(
+  int get debugUiStateRetainedBytes => projectionCheckedRetainedAdd(
+    projectionCheckedRetainedAdd(
       _activeUiStateRetainedBytes,
       _inactiveSnapshotRetainedBytes,
     ),
@@ -2971,7 +1609,7 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  List<AcpPermissionAuditEntry> get permissionHistory {
+  List<ChatPermissionAuditEntry> get permissionHistory {
     return List.unmodifiable(_permissionHistory);
   }
 
@@ -3004,8 +1642,8 @@ class ChatController extends ChangeNotifier {
 
   StreamSubscription<AgentEvent>? _promptSubscription;
   Timer? _promptIdleWarningTimer;
-  late final StreamSubscription<AcpPermissionRequest> _permissionSubscription;
-  late final StreamSubscription<AcpPermissionInvalidation>
+  late final StreamSubscription<ChatPermissionRequest> _permissionSubscription;
+  late final StreamSubscription<ChatPermissionInvalidation>
   _permissionInvalidationSubscription;
   late final StreamSubscription<AcpAvailableCommandsUpdate>
   _availableCommandsSubscription;
@@ -3116,7 +1754,7 @@ class ChatController extends ChangeNotifier {
           availableCommands = const <Map<String, Object?>>[];
           lastLatency = null;
           lastError = null;
-          sessionSettings = const AcpSessionSettings();
+          sessionSettings = const ChatSessionSettings();
           sessionUsage = null;
           _sessionTemplateWarnings = const <String>[];
           sessionSettingsLoading = false;
@@ -3204,7 +1842,7 @@ class ChatController extends ChangeNotifier {
     Future<void> applyOption({
       required String label,
       required String? requested,
-      required AcpConfigOption? option,
+      required ChatConfigOption? option,
     }) async {
       final value = requested?.trim();
       if (value == null || value.isEmpty) return;
@@ -3379,7 +2017,7 @@ class ChatController extends ChangeNotifier {
           _clearMessages();
           availableCommands = const <Map<String, Object?>>[];
           lastLatency = null;
-          sessionSettings = const AcpSessionSettings();
+          sessionSettings = const ChatSessionSettings();
           sessionUsage = null;
           sessionSettingsLoading = false;
           _activeSessionSettingsLoadId = null;
@@ -3627,14 +2265,14 @@ class ChatController extends ChangeNotifier {
         }
         final parsedTimestamp = DateTime.tryParse(timestamp);
         if (parsedTimestamp == null) return null;
-        final omissions = <acp.AcpInputOmission>[];
+        final omissions = <acp.ChatInputOmission>[];
         for (final rawOmission in rawOmissions) {
           if (rawOmission is! Map) return null;
           final reason = switch (rawOmission['reason']) {
-            'input_limit' => acp.AcpInputOmissionReason.inputLimit,
-            'invalid_encoding' => acp.AcpInputOmissionReason.invalidEncoding,
-            'invalid_image' => acp.AcpInputOmissionReason.invalidImage,
-            'invalid_structure' => acp.AcpInputOmissionReason.invalidStructure,
+            'input_limit' => acp.ChatInputOmissionReason.inputLimit,
+            'invalid_encoding' => acp.ChatInputOmissionReason.invalidEncoding,
+            'invalid_image' => acp.ChatInputOmissionReason.invalidImage,
+            'invalid_structure' => acp.ChatInputOmissionReason.invalidStructure,
             _ => null,
           };
           final resource = rawOmission['resource'];
@@ -3643,7 +2281,7 @@ class ChatController extends ChangeNotifier {
             return null;
           }
           omissions.add(
-            acp.AcpInputOmission(
+            acp.ChatInputOmission(
               reason: reason,
               resource: resource,
               truncated: truncated,
@@ -3664,7 +2302,7 @@ class ChatController extends ChangeNotifier {
           inputBudget: inputBudget,
         );
         final turnId = raw['turnId'];
-        if (turnId is int && turnId > 0) message._turnId = turnId;
+        if (turnId is int && turnId > 0) message.projectionTurnId = turnId;
         restored.add(message);
         if (sliceTimer.elapsed >= const Duration(milliseconds: 4)) {
           // Cache validation and metadata guarding can traverse tens of MiB.
@@ -3848,7 +2486,7 @@ class ChatController extends ChangeNotifier {
       lastError: wasCurrent ? lastError : inactiveSnapshot?.lastError,
       sessionSettings: wasCurrent
           ? sessionSettings
-          : inactiveSnapshot?.sessionSettings ?? const AcpSessionSettings(),
+          : inactiveSnapshot?.sessionSettings ?? const ChatSessionSettings(),
       sessionUsage: wasCurrent ? sessionUsage : inactiveSnapshot?.sessionUsage,
       sessionSettingsLoading: wasCurrent
           ? sessionSettingsLoading
@@ -3887,7 +2525,7 @@ class ChatController extends ChangeNotifier {
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
-        sessionSettings = const AcpSessionSettings();
+        sessionSettings = const ChatSessionSettings();
         sessionUsage = null;
         sessionSettingsLoading = false;
         _activeSessionSettingsLoadId = null;
@@ -3954,7 +2592,7 @@ class ChatController extends ChangeNotifier {
   void _issueArchiveLease(ArchivedSessionSnapshot snapshot) {
     final leaseId = ++_nextArchiveLeaseId;
     _archiveLeasesById[leaseId] = snapshot;
-    _archivedLeaseRetainedBytes = _checkedRetainedAdd(
+    _archivedLeaseRetainedBytes = projectionCheckedRetainedAdd(
       _archivedLeaseRetainedBytes,
       snapshot.retainedBytes,
     );
@@ -4020,7 +2658,7 @@ class ChatController extends ChangeNotifier {
       _inactiveSnapshotRetainedBytes -= previous.retainedBytes;
     }
     _sessionViewSnapshots[normalizedSessionId] = snapshot;
-    _inactiveSnapshotRetainedBytes = _checkedRetainedAdd(
+    _inactiveSnapshotRetainedBytes = projectionCheckedRetainedAdd(
       _inactiveSnapshotRetainedBytes,
       snapshot.retainedBytes,
     );
@@ -4052,7 +2690,7 @@ class ChatController extends ChangeNotifier {
     final snapshot = _takeSessionViewSnapshot(sessionId);
     if (snapshot == null) return null;
     _sessionViewSnapshots[sessionId.trim()] = snapshot;
-    _inactiveSnapshotRetainedBytes = _checkedRetainedAdd(
+    _inactiveSnapshotRetainedBytes = projectionCheckedRetainedAdd(
       _inactiveSnapshotRetainedBytes,
       snapshot.retainedBytes,
     );
@@ -4122,7 +2760,7 @@ class ChatController extends ChangeNotifier {
     return accepted;
   }
 
-  bool _tryReplaceSessionSettings(AcpSessionSettings settings) {
+  bool _tryReplaceSessionSettings(ChatSessionSettings settings) {
     final previous = _sessionSettings;
     return _commitAuxiliaryUiStateMutation(
       apply: () => _sessionSettings = settings,
@@ -4252,9 +2890,9 @@ class ChatController extends ChangeNotifier {
           ChatMessage(
             role: ChatMessageRole.status,
             text: '',
-            omissions: <acp.AcpInputOmission>[
-              acp.AcpInputOmission(
-                reason: acp.AcpInputOmissionReason.inputLimit,
+            omissions: <acp.ChatInputOmission>[
+              acp.ChatInputOmission(
+                reason: acp.ChatInputOmissionReason.inputLimit,
                 resource: 'timeline history',
                 truncated: true,
                 limit: inputBudget.maxUiStateBytes,
@@ -4403,7 +3041,7 @@ class ChatController extends ChangeNotifier {
     availableCommands = const <Map<String, Object?>>[];
     lastLatency = null;
     lastError = null;
-    sessionSettings = const AcpSessionSettings();
+    sessionSettings = const ChatSessionSettings();
     sessionUsage = null;
     sessionSettingsLoading = false;
     status = ConnectionStatus.reconnecting;
@@ -4698,7 +3336,7 @@ class ChatController extends ChangeNotifier {
       _clearSessionViewSnapshots();
       _clearMessages();
       availableCommands = const <Map<String, Object?>>[];
-      sessionSettings = const AcpSessionSettings();
+      sessionSettings = const ChatSessionSettings();
       sessionUsage = null;
       lastLatency = null;
       lastError = null;
@@ -4797,7 +3435,7 @@ class ChatController extends ChangeNotifier {
     await setConfigOption(option.id, effortValue);
   }
 
-  void setToolCallExecutionPolicy(AcpToolCallExecutionPolicy policy) {
+  void setToolCallExecutionPolicy(ChatToolCallExecutionPolicy policy) {
     if (toolCallExecutionPolicy == policy) return;
     toolCallExecutionPolicy = policy;
     final request = pendingPermissionRequest;
@@ -4873,7 +3511,7 @@ class ChatController extends ChangeNotifier {
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
-        sessionSettings = const AcpSessionSettings();
+        sessionSettings = const ChatSessionSettings();
         sessionUsage = null;
         sessionSettingsLoading = false;
         _activeSessionSettingsLoadId = null;
@@ -4953,7 +3591,7 @@ class ChatController extends ChangeNotifier {
         availableCommands = const <Map<String, Object?>>[];
         lastLatency = null;
         lastError = null;
-        sessionSettings = const AcpSessionSettings();
+        sessionSettings = const ChatSessionSettings();
         sessionUsage = null;
         sessionSettingsLoading = false;
         _activeSessionSettingsLoadId = null;
@@ -4998,7 +3636,7 @@ class ChatController extends ChangeNotifier {
           availableCommands = const <Map<String, Object?>>[];
           lastLatency = null;
           lastError = null;
-          sessionSettings = const AcpSessionSettings();
+          sessionSettings = const ChatSessionSettings();
           sessionUsage = null;
           sessionSettingsLoading = false;
           _activeSessionSettingsLoadId = null;
@@ -5056,7 +3694,7 @@ class ChatController extends ChangeNotifier {
     availableCommands = const <Map<String, Object?>>[];
     lastLatency = null;
     lastError = null;
-    sessionSettings = const AcpSessionSettings();
+    sessionSettings = const ChatSessionSettings();
     sessionUsage = null;
     _sessionTemplateWarnings = const <String>[];
     sessionSettingsLoading = false;
@@ -5093,13 +3731,13 @@ class ChatController extends ChangeNotifier {
     return authenticated;
   }
 
-  Future<void> resolvePermissionRequest(AcpPermissionDecision decision) async {
+  Future<void> resolvePermissionRequest(ChatPermissionDecision decision) async {
     final request = pendingPermissionRequest;
     if (request == null) return;
     await _resolvePermissionRequest(
       request,
       decision,
-      source: AcpPermissionDecisionSource.manual,
+      source: ChatPermissionDecisionSource.manual,
     );
   }
 
@@ -5114,7 +3752,7 @@ class ChatController extends ChangeNotifier {
     await _resolvePermissionRequest(
       request,
       decision,
-      source: AcpPermissionDecisionSource.manual,
+      source: ChatPermissionDecisionSource.manual,
       selectedOptionId: choice.optionId,
     );
   }
@@ -5187,11 +3825,14 @@ class ChatController extends ChangeNotifier {
 
   AgentEvent _safeAgentEvent(AgentEvent event) {
     if (event.trustedRenderProjection) return event;
-    final snapshot = _snapshotChatMessageMetadata(event.metadata, inputBudget);
+    final snapshot = projectionSnapshotChatMessageMetadata(
+      event.metadata,
+      inputBudget,
+    );
     final stableMetadata = snapshot.metadata;
     final guarded = stableMetadata == null
-        ? _invalidChatMessageMetadata()
-        : _guardChatMessageMetadata(stableMetadata, inputBudget);
+        ? projectionInvalidChatMessageMetadata()
+        : projectionGuardChatMessageMetadata(stableMetadata, inputBudget);
     final rawKindValue = stableMetadata?['kind'];
     final rawKind = rawKindValue is String ? rawKindValue : null;
     final behaviorKind =
@@ -5246,19 +3887,19 @@ class ChatController extends ChangeNotifier {
     final displayText = guardsDisplayText
         ? _boundedLocalDisplayText(event.text, resource: 'display text')
         : (text: event.text, omission: null);
-    var guardedOmissions = _boundedChatMessageOmissions(
+    var guardedOmissions = projectionBoundedChatMessageOmissions(
       event.omissions,
       _dedupeTurnMediaOmission(guarded.omission),
       inputBudget.maxCollectionItems,
     );
     for (final omission in guarded.localOmissions) {
-      guardedOmissions = _boundedChatMessageOmissions(
+      guardedOmissions = projectionBoundedChatMessageOmissions(
         guardedOmissions,
         _dedupeTurnMediaOmission(omission),
         inputBudget.maxCollectionItems,
       );
     }
-    guardedOmissions = _boundedChatMessageOmissions(
+    guardedOmissions = projectionBoundedChatMessageOmissions(
       guardedOmissions,
       displayText.omission,
       inputBudget.maxCollectionItems,
@@ -5268,7 +3909,7 @@ class ChatController extends ChangeNotifier {
       text: behaviorRejected || behaviorRejectedAll ? '' : displayText.text,
       timestamp: event.timestamp,
       metadata: safeMetadata,
-      omissions: _boundedChatMessageOmissions(
+      omissions: projectionBoundedChatMessageOmissions(
         guardedOmissions,
         media.omission,
         inputBudget.maxCollectionItems,
@@ -5276,8 +3917,8 @@ class ChatController extends ChangeNotifier {
     );
   }
 
-  acp.AcpInputOmission? _dedupeTurnMediaOmission(
-    acp.AcpInputOmission? omission,
+  acp.ChatInputOmission? _dedupeTurnMediaOmission(
+    acp.ChatInputOmission? omission,
   ) {
     if (omission == null) return null;
     if (omission.resource != 'image_data' &&
@@ -5291,13 +3932,13 @@ class ChatController extends ChangeNotifier {
     return turnBudget.mediaOmissionKeys.add(key) ? omission : null;
   }
 
-  ({Map<String, Object?> metadata, acp.AcpInputOmission? omission})
+  ({Map<String, Object?> metadata, acp.ChatInputOmission? omission})
   _sanitizeEventMedia(Map<String, Object?> metadata) {
     final rawBlocks = metadata['contentBlocks'];
     if (rawBlocks is! List) return (metadata: metadata, omission: null);
     final turnBudget = _ensureTurnBudget();
     final blocks = <Object?>[];
-    acp.AcpInputOmission? omission;
+    acp.ChatInputOmission? omission;
     var changed = false;
     for (final rawBlock in rawBlocks) {
       if (rawBlock is! Map<String, Object?>) {
@@ -5326,16 +3967,16 @@ class ChatController extends ChangeNotifier {
       }
       if (turnBudget.mediaRootDrained) {
         changed = true;
-        final drainedOmission = acp.AcpInputOmission(
-          reason: acp.AcpInputOmissionReason.inputLimit,
+        final drainedOmission = acp.ChatInputOmission(
+          reason: acp.ChatInputOmissionReason.inputLimit,
           resource: 'turn_media',
           truncated: false,
           limit: inputBudget.maxEmbeddedMediaBytes,
           observedAtLeast: inputBudget.maxEmbeddedMediaBytes + 1,
         );
-        blocks.add(_mediaOmissionProjection(drainedOmission));
-        omission ??= acp.AcpInputOmission(
-          reason: acp.AcpInputOmissionReason.inputLimit,
+        blocks.add(projectionMediaOmissionProjection(drainedOmission));
+        omission ??= acp.ChatInputOmission(
+          reason: acp.ChatInputOmissionReason.inputLimit,
           resource: 'turn_media',
           truncated: false,
           limit: inputBudget.maxEmbeddedMediaBytes,
@@ -5345,31 +3986,31 @@ class ChatController extends ChangeNotifier {
       }
       if (encoded is! String) {
         changed = true;
-        final invalid = acp.AcpInputOmission(
-          reason: acp.AcpInputOmissionReason.invalidStructure,
+        final invalid = acp.ChatInputOmission(
+          reason: acp.ChatInputOmissionReason.invalidStructure,
           resource: resource,
           truncated: false,
         );
-        blocks.add(_mediaOmissionProjection(invalid));
+        blocks.add(projectionMediaOmissionProjection(invalid));
         omission ??= invalid;
         continue;
       }
       // The content-block guard immediately before this phase already scanned
       // and detached this Base64 string. Count the validated encoding in O(1)
       // here so aggregate admission does not scan the same payload again.
-      final decodedBytes = _validatedAcpBase64DecodedBytes(encoded);
+      final decodedBytes = projectionValidatedAcpBase64DecodedBytes(encoded);
       if (decodedBytes >
           inputBudget.maxEmbeddedMediaBytes - turnBudget.mediaBytes) {
         turnBudget.mediaRootDrained = true;
         changed = true;
-        final aggregate = acp.AcpInputOmission(
-          reason: acp.AcpInputOmissionReason.inputLimit,
+        final aggregate = acp.ChatInputOmission(
+          reason: acp.ChatInputOmissionReason.inputLimit,
           resource: 'turn_media',
           truncated: false,
           limit: inputBudget.maxEmbeddedMediaBytes,
           observedAtLeast: inputBudget.maxEmbeddedMediaBytes + 1,
         );
-        blocks.add(_mediaOmissionProjection(aggregate));
+        blocks.add(projectionMediaOmissionProjection(aggregate));
         omission ??= aggregate;
         continue;
       }
@@ -5450,7 +4091,7 @@ class ChatController extends ChangeNotifier {
           final errorMessage = ChatMessage(
             role: ChatMessageRole.error,
             text: boundedError.text,
-            omissions: _boundedChatMessageOmissions(
+            omissions: projectionBoundedChatMessageOmissions(
               event.omissions,
               boundedError.omission,
               inputBudget.maxCollectionItems,
@@ -5491,7 +4132,7 @@ class ChatController extends ChangeNotifier {
     _eventAcceptedText = '';
     _eventHasMessageProjection = false;
     _eventAcceptedMetadata = const <String, Object?>{};
-    _eventAcceptedOmissions = const <acp.AcpInputOmission>[];
+    _eventAcceptedOmissions = const <acp.ChatInputOmission>[];
     _eventAcceptedTextOmission = null;
     _eventRootOmission = null;
   }
@@ -5533,8 +4174,8 @@ class ChatController extends ChangeNotifier {
       text: projectedText,
       timestamp: event.timestamp,
       metadata: projectedMetadata,
-      omissions: _boundedChatMessageOmissions(
-        _boundedChatMessageOmissions(
+      omissions: projectionBoundedChatMessageOmissions(
+        projectionBoundedChatMessageOmissions(
           acceptedOmissions,
           _eventAcceptedTextOmission,
           inputBudget.maxCollectionItems,
@@ -5565,14 +4206,14 @@ class ChatController extends ChangeNotifier {
   void _markAgentEventProjectionAccepted({
     required String text,
     required Map<String, Object?> metadata,
-    List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
+    List<acp.ChatInputOmission> omissions = const <acp.ChatInputOmission>[],
   }) {
     if (!_trackingAgentEvent || _suppressAgentEventProjection) return;
     _eventPayloadAccepted = true;
     _eventHasMessageProjection = true;
     _eventAcceptedText = text;
     _eventAcceptedMetadata = Map<String, Object?>.unmodifiable(metadata);
-    _eventAcceptedOmissions = List<acp.AcpInputOmission>.unmodifiable(
+    _eventAcceptedOmissions = List<acp.ChatInputOmission>.unmodifiable(
       omissions,
     );
   }
@@ -5592,21 +4233,16 @@ class ChatController extends ChangeNotifier {
       return;
     }
 
-    for (var index = messages.length - 1; index >= 0; index -= 1) {
+    final index = findChatToolMessage(messages, toolCallId);
+    if (index >= 0) {
       final message = messages[index];
-      if (message.role == ChatMessageRole.user) break;
-      if (message.role != ChatMessageRole.tool) continue;
-      if (_toolCallIdFromMetadata(message.metadata) != toolCallId) {
-        continue;
-      }
-
       _replaceTurnMessage(
         index,
         ChatMessage(
           role: ChatMessageRole.tool,
           text: event.text.trim().isEmpty ? message.text : event.text,
           timestamp: message.timestamp,
-          metadata: _mergeMetadata(message.metadata, event.metadata),
+          metadata: mergeChatToolMetadata(message.metadata, event.metadata),
           omissions: [...message.omissions, ...event.omissions],
           inputBudget: inputBudget,
         ),
@@ -5623,18 +4259,6 @@ class ChatController extends ChangeNotifier {
         inputBudget: inputBudget,
       ),
     );
-  }
-
-  Map<String, Object?> _mergeMetadata(
-    Map<String, Object?> existing,
-    Map<String, Object?> update,
-  ) {
-    final merged = Map<String, Object?>.from(existing);
-    for (final entry in update.entries) {
-      if (entry.value == null) continue;
-      merged[entry.key] = entry.value;
-    }
-    return Map.unmodifiable(merged);
   }
 
   void _notifyAgentEventObservers(AgentEvent event) {
@@ -5686,7 +4310,7 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  void _handlePermissionRequest(AcpPermissionRequest incomingRequest) {
+  void _handlePermissionRequest(ChatPermissionRequest incomingRequest) {
     final request = incomingRequest.withGeneration(
       ++_nextPermissionRequestGeneration,
     );
@@ -5697,7 +4321,7 @@ class ChatController extends ChangeNotifier {
       unawaited(
         _sendPermissionDecision(
           id: request.id,
-          decision: AcpPermissionDecision.cancel,
+          decision: ChatPermissionDecision.cancel,
           reportErrors: false,
         ),
       );
@@ -5708,13 +4332,13 @@ class ChatController extends ChangeNotifier {
       _recordPermissionRequest(request);
       _recordPermissionDecision(
         request,
-        AcpPermissionDecision.cancel,
-        source: AcpPermissionDecisionSource.system,
+        ChatPermissionDecision.cancel,
+        source: ChatPermissionDecisionSource.system,
       );
       unawaited(
         _sendPermissionDecision(
           id: request.id,
-          decision: AcpPermissionDecision.cancel,
+          decision: ChatPermissionDecision.cancel,
           reportErrors: false,
         ),
       );
@@ -5726,14 +4350,14 @@ class ChatController extends ChangeNotifier {
     if (previous != null) {
       _recordPermissionDecision(
         previous,
-        AcpPermissionDecision.cancel,
-        source: AcpPermissionDecisionSource.system,
+        ChatPermissionDecision.cancel,
+        source: ChatPermissionDecisionSource.system,
       );
       if (previous.id != request.id) {
         unawaited(
           _sendPermissionDecision(
             id: previous.id,
-            decision: AcpPermissionDecision.cancel,
+            decision: ChatPermissionDecision.cancel,
             reportErrors: false,
           ),
         );
@@ -5749,11 +4373,11 @@ class ChatController extends ChangeNotifier {
     _notifyListeners();
   }
 
-  bool _isCurrentPermissionRequest(AcpPermissionRequest request) {
+  bool _isCurrentPermissionRequest(ChatPermissionRequest request) {
     return pendingPermissionRequest?.bindingKey == request.bindingKey;
   }
 
-  bool _isPermissionRequestForActiveSession(AcpPermissionRequest request) {
+  bool _isPermissionRequestForActiveSession(ChatPermissionRequest request) {
     final requestSessionId = request.sessionId.trim();
     if (requestSessionId.isEmpty) return false;
     final session = currentSession;
@@ -5803,13 +4427,13 @@ class ChatController extends ChangeNotifier {
     _recordPromptActivity();
     _recordPermissionDecision(
       request,
-      AcpPermissionDecision.cancel,
-      source: AcpPermissionDecisionSource.system,
+      ChatPermissionDecision.cancel,
+      source: ChatPermissionDecisionSource.system,
     );
     _notifyListeners();
   }
 
-  void _handlePermissionInvalidation(AcpPermissionInvalidation event) {
+  void _handlePermissionInvalidation(ChatPermissionInvalidation event) {
     if (_isDisposed) return;
     final request = pendingPermissionRequest;
     if (request == null ||
@@ -5825,43 +4449,43 @@ class ChatController extends ChangeNotifier {
     _reviewingPermissionRequestIds.remove(bindingKey);
     _recordPermissionDecision(
       request,
-      AcpPermissionDecision.cancel,
-      source: AcpPermissionDecisionSource.system,
+      ChatPermissionDecision.cancel,
+      source: ChatPermissionDecisionSource.system,
     );
     _notifyListeners();
   }
 
-  AcpPermissionDecision? _trustedDecisionFor(AcpPermissionRequest request) {
+  ChatPermissionDecision? _trustedDecisionFor(ChatPermissionRequest request) {
     for (final rule in permissionTrustRules) {
       if (rule.matches(request)) return rule.decision;
     }
     return null;
   }
 
-  void _resolvePendingPermissionForPolicy(AcpPermissionRequest request) {
+  void _resolvePendingPermissionForPolicy(ChatPermissionRequest request) {
     switch (toolCallExecutionPolicy) {
-      case AcpToolCallExecutionPolicy.defaultPermissions:
+      case ChatToolCallExecutionPolicy.defaultPermissions:
         return;
-      case AcpToolCallExecutionPolicy.autoReview:
+      case ChatToolCallExecutionPolicy.autoReview:
         final trustedDecision = _trustedDecisionFor(request);
         if (trustedDecision != null) {
           unawaited(
             _resolvePermissionRequest(
               request,
               trustedDecision,
-              source: AcpPermissionDecisionSource.trustRule,
+              source: ChatPermissionDecisionSource.trustRule,
             ),
           );
           return;
         }
         _startPermissionReview(request);
         return;
-      case AcpToolCallExecutionPolicy.fullAccess:
+      case ChatToolCallExecutionPolicy.fullAccess:
         unawaited(
           _resolvePermissionRequest(
             request,
-            AcpPermissionDecision.allow,
-            source: AcpPermissionDecisionSource.policy,
+            ChatPermissionDecision.allow,
+            source: ChatPermissionDecisionSource.policy,
           ),
         );
         return;
@@ -5869,10 +4493,10 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _resolvePermissionRequest(
-    AcpPermissionRequest request,
-    AcpPermissionDecision decision, {
-    required AcpPermissionDecisionSource source,
-    AcpPermissionReviewResult? reviewResult,
+    ChatPermissionRequest request,
+    ChatPermissionDecision decision, {
+    required ChatPermissionDecisionSource source,
+    ChatPermissionReviewResult? reviewResult,
     String? selectedOptionId,
   }) async {
     if (_isDisposed) return;
@@ -5883,7 +4507,7 @@ class ChatController extends ChangeNotifier {
     try {
       final resolvedOptionId =
           selectedOptionId ?? request.singleUseChoiceFor(decision)?.optionId;
-      if (decision != AcpPermissionDecision.cancel &&
+      if (decision != ChatPermissionDecision.cancel &&
           request.choices.isNotEmpty &&
           resolvedOptionId == null) {
         return;
@@ -5914,7 +4538,7 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  void _startPermissionReview(AcpPermissionRequest request) {
+  void _startPermissionReview(ChatPermissionRequest request) {
     if (_isDisposed) return;
     final reviewer = permissionReviewer;
     if (reviewer == null) return;
@@ -5937,7 +4561,7 @@ class ChatController extends ChangeNotifier {
         );
         if (_isDisposed) return;
         if (result == null) return;
-        final boundedResult = sanitizeAcpPermissionReviewResult(
+        final boundedResult = sanitizeChatPermissionReviewResult(
           result,
           inputBudget: inputBudget,
           maxEncodedBytes: permissionReviewResultEncodedByteLimit,
@@ -5948,7 +4572,7 @@ class ChatController extends ChangeNotifier {
           _notifyListeners();
           return;
         }
-        if (decision == AcpPermissionDecision.allow &&
+        if (decision == ChatPermissionDecision.allow &&
             (!reviewer.canAutoApprove ||
                 boundedResult.risk.trim().toLowerCase() != 'low')) {
           _notifyListeners();
@@ -5958,7 +4582,7 @@ class ChatController extends ChangeNotifier {
         await _resolvePermissionRequest(
           request,
           decision,
-          source: AcpPermissionDecisionSource.reviewAgent,
+          source: ChatPermissionDecisionSource.reviewAgent,
           reviewResult: boundedResult,
         );
       } catch (error) {
@@ -5973,7 +4597,7 @@ class ChatController extends ChangeNotifier {
 
   Future<bool> _sendPermissionDecision({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
     bool reportErrors = true,
   }) async {
@@ -6000,13 +4624,13 @@ class ChatController extends ChangeNotifier {
     pendingPermissionRequest = null;
     _recordPermissionDecision(
       request,
-      AcpPermissionDecision.cancel,
-      source: AcpPermissionDecisionSource.system,
+      ChatPermissionDecision.cancel,
+      source: ChatPermissionDecisionSource.system,
     );
     try {
       await client.respondToPermissionRequest(
         id: request.id,
-        decision: AcpPermissionDecision.cancel,
+        decision: ChatPermissionDecision.cancel,
       );
       return null;
     } catch (error) {
@@ -6027,13 +4651,13 @@ class ChatController extends ChangeNotifier {
     pendingPermissionRequest = null;
     _recordPermissionDecision(
       request,
-      AcpPermissionDecision.cancel,
-      source: AcpPermissionDecisionSource.system,
+      ChatPermissionDecision.cancel,
+      source: ChatPermissionDecisionSource.system,
     );
     unawaited(
       _sendPermissionDecision(
         id: request.id,
-        decision: AcpPermissionDecision.cancel,
+        decision: ChatPermissionDecision.cancel,
         reportErrors: false,
       ),
     );
@@ -6045,34 +4669,34 @@ class ChatController extends ChangeNotifier {
     pendingPermissionRequest = null;
     _recordPermissionDecision(
       request,
-      AcpPermissionDecision.cancel,
-      source: AcpPermissionDecisionSource.system,
+      ChatPermissionDecision.cancel,
+      source: ChatPermissionDecisionSource.system,
     );
     unawaited(
       _sendPermissionDecision(
         id: request.id,
-        decision: AcpPermissionDecision.cancel,
+        decision: ChatPermissionDecision.cancel,
         reportErrors: false,
       ),
     );
   }
 
-  void _recordPermissionRequest(AcpPermissionRequest request) {
-    final entry = AcpPermissionAuditEntry(
+  void _recordPermissionRequest(ChatPermissionRequest request) {
+    final entry = ChatPermissionAuditEntry(
       request: _permissionRequestForAudit(request),
-      status: AcpPermissionAuditStatus.pending,
+      status: ChatPermissionAuditStatus.pending,
       recordedAt: request.requestedAt,
     );
     _permissionHistory.insert(0, entry);
-    final encodedBytes = acpPermissionAuditEntryEncodedBytes(entry);
+    final encodedBytes = chatPermissionAuditEntryEncodedBytes(entry);
     _permissionHistoryEntryEncodedBytes.insert(0, encodedBytes);
     _permissionHistoryEncodedBytes += encodedBytes;
     _trimPermissionHistory();
     _permissionHistoryRevision += 1;
   }
 
-  AcpPermissionRequest _permissionRequestForAudit(
-    AcpPermissionRequest request,
+  ChatPermissionRequest _permissionRequestForAudit(
+    ChatPermissionRequest request,
   ) {
     return request.forAudit(
       metadata: redactedPermissionMetadataForAudit(request),
@@ -6192,9 +4816,9 @@ class ChatController extends ChangeNotifier {
 
   void _replacePermissionHistoryEntry(
     int index,
-    AcpPermissionAuditEntry replacement,
+    ChatPermissionAuditEntry replacement,
   ) {
-    final replacementBytes = acpPermissionAuditEntryEncodedBytes(replacement);
+    final replacementBytes = chatPermissionAuditEntryEncodedBytes(replacement);
     final previousBytes = _permissionHistoryEntryEncodedBytes[index];
     _permissionHistory[index] = replacement;
     _permissionHistoryEntryEncodedBytes[index] = replacementBytes;
@@ -6204,10 +4828,10 @@ class ChatController extends ChangeNotifier {
   }
 
   void _recordPermissionDecision(
-    AcpPermissionRequest request,
-    AcpPermissionDecision decision, {
-    AcpPermissionDecisionSource source = AcpPermissionDecisionSource.manual,
-    AcpPermissionReviewResult? reviewResult,
+    ChatPermissionRequest request,
+    ChatPermissionDecision decision, {
+    ChatPermissionDecisionSource source = ChatPermissionDecisionSource.manual,
+    ChatPermissionReviewResult? reviewResult,
     String? selectedOptionId,
   }) {
     final index = _permissionHistory.indexWhere(
@@ -6218,7 +4842,7 @@ class ChatController extends ChangeNotifier {
     final status = _permissionAuditStatus(decision);
     final boundedReviewResult = reviewResult == null
         ? null
-        : sanitizeAcpPermissionReviewResult(
+        : sanitizeChatPermissionReviewResult(
             reviewResult,
             inputBudget: inputBudget,
             maxEncodedBytes: permissionReviewResultEncodedByteLimit,
@@ -6244,14 +4868,14 @@ class ChatController extends ChangeNotifier {
   }
 
   void _recordPermissionReview(
-    AcpPermissionRequest request,
-    AcpPermissionReviewResult reviewResult,
+    ChatPermissionRequest request,
+    ChatPermissionReviewResult reviewResult,
   ) {
     final index = _permissionHistory.indexWhere(
       (entry) => entry.request.bindingKey == request.bindingKey,
     );
     if (index == -1) return;
-    final boundedReviewResult = sanitizeAcpPermissionReviewResult(
+    final boundedReviewResult = sanitizeChatPermissionReviewResult(
       reviewResult,
       inputBudget: inputBudget,
       maxEncodedBytes: permissionReviewResultEncodedByteLimit,
@@ -6262,13 +4886,13 @@ class ChatController extends ChangeNotifier {
     );
   }
 
-  AcpPermissionAuditStatus _permissionAuditStatus(
-    AcpPermissionDecision decision,
+  ChatPermissionAuditStatus _permissionAuditStatus(
+    ChatPermissionDecision decision,
   ) {
     return switch (decision) {
-      AcpPermissionDecision.allow => AcpPermissionAuditStatus.allowed,
-      AcpPermissionDecision.deny => AcpPermissionAuditStatus.denied,
-      AcpPermissionDecision.cancel => AcpPermissionAuditStatus.cancelled,
+      ChatPermissionDecision.allow => ChatPermissionAuditStatus.allowed,
+      ChatPermissionDecision.deny => ChatPermissionAuditStatus.denied,
+      ChatPermissionDecision.cancel => ChatPermissionAuditStatus.cancelled,
     };
   }
 
@@ -6318,7 +4942,7 @@ class ChatController extends ChangeNotifier {
 
   @visibleForTesting
   void setMessageTextForTesting(int index, String text) {
-    _messages[index]._setTextForOwner(_messageOwnerToken, text);
+    _messages[index].projectionSetTextForOwner(_messageOwnerToken, text);
     _mutateMessages(() {});
   }
 
@@ -6331,14 +4955,14 @@ class ChatController extends ChangeNotifier {
   }
 
   @visibleForTesting
-  void addOmissionForTesting(acp.AcpInputOmission omission) {
+  void addOmissionForTesting(acp.ChatInputOmission omission) {
     if (_messages.isEmpty) {
       throw StateError('A message is required before adding an omission.');
     }
     final target = _messages.last;
     final applied = _applyTurnTextMutation(
       _ensureTurnBudget(),
-      parts: const <_TurnTextAppend>[],
+      parts: const <ChatTextAppend>[],
       omissionTarget: target,
       omission: omission,
     );
@@ -6346,15 +4970,15 @@ class ChatController extends ChangeNotifier {
   }
 
   ChatMessage _prepareOwnedMessage(ChatMessage message, {required int turnId}) {
-    if (message._ownerToken != null || message.turnId != null) {
+    if (message.projectionOwnerToken != null || message.turnId != null) {
       throw StateError('Cannot admit an already-owned chat message.');
     }
-    final owned = message._copyForBudget(
+    final owned = message.projectionCopyForBudget(
       inputBudget,
       frozen: false,
       preserveTurnId: false,
     );
-    owned._claimOwnership(_messageOwnerToken, turnId);
+    owned.projectionClaimOwnership(_messageOwnerToken, turnId);
     return owned;
   }
 
@@ -6378,9 +5002,9 @@ class ChatController extends ChangeNotifier {
     ChatMessage message, {
     bool allowCompleteTurnEviction = true,
   }) {
-    message._requireOwner(_messageOwnerToken);
+    message.projectionRequireOwner(_messageOwnerToken);
     if (!_canFitActiveMessageRetainedDelta(
-      message.retainedBytes + _retainedListItemHostBytes,
+      message.retainedBytes + projectionRetainedListItemHostBytes,
       allowCompleteTurnEviction: allowCompleteTurnEviction,
     )) {
       return false;
@@ -6397,8 +5021,8 @@ class ChatController extends ChangeNotifier {
     if (_uiStateTransactionDepth > 0) {
       _recomputeActiveUiStateRetainedBytes();
     }
-    var projected = _checkedRetainedAdd(
-      _checkedRetainedAdd(
+    var projected = projectionCheckedRetainedAdd(
+      projectionCheckedRetainedAdd(
         _activeUiStateRetainedBytes,
         _archivedLeaseRetainedBytes,
       ),
@@ -6410,12 +5034,13 @@ class ChatController extends ChangeNotifier {
       if (_isHistoryMarker(message)) continue;
       final turnId = message.turnId;
       if (turnId == null || turnId == _activeTurnId) continue;
-      projected -= message.retainedBytes + _retainedListItemHostBytes;
+      projected -= message.retainedBytes + projectionRetainedListItemHostBytes;
       if (projected <= inputBudget.maxUiStateBytes) return true;
     }
     final historyMarker = _messages.where(_isHistoryMarker).firstOrNull;
     if (historyMarker != null) {
-      projected -= historyMarker.retainedBytes + _retainedListItemHostBytes;
+      projected -=
+          historyMarker.retainedBytes + projectionRetainedListItemHostBytes;
     }
     return projected <= inputBudget.maxUiStateBytes;
   }
@@ -6446,12 +5071,13 @@ class ChatController extends ChangeNotifier {
       if (_isHistoryMarker(message)) continue;
       final messageTurnId = message.turnId;
       if (messageTurnId == null || messageTurnId == turnId) continue;
-      projected -= message.retainedBytes + _retainedListItemHostBytes;
+      projected -= message.retainedBytes + projectionRetainedListItemHostBytes;
       if (projected <= inputBudget.maxUiStateBytes) return true;
     }
     final historyMarker = _messages.where(_isHistoryMarker).firstOrNull;
     if (historyMarker != null) {
-      projected -= historyMarker.retainedBytes + _retainedListItemHostBytes;
+      projected -=
+          historyMarker.retainedBytes + projectionRetainedListItemHostBytes;
     }
     return projected <= inputBudget.maxUiStateBytes;
   }
@@ -6461,7 +5087,7 @@ class ChatController extends ChangeNotifier {
     ChatMessage replacement, {
     required int turnId,
   }) {
-    replacement._requireOwner(_messageOwnerToken);
+    replacement.projectionRequireOwner(_messageOwnerToken);
     if (!_canFitTimelineReplacement(index, replacement, turnId: turnId)) {
       return false;
     }
@@ -6477,12 +5103,12 @@ class ChatController extends ChangeNotifier {
       final turnId = previousTurnId == null
           ? ++_nextTurnId
           : copiedTurnIds.putIfAbsent(previousTurnId, () => ++_nextTurnId);
-      final owned = message._copyForBudget(
+      final owned = message.projectionCopyForBudget(
         inputBudget,
         frozen: false,
         preserveTurnId: false,
       );
-      owned._claimOwnership(_messageOwnerToken, turnId);
+      owned.projectionClaimOwnership(_messageOwnerToken, turnId);
       copied.add(owned);
     }
     _mutateMessages(() {
@@ -6554,9 +5180,9 @@ class ChatController extends ChangeNotifier {
           ChatMessage(
             role: ChatMessageRole.status,
             text: '',
-            omissions: <acp.AcpInputOmission>[
-              acp.AcpInputOmission(
-                reason: acp.AcpInputOmissionReason.inputLimit,
+            omissions: <acp.ChatInputOmission>[
+              acp.ChatInputOmission(
+                reason: acp.ChatInputOmissionReason.inputLimit,
                 resource: 'timeline history',
                 truncated: true,
                 limit: _messages.length > inputBudget.maxTimelineItems
@@ -6732,7 +5358,7 @@ class ChatController extends ChangeNotifier {
     final copied = _copyAvailableCommands(commands, inputBudget);
     final nextRetained = copied.isEmpty
         ? 0
-        : acp.AcpRetainedSizeEstimator(budget: inputBudget).estimate(copied);
+        : acp.ChatRetainedSizeEstimator(budget: inputBudget).estimate(copied);
     final turnBudget = _ensureTurnBudget();
     final previousCommands = _availableCommands;
     if (!_canAdmitAuxiliaryUiState(
@@ -6765,7 +5391,7 @@ class ChatController extends ChangeNotifier {
   }
 
   bool _replaceTurnSettings(
-    AcpSessionSettings settings, {
+    ChatSessionSettings settings, {
     bool markAccepted = true,
   }) {
     final copied = _copySessionSettings(settings, inputBudget);
@@ -6778,7 +5404,7 @@ class ChatController extends ChangeNotifier {
     final nextRetained = hasState
         ? _addSessionSettingsRetainedBytes(
             _sessionSettingsStateHostRetainedBytes,
-            acp.AcpRetainedSizeEstimator(budget: inputBudget),
+            acp.ChatRetainedSizeEstimator(budget: inputBudget),
             copied,
           )
         : 0;
@@ -6806,7 +5432,7 @@ class ChatController extends ChangeNotifier {
         return true;
       },
       clear: () {
-        _tryReplaceSessionSettings(const AcpSessionSettings());
+        _tryReplaceSessionSettings(const ChatSessionSettings());
         turnBudget.settingsStateRetainedBytes = 0;
       },
       markAccepted: markAccepted,
@@ -6886,7 +5512,7 @@ class ChatController extends ChangeNotifier {
       turnBudget.retainedBytes -= retained;
       turnBudget.items -= 1;
     }
-    sessionSettings = const AcpSessionSettings();
+    sessionSettings = const ChatSessionSettings();
     _resetAgentEventAcceptedProjection();
   }
 
@@ -6896,7 +5522,7 @@ class ChatController extends ChangeNotifier {
     _eventAcceptedText = '';
     _eventHasMessageProjection = false;
     _eventAcceptedMetadata = const <String, Object?>{};
-    _eventAcceptedOmissions = const <acp.AcpInputOmission>[];
+    _eventAcceptedOmissions = const <acp.ChatInputOmission>[];
     _eventAcceptedTextOmission = null;
   }
 
@@ -6915,7 +5541,7 @@ class ChatController extends ChangeNotifier {
     final next = AcpSessionUsage(used: used, size: size, cost: costResult.cost);
     final retained = _addSessionUsageRetainedBytes(
       0,
-      acp.AcpRetainedSizeEstimator(budget: inputBudget),
+      acp.ChatRetainedSizeEstimator(budget: inputBudget),
       next,
     );
     final turnBudget = _ensureTurnBudget();
@@ -6963,13 +5589,17 @@ class ChatController extends ChangeNotifier {
         ? DateTime.tryParse(updatedAtRaw)?.toLocal()
         : null;
     final updated = session.copyWith(title: title, updatedAt: updatedAt);
-    final estimator = acp.AcpRetainedSizeEstimator(budget: inputBudget);
+    final estimator = acp.ChatRetainedSizeEstimator(budget: inputBudget);
     var retained = _sessionInfoStateHostRetainedBytes;
     if (updated.title != null) {
-      retained = _addEstimatedRetainedBytes(retained, estimator, updated.title);
+      retained = projectionAddEstimatedRetainedBytes(
+        retained,
+        estimator,
+        updated.title,
+      );
     }
     if (updated.updatedAt != null) {
-      retained = _addEstimatedRetainedBytes(
+      retained = projectionAddEstimatedRetainedBytes(
         retained,
         estimator,
         updated.updatedAt!.toIso8601String(),
@@ -7012,8 +5642,8 @@ class ChatController extends ChangeNotifier {
     required int observedAtLeast,
   }) {
     turnBudget.overflowed = true;
-    final omission = acp.AcpInputOmission(
-      reason: acp.AcpInputOmissionReason.inputLimit,
+    final omission = acp.ChatInputOmission(
+      reason: acp.ChatInputOmissionReason.inputLimit,
       resource: resource,
       truncated: false,
       limit: limit,
@@ -7039,9 +5669,9 @@ class ChatController extends ChangeNotifier {
               existing.reason == omission.reason,
         )) {
       final previousRetained = turnBudget.messageRetainedBytes[target]!;
-      final nextRetained = _estimateChatMessageRetainedBytes(
+      final nextRetained = projectionEstimateChatMessageRetainedBytes(
         metadata: target.metadata,
-        omissions: <acp.AcpInputOmission>[...target.omissions, omission],
+        omissions: <acp.ChatInputOmission>[...target.omissions, omission],
         acceptedUtf8Bytes: target.acceptedUtf8Bytes,
         inputBudget: inputBudget,
       );
@@ -7052,7 +5682,7 @@ class ChatController extends ChangeNotifier {
             delta,
             allowCompleteTurnEviction: false,
           ) &&
-          target._addOmissionForOwner(_messageOwnerToken, omission)) {
+          target.projectionAddOmissionForOwner(_messageOwnerToken, omission)) {
         turnBudget.retainedBytes += delta;
         _activeTimelineRetainedBytes += delta;
         turnBudget.messageRetainedBytes[target] = nextRetained;
@@ -7066,7 +5696,7 @@ class ChatController extends ChangeNotifier {
     final marker = ChatMessage(
       role: ChatMessageRole.status,
       text: '',
-      omissions: <acp.AcpInputOmission>[omission],
+      omissions: <acp.ChatInputOmission>[omission],
       inputBudget: inputBudget,
     );
     final markerRetained = marker.retainedBytes;
@@ -7132,7 +5762,7 @@ class ChatController extends ChangeNotifier {
     }
 
     final accepted = counter.append(chunk);
-    final parts = <_TurnTextAppend>[];
+    final parts = <ChatTextAppend>[];
     if (pending != null &&
         !identical(pending.target, target) &&
         accepted.safePrefix.isNotEmpty) {
@@ -7144,14 +5774,14 @@ class ChatController extends ChangeNotifier {
           ? String.fromCharCodes(<int>[pending.codeUnit, chunk.codeUnitAt(0)])
           : String.fromCharCode(pending.codeUnit);
       parts.add(
-        _TurnTextAppend(
+        ChatTextAppend(
           target: pending.target,
           text: resolvedPrefix,
           acceptedUtf8Bytes: resolvedBytes,
         ),
       );
       parts.add(
-        _TurnTextAppend(
+        ChatTextAppend(
           target: target,
           text: accepted.safePrefix.substring(resolvedCodeUnits),
           acceptedUtf8Bytes: accepted.acceptedBytes - resolvedBytes,
@@ -7159,7 +5789,7 @@ class ChatController extends ChangeNotifier {
       );
     } else {
       parts.add(
-        _TurnTextAppend(
+        ChatTextAppend(
           target: target,
           text: accepted.safePrefix,
           acceptedUtf8Bytes: accepted.acceptedBytes,
@@ -7219,54 +5849,20 @@ class ChatController extends ChangeNotifier {
 
   bool _applyTurnTextMutation(
     _TurnBudgetState turnBudget, {
-    required List<_TurnTextAppend> parts,
+    required List<ChatTextAppend> parts,
     ChatMessage? omissionTarget,
-    acp.AcpInputOmission? omission,
+    acp.ChatInputOmission? omission,
   }) {
-    final projections = HashMap<ChatMessage, _TurnMessageProjection>.identity();
-    _TurnMessageProjection projectionFor(ChatMessage message) {
-      return projections.putIfAbsent(message, () {
-        final retained = turnBudget.messageRetainedBytes[message];
-        if (retained == null) {
-          throw StateError('Turn message is not owned by the active ledger.');
-        }
-        return _TurnMessageProjection(
-          message: message,
-          previousRetained: retained,
-        );
-      });
-    }
-
     try {
-      for (final part in parts) {
-        projectionFor(part.target).acceptedUtf8Bytes += part.acceptedUtf8Bytes;
-      }
-      if (omissionTarget != null && omission != null) {
-        final projection = projectionFor(omissionTarget);
-        final duplicate = projection.omissions.any(
-          (existing) =>
-              existing.resource == omission.resource &&
-              existing.reason == omission.reason,
-        );
-        if (!duplicate &&
-            projection.omissions.length < inputBudget.maxCollectionItems) {
-          projection.omissions.add(omission);
-        }
-      }
-      var totalDelta = 0;
-      final nextRetained = HashMap<ChatMessage, int>.identity();
-      for (final projection in projections.values) {
-        final retained = _estimateChatMessageRetainedBytes(
-          metadata: projection.message.metadata,
-          omissions: projection.omissions,
-          acceptedUtf8Bytes: projection.acceptedUtf8Bytes,
-          inputBudget: inputBudget,
-        );
-        final delta = retained - projection.previousRetained;
-        if (delta < 0) return false;
-        totalDelta = _checkedRetainedAdd(totalDelta, delta);
-        nextRetained[projection.message] = retained;
-      }
+      final mutation = ChatTextMutation.prepare(
+        parts: parts,
+        previousRetained: turnBudget.messageRetainedBytes,
+        inputBudget: inputBudget,
+        omissionTarget: omissionTarget,
+        omission: omission,
+      );
+      final totalDelta = mutation.totalDelta;
+      final nextRetained = mutation.nextRetained;
       if (totalDelta >
           turnBudget.normalRetainedByteLimit - turnBudget.retainedBytes) {
         return false;
@@ -7280,22 +5876,9 @@ class ChatController extends ChangeNotifier {
         );
         return false;
       }
-      for (final part in parts) {
-        final revision = part.target.revision;
-        part.target._appendAcceptedTextForOwner(
-          _messageOwnerToken,
-          part.text,
-          acceptedUtf8Bytes: part.acceptedUtf8Bytes,
-        );
-        if (part.target.revision != revision) {
-          turnBudget.materializationTargets.add(part.target);
-        }
-      }
-      if (omissionTarget != null && omission != null) {
-        if (omissionTarget._addOmissionForOwner(_messageOwnerToken, omission)) {
-          turnBudget.materializationTargets.add(omissionTarget);
-        }
-      }
+      turnBudget.materializationTargets.addAll(
+        mutation.apply(_messageOwnerToken),
+      );
       turnBudget.retainedBytes += totalDelta;
       _activeTimelineRetainedBytes += totalDelta;
       for (final entry in nextRetained.entries) {
@@ -7346,13 +5929,13 @@ class ChatController extends ChangeNotifier {
   void _appendFinishedText(
     _TurnBudgetState turnBudget,
     ChatMessage? target,
-    acp.AcpTextBudgetChunk finished,
+    acp.ChatTextBudgetChunk finished,
   ) {
     if (target == null) return;
     final applied = _applyTurnTextMutation(
       turnBudget,
-      parts: <_TurnTextAppend>[
-        _TurnTextAppend(
+      parts: <ChatTextAppend>[
+        ChatTextAppend(
           target: target,
           text: finished.safePrefix,
           acceptedUtf8Bytes: finished.acceptedBytes,
@@ -7375,7 +5958,7 @@ class ChatController extends ChangeNotifier {
     ChatMessageRole role,
     String text, {
     Map<String, Object?> metadata = const <String, Object?>{},
-    List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
+    List<acp.ChatInputOmission> omissions = const <acp.ChatInputOmission>[],
   }) {
     final lastMessage = messages.isNotEmpty ? messages.last : null;
     final ChatMessage target;
@@ -7385,7 +5968,7 @@ class ChatController extends ChangeNotifier {
       for (final omission in omissions) {
         final applied = _applyTurnTextMutation(
           turnBudget,
-          parts: const <_TurnTextAppend>[],
+          parts: const <ChatTextAppend>[],
           omissionTarget: target,
           omission: omission,
         );
@@ -7401,7 +5984,7 @@ class ChatController extends ChangeNotifier {
         }
       }
     } else {
-      final candidate = ChatMessage._guarded(
+      final candidate = ChatMessage.projectionGuarded(
         role: role,
         text: '',
         metadata: metadata,
@@ -7424,26 +6007,26 @@ class ChatController extends ChangeNotifier {
     final behaviorRejected = event.metadata['_behaviorRejected'] == true;
     if (event.metadata['_behaviorRejectedAll'] == true) {
       _replaceTurnCommands(const <Map<String, Object?>>[], markAccepted: false);
-      _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+      _replaceTurnSettings(const ChatSessionSettings(), markAccepted: false);
       _resetAgentEventAcceptedProjection();
       _appendBehaviorFailureMarker(event.omissions);
       return;
     }
     if (kind == 'mode') {
       if (behaviorRejected) {
-        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+        _replaceTurnSettings(const ChatSessionSettings(), markAccepted: false);
         _resetAgentEventAcceptedProjection();
         _appendBehaviorFailureMarker(event.omissions);
         return;
       }
       final mode = event.metadata['mode'];
       if (mode is! String || mode.isEmpty) {
-        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+        _replaceTurnSettings(const ChatSessionSettings(), markAccepted: false);
         _resetAgentEventAcceptedProjection();
-        _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+        _appendBehaviorFailureMarker(<acp.ChatInputOmission>[
           ...event.omissions,
-          acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmission(
+            reason: acp.ChatInputOmissionReason.invalidStructure,
             resource: 'session mode',
             truncated: false,
           ),
@@ -7461,19 +6044,19 @@ class ChatController extends ChangeNotifier {
     }
     if (kind == 'config_option_update') {
       if (behaviorRejected) {
-        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+        _replaceTurnSettings(const ChatSessionSettings(), markAccepted: false);
         _resetAgentEventAcceptedProjection();
         _appendBehaviorFailureMarker(event.omissions);
         return;
       }
       final options = event.metadata['configOptions'];
-      if (options is! List<AcpConfigOption>) {
-        _replaceTurnSettings(const AcpSessionSettings(), markAccepted: false);
+      if (options is! List<ChatConfigOption>) {
+        _replaceTurnSettings(const ChatSessionSettings(), markAccepted: false);
         _resetAgentEventAcceptedProjection();
-        _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+        _appendBehaviorFailureMarker(<acp.ChatInputOmission>[
           ...event.omissions,
-          acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmission(
+            reason: acp.ChatInputOmissionReason.invalidStructure,
             resource: 'config options',
             truncated: false,
           ),
@@ -7514,10 +6097,10 @@ class ChatController extends ChangeNotifier {
       if (behaviorRejected) {
         if (event.metadata['_invalidUsageCost'] == true) {
           _resetAgentEventAcceptedProjection();
-          _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+          _appendBehaviorFailureMarker(<acp.ChatInputOmission>[
             ...event.omissions,
-            acp.AcpInputOmission(
-              reason: acp.AcpInputOmissionReason.invalidStructure,
+            acp.ChatInputOmission(
+              reason: acp.ChatInputOmissionReason.invalidStructure,
               resource: 'usage cost',
               truncated: false,
             ),
@@ -7530,10 +6113,10 @@ class ChatController extends ChangeNotifier {
       final usageResult = _replaceTurnUsage(event.metadata);
       if (usageResult.invalidResource case final invalidResource?) {
         _resetAgentEventAcceptedProjection();
-        _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+        _appendBehaviorFailureMarker(<acp.ChatInputOmission>[
           ...event.omissions,
-          acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmission(
+            reason: acp.ChatInputOmissionReason.invalidStructure,
             resource: invalidResource,
             truncated: false,
           ),
@@ -7581,10 +6164,10 @@ class ChatController extends ChangeNotifier {
             markAccepted: false,
           );
           _resetAgentEventAcceptedProjection();
-          _appendBehaviorFailureMarker(<acp.AcpInputOmission>[
+          _appendBehaviorFailureMarker(<acp.ChatInputOmission>[
             ...event.omissions,
-            acp.AcpInputOmission(
-              reason: acp.AcpInputOmissionReason.invalidStructure,
+            acp.ChatInputOmission(
+              reason: acp.ChatInputOmissionReason.invalidStructure,
               resource: 'commands',
               truncated: false,
             ),
@@ -7610,7 +6193,7 @@ class ChatController extends ChangeNotifier {
       for (final omission in event.omissions) {
         final applied = _applyTurnTextMutation(
           turnBudget,
-          parts: const <_TurnTextAppend>[],
+          parts: const <ChatTextAppend>[],
           omissionTarget: lastMessage,
           omission: omission,
         );
@@ -7629,7 +6212,7 @@ class ChatController extends ChangeNotifier {
       return;
     }
     if (kind == 'thought') {
-      final message = ChatMessage._guarded(
+      final message = ChatMessage.projectionGuarded(
         role: ChatMessageRole.status,
         text: '',
         metadata: event.metadata,
@@ -7656,7 +6239,7 @@ class ChatController extends ChangeNotifier {
     );
   }
 
-  void _appendBehaviorFailureMarker(List<acp.AcpInputOmission> omissions) {
+  void _appendBehaviorFailureMarker(List<acp.ChatInputOmission> omissions) {
     _addTurnMessage(
       ChatMessage(
         role: ChatMessageRole.status,
@@ -7776,23 +6359,8 @@ class ChatController extends ChangeNotifier {
     return value is String ? value.trim() : '';
   }
 
-  String _toolCallIdFromMetadata(Map<String, Object?> metadata) {
-    for (final key in _toolCallIdMetadataKeys) {
-      final value = _stringFromMap(metadata, key);
-      if (value.isNotEmpty) return value;
-    }
-    final nested = metadata['toolCall'];
-    if (nested is Map) {
-      final nestedMetadata = nested.map(
-        (key, value) => MapEntry(key.toString(), value),
-      );
-      for (final key in _toolCallIdMetadataKeys) {
-        final value = _stringFromMap(nestedMetadata, key);
-        if (value.isNotEmpty) return value;
-      }
-    }
-    return '';
-  }
+  String _toolCallIdFromMetadata(Map<String, Object?> metadata) =>
+      chatToolCallId(metadata);
 
   ({AcpSessionUsageCost? cost, bool valid}) _usageCostFromObject(Object? raw) {
     if (raw == null) return (cost: null, valid: true);
@@ -8006,7 +6574,7 @@ class ChatController extends ChangeNotifier {
     return true;
   }
 
-  List<AcpConfigOption> _configOptionsWithOverride(
+  List<ChatConfigOption> _configOptionsWithOverride(
     String configId,
     Object value,
   ) {
@@ -8042,7 +6610,7 @@ class ChatController extends ChangeNotifier {
           'kind': 'turn',
           'stopReason': canonicalStopReason,
         },
-        omissions: _boundedChatMessageOmissions(
+        omissions: projectionBoundedChatMessageOmissions(
           event.omissions,
           display.omission,
           inputBudget.maxCollectionItems,
@@ -8279,7 +6847,7 @@ class ChatController extends ChangeNotifier {
       turnId: turnId,
     );
     if (!_canFitActiveMessageRetainedDelta(
-      message.retainedBytes + _retainedListItemHostBytes,
+      message.retainedBytes + projectionRetainedListItemHostBytes,
     )) {
       return;
     }
@@ -8320,15 +6888,15 @@ class ChatController extends ChangeNotifier {
     return event.text;
   }
 
-  ({String text, acp.AcpInputOmission? omission}) _boundedLocalErrorText(
+  ({String text, acp.ChatInputOmission? omission}) _boundedLocalErrorText(
     String raw,
   ) => _boundedLocalDisplayText(raw, resource: 'error text');
 
-  ({String text, acp.AcpInputOmission? omission}) _boundedLocalDisplayText(
+  ({String text, acp.ChatInputOmission? omission}) _boundedLocalDisplayText(
     String raw, {
     required String resource,
   }) {
-    final counter = acp.AcpUtf8LineBudgetCounter(
+    final counter = acp.ChatUtf8LineBudgetCounter(
       maxBytes: inputBudget.maxMessageTextBytes,
       maxLines: inputBudget.maxMessageTextLines,
       resource: resource,
@@ -8387,7 +6955,7 @@ class ChatController extends ChangeNotifier {
       }
     } catch (_) {
       if (_isCurrentSessionSettingsLoad(loadId, sessionId)) {
-        sessionSettings = const AcpSessionSettings();
+        sessionSettings = const ChatSessionSettings();
       }
     } finally {
       if (notify && !_isDisposed && _activeSessionSettingsLoadId == loadId) {

@@ -1,6 +1,7 @@
-import 'package:ianvs_agent_chat/models/chat_capabilities.dart';
-export 'package:ianvs_agent_chat/models/chat_capabilities.dart';
-import 'acp_input_budget.dart' show AcpInputBudget, copyBoundedInitializeInput;
+import 'package:ianvs_agent_core/models/chat_capabilities.dart';
+export 'package:ianvs_agent_core/models/chat_capabilities.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart'
+    show ChatInputBudget, copyBoundedInitializeInput;
 
 typedef AcpPromptCapabilities = ChatPromptCapabilities;
 
@@ -32,7 +33,7 @@ class AcpAgentCapabilities {
     required bool allowReadOutsideWorkspace,
     Object? agentInfo,
     Map<String, dynamic>? clientInfo,
-    AcpInputBudget inputBudget = const AcpInputBudget(),
+    ChatInputBudget inputBudget = const ChatInputBudget(),
   }) {
     final copied = copyBoundedInitializeInput(
       agentCapabilities: agentCapabilities,

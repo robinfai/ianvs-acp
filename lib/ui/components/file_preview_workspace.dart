@@ -8,7 +8,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:path/path.dart' as p;
 
-import '../../acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import '../../platform/file_manager.dart';
 import '../file_preview/file_preview_document.dart';
 import '../file_preview/markdown_front_matter.dart';
@@ -42,7 +42,7 @@ class FilePreviewWorkspace extends StatefulWidget {
     this.processRunner,
     this.resolveTarget = resolveFilePreviewTarget,
     this.imageDimensionInspector = inspectFilePreviewImageDimensions,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
     this.markdownImageLoadBudgetLedger,
@@ -60,7 +60,7 @@ class FilePreviewWorkspace extends StatefulWidget {
   final FilePreviewProcessRunner? processRunner;
   final FilePreviewTargetResolver resolveTarget;
   final FilePreviewImageDimensionInspector imageDimensionInspector;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
   final MarkdownImageLoadBudgetLedger? markdownImageLoadBudgetLedger;
@@ -354,7 +354,7 @@ class FilePreviewPane extends StatefulWidget {
     required this.onClosePreview,
     required this.onOpenNestedLink,
     this.processRunner,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
     required this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
     this.markdownImageLoadBudgetLedger,
@@ -370,7 +370,7 @@ class FilePreviewPane extends StatefulWidget {
   final VoidCallback onClosePreview;
   final FilePreviewLinkHandler onOpenNestedLink;
   final FilePreviewProcessRunner? processRunner;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
   final MarkdownImageLoadBudgetLedger? markdownImageLoadBudgetLedger;
@@ -945,7 +945,7 @@ class _PreviewBody extends StatelessWidget {
   final List<String> additionalDirectories;
   final FilePreviewLinkHandler onTapLink;
   final VoidCallback onOpenExternal;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
   final MarkdownImageLoadBudgetLedger? markdownImageLoadBudgetLedger;
@@ -1057,7 +1057,7 @@ class _MarkdownFilePreview extends StatefulWidget {
   final String workspacePath;
   final List<String> additionalDirectories;
   final FilePreviewLinkHandler onTapLink;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
   final MarkdownImageLoadBudgetLedger? imageLoadBudgetLedger;
@@ -1523,7 +1523,7 @@ class _ImageFilePreview extends StatelessWidget {
   });
 
   final Uint8List bytes;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
 

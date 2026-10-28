@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:mime/mime.dart' as mime;
 
-import 'chat_capabilities.dart';
+import 'package:ianvs_agent_core/models/chat_capabilities.dart';
 
 enum PromptAttachmentKind { file, image, audio }
 

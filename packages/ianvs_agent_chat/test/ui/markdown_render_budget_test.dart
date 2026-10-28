@@ -1,4 +1,4 @@
-import 'package:ianvs_agent_chat/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
 import 'package:ianvs_agent_chat/ui/markdown_render_budget.dart';

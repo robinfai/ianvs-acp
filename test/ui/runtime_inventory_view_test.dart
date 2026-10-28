@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
@@ -207,7 +207,7 @@ void main() {
     expect(find.text('manual confirmation'), findsOneWidget);
 
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.fullAccess,
+      ChatToolCallExecutionPolicy.fullAccess,
     );
     await tester.pump();
 
@@ -430,33 +430,33 @@ void main() {
       sessionTemplateId: 'review',
       sessionTemplateVersion: 1,
     );
-    controller.sessionSettings = const AcpSessionSettings(
-      modes: AcpSessionModeInfo(
+    controller.sessionSettings = const ChatSessionSettings(
+      modes: ChatSessionModeInfo(
         currentModeId: 'default',
-        availableModes: <AcpSessionMode>[
-          AcpSessionMode(id: 'default', name: 'Default'),
-          AcpSessionMode(id: 'plan', name: 'Plan'),
+        availableModes: <ChatSessionMode>[
+          ChatSessionMode(id: 'default', name: 'Default'),
+          ChatSessionMode(id: 'plan', name: 'Plan'),
         ],
       ),
-      configOptions: <AcpConfigOption>[
-        AcpConfigOption(
+      configOptions: <ChatConfigOption>[
+        ChatConfigOption(
           id: 'model',
           name: 'Model',
           type: 'select',
           currentValue: 'slow',
-          options: <AcpConfigOptionChoice>[
-            AcpConfigOptionChoice(value: 'slow', name: 'Slow'),
-            AcpConfigOptionChoice(value: 'fast', name: 'Fast'),
+          options: <ChatConfigOptionChoice>[
+            ChatConfigOptionChoice(value: 'slow', name: 'Slow'),
+            ChatConfigOptionChoice(value: 'fast', name: 'Fast'),
           ],
         ),
-        AcpConfigOption(
+        ChatConfigOption(
           id: 'reasoning_effort',
           name: 'Reasoning effort',
           type: 'select',
           currentValue: 'low',
-          options: <AcpConfigOptionChoice>[
-            AcpConfigOptionChoice(value: 'low', name: 'Low'),
-            AcpConfigOptionChoice(value: 'high', name: 'High'),
+          options: <ChatConfigOptionChoice>[
+            ChatConfigOptionChoice(value: 'low', name: 'Low'),
+            ChatConfigOptionChoice(value: 'high', name: 'High'),
           ],
         ),
       ],
@@ -481,30 +481,30 @@ void main() {
       findsOneWidget,
     );
 
-    controller.sessionSettings = const AcpSessionSettings(
-      modes: AcpSessionModeInfo(
+    controller.sessionSettings = const ChatSessionSettings(
+      modes: ChatSessionModeInfo(
         currentModeId: 'plan',
-        availableModes: <AcpSessionMode>[
-          AcpSessionMode(id: 'plan', name: 'Plan'),
+        availableModes: <ChatSessionMode>[
+          ChatSessionMode(id: 'plan', name: 'Plan'),
         ],
       ),
-      configOptions: <AcpConfigOption>[
-        AcpConfigOption(
+      configOptions: <ChatConfigOption>[
+        ChatConfigOption(
           id: 'model',
           name: 'Model',
           type: 'select',
           currentValue: 'fast',
-          options: <AcpConfigOptionChoice>[
-            AcpConfigOptionChoice(value: 'fast', name: 'Fast'),
+          options: <ChatConfigOptionChoice>[
+            ChatConfigOptionChoice(value: 'fast', name: 'Fast'),
           ],
         ),
-        AcpConfigOption(
+        ChatConfigOption(
           id: 'reasoning_effort',
           name: 'Reasoning effort',
           type: 'select',
           currentValue: 'high',
-          options: <AcpConfigOptionChoice>[
-            AcpConfigOptionChoice(value: 'high', name: 'High'),
+          options: <ChatConfigOptionChoice>[
+            ChatConfigOptionChoice(value: 'high', name: 'High'),
           ],
         ),
       ],
@@ -570,8 +570,8 @@ void main() {
 
 final class _StubPermissionReviewer extends AcpPermissionReviewer {
   @override
-  Future<AcpPermissionReviewResult?> review(
-    AcpPermissionRequest request, {
+  Future<ChatPermissionReviewResult?> review(
+    ChatPermissionRequest request, {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,

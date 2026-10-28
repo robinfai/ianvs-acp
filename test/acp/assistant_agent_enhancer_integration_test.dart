@@ -4,12 +4,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/assistant_agent_enhancer.dart';
 import 'package:ianvs_acp/acp/rust_acp_agent_client.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
-import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
+import 'package:ianvs_acp_runtime/ianvs_acp_runtime.dart';
 
 void main() {
   final root = Directory.current.path;
-  final libraryPath = '$root/rust/target/debug/libianvs_acp_ffi.dylib';
-  final agentPath = '$root/rust/target/debug/ianvs-acp-fixture-agent';
+  final libraryPath =
+      '$root/packages/ianvs_acp_runtime/rust/target/debug/libianvs_acp_ffi.dylib';
+  final agentPath =
+      '$root/packages/ianvs_acp_runtime/rust/target/debug/ianvs-acp-fixture-agent';
   final artifactsAvailable =
       File(libraryPath).existsSync() && File(agentPath).existsSync();
 

@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import 'dart:collection';
 
 import '../../state/chat_controller.dart';

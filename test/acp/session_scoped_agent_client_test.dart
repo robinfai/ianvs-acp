@@ -3,11 +3,11 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_client.dart';
 import 'package:ianvs_acp/acp/acp_available_commands.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'package:ianvs_acp/acp/session_scoped_agent_client.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
 import 'package:ianvs_acp/storage/session_transcript_cache.dart';
@@ -24,8 +24,8 @@ void main() {
     final firstSession = await first.createSession(cwd: '/workspace/first');
     final secondSession = await second.createSession(cwd: '/workspace/second');
 
-    final firstRequests = <AcpPermissionRequest>[];
-    final secondRequests = <AcpPermissionRequest>[];
+    final firstRequests = <ChatPermissionRequest>[];
+    final secondRequests = <ChatPermissionRequest>[];
     final firstSubscription = first.permissionRequests.listen(
       firstRequests.add,
     );
@@ -47,13 +47,13 @@ void main() {
     await expectLater(
       second.respondToPermissionRequest(
         id: 'permission-a',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       ),
       throwsStateError,
     );
     await first.respondToPermissionRequest(
       id: 'permission-a',
-      decision: AcpPermissionDecision.allow,
+      decision: ChatPermissionDecision.allow,
     );
     expect(underlying.lastPermissionRequestId, 'permission-a');
 
@@ -103,7 +103,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(underlying.lastPermissionRequestId, 'late-retired');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
       expect(controller.permissionHistory, isEmpty);
     },
   );
@@ -117,7 +117,7 @@ void main() {
       final observingLease = pool.acquire();
       addTearDown(retiredLease.dispose);
       addTearDown(observingLease.dispose);
-      final observed = <AcpPermissionRequest>[];
+      final observed = <ChatPermissionRequest>[];
       final subscription = observingLease.permissionRequests.listen(
         observed.add,
       );
@@ -133,7 +133,7 @@ void main() {
 
       expect(observed, isEmpty);
       expect(underlying.lastPermissionRequestId, 'late-without-listener');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     },
   );
 
@@ -172,7 +172,7 @@ void main() {
     expect(controller.currentSession?.id, 'actual-session');
     expect(controller.pendingPermissionRequest, isNull);
     expect(underlying.lastPermissionRequestId, 'mismatched-setup');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
   });
 
   test('cancels provisional permissions when setup fails', () async {
@@ -189,7 +189,7 @@ void main() {
     expect(controller.currentSession, isNull);
     expect(controller.pendingPermissionRequest, isNull);
     expect(underlying.lastPermissionRequestId, 'failed-setup');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
   });
 
   test(
@@ -205,7 +205,7 @@ void main() {
       expect(await controller.newSession(), isTrue);
       final previousSessionId = controller.currentSession!.id;
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
+        ChatToolCallExecutionPolicy.fullAccess,
       );
       expect(await controller.newSession(), isFalse);
       await Future<void>.delayed(Duration.zero);
@@ -213,7 +213,7 @@ void main() {
       expect(controller.currentSession?.id, previousSessionId);
       expect(controller.pendingPermissionRequest, isNull);
       expect(underlying.lastPermissionRequestId, 'late-previous-permission');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     },
   );
 
@@ -236,7 +236,7 @@ void main() {
       expect(controller.currentSession?.id, 'reused-session');
       expect(controller.pendingPermissionRequest, isNull);
       expect(underlying.lastPermissionRequestId, 'reused-permission-2');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     },
   );
 
@@ -269,7 +269,7 @@ void main() {
     expect(idle.pendingPermissionRequest, isNull);
     expect(active.pendingPermissionRequest, isNull);
     expect(underlying.lastPermissionRequestId, 'late-after-close-failure');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
   });
 
   test('close failure cancels an already pending remote permission', () async {
@@ -296,7 +296,7 @@ void main() {
 
     expect(controller.pendingPermissionRequest, isNull);
     expect(underlying.lastPermissionRequestId, 'pending-before-close');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
   });
 
   test(
@@ -323,15 +323,15 @@ void main() {
       expect(controller.currentSession?.id, sessionId);
       expect(controller.pendingPermissionRequest, isNull);
       expect(underlying.lastPermissionRequestId, 'pending-before-delete');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
 
       underlying.emitPermissionRequest(
         _permissionRequest(id: 'pending-after-delete', sessionId: sessionId),
       );
       expect(controller.pendingPermissionRequest?.id, 'pending-after-delete');
-      await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
+      await controller.resolvePermissionRequest(ChatPermissionDecision.allow);
       expect(underlying.lastPermissionRequestId, 'pending-after-delete');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.allow);
     },
   );
 
@@ -395,8 +395,8 @@ void main() {
       final underlying = _ControlledCloseAgentClient();
       final lease = SessionScopedAgentClientPool(underlying).acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
-      final invalidations = <AcpPermissionInvalidation>[];
+      final requests = <ChatPermissionRequest>[];
+      final invalidations = <ChatPermissionInvalidation>[];
       final requestSubscription = lease.permissionRequests.listen(requests.add);
       final invalidationSubscription = lease.permissionInvalidations.listen(
         invalidations.add,
@@ -418,7 +418,7 @@ void main() {
       await expectLater(
         lease.respondToPermissionRequest(
           id: 'before-terminal-close',
-          decision: AcpPermissionDecision.allow,
+          decision: ChatPermissionDecision.allow,
         ),
         throwsStateError,
       );
@@ -429,7 +429,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(requests, hasLength(1));
       expect(underlying.lastPermissionRequestId, 'during-terminal-close');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
 
       underlying.releaseClose();
       await close;
@@ -452,7 +452,7 @@ void main() {
         _permissionRequest(id: 'responding-during-close', sessionId: sessionId),
       );
       final response = controller.resolvePermissionRequest(
-        AcpPermissionDecision.allow,
+        ChatPermissionDecision.allow,
       );
       await underlying.responseStarted;
 
@@ -470,7 +470,7 @@ void main() {
 
       expect(controller.pendingPermissionRequest, isNull);
       expect(underlying.lastPermissionRequestId, 'late-after-rejected-close');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     },
   );
 
@@ -478,7 +478,7 @@ void main() {
     final underlying = _ControlledDeleteAgentClient();
     final lease = SessionScopedAgentClientPool(underlying).acquire();
     addTearDown(lease.dispose);
-    final requests = <AcpPermissionRequest>[];
+    final requests = <ChatPermissionRequest>[];
     final subscription = lease.permissionRequests.listen(requests.add);
     addTearDown(subscription.cancel);
 
@@ -493,7 +493,7 @@ void main() {
 
     expect(requests, isEmpty);
     expect(underlying.lastPermissionRequestId, 'during-terminal-delete');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     underlying.releaseDelete();
     await deletion;
   });
@@ -672,7 +672,7 @@ void main() {
       final creating = pool.acquire();
       addTearDown(owner.dispose);
       addTearDown(creating.dispose);
-      final creatingRequests = <AcpPermissionRequest>[];
+      final creatingRequests = <ChatPermissionRequest>[];
       final subscription = creating.permissionRequests.listen(
         creatingRequests.add,
       );
@@ -690,7 +690,7 @@ void main() {
 
       expect(creatingRequests, isEmpty);
       expect(underlying.lastPermissionRequestId, 'late-inactive');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
       underlying.releaseBlockedCreate();
       await create;
       await owner.sessionSettings(inactive.id);
@@ -707,7 +707,7 @@ void main() {
       final creating = pool.acquire();
       addTearDown(owner.dispose);
       addTearDown(creating.dispose);
-      final creatingRequests = <AcpPermissionRequest>[];
+      final creatingRequests = <ChatPermissionRequest>[];
       final subscription = creating.permissionRequests.listen(
         creatingRequests.add,
       );
@@ -727,7 +727,7 @@ void main() {
 
       expect(creatingRequests, isEmpty);
       expect(underlying.lastPermissionRequestId, 'late-evicted-known');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
       underlying.releaseBlockedCreate();
       await create;
       final ownership = owner as AcpLocalSessionViewOwnership;
@@ -744,7 +744,7 @@ void main() {
     final second = pool.acquire();
     addTearDown(first.dispose);
     addTearDown(second.dispose);
-    final invalidations = <AcpPermissionInvalidation>[];
+    final invalidations = <ChatPermissionInvalidation>[];
     final requestSubscription = first.permissionRequests.listen((_) {});
     final invalidationSubscription = first.permissionInvalidations.listen(
       invalidations.add,
@@ -766,11 +766,11 @@ void main() {
 
     expect(invalidations.single.requestId, 'handoff-permission');
     expect(underlying.lastPermissionRequestId, 'handoff-permission');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     await expectLater(
       first.respondToPermissionRequest(
         id: 'handoff-permission',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       ),
       throwsStateError,
     );
@@ -812,9 +812,9 @@ void main() {
       );
       await first.respondToPermissionRequest(
         id: 'preserved-after-failed-handoff',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       );
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.allow);
     },
   );
 
@@ -868,9 +868,9 @@ void main() {
     final second = pool.acquire();
     addTearDown(first.dispose);
     addTearDown(second.dispose);
-    final firstRequests = <AcpPermissionRequest>[];
-    final secondRequests = <AcpPermissionRequest>[];
-    final firstInvalidations = <AcpPermissionInvalidation>[];
+    final firstRequests = <ChatPermissionRequest>[];
+    final secondRequests = <ChatPermissionRequest>[];
+    final firstInvalidations = <ChatPermissionInvalidation>[];
     final firstSubscription = first.permissionRequests.listen(
       firstRequests.add,
     );
@@ -902,11 +902,11 @@ void main() {
       ),
     );
     underlying.emitPermissionInvalidation(
-      AcpPermissionInvalidation(
+      ChatPermissionInvalidation(
         requestId: 'reused-permission',
         lifecycleId: 'old-lifecycle',
         sessionId: firstSession.id,
-        reason: AcpPermissionInvalidationReason.sessionClosed,
+        reason: ChatPermissionInvalidationReason.sessionClosed,
         invalidatedAt: DateTime(2026, 8, 20),
       ),
     );
@@ -918,13 +918,13 @@ void main() {
     await expectLater(
       first.respondToPermissionRequest(
         id: 'reused-permission',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       ),
       throwsStateError,
     );
     await second.respondToPermissionRequest(
       id: 'reused-permission',
-      decision: AcpPermissionDecision.allow,
+      decision: ChatPermissionDecision.allow,
     );
     expect(underlying.lastPermissionRequestId, 'reused-permission');
   });
@@ -936,8 +936,8 @@ void main() {
       final pool = SessionScopedAgentClientPool(underlying);
       final lease = pool.acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
-      final invalidations = <AcpPermissionInvalidation>[];
+      final requests = <ChatPermissionRequest>[];
+      final invalidations = <ChatPermissionInvalidation>[];
       final requestSubscription = lease.permissionRequests.listen(requests.add);
       final invalidationSubscription = lease.permissionInvalidations.listen(
         invalidations.add,
@@ -957,11 +957,11 @@ void main() {
       expect(requests.single.id, ' permission-with-space ');
 
       underlying.emitPermissionInvalidation(
-        AcpPermissionInvalidation(
+        ChatPermissionInvalidation(
           requestId: ' permission-with-space ',
           lifecycleId: ' lifecycle-with-space ',
           sessionId: session.id,
-          reason: AcpPermissionInvalidationReason.sessionClosed,
+          reason: ChatPermissionInvalidationReason.sessionClosed,
           invalidatedAt: DateTime(2026, 8, 20),
         ),
       );
@@ -974,7 +974,7 @@ void main() {
     final pool = SessionScopedAgentClientPool(underlying);
     final lease = pool.acquire();
     addTearDown(lease.dispose);
-    final requests = <AcpPermissionRequest>[];
+    final requests = <ChatPermissionRequest>[];
     final subscription = lease.permissionRequests.listen(requests.add);
     addTearDown(subscription.cancel);
 
@@ -989,7 +989,7 @@ void main() {
 
     expect(requests, hasLength(512));
     expect(underlying.lastPermissionRequestId, 'permission-512');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
   });
 
   test(
@@ -1021,7 +1021,7 @@ void main() {
       final pool = SessionScopedAgentClientPool(underlying);
       final lease = pool.acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = lease.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1054,7 +1054,7 @@ void main() {
       final pool = SessionScopedAgentClientPool(underlying);
       final lease = pool.acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = lease.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1075,11 +1075,11 @@ void main() {
         ),
       );
       underlying.emitPermissionInvalidation(
-        AcpPermissionInvalidation(
+        ChatPermissionInvalidation(
           requestId: 'invalidated-during-cancel',
           lifecycleId: 'deferred-lifecycle',
           sessionId: session.id,
-          reason: AcpPermissionInvalidationReason.timedOut,
+          reason: ChatPermissionInvalidationReason.timedOut,
           invalidatedAt: DateTime(2026, 8, 20),
         ),
       );
@@ -1100,7 +1100,7 @@ void main() {
       addTearDown(first.dispose);
       addTearDown(second.dispose);
       final firstSubscription = first.permissionRequests.listen((_) {});
-      final secondRequests = <AcpPermissionRequest>[];
+      final secondRequests = <ChatPermissionRequest>[];
       final secondSubscription = second.permissionRequests.listen(
         secondRequests.add,
       );
@@ -1121,7 +1121,7 @@ void main() {
       );
       final response = first.respondToPermissionRequest(
         id: 'invalidated-during-response',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       );
       await underlying.responseStarted;
       underlying.emitPermissionRequest(
@@ -1132,11 +1132,11 @@ void main() {
         ),
       );
       underlying.emitPermissionInvalidation(
-        AcpPermissionInvalidation(
+        ChatPermissionInvalidation(
           requestId: 'invalidated-during-response',
           lifecycleId: 'second-lifecycle',
           sessionId: secondSession.id,
-          reason: AcpPermissionInvalidationReason.timedOut,
+          reason: ChatPermissionInvalidationReason.timedOut,
           invalidatedAt: DateTime(2026, 8, 20),
         ),
       );
@@ -1153,7 +1153,7 @@ void main() {
       final underlying = _ControlledPermissionResponseAgentClient();
       final lease = SessionScopedAgentClientPool(underlying).acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = lease.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1167,16 +1167,16 @@ void main() {
       underlying.emitPermissionRequest(request);
       final response = lease.respondToPermissionRequest(
         id: request.id,
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       );
       await underlying.responseStarted;
       underlying.emitPermissionRequest(request);
       underlying.emitPermissionInvalidation(
-        AcpPermissionInvalidation(
+        ChatPermissionInvalidation(
           requestId: request.id,
           lifecycleId: request.lifecycleId,
           sessionId: request.sessionId,
-          reason: AcpPermissionInvalidationReason.timedOut,
+          reason: ChatPermissionInvalidationReason.timedOut,
           invalidatedAt: DateTime(2026, 8, 20),
         ),
       );
@@ -1212,7 +1212,7 @@ void main() {
       final underlying = _ControlledPermissionResponseAgentClient();
       final lease = SessionScopedAgentClientPool(underlying).acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = lease.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1250,7 +1250,7 @@ void main() {
       final underlying = _ControlledPermissionResponseAgentClient();
       final lease = SessionScopedAgentClientPool(underlying).acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = lease.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1270,11 +1270,11 @@ void main() {
         ),
       );
       underlying.emitPermissionInvalidation(
-        AcpPermissionInvalidation(
+        ChatPermissionInvalidation(
           requestId: 'queued-lifecycle-reuse',
           lifecycleId: 'old-lifecycle',
           sessionId: 'old-session',
-          reason: AcpPermissionInvalidationReason.timedOut,
+          reason: ChatPermissionInvalidationReason.timedOut,
           invalidatedAt: DateTime(2026, 8, 20),
         ),
       );
@@ -1320,7 +1320,7 @@ void main() {
     final creating = pool.acquire();
     addTearDown(retiring.dispose);
     addTearDown(creating.dispose);
-    final creatingRequests = <AcpPermissionRequest>[];
+    final creatingRequests = <ChatPermissionRequest>[];
     final subscription = creating.permissionRequests.listen(
       creatingRequests.add,
     );
@@ -1340,7 +1340,7 @@ void main() {
 
     expect(creatingRequests, isEmpty);
     expect(underlying.lastPermissionRequestId, 'evicted-late');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     underlying.releaseLastCreate();
     await create;
   });
@@ -1354,7 +1354,7 @@ void main() {
       final creating = pool.acquire();
       addTearDown(retiring.dispose);
       addTearDown(creating.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = creating.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1381,7 +1381,7 @@ void main() {
       final creating = pool.acquire();
       addTearDown(retiring.dispose);
       addTearDown(creating.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = creating.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1398,7 +1398,7 @@ void main() {
 
       expect(requests, isEmpty);
       expect(underlying.lastPermissionRequestId, 'late-after-logout');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
       underlying.releaseBlockedCreate();
       await create;
     },
@@ -1413,7 +1413,7 @@ void main() {
       final creating = pool.acquire();
       addTearDown(retiring.dispose);
       addTearDown(creating.dispose);
-      final requests = <AcpPermissionRequest>[];
+      final requests = <ChatPermissionRequest>[];
       final subscription = creating.permissionRequests.listen(requests.add);
       addTearDown(subscription.cancel);
 
@@ -1519,14 +1519,14 @@ void main() {
     );
     final firstResponse = lease.respondToPermissionRequest(
       id: 'single-response',
-      decision: AcpPermissionDecision.allow,
+      decision: ChatPermissionDecision.allow,
     );
     await underlying.responseStarted;
 
     await expectLater(
       lease.respondToPermissionRequest(
         id: 'single-response',
-        decision: AcpPermissionDecision.deny,
+        decision: ChatPermissionDecision.deny,
       ),
       throwsStateError,
     );
@@ -1564,11 +1564,11 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(underlying.lastPermissionRequestId, 'terminal-live');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     await expectLater(
       lease.respondToPermissionRequest(
         id: 'terminal-live',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       ),
       throwsStateError,
     );
@@ -1580,8 +1580,8 @@ void main() {
       final underlying = _TrackingAgentClient();
       final lease = SessionScopedAgentClientPool(underlying).acquire();
       addTearDown(lease.dispose);
-      final requests = <AcpPermissionRequest>[];
-      final invalidations = <AcpPermissionInvalidation>[];
+      final requests = <ChatPermissionRequest>[];
+      final invalidations = <ChatPermissionInvalidation>[];
       final requestDone = Completer<void>();
       final requestSubscription = lease.permissionRequests.listen(
         requests.add,
@@ -1611,7 +1611,7 @@ void main() {
         underlying.lastPermissionRequestId,
         'live-before-invalidation-done',
       );
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
 
       underlying.emitPermissionRequest(
         _permissionRequest(
@@ -1625,7 +1625,7 @@ void main() {
         underlying.lastPermissionRequestId,
         'future-after-invalidation-done',
       );
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     },
   );
 
@@ -1633,7 +1633,7 @@ void main() {
     final underlying = _ControlledPermissionResponseAgentClient();
     final lease = SessionScopedAgentClientPool(underlying).acquire();
     addTearDown(lease.dispose);
-    final requests = <AcpPermissionRequest>[];
+    final requests = <ChatPermissionRequest>[];
     final subscription = lease.permissionRequests.listen(requests.add);
     addTearDown(subscription.cancel);
 
@@ -1665,9 +1665,9 @@ void main() {
       'terminal-deferred',
       'terminal-deferred',
     ]);
-    expect(underlying.responseDecisions, <AcpPermissionDecision>[
-      AcpPermissionDecision.cancel,
-      AcpPermissionDecision.cancel,
+    expect(underlying.responseDecisions, <ChatPermissionDecision>[
+      ChatPermissionDecision.cancel,
+      ChatPermissionDecision.cancel,
     ]);
   });
 
@@ -1675,7 +1675,7 @@ void main() {
     final underlying = _ControlledPermissionResponseAgentClient();
     final lease = SessionScopedAgentClientPool(underlying).acquire();
     addTearDown(lease.dispose);
-    final requests = <AcpPermissionRequest>[];
+    final requests = <ChatPermissionRequest>[];
     final subscription = lease.permissionRequests.listen(requests.add);
     addTearDown(subscription.cancel);
 
@@ -1710,9 +1710,9 @@ void main() {
       'terminal-future-busy',
       'terminal-future-busy',
     ]);
-    expect(underlying.responseDecisions, <AcpPermissionDecision>[
-      AcpPermissionDecision.cancel,
-      AcpPermissionDecision.cancel,
+    expect(underlying.responseDecisions, <ChatPermissionDecision>[
+      ChatPermissionDecision.cancel,
+      ChatPermissionDecision.cancel,
     ]);
   });
 
@@ -1739,7 +1739,7 @@ void main() {
       );
 
       final response = controller.resolvePermissionRequest(
-        AcpPermissionDecision.allow,
+        ChatPermissionDecision.allow,
       );
       await underlying.responseStarted;
       await underlying.closePermissionInvalidations();
@@ -1756,11 +1756,11 @@ void main() {
       expect(controller.pendingPermissionRequest, isNull);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.allowed,
+        ChatPermissionAuditStatus.allowed,
       );
       expect(underlying.responseIds, <String>['allow-while-channel-closes']);
-      expect(underlying.responseDecisions, <AcpPermissionDecision>[
-        AcpPermissionDecision.allow,
+      expect(underlying.responseDecisions, <ChatPermissionDecision>[
+        ChatPermissionDecision.allow,
       ]);
     },
   );
@@ -1792,8 +1792,8 @@ void main() {
       throwsStateError,
     );
 
-    final firstRequests = <AcpPermissionRequest>[];
-    final secondRequests = <AcpPermissionRequest>[];
+    final firstRequests = <ChatPermissionRequest>[];
+    final secondRequests = <ChatPermissionRequest>[];
     final firstSubscription = first.permissionRequests.listen(
       firstRequests.add,
     );
@@ -1859,7 +1859,7 @@ void main() {
       );
       final response = first.respondToPermissionRequest(
         id: 'handoff-response',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       );
       await underlying.responseStarted;
 
@@ -1895,7 +1895,7 @@ void main() {
       );
       final response = first.respondToPermissionRequest(
         id: 'failed-response',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       );
       final failedResponse = expectLater(response, throwsStateError);
       await underlying.responseStarted;
@@ -1920,7 +1920,7 @@ void main() {
       }
 
       expect(underlying.lastPermissionRequestId, 'failed-response');
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
       await second.restoreSession(
         sessionId: session.id,
         cwd: '/workspace/b',
@@ -1956,7 +1956,7 @@ void main() {
       await expectLater(
         first.respondToPermissionRequest(
           id: 'reserved-handoff',
-          decision: AcpPermissionDecision.allow,
+          decision: ChatPermissionDecision.allow,
         ),
         throwsStateError,
       );
@@ -1974,8 +1974,8 @@ void main() {
       final second = pool.acquire();
       addTearDown(first.dispose);
       addTearDown(second.dispose);
-      final requests = <AcpPermissionRequest>[];
-      final invalidations = <AcpPermissionInvalidation>[];
+      final requests = <ChatPermissionRequest>[];
+      final invalidations = <ChatPermissionInvalidation>[];
       final requestSubscription = second.permissionRequests.listen(
         requests.add,
       );
@@ -2002,9 +2002,9 @@ void main() {
       expect(invalidations, isEmpty);
       await second.respondToPermissionRequest(
         id: 'restore-setup-permission',
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       );
-      expect(underlying.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(underlying.lastPermissionDecision, ChatPermissionDecision.allow);
     },
   );
 
@@ -2361,18 +2361,18 @@ void main() {
 
     expect(controller.pendingPermissionRequest, isNull);
     expect(underlying.lastPermissionRequestId, 'late-reconnect-permission');
-    expect(underlying.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(underlying.lastPermissionDecision, ChatPermissionDecision.cancel);
     underlying.releaseReconnect();
     await reconnect;
   });
 }
 
-AcpPermissionRequest _permissionRequest({
+ChatPermissionRequest _permissionRequest({
   required String id,
   required String sessionId,
   String? lifecycleId,
 }) {
-  return AcpPermissionRequest(
+  return ChatPermissionRequest(
     id: id,
     lifecycleId: lifecycleId ?? '$id-lifecycle',
     title: 'Run tool',
@@ -2656,15 +2656,15 @@ final class _ControlledPermissionResponseAgentClient
   final Completer<void> _responseGate = Completer<void>();
   int responseCalls = 0;
   final List<String> responseIds = <String>[];
-  final List<AcpPermissionDecision> responseDecisions =
-      <AcpPermissionDecision>[];
+  final List<ChatPermissionDecision> responseDecisions =
+      <ChatPermissionDecision>[];
 
   Future<void> get responseStarted => _responseStarted.future;
 
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     responseCalls += 1;
@@ -2750,7 +2750,7 @@ final class _FailingControlledPermissionResponseAgentClient
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     if (_failNextResponse) {

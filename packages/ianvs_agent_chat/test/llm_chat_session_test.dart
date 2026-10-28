@@ -1,7 +1,7 @@
+import 'package:ianvs_agent_core/ianvs_agent_core.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:ianvs_agent_chat/llm.dart';
-import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 

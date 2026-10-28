@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 
 class PermissionDisplayEntry {
   const PermissionDisplayEntry({required this.label, required this.value});

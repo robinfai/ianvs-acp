@@ -18,19 +18,13 @@ fixture agent, and native build/signing scripts. It has no Flutter dependency.
 | Full package verification | `tool/verify.sh` |
 | C header | `include/ianvs_acp.h` |
 | CLI example | `example/local_chat.dart` |
-| C ABI | **11**, `libianvs_acp_ffi.dylib`; incompatible versions are rejected |
-| Event schema | **4**, independent of the ABI and ACP wire version |
+| C ABI | **12**, `libianvs_acp_ffi.dylib`; incompatible versions are rejected |
+| Event schema | **5**, independent of the ABI and ACP wire version |
 | ACP Rust SDK | `agent-client-protocol = 2.1.0` in development source; stable ACP v1 wire protocol |
 
-The unreleased source uses Rust SDK 2.1.0. The published
-`ianvs_acp_runtime 0.1.0` archive still pins SDK 1.2.0; existing hosted consumers
-keep that version until a new package release. C ABI 11 and event schema 4 are
-unchanged.
-
-The package directory can be copied or archived as a whole and built outside this
-repository. No source, fixture, or build script depends on files above this
-directory. The app's root `rust` symlink and `lib/rust` re-exports are compatibility
-entry points only; the implementation lives here.
+The runtime and its sibling `ianvs_agent_core` are developed together in this
+workspace. Breaking changes update Dart, Rust, FFI and both hosts together.
+The native runtime remains macOS-only; the core has no Flutter dependency.
 
 ## Consumer integration
 
@@ -58,6 +52,8 @@ final subscription = runtime.events.listen(
   onError: handleStreamError,
 );
 runtime.startAgent(
+  environmentPolicy: AcpEnvironmentPolicy.replace,
+  maxRestartAttempts: 0,
   agentName: 'Document assistant',
   command: '/absolute/path/to/agent',
   args: ['--acp'],
@@ -76,7 +72,9 @@ await runtime.dispose();
 A runnable example is `dart run example/local_chat.dart /path/to/agent --acp`;
 it prints text/tool events and declines permissions by default.
 
-The launch environment inherits the host environment with explicit overrides;
+The launch environment policy is explicit: `replace` clears inherited variables;
+`inheritAndOverride` keeps them. Automatic restart is disabled by default
+(`maxRestartAttempts: 0`);
 `command` and `args` are passed directly, without a shell. GUI apps may need an
 absolute executable path and an explicit `PATH` for the agent's child tools.
 `processCwd` controls process launch; session `cwd` controls the session workspace.
@@ -89,9 +87,9 @@ process or tools. Permission requests from the agent are still surfaced. Local
 ACP is for the macOS host with App Sandbox disabled, matching ianvs-acp. Do not
 load or start this runtime on iOS or web.
 
-## ABI v11 event contract
+## ABI v12 event contract
 
-Every event is a flattened JSON envelope: `schemaVersion: 4`, positive strictly
+Every event is a flattened JSON envelope: `schemaVersion: 5`, positive strictly
 increasing `sequence` (per runtime), and snake_case `type`. Field names are
 camelCase. `IanvsRuntimeEvent.data` exposes the full envelope. Native polling
 returns `{ "events": [...], "hasMore": bool }`, or null when empty. Dart validates
@@ -100,9 +98,9 @@ Sequence gaps are allowed; regressing/repeated sequences are stream errors.
 
 | Type | Payload and consumer behavior |
 | --- | --- |
-| `status_changed` | `status`: `stopped`, `starting`, `ready`, `recovering`, `failed`, `disposed`; optional `detail`, `capabilities`. Wait for `ready` before session commands. |
+| `status_changed` | `status`: `stopped`, `starting`, `ready`, `recovering`, `failed`, `disposed`; optional `detail`, `capabilities` (including original `agentInfo`). Wait for `ready` before session commands. |
 | `session_update` | `update: {sessionId, kind, requestId?, text?, payload?}`. Kinds: `session_created`, `session_restored`, `session_closed`, `session_deleted`, `mode_changed`, `config_changed`, `commands_changed`, `permission_invalidated`. Creation completion carries the caller's request ID inside `update`, not at the envelope level. |
-| `render_update` | `update: {sessionId, kind, text?, metadata?}`. Kinds: `user_message`, `assistant_text`, `thought`, `tool_call`, `plan`, `turn_completed`. Text is streamed incrementally; append deltas. Merge tool fields by `metadata.toolCallId`; updates can be partial. `turn_completed.metadata` includes `requestId` and `stopReason` (including `cancelled`). |
+| `render_update` | `update: {sessionId, kind, text?, metadata?}`. Kinds: `user_message`, `assistant_text`, `thought`, `tool_call`, `plan`, `turn_completed`. Text is streamed incrementally; append deltas. Merge tool fields by `metadata.toolCallId`; updates can be partial. `turn_completed.metadata` includes `requestId`, `stopReason` (including `cancelled`), and `resultMeta` containing prompt `_meta`. Metadata above 16 KiB causes a correlated failure rather than silently losing quota fields. |
 | `render_snapshot_chunk` | `requestId`, `sessionId`, `chunkIndex`, `isLast`, `updates`. Stage replay chunks; commit only after the matching `session_restored`. Discard staged data on failure. |
 | `permission_request` | `request: {requestId, sessionId, toolCallId, title, toolKind, rawInput, options}`. Options contain `optionId`, `label`, `kind`. Respond using this nested request ID and an offered option. |
 | `runtime_error` | `requestId?`, `code`, `message`, `recoverable`. Correlate request failures; connection failures may have no request ID. Fail pending host operations on terminal failure and clear pending permissions. |
@@ -218,3 +216,16 @@ entry points still run the shared suites through compatibility wrappers.
 ## License
 
 Apache-2.0. Source provenance is recorded in `SOURCE.md`.
+
+## Shared content adapter
+
+`package:ianvs_acp_runtime/acp_chat_session.dart` exposes `AcpRuntimeChatSession`
+for an already-created native session. It implements the pure Dart core stream
+contract and owns only its subscription/content projection, not the runtime.
+The host starts and disposes the runtime, and chooses recovery/credential policy.
+Applications with additional queue/cache policies can consume native events and
+use core models directly. ACP permission choices never authorize host business
+operations such as Trail execution.
+
+Disposal is out-of-band and interrupts an unresponsive initialize or setup request;
+normal prompt cancellation still waits for the original prompt result.

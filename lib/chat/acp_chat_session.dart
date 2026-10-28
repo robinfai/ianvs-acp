@@ -1,9 +1,9 @@
-import 'package:ianvs_agent_chat/chat_submission.dart';
-import 'package:ianvs_agent_chat/chat_session.dart';
-import 'package:ianvs_agent_chat/models/chat_capabilities.dart';
-import 'package:ianvs_agent_chat/models/chat_permission_request.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
-import 'package:flutter/foundation.dart';
+import 'package:ianvs_agent_core/chat_submission.dart';
+import 'package:ianvs_agent_core/chat_session.dart';
+import 'package:ianvs_agent_core/models/chat_capabilities.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
+import 'dart:async';
 
 import '../acp/acp_prompt_capability_policy.dart';
 import '../state/chat_controller.dart';
@@ -47,11 +47,21 @@ class AcpChatSession extends ChatSession implements ChatSubmissionSession {
     });
   }
 
+  late final StreamController<ChatSessionState> _bridge =
+      StreamController.broadcast(
+        sync: true,
+        onListen: () => controller.addListener(_publish),
+        onCancel: () => controller.removeListener(_publish),
+      );
+  void _publish() => _bridge.add(state);
   @override
-  void addListener(VoidCallback listener) => controller.addListener(listener);
+  Stream<ChatSessionState> get changes => _bridge.stream;
   @override
-  void removeListener(VoidCallback listener) =>
-      controller.removeListener(listener);
+  void dispose() {
+    controller.removeListener(_publish);
+    unawaited(_bridge.close());
+    super.dispose();
+  }
 
   @override
   ChatSessionState get state {

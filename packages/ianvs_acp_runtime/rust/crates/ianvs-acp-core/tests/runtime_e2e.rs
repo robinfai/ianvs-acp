@@ -13,6 +13,7 @@ fn subprocess_handshake_prompt_permission_and_projection_are_rust_owned() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -217,6 +218,7 @@ fn prompt_attachments_are_bounded_workspace_scoped_and_typed_by_rust() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "attachment-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -416,6 +418,7 @@ fn filesystem_reverse_requests_use_permissions_and_core_scope() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "filesystem-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -549,6 +552,7 @@ fn permission_timeout_is_resolved_and_projected_by_rust() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -642,6 +646,7 @@ fn permission_flood_is_rejected_at_the_per_session_admission_limit() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "permission-flood-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -753,6 +758,7 @@ fn idle_agent_process_is_restarted_before_session_activity() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "flaky-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -812,6 +818,7 @@ fn process_loss_after_session_activity_restores_durable_session() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "session-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -935,6 +942,7 @@ fn one_bad_persisted_session_does_not_block_other_recovery_or_ready() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "partial-recovery-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -1074,6 +1082,7 @@ fn startup_migrates_prior_display_key_and_recovers_the_session() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "Renamed agent".to_string(),
             persistence_identity: Some("stable-agent-identity".to_string()),
             persistence_aliases: vec!["Original display name".to_string()],
@@ -1152,6 +1161,7 @@ fn duplicate_created_session_id_cannot_overwrite_the_registered_workspace() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "duplicate-session-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -1252,6 +1262,7 @@ fn duplicate_restored_session_id_keeps_the_first_workspace_and_registry_entry() 
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "duplicate-restore-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -1376,6 +1387,7 @@ fn durable_session_registry_survives_display_name_change_and_runtime_recreation(
     let directory = unique_temp_dir("session-recovery-reopen");
     let database = directory.join("sessions.sqlite3");
     let config = AgentLaunchConfig {
+        environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
         agent_name: "durable-session-fixture".to_string(),
         persistence_identity: Some("durable-agent-identity".to_string()),
         persistence_aliases: vec!["durable-session-fixture".to_string()],
@@ -1485,6 +1497,7 @@ fn successful_prompt_refreshes_session_retention_timestamp() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "retention-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -1568,6 +1581,7 @@ fn session_catalog_restore_close_and_delete_are_rust_owned() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "session-lifecycle-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -1837,6 +1851,7 @@ fn terminal_reverse_requests_use_real_pty_and_generic_permissions() {
     let runtime = RuntimeHandle::new();
     runtime
         .start_agent(AgentLaunchConfig {
+            environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
             agent_name: "terminal-fixture".to_string(),
             persistence_identity: None,
             persistence_aliases: vec![],
@@ -2037,7 +2052,11 @@ fn exhausted_startup_failure_can_be_retried_with_a_corrected_config() {
         )
     });
     runtime
-        .create_session("after-retry", std::env::temp_dir().display().to_string(), vec![])
+        .create_session(
+            "after-retry",
+            std::env::temp_dir().display().to_string(),
+            vec![],
+        )
         .unwrap();
     wait_for(&runtime, |event| {
         matches!(
@@ -2174,6 +2193,7 @@ fn oversized_modes_and_catalog_complete_requests_with_correlated_errors() {
 
 fn fixture_config(environment: BTreeMap<String, String>) -> AgentLaunchConfig {
     AgentLaunchConfig {
+        environment_policy: ianvs_acp_core::EnvironmentPolicy::InheritAndOverride,
         agent_name: "fixture".to_string(),
         persistence_identity: None,
         persistence_aliases: vec![],
@@ -2230,4 +2250,77 @@ fn unique_temp_dir(label: &str) -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&path).unwrap();
     path
+}
+
+#[test]
+fn replace_environment_and_prompt_meta_cross_the_real_subprocess_boundary() {
+    let runtime = RuntimeHandle::new();
+    let mut config = fixture_config(BTreeMap::from([
+        ("IANVS_FIXTURE_RESULT_META".to_string(), "1".to_string()),
+        ("IANVS_ALLOWED".to_string(), "explicit".to_string()),
+    ]));
+    config.environment_policy = ianvs_acp_core::EnvironmentPolicy::Replace;
+    runtime.start_agent(config).unwrap();
+    let ready = wait_for(&runtime, |e| {
+        matches!(
+            e,
+            RuntimeEvent::StatusChanged {
+                status: RuntimeStatus::Ready,
+                ..
+            }
+        )
+    });
+    if let RuntimeEvent::StatusChanged {
+        capabilities: Some(c),
+        ..
+    } = ready.event
+    {
+        assert!(c.agent_info.as_ref().unwrap()["name"].is_string());
+        assert!(c.agent_info.as_ref().unwrap()["version"].is_string());
+    } else {
+        panic!("missing capabilities");
+    }
+    runtime
+        .create_session(
+            "meta-new",
+            std::env::temp_dir().to_string_lossy().into_owned(),
+            vec![],
+        )
+        .unwrap();
+    wait_for(
+        &runtime,
+        |e| matches!(e, RuntimeEvent::SessionUpdate { update } if update.kind == SessionUpdateKind::SessionCreated),
+    );
+    runtime
+        .prompt("meta-prompt", "fixture-session", "test")
+        .unwrap();
+    let done = wait_for(
+        &runtime,
+        |e| matches!(e, RuntimeEvent::RenderUpdate { update } if update.kind == RenderUpdateKind::TurnCompleted),
+    );
+    if let RuntimeEvent::RenderUpdate { update } = done.event {
+        let meta = &update.metadata.unwrap()["resultMeta"];
+        assert_eq!(meta["quota"]["remaining"], 42);
+        assert_eq!(meta["parentHomePresent"], false);
+        assert_eq!(meta["allowedValue"], "explicit");
+    }
+    runtime.dispose().unwrap();
+}
+
+#[test]
+fn dispose_interrupts_an_agent_that_never_answers_initialize() {
+    let runtime = RuntimeHandle::new();
+    runtime
+        .start_agent(fixture_config(BTreeMap::from([(
+            "IANVS_FIXTURE_HOLD_INITIALIZE".to_string(),
+            "1".to_string(),
+        )])))
+        .unwrap();
+    wait_for(
+        &runtime,
+        |e| matches!(e, RuntimeEvent::StderrLog { line } if line == "fixture holding initialize"),
+    );
+    let started = Instant::now();
+    runtime.join().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
 }

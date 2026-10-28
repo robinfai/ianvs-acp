@@ -1,5 +1,5 @@
-import 'chat_input_budget.dart';
-import 'prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 /// Rendering roles shared by every backend. Execution remains host-owned.
 enum ChatMessageRole { user, assistant, tool, error, status }

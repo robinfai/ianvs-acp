@@ -2,6 +2,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentPolicy {
+    #[default]
+    InheritAndOverride,
+    Replace,
+}
+
 /// Configuration used to launch one local ACP agent process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +27,9 @@ pub struct AgentLaunchConfig {
     /// Arguments passed directly to the executable.
     #[serde(default)]
     pub args: Vec<String>,
-    /// Explicit environment overrides. The parent environment remains inherited.
+    #[serde(default)]
+    pub environment_policy: EnvironmentPolicy,
+    /// Explicit environment values applied according to `environment_policy`.
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
     /// Optional working directory for the agent process.
@@ -342,6 +352,7 @@ pub enum CommandKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityProjection {
+    pub agent_info: Option<serde_json::Value>,
     pub protocol_version: u16,
     pub load_session: bool,
     pub list_sessions: bool,
@@ -637,7 +648,7 @@ pub struct RuntimeEventEnvelope {
 }
 
 impl RuntimeEventEnvelope {
-    pub const SCHEMA_VERSION: u16 = 4;
+    pub const SCHEMA_VERSION: u16 = 5;
 
     #[must_use]
     pub fn new(sequence: u64, event: RuntimeEvent) -> Self {

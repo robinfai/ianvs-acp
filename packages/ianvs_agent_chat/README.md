@@ -23,6 +23,7 @@ Requires Dart 3.12 or later and Flutter. The desktop integration is validated on
 ## Use an LLM API
 
 ```dart
+import 'package:ianvs_agent_core/ianvs_agent_core.dart';
 import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
 import 'package:ianvs_agent_chat/llm.dart';
 
@@ -88,7 +89,7 @@ The package does **not** bundle an ACP transport, process runner or the Ianvs ap
 
 ```dart
 final session = CallbackChatSession(
-  changes: yourController,
+  changes: yourSessionStateStream,
   readState: () => ChatSessionState(
     identity: yourSessionId,
     agentName: 'My ACP Agent',
@@ -185,46 +186,22 @@ ChatTheme(
 - Supply `readClipboardImage` to enable your host's image clipboard. No application-specific native channel is required.
 - Use `ChatTimeline` and `PromptInput` independently when your host owns layout.
 
-### Mermaid rendering
+### Optional diagrams and independent message content
 
-Assistant messages render fenced `mermaid` blocks through the shared timeline.
-For an independent diagram, import the package's Mermaid entry point:
+`ChatMessageBody(text: source)` embeds content without a conversation scroll view.
+It accepts `documentSelection`, `softLineBreak`, `clipboardWriter`, `onTapLink`,
+`inputBudget`, `resourcePolicy`, and an optional `diagramBuilder`. External images
+are blocked by default. Only an explicit host resource callback may load them.
+Links are delegated to the host. With no diagram builder, Mermaid remains source.
 
-```dart
-import 'package:ianvs_agent_chat/mermaid/mermaid.dart';
+`ChatToolCard`, `ChatPlanCard`, and `ChatPermissionCard` expose standalone content
+presentation; they do not own protocol or execution. `ChatSessionBinding` adapts
+core streams to Flutter and never disposes the session on unmount.
 
-MermaidView(source: 'flowchart TD\nA --> B');
-```
-
-The default renderer uses native `package:merman` through Dart FFI and displays
-SVG with `flutter_svg`. `MermaidRenderOptions.flutterSvgDefault` selects the
-`resvg-safe` SVG profile. CSS normalization inlines supported Mermaid style
-rules before display so unsupported SVG style blocks do not cause black fills.
-The in-memory LRU cache is keyed by source, options JSON, and engine version.
-
-Use `NativeMermanRenderer` to reuse an engine instance, `MermaidController` for
-live render state, and the renderer's `layoutJson()` for node/edge geometry.
-Apply the macOS integration below before relying on native rendering.
-
-### macOS native rendering
-
-The bundled Mermaid renderer currently uses Merman's CocoaPods library on macOS. The example disables Swift Package Manager to avoid Merman 0.7.0's missing SPM artifact. Set this in a macOS host's pubspec before building:
-
-```yaml
-flutter:
-  config:
-    enable-swift-package-manager: false
-```
-
-Merman 0.7.0 also contains an absolute dylib install name. The example includes
-`macos/scripts/normalize_merman.sh` and a final Runner build phase to normalize
-the bundled library references and sign the modified library. Existing macOS
-hosts should copy that script and add a **Run Script** phase after **Embed Pods
-Frameworks**, using `"${SRCROOT}/scripts/normalize_merman.sh"`. Set the macOS
-deployment target to 12.0 or later. The example also raises older CocoaPods
-deployment targets to 12.0 for current Xcode. Without this workaround, compilation can
-succeed but launching the app can fail. The example is a complete reference
-for these native settings.
+Native Mermaid lives in sibling `ianvs_mermaid`. A desktop host may inject it via
+`ChatRenderingScope`; the basic chat package has no `merman` dependency. The
+OpenAI-compatible adapter remains the optional `llm.dart` entry point in this
+package and implements the pure Dart core stream contract.
 
 The shared input defaults to Flutter semantics, including on macOS. Only a host
 that registers `com.ianvs.acp/accessible-text-field` should wrap its application
@@ -236,7 +213,7 @@ Markdown uses `ianvs_markdown`'s standard GFM preset, built-in typography, color
 code blocks and file-link chips. The renderer resolves its own light/dark palette
 or an ambient `IanvsMarkdownThemeData` extension; `ChatTheme` does not override
 Markdown styling. Chat retains blocked resource images with link copying and
-connects Mermaid through `diagramBuilder`. It keeps
+accepts optional diagrams through `diagramBuilder`. It keeps
 block-level selection (`documentSelection: false`); full document copy remains a
 host action. Obsidian comment/block-ID normalization and HTML form controls are
 not enabled. Both preflight and rendering use the same syntax/fallback limits.

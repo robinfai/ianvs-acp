@@ -1,11 +1,11 @@
 import 'acp_agent_capabilities.dart';
 import 'acp_available_commands.dart';
-import 'acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'acp_session_catalog.dart';
-import 'acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 typedef AcpSessionRestoreEventObserver = void Function(AgentEvent event);
 
@@ -47,9 +47,9 @@ abstract class AcpAgentClient {
   /// cancel each prompt independently with [cancelSession].
   bool get supportsConcurrentPrompts => false;
 
-  Stream<AcpPermissionRequest> get permissionRequests;
+  Stream<ChatPermissionRequest> get permissionRequests;
 
-  Stream<AcpPermissionInvalidation> get permissionInvalidations;
+  Stream<ChatPermissionInvalidation> get permissionInvalidations;
 
   Stream<AcpAvailableCommandsUpdate> get availableCommandsUpdates;
 
@@ -77,14 +77,14 @@ abstract class AcpAgentClient {
 
   Future<List<AcpProjectSessions>> listSessions();
 
-  Future<AcpSessionSettings> sessionSettings(String sessionId);
+  Future<ChatSessionSettings> sessionSettings(String sessionId);
 
   Future<bool> setSessionMode({
     required String sessionId,
     required String modeId,
   });
 
-  Future<List<AcpConfigOption>> setConfigOption({
+  Future<List<ChatConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
     required Object value,
@@ -118,7 +118,7 @@ abstract class AcpAgentClient {
 
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   });
 

@@ -1,6 +1,6 @@
 import 'package:flutter/painting.dart';
 import 'package:file_picker/file_picker.dart';
-import '../models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 ImageProvider<Object> platformImageForPath(String path) =>
     throw UnsupportedError('Provide imageForPath for this platform.');

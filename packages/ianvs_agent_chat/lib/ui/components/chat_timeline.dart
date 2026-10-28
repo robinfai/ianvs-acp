@@ -8,8 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:ianvs_markdown/ianvs_markdown.dart' as markdown;
 
-import '../../models/chat_input_budget.dart';
-import '../../models/chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
 import '../bounded_metadata_preview.dart';
 import '../image_decode_budget.dart';
 import '../user_message_projection.dart';
@@ -1512,7 +1512,7 @@ class _MessageBubble extends StatelessWidget {
       );
     }
     if (message.role == ChatMessageRole.tool) {
-      return _ToolBubble(message: message, inputBudget: inputBudget);
+      return ChatToolCard(message: message, inputBudget: inputBudget);
     }
     if (message.role == ChatMessageRole.status &&
         _stringMetadata(message.metadata, 'kind') != null &&
@@ -1867,26 +1867,90 @@ class _InputOmissionNotice extends StatelessWidget {
   }
 }
 
+typedef ChatDiagramBuilder =
+    Widget Function(BuildContext context, String source);
+typedef ChatResourceImageBuilder =
+    Widget Function(BuildContext context, Uri uri, String? title, String? alt);
+
+/// No automatic network or local-file access. A host loader is explicit authority.
+class ChatResourcePolicy {
+  const ChatResourcePolicy({this.imageBuilder});
+  final ChatResourceImageBuilder? imageBuilder;
+}
+
+class ChatRenderingScope extends InheritedWidget {
+  const ChatRenderingScope({
+    super.key,
+    required super.child,
+    this.diagramBuilder,
+    this.resourcePolicy = const ChatResourcePolicy(),
+  });
+  final ChatDiagramBuilder? diagramBuilder;
+  final ChatResourcePolicy resourcePolicy;
+  static ChatRenderingScope? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ChatRenderingScope>();
+  @override
+  bool updateShouldNotify(ChatRenderingScope oldWidget) =>
+      diagramBuilder != oldWidget.diagramBuilder ||
+      resourcePolicy != oldWidget.resourcePolicy;
+}
+
 class _SelectableMessageMarkdown extends StatelessWidget {
   const _SelectableMessageMarkdown({
     required this.data,
     required this.user,
     required this.onTapLink,
   });
-
   final String data;
+  final bool user;
+  final MarkdownTapLinkCallback? onTapLink;
+  @override
+  Widget build(BuildContext context) => ChatMessageBody(
+    text: data,
+    user: user,
+    onTapLink: onTapLink,
+    inputBudget: _ImageDecodeScope.of(context).inputBudget,
+    diagramBuilder: ChatRenderingScope.of(context)?.diagramBuilder,
+    resourcePolicy:
+        ChatRenderingScope.of(context)?.resourcePolicy ??
+        const ChatResourcePolicy(),
+  );
+}
+
+class ChatMessageBody extends StatelessWidget {
+  const ChatMessageBody({
+    super.key,
+    this.inputBudget = const ChatInputBudget(),
+    this.resourcePolicy = const ChatResourcePolicy(),
+    this.diagramBuilder,
+    this.clipboardWriter = markdown.writeIanvsMarkdownClipboard,
+    this.documentSelection = false,
+    this.softLineBreak,
+    required this.text,
+    this.user = false,
+    this.onTapLink,
+  });
+
+  final markdown.IanvsMarkdownClipboardWriter clipboardWriter;
+  final bool documentSelection;
+  final bool? softLineBreak;
+  final String text;
+  final ChatInputBudget inputBudget;
+  final ChatResourcePolicy resourcePolicy;
+  final ChatDiagramBuilder? diagramBuilder;
   final bool user;
   final MarkdownTapLinkCallback? onTapLink;
 
   @override
   Widget build(BuildContext context) {
-    final budget = _ImageDecodeScope.of(context).inputBudget;
+    final budget = inputBudget;
     // Let the renderer resolve its own palette, typography and components.
     return markdown.IanvsMarkdown(
-      data: data,
+      data: text,
       syntaxPreset: markdown.IanvsMarkdownSyntaxPreset.standard,
       selectable: true,
-      documentSelection: false,
+      documentSelection: documentSelection,
+      clipboardWriter: clipboardWriter,
       fitContent: true,
       renderBudget: markdown.IanvsMarkdownRenderBudget(
         maxSyntaxTokens: budget.maxMarkdownSyntaxTokens,
@@ -1911,13 +1975,14 @@ class _SelectableMessageMarkdown extends StatelessWidget {
           ),
         ],
       ),
-      softLineBreak: user,
+      softLineBreak: softLineBreak ?? user,
       enableFileLinkChips: true,
       onTapLink: onTapLink,
       imageBuilder: (uri, title, alt) =>
+          resourcePolicy.imageBuilder?.call(context, uri, title, alt) ??
           _blockedMarkdownImage(context, uri, title, alt),
-      diagramBuilder: (context, source) =>
-          MarkdownMermaidBlock(source: source, user: user),
+      diagramBuilder:
+          diagramBuilder ?? (context, source) => SelectableText(source),
     );
   }
 }
@@ -1979,8 +2044,12 @@ Widget _blockedMarkdownImage(
   );
 }
 
-class _ToolBubble extends StatelessWidget {
-  const _ToolBubble({required this.message, required this.inputBudget});
+class ChatToolCard extends StatelessWidget {
+  const ChatToolCard({
+    super.key,
+    required this.message,
+    this.inputBudget = const ChatInputBudget(),
+  });
 
   final ChatMessageView message;
   final ChatInputBudget inputBudget;
@@ -2075,7 +2144,7 @@ class _ToolGroupBubble extends StatelessWidget {
             _ToolDiffActivity(diffs: diffs, statusSummary: statusSummary),
           if (ordinaryMessages.isNotEmpty) SizedBox(height: 8),
           if (ordinaryMessages.length == 1 && ordinaryActivity.length == 1)
-            _ToolBubble(
+            ChatToolCard(
               message: ordinaryMessages.single,
               inputBudget: inputBudget,
             )
@@ -3519,7 +3588,7 @@ class _StatusBubble extends StatelessWidget {
         kind == 'plan' ||
         kind == 'commands';
     final child = switch (kind) {
-      'plan' => _PlanStatus(message: message),
+      'plan' => ChatPlanCard(message: message),
       'diff' => _DiffStatus(message: message),
       'commands' => _CommandsStatus(
         message: message,
@@ -4326,8 +4395,8 @@ class _InlineContentFrame extends StatelessWidget {
   }
 }
 
-class _PlanStatus extends StatelessWidget {
-  const _PlanStatus({required this.message});
+class ChatPlanCard extends StatelessWidget {
+  const ChatPlanCard({super.key, required this.message});
 
   final ChatMessageView message;
 

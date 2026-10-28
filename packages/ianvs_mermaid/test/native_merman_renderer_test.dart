@@ -3,8 +3,8 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/mermaid/mermaid_exception.dart';
-import 'package:ianvs_agent_chat/mermaid/native_merman_renderer.dart';
+import 'package:ianvs_mermaid/mermaid_exception.dart';
+import 'package:ianvs_mermaid/native_merman_renderer.dart';
 import 'package:merman/merman.dart' as merman;
 
 void main() {

@@ -8,12 +8,12 @@ import '../platform/agent_process_environment.dart';
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_available_commands.dart';
-import 'acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'acp_session_catalog.dart';
-import 'acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'session_title.dart';
 
 typedef AcpMcpServersProvider = Future<List<Map<String, Object?>>> Function();
@@ -94,10 +94,10 @@ final class RustAcpAgentClient implements AcpAgentClient {
   final int? terminalMaxOutputByteLimit;
   IanvsRustRuntime? _runtime;
 
-  final StreamController<AcpPermissionRequest> _permissionRequests =
-      StreamController<AcpPermissionRequest>.broadcast(sync: true);
-  final StreamController<AcpPermissionInvalidation> _permissionInvalidations =
-      StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
+  final StreamController<ChatPermissionRequest> _permissionRequests =
+      StreamController<ChatPermissionRequest>.broadcast(sync: true);
+  final StreamController<ChatPermissionInvalidation> _permissionInvalidations =
+      StreamController<ChatPermissionInvalidation>.broadcast(sync: true);
   final StreamController<AcpAvailableCommandsUpdate> _availableCommandsUpdates =
       StreamController<AcpAvailableCommandsUpdate>.broadcast(sync: true);
   final Map<String, Completer<AgentSession>> _pendingCreates =
@@ -129,17 +129,17 @@ final class RustAcpAgentClient implements AcpAgentClient {
       <String, Completer<void>>{};
   final Map<String, Completer<bool>> _pendingModes =
       <String, Completer<bool>>{};
-  final Map<String, Completer<List<AcpConfigOption>>> _pendingConfigs =
-      <String, Completer<List<AcpConfigOption>>>{};
+  final Map<String, Completer<List<ChatConfigOption>>> _pendingConfigs =
+      <String, Completer<List<ChatConfigOption>>>{};
   final Map<String, String> _configRequestBySession = <String, String>{};
   final Map<String, StreamController<AgentEvent>> _promptStreams =
       <String, StreamController<AgentEvent>>{};
   final Map<String, String> _promptRequestIds = <String, String>{};
-  final Map<String, AcpPermissionRequest> _pendingPermissions =
-      <String, AcpPermissionRequest>{};
+  final Map<String, ChatPermissionRequest> _pendingPermissions =
+      <String, ChatPermissionRequest>{};
   final Map<String, AgentSession> _sessions = <String, AgentSession>{};
-  final Map<String, AcpSessionSettings> _settings =
-      <String, AcpSessionSettings>{};
+  final Map<String, ChatSessionSettings> _settings =
+      <String, ChatSessionSettings>{};
   final LinkedHashMap<String, AcpAvailableCommandsUpdate>
   _availableCommandsBySession =
       LinkedHashMap<String, AcpAvailableCommandsUpdate>();
@@ -175,11 +175,11 @@ final class RustAcpAgentClient implements AcpAgentClient {
   bool get supportsConcurrentPrompts => true;
 
   @override
-  Stream<AcpPermissionRequest> get permissionRequests =>
+  Stream<ChatPermissionRequest> get permissionRequests =>
       _permissionRequests.stream;
 
   @override
-  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
+  Stream<ChatPermissionInvalidation> get permissionInvalidations =>
       _permissionInvalidations.stream;
 
   @override
@@ -222,6 +222,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
         return;
       }
       _runtimeInstance.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: agentName,
         persistenceIdentity: agentPersistenceId,
         persistenceAliases: agentPersistenceAliases,
@@ -377,7 +378,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     _ensureConnected();
@@ -387,7 +388,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     }
     final selected =
         selectedOptionId ?? request.singleUseChoiceFor(decision)?.optionId;
-    final projection = decision == AcpPermissionDecision.cancel
+    final projection = decision == ChatPermissionDecision.cancel
         ? const <String, Object?>{'decision': 'cancelled'}
         : selected == null
         ? throw StateError(
@@ -400,9 +401,9 @@ final class RustAcpAgentClient implements AcpAgentClient {
   }
 
   @override
-  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+  Future<ChatSessionSettings> sessionSettings(String sessionId) async {
     _ensureConnected();
-    return _settings[sessionId] ?? const AcpSessionSettings();
+    return _settings[sessionId] ?? const ChatSessionSettings();
   }
 
   @override
@@ -450,7 +451,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   @override
   Future<void> dispose() async {
     if (_disposed) return;
-    _invalidateAllPermissions(AcpPermissionInvalidationReason.disposed);
+    _invalidateAllPermissions(ChatPermissionInvalidationReason.disposed);
     _disposed = true;
     final error = StateError('Rust ACP client disposed.');
     final connecting = _connecting;
@@ -588,28 +589,28 @@ final class RustAcpAgentClient implements AcpAgentClient {
   }) => _unsupported('forkSession');
 
   @override
-  Future<List<AcpConfigOption>> setConfigOption({
+  Future<List<ChatConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
     required Object value,
   }) {
     _ensureConnected();
     final settings = _settings[sessionId];
-    AcpConfigOption? option;
+    ChatConfigOption? option;
     for (final candidate
-        in settings?.configOptions ?? const <AcpConfigOption>[]) {
+        in settings?.configOptions ?? const <ChatConfigOption>[]) {
       if (candidate.id == configId) {
         option = candidate;
         break;
       }
     }
     if (option == null) {
-      return Future<List<AcpConfigOption>>.error(
+      return Future<List<ChatConfigOption>>.error(
         StateError('Unknown session config option: $configId'),
       );
     }
     if (_configRequestBySession.containsKey(sessionId)) {
-      return Future<List<AcpConfigOption>>.error(
+      return Future<List<ChatConfigOption>>.error(
         StateError('Session $sessionId already has a config update in flight.'),
       );
     }
@@ -625,7 +626,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _ => null,
     };
     if (projectedValue == null) {
-      return Future<List<AcpConfigOption>>.error(
+      return Future<List<ChatConfigOption>>.error(
         ArgumentError.value(
           value,
           'value',
@@ -634,7 +635,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       );
     }
     final requestId = _requestId('config');
-    final completer = Completer<List<AcpConfigOption>>();
+    final completer = Completer<List<ChatConfigOption>>();
     _pendingConfigs[requestId] = completer;
     _configRequestBySession[sessionId] = requestId;
     try {
@@ -830,7 +831,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
         _connected = false;
         _clearAvailableCommandsCache(notify: true);
         _invalidateAllPermissions(
-          AcpPermissionInvalidationReason.connectionClosed,
+          ChatPermissionInvalidationReason.connectionClosed,
         );
         final error = StateError(
           event.data['detail'] as String? ?? 'Rust ACP runtime failed.',
@@ -841,12 +842,12 @@ final class RustAcpAgentClient implements AcpAgentClient {
       case 'disposed':
         _connected = false;
         _clearAvailableCommandsCache(notify: true);
-        _invalidateAllPermissions(AcpPermissionInvalidationReason.disposed);
+        _invalidateAllPermissions(ChatPermissionInvalidationReason.disposed);
       case 'recovering':
         _connected = false;
         _clearAvailableCommandsCache(notify: true);
         _invalidateAllPermissions(
-          AcpPermissionInvalidationReason.connectionClosed,
+          ChatPermissionInvalidationReason.connectionClosed,
         );
         _failPendingOperations(
           StateError(
@@ -958,7 +959,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       _finishPrompt(sessionId);
       _invalidatePermissionsForSession(
         sessionId,
-        AcpPermissionInvalidationReason.sessionClosed,
+        ChatPermissionInvalidationReason.sessionClosed,
       );
       return;
     }
@@ -967,7 +968,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       final modeId = payload?['modeId'] as String?;
       if (modeId != null) {
         _settings[sessionId] =
-            (_settings[sessionId] ?? const AcpSessionSettings())
+            (_settings[sessionId] ?? const ChatSessionSettings())
                 .withCurrentMode(modeId);
       }
       if (requestId != null) _pendingModes.remove(requestId)?.complete(true);
@@ -977,7 +978,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
       final payload = _objectMap(update['payload']);
       final options = _configOptionsFromPayload(payload);
       _settings[sessionId] =
-          (_settings[sessionId] ?? const AcpSessionSettings())
+          (_settings[sessionId] ?? const ChatSessionSettings())
               .withPreferredConfigOptions(options);
       if (requestId != null) {
         _pendingConfigs.remove(requestId)?.complete(options);
@@ -1222,7 +1223,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     final choices = (value['options'] as List? ?? const <Object?>[])
         .whereType<Map>()
         .map(
-          (raw) => AcpPermissionChoice(
+          (raw) => ChatPermissionChoice(
             optionId: raw['optionId'] as String? ?? '',
             name: raw['label'] as String? ?? '',
             kind: raw['kind'] as String?,
@@ -1230,7 +1231,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
         )
         .where((choice) => choice.optionId.isNotEmpty)
         .toList(growable: false);
-    final request = AcpPermissionRequest(
+    final request = ChatPermissionRequest(
       id: value['requestId']! as String,
       lifecycleId: value['requestId']! as String,
       title: value['title'] as String? ?? 'Permission requested',
@@ -1291,7 +1292,9 @@ final class RustAcpAgentClient implements AcpAgentClient {
   void _handleRuntimeStreamError(Object error, StackTrace stackTrace) {
     _connected = false;
     _clearAvailableCommandsCache(notify: true);
-    _invalidateAllPermissions(AcpPermissionInvalidationReason.connectionClosed);
+    _invalidateAllPermissions(
+      ChatPermissionInvalidationReason.connectionClosed,
+    );
     final completer = _connecting;
     if (completer != null) {
       _completeConnectionError(completer, error, stackTrace);
@@ -1518,17 +1521,17 @@ final class RustAcpAgentClient implements AcpAgentClient {
     );
   }
 
-  AcpSessionSettings _settingsFromSessionCreated(
+  ChatSessionSettings _settingsFromSessionCreated(
     Map<String, Object?>? payload,
   ) {
     final configOptions = _configOptionsFromPayload(payload);
     final modes = _objectMap(payload?['modes']);
-    var modeInfo = const AcpSessionModeInfo();
+    var modeInfo = const ChatSessionModeInfo();
     if (modes != null) {
       final currentModeId = (modes['currentModeId'] as String? ?? '').trim();
       final rawModes = modes['availableModes'];
       if (currentModeId.isNotEmpty && rawModes is List) {
-        final available = <AcpSessionMode>[];
+        final available = <ChatSessionMode>[];
         for (final raw in rawModes) {
           final mode = _objectMap(raw);
           final id = (mode?['id'] as String? ?? '').trim();
@@ -1537,32 +1540,32 @@ final class RustAcpAgentClient implements AcpAgentClient {
           }
           final label = (mode?['label'] as String? ?? '').trim();
           available.add(
-            AcpSessionMode(id: id, name: label.isEmpty ? id : label),
+            ChatSessionMode(id: id, name: label.isEmpty ? id : label),
           );
         }
-        modeInfo = AcpSessionModeInfo(
+        modeInfo = ChatSessionModeInfo(
           currentModeId: currentModeId,
-          availableModes: List<AcpSessionMode>.unmodifiable(available),
+          availableModes: List<ChatSessionMode>.unmodifiable(available),
         );
       }
     }
-    return AcpSessionSettings(
+    return ChatSessionSettings(
       modes: modeInfo,
       configOptions: configOptions,
     ).withConfigOptionsPreference;
   }
 
-  List<AcpConfigOption> _configOptionsFromPayload(
+  List<ChatConfigOption> _configOptionsFromPayload(
     Map<String, Object?>? payload,
   ) {
     final rawOptions = payload?['configOptions'];
-    if (rawOptions == null) return const <AcpConfigOption>[];
+    if (rawOptions == null) return const <ChatConfigOption>[];
     if (rawOptions is! List) {
       throw const FormatException(
         'Rust session config options must be a list.',
       );
     }
-    final options = <AcpConfigOption>[];
+    final options = <ChatConfigOption>[];
     final ids = <String>{};
     for (final raw in rawOptions) {
       final option = _objectMap(raw);
@@ -1580,7 +1583,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
           'Invalid Rust session config current value.',
         );
       }
-      final choices = <AcpConfigOptionChoice>[];
+      final choices = <ChatConfigOptionChoice>[];
       final choiceValues = <String>{};
       for (final rawChoice
           in option?['options'] as List? ?? const <Object?>[]) {
@@ -1591,7 +1594,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
         }
         final name = (choice?['name'] as String? ?? '').trim();
         choices.add(
-          AcpConfigOptionChoice(
+          ChatConfigOptionChoice(
             value: value,
             name: name.isEmpty ? value : name,
             description: choice?['description'] as String?,
@@ -1606,18 +1609,18 @@ final class RustAcpAgentClient implements AcpAgentClient {
       }
       final name = (option?['name'] as String? ?? '').trim();
       options.add(
-        AcpConfigOption(
+        ChatConfigOption(
           id: id,
           name: name.isEmpty ? id : name,
           type: type,
           currentValue: current.toString(),
-          options: List<AcpConfigOptionChoice>.unmodifiable(choices),
+          options: List<ChatConfigOptionChoice>.unmodifiable(choices),
           description: option?['description'] as String?,
           category: option?['category'] as String?,
         ),
       );
     }
-    return List<AcpConfigOption>.unmodifiable(options);
+    return List<ChatConfigOption>.unmodifiable(options);
   }
 
   String _requestId(String operation) => '$operation-${_nextRequestId++}';
@@ -1639,7 +1642,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
   void _invalidatePermission({
     required String requestId,
     required String sessionId,
-    required AcpPermissionInvalidationReason reason,
+    required ChatPermissionInvalidationReason reason,
   }) {
     final pending = _pendingPermissions[requestId];
     if (pending == null ||
@@ -1649,7 +1652,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     }
     _pendingPermissions.remove(requestId);
     _permissionInvalidations.add(
-      AcpPermissionInvalidation(
+      ChatPermissionInvalidation(
         requestId: requestId,
         lifecycleId: pending.lifecycleId,
         sessionId: pending.sessionId,
@@ -1659,7 +1662,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
     );
   }
 
-  void _invalidateAllPermissions(AcpPermissionInvalidationReason reason) {
+  void _invalidateAllPermissions(ChatPermissionInvalidationReason reason) {
     for (final pending in _pendingPermissions.values.toList(growable: false)) {
       _invalidatePermission(
         requestId: pending.id,
@@ -1671,7 +1674,7 @@ final class RustAcpAgentClient implements AcpAgentClient {
 
   void _invalidatePermissionsForSession(
     String sessionId,
-    AcpPermissionInvalidationReason reason,
+    ChatPermissionInvalidationReason reason,
   ) {
     final requests = _pendingPermissions.values
         .where((request) => request.sessionId == sessionId)
@@ -1685,14 +1688,14 @@ final class RustAcpAgentClient implements AcpAgentClient {
     }
   }
 
-  AcpPermissionInvalidationReason? _invalidationReason(Object? raw) {
+  ChatPermissionInvalidationReason? _invalidationReason(Object? raw) {
     return switch (raw) {
-      'timed_out' => AcpPermissionInvalidationReason.timedOut,
-      'prompt_ended' => AcpPermissionInvalidationReason.promptEnded,
-      'prompt_cancelled' => AcpPermissionInvalidationReason.promptCancelled,
-      'session_closed' => AcpPermissionInvalidationReason.sessionClosed,
-      'connection_closed' => AcpPermissionInvalidationReason.connectionClosed,
-      'disposed' => AcpPermissionInvalidationReason.disposed,
+      'timed_out' => ChatPermissionInvalidationReason.timedOut,
+      'prompt_ended' => ChatPermissionInvalidationReason.promptEnded,
+      'prompt_cancelled' => ChatPermissionInvalidationReason.promptCancelled,
+      'session_closed' => ChatPermissionInvalidationReason.sessionClosed,
+      'connection_closed' => ChatPermissionInvalidationReason.connectionClosed,
+      'disposed' => ChatPermissionInvalidationReason.disposed,
       _ => null,
     };
   }

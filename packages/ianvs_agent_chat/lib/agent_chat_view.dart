@@ -1,11 +1,12 @@
+import 'chat_session_binding.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'chat_session.dart';
-import 'chat_submission.dart';
+import 'package:ianvs_agent_core/chat_session.dart';
+import 'package:ianvs_agent_core/chat_submission.dart';
 import 'chat_composer_controller.dart';
-import 'models/chat_message.dart';
-import 'models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'ui/components/bounded_image_preview.dart';
 import 'ui/components/chat_timeline.dart';
 import 'ui/components/prompt_input.dart';
@@ -52,10 +53,9 @@ class AgentChatView extends StatelessWidget {
   final bool showError;
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: session,
-    builder: (context, _) {
-      final state = session.state;
+  Widget build(BuildContext context) => ChatSessionBinding(
+    session: session,
+    builder: (context, state) {
       final timeline = ChatTimeline(
         key: ValueKey(('timeline', state.identity)),
         messages: state.messages,

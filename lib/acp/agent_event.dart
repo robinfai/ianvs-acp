@@ -1,4 +1,4 @@
-import 'acp_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
 
 enum AgentEventType {
   userMessage,
@@ -15,7 +15,7 @@ class AgentEvent {
     required this.text,
     this.timestamp,
     this.metadata = const <String, Object?>{},
-    this.omissions = const <acp.AcpInputOmission>[],
+    this.omissions = const <acp.ChatInputOmission>[],
     this.trustedRenderProjection = false,
   });
 
@@ -23,7 +23,7 @@ class AgentEvent {
   final String text;
   final DateTime? timestamp;
   final Map<String, Object?> metadata;
-  final List<acp.AcpInputOmission> omissions;
+  final List<acp.ChatInputOmission> omissions;
 
   /// True only for the Rust-owned, allowlisted render protocol. This lets the
   /// controller avoid a second full metadata snapshot before its normal

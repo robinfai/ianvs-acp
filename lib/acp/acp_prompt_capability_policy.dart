@@ -1,5 +1,5 @@
 import 'acp_agent_capabilities.dart';
-import 'acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 
 class AcpPromptCapabilityResolution {
   const AcpPromptCapabilityResolution({
@@ -13,7 +13,7 @@ class AcpPromptCapabilityResolution {
 
 AcpPromptCapabilityResolution resolvePromptCapabilitiesForSession({
   required AcpPromptCapabilities? advertised,
-  required AcpSessionSettings settings,
+  required ChatSessionSettings settings,
   required String agentName,
   Map<String, Object?> agentInfo = const <String, Object?>{},
 }) {

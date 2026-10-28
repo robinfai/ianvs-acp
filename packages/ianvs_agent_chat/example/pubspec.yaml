@@ -6,6 +6,8 @@ environment:
   sdk: ^3.12.0
   flutter: '>=3.44.0'
 dependencies:
+  ianvs_agent_core:
+    path: ../../ianvs_agent_core
   ianvs_design: ^0.4.0
   flutter:
     sdk: flutter

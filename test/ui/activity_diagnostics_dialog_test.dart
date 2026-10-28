@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'dart:async';
 import 'dart:convert';
@@ -5,7 +6,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/state/chat_controller.dart';
@@ -21,7 +22,7 @@ void main() {
 
   void request(FakeAgentClient client, ChatController value, String id) {
     client.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: id,
         requestedAt: DateTime.utc(2026, 9, 9),
         title: 'Read $id',
@@ -44,7 +45,7 @@ void main() {
       );
       request(client, value, 'first');
       await tester.pump();
-      await value.resolvePermissionRequest(AcpPermissionDecision.deny);
+      await value.resolvePermissionRequest(ChatPermissionDecision.deny);
       String? exported;
       await tester.pumpWidget(
         MaterialApp(
@@ -67,7 +68,7 @@ void main() {
       );
       request(client, value, 'second');
       await tester.pump();
-      await value.resolvePermissionRequest(AcpPermissionDecision.deny);
+      await value.resolvePermissionRequest(ChatPermissionDecision.deny);
       await tester.pumpAndSettle();
       expect(find.text('First session content'), findsNothing);
       expect(find.text('Second session content'), findsOneWidget);
@@ -159,7 +160,7 @@ void main() {
       final first = await controller(firstClient);
       request(firstClient, first, 'old');
       await tester.pump();
-      await first.resolvePermissionRequest(AcpPermissionDecision.deny);
+      await first.resolvePermissionRequest(ChatPermissionDecision.deny);
       final second = await controller(FakeAgentClient());
       final pendingExport = Completer<String?>();
       Widget app(ChatController value) => MaterialApp(

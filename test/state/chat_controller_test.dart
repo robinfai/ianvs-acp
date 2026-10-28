@@ -1,20 +1,21 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
-import 'package:ianvs_acp/acp/acp_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
 import 'package:ianvs_acp/acp/acp_agent_client.dart';
 import 'package:ianvs_acp/acp/acp_available_commands.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/acp_permission_reviewer.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/acp_session_usage.dart';
 import 'package:ianvs_acp/acp/assistant_agent_enhancer.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'package:ianvs_acp/config/assistant_agent_config.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_acp/storage/session_transcript_cache.dart';
@@ -88,8 +89,8 @@ void main() {
     });
 
     test('freeze and thaw preserve value without sharing mutable state', () {
-      final omission = acp.AcpInputOmission(
-        reason: acp.AcpInputOmissionReason.inputLimit,
+      final omission = acp.ChatInputOmission(
+        reason: acp.ChatInputOmissionReason.inputLimit,
         resource: 'message text',
         truncated: true,
         limit: 4,
@@ -104,7 +105,7 @@ void main() {
             'items': <Object?>['safe'],
           },
         },
-        omissions: <acp.AcpInputOmission>[omission],
+        omissions: <acp.ChatInputOmission>[omission],
       );
       active.appendAcceptedText('!', acceptedUtf8Bytes: 1);
       final retainedBeforeFreeze = active.retainedBytes;
@@ -167,7 +168,7 @@ void main() {
     test(
       'media retained bytes survive freeze thaw and archive restore exactly',
       () {
-        const budget = acp.AcpInputBudget(
+        const budget = acp.ChatInputBudget(
           maxEmbeddedMediaBytes: 1,
           maxStructuredStringBytes: 1,
         );
@@ -202,7 +203,7 @@ void main() {
           availableCommands: const <Map<String, Object?>>[],
           lastLatency: null,
           lastError: null,
-          sessionSettings: const AcpSessionSettings(),
+          sessionSettings: const ChatSessionSettings(),
           sessionUsage: null,
           sessionSettingsLoading: false,
           status: app_state.ConnectionStatus.sessionReady,
@@ -227,7 +228,7 @@ void main() {
 
     test('owned media omission provenance survives internal copies only', () {
       const canary = 'SECRET_OWNED_MEDIA_OMISSION';
-      const budget = acp.AcpInputBudget(maxStructuredStringBytes: 1);
+      const budget = acp.ChatInputBudget(maxStructuredStringBytes: 1);
       final owned = ChatMessage(
         role: ChatMessageRole.assistant,
         text: '',
@@ -305,7 +306,7 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -404,7 +405,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: acp.AcpInputBudget(
+          inputBudget: acp.ChatInputBudget(
             maxTurnRetainedBytes: userRetained + small.retainedBytes + 1024,
           ),
         );
@@ -449,7 +450,7 @@ void main() {
       expect(message.metadata, isEmpty);
       expect(
         message.omissions.single.reason,
-        acp.AcpInputOmissionReason.invalidStructure,
+        acp.ChatInputOmissionReason.invalidStructure,
       );
     });
 
@@ -482,7 +483,7 @@ void main() {
         expect(message.metadata.toString(), isNot(contains(canary)));
         expect(
           message.omissions.single.reason,
-          acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmissionReason.invalidStructure,
         );
       }
     });
@@ -497,7 +498,7 @@ void main() {
           text: '',
           metadata: <String, Object?>{
             'kind': hostileKind,
-            'configOptions': <AcpConfigOption>[],
+            'configOptions': <ChatConfigOption>[],
           },
         );
 
@@ -505,7 +506,7 @@ void main() {
         expect(message.metadata, isEmpty);
         expect(
           message.omissions.single.reason,
-          acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmissionReason.invalidStructure,
         );
       }
     });
@@ -513,7 +514,7 @@ void main() {
     test('resource blocks snapshot nested entries and guard dynamic keys', () {
       ChatMessage resource(
         Map<String, Object?> nested,
-        acp.AcpInputBudget budget,
+        acp.ChatInputBudget budget,
       ) => ChatMessage(
         role: ChatMessageRole.assistant,
         text: '',
@@ -525,7 +526,7 @@ void main() {
         inputBudget: budget,
       );
 
-      const entryBudget = acp.AcpInputBudget(
+      const entryBudget = acp.ChatInputBudget(
         maxCollectionItems: 2,
         maxMetadataEntries: 2,
       );
@@ -548,20 +549,20 @@ void main() {
 
       final longKey = resource(<String, Object?>{
         canary: 'v',
-      }, const acp.AcpInputBudget(maxStructuredStringBytes: 4));
+      }, const acp.ChatInputBudget(maxStructuredStringBytes: 4));
       expect(longKey.metadata, isEmpty);
       expect(longKey.metadata.toString(), isNot(contains(canary)));
 
       final stateful = resource(
         _ReportedLengthResourceMap(canary),
-        const acp.AcpInputBudget(),
+        const acp.ChatInputBudget(),
       );
       expect(stateful.metadata, isEmpty);
       expect(stateful.metadata.toString(), isNot(contains(canary)));
 
       final throwing = resource(
         _ThrowingMetadataMap(canary),
-        const acp.AcpInputBudget(),
+        const acp.ChatInputBudget(),
       );
       expect(throwing.metadata, isEmpty);
       expect(throwing.metadata.toString(), isNot(contains(canary)));
@@ -618,7 +619,7 @@ void main() {
       expect(message.omissions, hasLength(1));
       expect(
         message.omissions.single.reason,
-        acp.AcpInputOmissionReason.invalidStructure,
+        acp.ChatInputOmissionReason.invalidStructure,
       );
       expect(message.omissions.single.resource, 'chat message metadata');
       expect(message.omissions.single.toString(), isNot(contains(canary)));
@@ -630,13 +631,13 @@ void main() {
         role: ChatMessageRole.tool,
         text: 'safe',
         metadata: const <String, Object?>{'first': 'safe', 'second': canary},
-        inputBudget: const acp.AcpInputBudget(maxMetadataNodes: 2),
+        inputBudget: const acp.ChatInputBudget(maxMetadataNodes: 2),
       );
 
       expect(message.metadata, isEmpty);
       expect(
         message.omissions.single.reason,
-        acp.AcpInputOmissionReason.inputLimit,
+        acp.ChatInputOmissionReason.inputLimit,
       );
       expect(message.omissions.single.limit, 2);
       expect(message.omissions.single.toString(), isNot(contains(canary)));
@@ -649,26 +650,26 @@ void main() {
         metadata: const <String, Object?>{
           'nested': <String, Object?>{'value': 'safe'},
         },
-        inputBudget: const acp.AcpInputBudget(maxJsonDepth: 1),
+        inputBudget: const acp.ChatInputBudget(maxJsonDepth: 1),
       );
       final entryLimited = ChatMessage(
         role: ChatMessageRole.tool,
         text: 'safe',
         metadata: const <String, Object?>{'a': 1, 'b': 2},
-        inputBudget: const acp.AcpInputBudget(maxMetadataEntries: 1),
+        inputBudget: const acp.ChatInputBudget(maxMetadataEntries: 1),
       );
 
       expect(depthLimited.metadata, isEmpty);
       expect(
         depthLimited.omissions.single.reason,
-        acp.AcpInputOmissionReason.inputLimit,
+        acp.ChatInputOmissionReason.inputLimit,
       );
       expect(entryLimited.metadata, isEmpty);
       expect(entryLimited.omissions.single.limit, 1);
     });
 
     test('structured metadata nodes bytes and strings honor exact limits', () {
-      ChatMessage message(acp.AcpInputBudget budget, String value) {
+      ChatMessage message(acp.ChatInputBudget budget, String value) {
         return ChatMessage(
           role: ChatMessageRole.tool,
           text: 'safe',
@@ -679,42 +680,42 @@ void main() {
 
       expect(
         message(
-          const acp.AcpInputBudget(maxStructuredUpdateNodes: 2),
+          const acp.ChatInputBudget(maxStructuredUpdateNodes: 2),
           'b',
         ).metadata,
         {'a': 'b'},
       );
       expect(
         message(
-          const acp.AcpInputBudget(maxStructuredUpdateNodes: 1),
+          const acp.ChatInputBudget(maxStructuredUpdateNodes: 1),
           'b',
         ).metadata,
         isEmpty,
       );
       expect(
         message(
-          const acp.AcpInputBudget(maxStructuredUpdateBytes: 2),
+          const acp.ChatInputBudget(maxStructuredUpdateBytes: 2),
           'b',
         ).metadata,
         {'a': 'b'},
       );
       expect(
         message(
-          const acp.AcpInputBudget(maxStructuredUpdateBytes: 1),
+          const acp.ChatInputBudget(maxStructuredUpdateBytes: 1),
           'b',
         ).metadata,
         isEmpty,
       );
       expect(
         message(
-          const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+          const acp.ChatInputBudget(maxStructuredStringBytes: 1),
           'b',
         ).metadata,
         {'a': 'b'},
       );
       expect(
         message(
-          const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+          const acp.ChatInputBudget(maxStructuredStringBytes: 1),
           'bb',
         ).metadata,
         isEmpty,
@@ -732,7 +733,7 @@ void main() {
           role: ChatMessageRole.tool,
           text: 'safe',
           metadata: metadata,
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxJsonDepth: 300,
             maxMetadataDepth: 300,
             maxMetadataNodes: 600,
@@ -751,9 +752,9 @@ void main() {
     );
 
     test('typed omissions are copied deduplicated immutable and bounded', () {
-      acp.AcpInputOmission omission(String resource, int limit) {
-        return acp.AcpInputOmission(
-          reason: acp.AcpInputOmissionReason.inputLimit,
+      acp.ChatInputOmission omission(String resource, int limit) {
+        return acp.ChatInputOmission(
+          reason: acp.ChatInputOmissionReason.inputLimit,
           resource: resource,
           truncated: true,
           limit: limit,
@@ -761,7 +762,7 @@ void main() {
         );
       }
 
-      final source = <acp.AcpInputOmission>[
+      final source = <acp.ChatInputOmission>[
         omission('message text', 4),
         omission('message text', 8),
         omission('thought text', 4),
@@ -771,7 +772,7 @@ void main() {
         role: ChatMessageRole.assistant,
         text: '',
         omissions: source,
-        inputBudget: const acp.AcpInputBudget(maxCollectionItems: 2),
+        inputBudget: const acp.ChatInputBudget(maxCollectionItems: 2),
         metadata: const <String, Object?>{
           'omissions': <Object?>[
             <String, Object?>{'resource': 'forged', 'reason': 'inputLimit'},
@@ -799,8 +800,8 @@ void main() {
     });
 
     test('trusted omissions take capacity before local metadata failures', () {
-      final trusted = acp.AcpInputOmission(
-        reason: acp.AcpInputOmissionReason.inputLimit,
+      final trusted = acp.ChatInputOmission(
+        reason: acp.ChatInputOmissionReason.inputLimit,
         resource: 'trusted event resource',
         truncated: true,
         limit: 1,
@@ -810,8 +811,8 @@ void main() {
         role: ChatMessageRole.tool,
         text: 'safe',
         metadata: <String, Object?>{'bad': StringBuffer('payload')},
-        omissions: <acp.AcpInputOmission>[trusted],
-        inputBudget: const acp.AcpInputBudget(maxCollectionItems: 1),
+        omissions: <acp.ChatInputOmission>[trusted],
+        inputBudget: const acp.ChatInputBudget(maxCollectionItems: 1),
       );
 
       expect(message.metadata, isEmpty);
@@ -827,9 +828,9 @@ void main() {
         () => ChatController(
           client: FakeAgentClient(),
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(maxMessageTextBytes: 4),
+          inputBudget: const acp.ChatInputBudget(maxMessageTextBytes: 4),
         ),
-        throwsA(isA<acp.AcpInputLimitExceeded>()),
+        throwsA(isA<acp.ChatInputLimitExceeded>()),
       );
     });
 
@@ -863,7 +864,7 @@ void main() {
           ],
         ),
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(
+        inputBudget: const acp.ChatInputBudget(
           maxMessageTextBytes: 4,
           maxThoughtTextBytes: 4,
           maxMarkdownFallbackBytes: 4,
@@ -1011,7 +1012,7 @@ void main() {
             ],
           ),
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxMessageTextBytes: 7,
             maxThoughtTextBytes: 7,
             maxMarkdownFallbackBytes: 7,
@@ -1075,7 +1076,7 @@ void main() {
             ],
           ),
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxMessageTextBytes: 3,
             maxThoughtTextBytes: 3,
             maxMarkdownFallbackBytes: 3,
@@ -1205,7 +1206,7 @@ void main() {
         final omissionController = ChatController(
           client: omissionFake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxMessageTextBytes: 2,
             maxMarkdownFallbackBytes: 2,
           ),
@@ -1266,7 +1267,7 @@ void main() {
           final controller = ChatController(
             client: fake,
             cwd: '/workspace',
-            inputBudget: acp.AcpInputBudget(
+            inputBudget: acp.ChatInputBudget(
               maxTurnRetainedBytes:
                   pendingRetained + (error ? errorRetained : 0) + 1024,
             ),
@@ -1316,14 +1317,14 @@ void main() {
       () async {
         const canary = 'SECRET_UNKNOWN_STOP_REASON_CANARY_MUST_NOT_APPEAR';
         const stopReason = '$canary-suffix';
-        const baseBudget = acp.AcpInputBudget(
+        const baseBudget = acp.ChatInputBudget(
           maxStructuredStringBytes: 256,
           maxMessageTextBytes: 16,
           maxMarkdownFallbackBytes: 16,
         );
 
         Future<({ChatController controller, List<AgentEvent> observed})> run(
-          acp.AcpInputBudget budget,
+          acp.ChatInputBudget budget,
         ) async {
           final controller = ChatController(
             client: FakeAgentClient(
@@ -1355,7 +1356,7 @@ void main() {
 
         for (final delta in const <int>[0, -1]) {
           final result = await run(
-            acp.AcpInputBudget(
+            acp.ChatInputBudget(
               maxStructuredStringBytes: 256,
               maxMessageTextBytes: 16,
               maxMarkdownFallbackBytes: 16,
@@ -1449,7 +1450,7 @@ void main() {
             ],
           ),
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxMessageTextBytes: 128,
             maxMessageTextLines: 2,
             maxThoughtTextBytes: 128,
@@ -1498,9 +1499,9 @@ void main() {
         const canary = 'SECRET_THOUGHT_METADATA_CANARY';
 
         Future<void> verify({
-          required acp.AcpInputBudget budget,
+          required acp.ChatInputBudget budget,
           required Map<String, Object?> metadata,
-          required acp.AcpInputOmissionReason metadataReason,
+          required acp.ChatInputOmissionReason metadataReason,
         }) async {
           final fake = _ControlledPromptAgentClient();
           final controller = ChatController(
@@ -1570,7 +1571,7 @@ void main() {
         }
 
         await verify(
-          budget: const acp.AcpInputBudget(
+          budget: const acp.ChatInputBudget(
             maxMessageTextBytes: 100,
             maxThoughtTextBytes: 1,
             maxMarkdownFallbackBytes: 100,
@@ -1579,17 +1580,17 @@ void main() {
             'kind': 'thought',
             'bad': _CanaryPayload(),
           },
-          metadataReason: acp.AcpInputOmissionReason.invalidStructure,
+          metadataReason: acp.ChatInputOmissionReason.invalidStructure,
         );
         await verify(
-          budget: const acp.AcpInputBudget(
+          budget: const acp.ChatInputBudget(
             maxMessageTextBytes: 100,
             maxThoughtTextBytes: 1,
             maxMarkdownFallbackBytes: 100,
             maxStructuredStringBytes: 16,
           ),
           metadata: const <String, Object?>{'kind': 'thought', 'bad': canary},
-          metadataReason: acp.AcpInputOmissionReason.inputLimit,
+          metadataReason: acp.ChatInputOmissionReason.inputLimit,
         );
       },
     );
@@ -1635,7 +1636,7 @@ void main() {
       );
     }
 
-    const twoTurnBudget = acp.AcpInputBudget(
+    const twoTurnBudget = acp.ChatInputBudget(
       maxMessageTextBytes: 1,
       maxThoughtTextBytes: 1,
       maxMarkdownFallbackBytes: 1,
@@ -1751,7 +1752,7 @@ void main() {
       })
     >
     configController({
-      acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+      acp.ChatInputBudget budget = const acp.ChatInputBudget(),
     }) async {
       final fake = _ControlledPromptAgentClient();
       final controller = ChatController(
@@ -1768,7 +1769,7 @@ void main() {
 
     AgentEvent typedConfigEvent(
       List<Object?> options, {
-      List<acp.AcpInputOmission> omissions = const <acp.AcpInputOmission>[],
+      List<acp.ChatInputOmission> omissions = const <acp.ChatInputOmission>[],
     }) {
       return AgentEvent(
         type: AgentEventType.status,
@@ -1786,19 +1787,19 @@ void main() {
       () async {
         const canary = 'TYPED_CONFIG_LIMIT_CANARY_MUST_NOT_APPEAR';
         final state = await configController(
-          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 16),
+          budget: const acp.ChatInputBudget(maxStructuredStringBytes: 16),
         );
         addTearDown(state.controller.dispose);
         expect(state.controller.sessionSettings.configOptions, isNotEmpty);
 
         state.fake.emit(
           typedConfigEvent(<Object?>[
-            const AcpConfigOption(
+            const ChatConfigOption(
               id: canary,
               name: 'name',
               type: 'type',
               currentValue: 'value',
-              options: <AcpConfigOptionChoice>[],
+              options: <ChatConfigOptionChoice>[],
             ),
           ]),
         );
@@ -1808,7 +1809,7 @@ void main() {
         expect(state.observed.single.metadata['configOptions'], isEmpty);
         expect(
           state.observed.single.omissions.single.reason,
-          acp.AcpInputOmissionReason.inputLimit,
+          acp.ChatInputOmissionReason.inputLimit,
         );
         expect(
           <Object?>[
@@ -1830,12 +1831,12 @@ void main() {
 
         state.fake.emit(
           typedConfigEvent(<Object?>[
-            const AcpConfigOption(
+            const ChatConfigOption(
               id: 'valid',
               name: 'Valid',
               type: 'select',
               currentValue: 'on',
-              options: <AcpConfigOptionChoice>[],
+              options: <ChatConfigOptionChoice>[],
             ),
             42,
           ]),
@@ -1846,7 +1847,7 @@ void main() {
         expect(state.observed.single.metadata['configOptions'], isEmpty);
         expect(
           state.observed.single.omissions.single.reason,
-          acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmissionReason.invalidStructure,
         );
       },
     );
@@ -1854,15 +1855,15 @@ void main() {
     test(
       'trusted omission may fill cap while empty config carrier still clears',
       () async {
-        final trusted = acp.AcpInputOmission(
-          reason: acp.AcpInputOmissionReason.inputLimit,
+        final trusted = acp.ChatInputOmission(
+          reason: acp.ChatInputOmissionReason.inputLimit,
           resource: 'trusted config omission',
           truncated: false,
           limit: 1,
           observedAtLeast: 2,
         );
         final state = await configController(
-          budget: const acp.AcpInputBudget(maxCollectionItems: 1),
+          budget: const acp.ChatInputBudget(maxCollectionItems: 1),
         );
         addTearDown(state.controller.dispose);
         expect(state.controller.sessionSettings.configOptions, isNotEmpty);
@@ -1870,7 +1871,7 @@ void main() {
         state.fake.emit(
           typedConfigEvent(
             <Object?>[42],
-            omissions: <acp.AcpInputOmission>[trusted],
+            omissions: <acp.ChatInputOmission>[trusted],
           ),
         );
 
@@ -1890,7 +1891,7 @@ void main() {
       () async {
         const canary = 'STATEFUL_TYPED_MAP_CANARY_MUST_NOT_APPEAR';
         final state = await configController(
-          budget: const acp.AcpInputBudget(maxStructuredStringBytes: 16),
+          budget: const acp.ChatInputBudget(maxStructuredStringBytes: 16),
         );
         addTearDown(state.controller.dispose);
         final metadata = _StatefulTypedConfigMetadataMap(canary);
@@ -1931,7 +1932,7 @@ void main() {
         expect(state.observed.single.metadata['configOptions'], isEmpty);
         expect(
           state.observed.single.omissions.single.reason,
-          acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmissionReason.invalidStructure,
         );
         expect(options.lengthReads, greaterThan(0));
         expect(options.indexReads, greaterThan(0));
@@ -1993,7 +1994,7 @@ void main() {
         expect(observed.single.omissions, hasLength(1));
         expect(
           observed.single.omissions.single.reason,
-          acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmissionReason.invalidStructure,
         );
         final visible = <Object?>[
           controller.lastError,
@@ -2152,7 +2153,7 @@ void main() {
       final controller = ChatController(
         client: fake,
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(
+        inputBudget: const acp.ChatInputBudget(
           maxMessageTextBytes: 1,
           maxMarkdownFallbackBytes: 1,
         ),
@@ -2224,7 +2225,7 @@ void main() {
       final controller = ChatController(
         client: fake,
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(maxTurnItems: 2),
+        inputBudget: const acp.ChatInputBudget(maxTurnItems: 2),
       );
       addTearDown(controller.dispose);
       await controller.newSession();
@@ -2262,7 +2263,7 @@ void main() {
       final controller = ChatController(
         client: fake,
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(maxTurnItems: 3),
+        inputBudget: const acp.ChatInputBudget(maxTurnItems: 3),
       );
       addTearDown(controller.dispose);
       await controller.newSession();
@@ -2295,7 +2296,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(maxTurnItems: 2),
+          inputBudget: const acp.ChatInputBudget(maxTurnItems: 2),
         );
         addTearDown(controller.dispose);
         await controller.newSession();
@@ -2331,7 +2332,7 @@ void main() {
       final controller = ChatController(
         client: fake,
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(
+        inputBudget: const acp.ChatInputBudget(
           maxMessageTextBytes: 3,
           maxMarkdownFallbackBytes: 3,
         ),
@@ -2368,7 +2369,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxMessageTextBytes: 4,
             maxMarkdownFallbackBytes: 4,
           ),
@@ -2411,7 +2412,7 @@ void main() {
       final controller = ChatController(
         client: fake,
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(maxEmbeddedMediaBytes: 1),
+        inputBudget: const acp.ChatInputBudget(maxEmbeddedMediaBytes: 1),
       );
       addTearDown(controller.dispose);
       await controller.newSession();
@@ -2462,7 +2463,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: acp.AcpInputBudget(
+          inputBudget: acp.ChatInputBudget(
             maxTurnRetainedBytes: maxTurnRetainedBytes,
           ),
         );
@@ -2576,7 +2577,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: acp.AcpInputBudget(
+          inputBudget: acp.ChatInputBudget(
             maxTurnRetainedBytes: userRetained + toolRetained + 1024,
           ),
         );
@@ -2640,7 +2641,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: acp.AcpInputBudget(
+          inputBudget: acp.ChatInputBudget(
             maxTurnRetainedBytes: userRetained + statusRetained + 1024,
           ),
         );
@@ -2737,7 +2738,7 @@ void main() {
           final controller = ChatController(
             client: fake,
             cwd: '/workspace',
-            inputBudget: const acp.AcpInputBudget(
+            inputBudget: const acp.ChatInputBudget(
               maxMessageTextBytes: 4,
               maxMarkdownFallbackBytes: 4,
             ),
@@ -2783,7 +2784,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxMessageTextBytes: 128,
             maxMessageTextLines: 2,
             maxMarkdownFallbackBytes: 128,
@@ -2858,13 +2859,13 @@ void main() {
           text: 'settings',
           metadata: <String, Object?>{
             'kind': 'config_option_update',
-            'configOptions': <AcpConfigOption>[
-              AcpConfigOption(
+            'configOptions': <ChatConfigOption>[
+              ChatConfigOption(
                 id: 'mode',
                 name: 'Mode',
                 type: 'select',
                 currentValue: 'safe',
-                options: <AcpConfigOptionChoice>[],
+                options: <ChatConfigOptionChoice>[],
               ),
             ],
           },
@@ -2974,7 +2975,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: acp.AcpInputBudget(
+          inputBudget: acp.ChatInputBudget(
             maxTurnRetainedBytes: exactRetained + 1024,
           ),
         );
@@ -3025,7 +3026,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: acp.AcpInputBudget(maxTurnItems: markerFits ? 512 : 2),
+          inputBudget: acp.ChatInputBudget(maxTurnItems: markerFits ? 512 : 2),
         );
         await controller.newSession();
         await controller.sendPrompt('u');
@@ -3182,9 +3183,9 @@ void main() {
 
         Future<void> verify({
           required String kind,
-          required acp.AcpInputBudget budget,
+          required acp.ChatInputBudget budget,
           required Map<String, Object?> metadata,
-          required acp.AcpInputOmissionReason reason,
+          required acp.ChatInputOmissionReason reason,
         }) async {
           final fake = _ControlledPromptAgentClient();
           final controller = ChatController(
@@ -3237,18 +3238,18 @@ void main() {
         ]) {
           await verify(
             kind: kind,
-            budget: const acp.AcpInputBudget(maxStructuredStringBytes: 16),
+            budget: const acp.ChatInputBudget(maxStructuredStringBytes: 16),
             metadata: <String, Object?>{'kind': kind, 'value': canary},
-            reason: acp.AcpInputOmissionReason.inputLimit,
+            reason: acp.ChatInputOmissionReason.inputLimit,
           );
           await verify(
             kind: kind,
-            budget: const acp.AcpInputBudget(),
+            budget: const acp.ChatInputBudget(),
             metadata: <String, Object?>{
               'kind': kind,
               'value': _CanaryPayload(),
             },
-            reason: acp.AcpInputOmissionReason.invalidStructure,
+            reason: acp.ChatInputOmissionReason.invalidStructure,
           );
         }
       },
@@ -3354,7 +3355,7 @@ void main() {
                 (omission) =>
                     omission.resource == 'chat message metadata' &&
                     omission.reason ==
-                        acp.AcpInputOmissionReason.invalidStructure,
+                        acp.ChatInputOmissionReason.invalidStructure,
               ),
           hasLength(1),
         );
@@ -3423,7 +3424,7 @@ void main() {
           final controller = ChatController(
             client: fake,
             cwd: '/workspace',
-            inputBudget: acp.AcpInputBudget(
+            inputBudget: acp.ChatInputBudget(
               maxTurnItems: ledgerTracked ? 512 : 2,
             ),
           );
@@ -3457,8 +3458,8 @@ void main() {
               <String, Object?>{'name': 'old'},
             ];
           } else {
-            controller.sessionSettings = const AcpSessionSettings(
-              modes: AcpSessionModeInfo(currentModeId: 'old'),
+            controller.sessionSettings = const ChatSessionSettings(
+              modes: ChatSessionModeInfo(currentModeId: 'old'),
             );
           }
           expect(
@@ -3525,18 +3526,18 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: acp.AcpInputBudget(
+          inputBudget: acp.ChatInputBudget(
             maxTurnItems: ledgerTracked ? 512 : 2,
           ),
         );
         await controller.newSession();
         await controller.sendPrompt('u');
-        const oldOption = AcpConfigOption(
+        const oldOption = ChatConfigOption(
           id: 'old',
           name: 'Old',
           type: 'select',
           currentValue: 'on',
-          options: <AcpConfigOptionChoice>[],
+          options: <ChatConfigOptionChoice>[],
         );
         if (ledgerTracked) {
           fake.emit(
@@ -3545,13 +3546,13 @@ void main() {
               text: 'old config',
               metadata: <String, Object?>{
                 'kind': 'config_option_update',
-                'configOptions': <AcpConfigOption>[oldOption],
+                'configOptions': <ChatConfigOption>[oldOption],
               },
             ),
           );
         } else {
-          controller.sessionSettings = const AcpSessionSettings(
-            configOptions: <AcpConfigOption>[oldOption],
+          controller.sessionSettings = const ChatSessionSettings(
+            configOptions: <ChatConfigOption>[oldOption],
           );
         }
         expect(controller.sessionSettings.configOptions, isNotEmpty);
@@ -3599,7 +3600,7 @@ void main() {
           final controller = ChatController(
             client: fake,
             cwd: '/workspace',
-            inputBudget: acp.AcpInputBudget(maxTurnItems: maxTurnItems),
+            inputBudget: acp.ChatInputBudget(maxTurnItems: maxTurnItems),
           );
           await controller.newSession();
           await controller.sendPrompt('u');
@@ -3648,7 +3649,7 @@ void main() {
           final controller = ChatController(
             client: fake,
             cwd: '/workspace',
-            inputBudget: acp.AcpInputBudget(maxTurnItems: maxTurnItems),
+            inputBudget: acp.ChatInputBudget(maxTurnItems: maxTurnItems),
           );
           await controller.newSession();
           await controller.sendPrompt('u');
@@ -3661,13 +3662,13 @@ void main() {
               text: canary,
               metadata: <String, Object?>{
                 'kind': 'config_option_update',
-                'configOptions': <AcpConfigOption>[
-                  AcpConfigOption(
+                'configOptions': <ChatConfigOption>[
+                  ChatConfigOption(
                     id: 'mode',
                     name: canary,
                     type: 'select',
                     currentValue: 'safe',
-                    options: <AcpConfigOptionChoice>[],
+                    options: <ChatConfigOptionChoice>[],
                   ),
                 ],
               },
@@ -3705,14 +3706,14 @@ void main() {
         controller.availableCommands = const <Map<String, Object?>>[
           <String, Object?>{'name': 'old'},
         ];
-        controller.sessionSettings = const AcpSessionSettings(
-          configOptions: <AcpConfigOption>[
-            AcpConfigOption(
+        controller.sessionSettings = const ChatSessionSettings(
+          configOptions: <ChatConfigOption>[
+            ChatConfigOption(
               id: 'old',
               name: 'Old',
               type: 'select',
               currentValue: 'on',
-              options: <AcpConfigOptionChoice>[],
+              options: <ChatConfigOptionChoice>[],
             ),
           ],
         );
@@ -3746,14 +3747,14 @@ void main() {
       controller.availableCommands = const <Map<String, Object?>>[
         <String, Object?>{'name': 'old'},
       ];
-      controller.sessionSettings = const AcpSessionSettings(
-        configOptions: <AcpConfigOption>[
-          AcpConfigOption(
+      controller.sessionSettings = const ChatSessionSettings(
+        configOptions: <ChatConfigOption>[
+          ChatConfigOption(
             id: 'old',
             name: 'Old',
             type: 'select',
             currentValue: 'on',
-            options: <AcpConfigOptionChoice>[],
+            options: <ChatConfigOptionChoice>[],
           ),
         ],
       );
@@ -3780,7 +3781,7 @@ void main() {
       expect(
         observed.single.omissions.where(
           (omission) =>
-              omission.reason == acp.AcpInputOmissionReason.invalidStructure,
+              omission.reason == acp.ChatInputOmissionReason.invalidStructure,
         ),
         hasLength(1),
       );
@@ -3793,7 +3794,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxTurnItems: 2,
             maxStructuredStringBytes: 16,
           ),
@@ -3833,7 +3834,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(maxEmbeddedMediaBytes: 1),
+          inputBudget: const acp.ChatInputBudget(maxEmbeddedMediaBytes: 1),
         );
         addTearDown(controller.dispose);
         await controller.newSession();
@@ -3879,7 +3880,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(maxEmbeddedMediaBytes: 2),
+          inputBudget: const acp.ChatInputBudget(maxEmbeddedMediaBytes: 2),
         );
         addTearDown(controller.dispose);
         await controller.newSession();
@@ -3947,7 +3948,7 @@ void main() {
                 (omission) =>
                     omission.resource == 'image_data' &&
                     omission.reason ==
-                        acp.AcpInputOmissionReason.invalidEncoding,
+                        acp.ChatInputOmissionReason.invalidEncoding,
               ),
           hasLength(1),
         );
@@ -3971,7 +3972,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(
+          inputBudget: const acp.ChatInputBudget(
             maxEmbeddedMediaBytes: 1,
             maxStructuredStringBytes: 16,
           ),
@@ -4172,7 +4173,7 @@ void main() {
         final controller = ChatController(
           client: fake,
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(maxTurnItems: 2),
+          inputBudget: const acp.ChatInputBudget(maxTurnItems: 2),
         );
         addTearDown(controller.dispose);
         await controller.newSession();
@@ -4227,7 +4228,7 @@ void main() {
           ],
         ),
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(maxTurnItems: 1),
+        inputBudget: const acp.ChatInputBudget(maxTurnItems: 1),
       );
       addTearDown(controller.dispose);
       final dynamic debug = controller;
@@ -4246,7 +4247,7 @@ void main() {
       expect(retainedDuringObservation, greaterThan(0));
       expect(
         retainedDuringObservation,
-        lessThanOrEqualTo(const acp.AcpInputBudget().maxTurnRetainedBytes),
+        lessThanOrEqualTo(const acp.ChatInputBudget().maxTurnRetainedBytes),
       );
       expect(controller.messages, hasLength(1));
       final marker = controller.messages.single;
@@ -4327,7 +4328,7 @@ void main() {
       final controller = ChatController(
         client: fake,
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(maxTurnRetainedBytes: 1),
+        inputBudget: const acp.ChatInputBudget(maxTurnRetainedBytes: 1),
       );
       addTearDown(controller.dispose);
       await controller.newSession();
@@ -4494,8 +4495,8 @@ void main() {
       );
       expect(
         () => firstOwned.addOmission(
-          acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidStructure,
+          acp.ChatInputOmission(
+            reason: acp.ChatInputOmissionReason.invalidStructure,
             resource: 'bypass',
             truncated: false,
           ),
@@ -4524,7 +4525,7 @@ void main() {
         final controller = ChatController(
           client: FakeAgentClient(),
           cwd: '/workspace',
-          inputBudget: const acp.AcpInputBudget(maxTimelineItems: 3),
+          inputBudget: const acp.ChatInputBudget(maxTimelineItems: 3),
         );
         addTearDown(controller.dispose);
 
@@ -4600,7 +4601,7 @@ void main() {
             text: assistantText,
           ).retainedBytes;
       final timelineBytes = 64 + 32 * 4 + turnBytes * 2;
-      final budget = acp.AcpInputBudget(
+      final budget = acp.ChatInputBudget(
         maxTurnRetainedBytes: turnBytes + 1025,
         maxTimelineBytes: timelineBytes,
         maxUiStateBytes: timelineBytes + 16384,
@@ -4670,7 +4671,7 @@ void main() {
       final exact = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace',
-        inputBudget: acp.AcpInputBudget(
+        inputBudget: acp.ChatInputBudget(
           maxTurnRetainedBytes: turnBytes,
           maxTimelineBytes: exactBytes,
           maxUiStateBytes: exactBytes + 4096,
@@ -4687,7 +4688,7 @@ void main() {
       final plusOne = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace',
-        inputBudget: acp.AcpInputBudget(
+        inputBudget: acp.ChatInputBudget(
           maxTurnRetainedBytes: turnBytes,
           maxTimelineBytes: exactBytes - 1,
           maxUiStateBytes: exactBytes + 4096,
@@ -4720,7 +4721,7 @@ void main() {
       () async {
         ArchivedSessionSnapshot snapshot(
           String id, {
-          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+          acp.ChatInputBudget budget = const acp.ChatInputBudget(),
         }) {
           return ArchivedSessionSnapshot(
             session: AgentSession(
@@ -4733,7 +4734,7 @@ void main() {
             availableCommands: const <Map<String, Object?>>[],
             lastLatency: null,
             lastError: null,
-            sessionSettings: const AcpSessionSettings(),
+            sessionSettings: const ChatSessionSettings(),
             sessionUsage: null,
             sessionSettingsLoading: false,
             status: app_state.ConnectionStatus.sessionReady,
@@ -4743,7 +4744,7 @@ void main() {
         }
 
         final oneSnapshotBytes = snapshot('s1').retainedBytes;
-        final budget = acp.AcpInputBudget(
+        final budget = acp.ChatInputBudget(
           maxTurnRetainedBytes: 2048,
           maxTimelineBytes: 2048,
           maxUiStateBytes: oneSnapshotBytes * 2,
@@ -4814,11 +4815,11 @@ void main() {
             'description': 'Review active state',
           },
         ];
-        const settings = AcpSessionSettings(
-          modes: AcpSessionModeInfo(
+        const settings = ChatSessionSettings(
+          modes: ChatSessionModeInfo(
             currentModeId: 'ask',
-            availableModes: <AcpSessionMode>[
-              AcpSessionMode(id: 'ask', name: 'Ask'),
+            availableModes: <ChatSessionMode>[
+              ChatSessionMode(id: 'ask', name: 'Ask'),
             ],
           ),
         );
@@ -4832,10 +4833,10 @@ void main() {
           required AgentSession session,
           List<Map<String, Object?>> availableCommands =
               const <Map<String, Object?>>[],
-          AcpSessionSettings sessionSettings = const AcpSessionSettings(),
+          ChatSessionSettings sessionSettings = const ChatSessionSettings(),
           AcpSessionUsage? sessionUsage,
           bool wasCurrent = false,
-          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+          acp.ChatInputBudget budget = const acp.ChatInputBudget(),
         }) {
           return ArchivedSessionSnapshot(
             session: session,
@@ -4880,7 +4881,7 @@ void main() {
             ];
 
         ChatController build(int maxUiStateBytes) {
-          final budget = acp.AcpInputBudget(
+          final budget = acp.ChatInputBudget(
             maxTurnRetainedBytes: 2048,
             maxTimelineBytes: 2048,
             maxUiStateBytes: maxUiStateBytes,
@@ -4940,7 +4941,7 @@ void main() {
         expect(reconnect.currentSession, isNull);
         expect(reconnect.messages, isEmpty);
         expect(reconnect.availableCommands, isEmpty);
-        expect(reconnect.sessionSettings, const AcpSessionSettings());
+        expect(reconnect.sessionSettings, const ChatSessionSettings());
         expect(reconnect.sessionUsage, isNull);
         expect(reconnect.lastLatency, isNull);
         expect(reconnect.lastError, isNull);
@@ -4973,7 +4974,7 @@ void main() {
           AgentSession session, {
           List<ChatMessage> messages = const <ChatMessage>[],
           bool wasCurrent = false,
-          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+          acp.ChatInputBudget budget = const acp.ChatInputBudget(),
         }) => ArchivedSessionSnapshot(
           session: session,
           wasCurrent: wasCurrent,
@@ -4981,7 +4982,7 @@ void main() {
           availableCommands: const <Map<String, Object?>>[],
           lastLatency: null,
           lastError: null,
-          sessionSettings: const AcpSessionSettings(),
+          sessionSettings: const ChatSessionSettings(),
           sessionUsage: null,
           sessionSettingsLoading: false,
           status: app_state.ConnectionStatus.sessionReady,
@@ -4995,13 +4996,13 @@ void main() {
         ).retainedBytes;
         final newRetained = snapshot(newSession).retainedBytes;
         final exact = oldRetained + newRetained;
-        final budget = acp.AcpInputBudget(
+        final budget = acp.ChatInputBudget(
           maxTurnRetainedBytes: 4096,
           maxTimelineBytes: 4096,
           maxUiStateBytes: exact,
         );
         final controller = ChatController(
-          client: FakeAgentClient(sessionSettings: const AcpSessionSettings()),
+          client: FakeAgentClient(sessionSettings: const ChatSessionSettings()),
           cwd: '/workspace',
           inputBudget: budget,
         );
@@ -5047,7 +5048,7 @@ void main() {
           AgentSession session,
           String text, {
           required bool wasCurrent,
-          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+          acp.ChatInputBudget budget = const acp.ChatInputBudget(),
         }) => ArchivedSessionSnapshot(
           session: session,
           wasCurrent: wasCurrent,
@@ -5057,7 +5058,7 @@ void main() {
           availableCommands: const <Map<String, Object?>>[],
           lastLatency: null,
           lastError: null,
-          sessionSettings: const AcpSessionSettings(),
+          sessionSettings: const ChatSessionSettings(),
           sessionUsage: null,
           sessionSettingsLoading: false,
           status: app_state.ConnectionStatus.sessionReady,
@@ -5074,7 +5075,7 @@ void main() {
               secondText,
               wasCurrent: false,
             ).retainedBytes;
-        final budget = acp.AcpInputBudget(
+        final budget = acp.ChatInputBudget(
           maxTurnRetainedBytes: 4096,
           maxTimelineBytes: 4096,
           maxUiStateBytes: exact,
@@ -5129,7 +5130,7 @@ void main() {
         String text, {
         required bool wasCurrent,
         String? lastError,
-        acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        acp.ChatInputBudget budget = const acp.ChatInputBudget(),
       }) => ArchivedSessionSnapshot(
         session: session,
         wasCurrent: wasCurrent,
@@ -5139,7 +5140,7 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: lastError,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -5158,7 +5159,7 @@ void main() {
             lastError: failedError,
           ).retainedBytes +
           snapshot(cachedSession, cachedText, wasCurrent: false).retainedBytes;
-      final budget = acp.AcpInputBudget(
+      final budget = acp.ChatInputBudget(
         maxTurnRetainedBytes: 4096,
         maxTimelineBytes: 4096,
         maxUiStateBytes: exactAfterRollback,
@@ -5209,7 +5210,7 @@ void main() {
             availableCommands: const <Map<String, Object?>>[],
             lastLatency: null,
             lastError: null,
-            sessionSettings: const AcpSessionSettings(),
+            sessionSettings: const ChatSessionSettings(),
             sessionUsage: null,
             sessionSettingsLoading: false,
             status: app_state.ConnectionStatus.sessionReady,
@@ -5279,7 +5280,7 @@ void main() {
           availableCommands: const <Map<String, Object?>>[],
           lastLatency: null,
           lastError: null,
-          sessionSettings: const AcpSessionSettings(),
+          sessionSettings: const ChatSessionSettings(),
           sessionUsage: null,
           sessionSettingsLoading: false,
           status: app_state.ConnectionStatus.sessionReady,
@@ -5351,9 +5352,9 @@ void main() {
         ArchivedSessionSnapshot snapshot({
           List<ChatMessage> messages = const <ChatMessage>[],
           List<Map<String, Object?>> commands = const <Map<String, Object?>>[],
-          AcpSessionSettings settings = const AcpSessionSettings(),
+          ChatSessionSettings settings = const ChatSessionSettings(),
           AcpSessionUsage? usage,
-          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+          acp.ChatInputBudget budget = const acp.ChatInputBudget(),
         }) => ArchivedSessionSnapshot(
           session: session,
           wasCurrent: true,
@@ -5379,7 +5380,7 @@ void main() {
         );
         measuring.addMessageForTesting(currentMessage(), startsNewTurn: true);
         final messageExact = measuring.debugUiStateRetainedBytes;
-        final messageBudget = acp.AcpInputBudget(
+        final messageBudget = acp.ChatInputBudget(
           maxTurnRetainedBytes: 4096,
           maxTimelineBytes: 4096,
           maxUiStateBytes: messageExact,
@@ -5430,11 +5431,11 @@ void main() {
         const commands = <Map<String, Object?>>[
           <String, Object?>{'name': 'review'},
         ];
-        const settings = AcpSessionSettings(
-          modes: AcpSessionModeInfo(
+        const settings = ChatSessionSettings(
+          modes: ChatSessionModeInfo(
             currentModeId: 'ask',
-            availableModes: <AcpSessionMode>[
-              AcpSessionMode(id: 'ask', name: 'Ask'),
+            availableModes: <ChatSessionMode>[
+              ChatSessionMode(id: 'ask', name: 'Ask'),
             ],
           ),
         );
@@ -5480,7 +5481,7 @@ void main() {
               ),
             ];
         for (final stateCase in desired) {
-          final budget = acp.AcpInputBudget(
+          final budget = acp.ChatInputBudget(
             maxTurnRetainedBytes: 2048,
             maxTimelineBytes: 2048,
             maxUiStateBytes: stateCase.retained - 1,
@@ -5527,20 +5528,20 @@ void main() {
         availableCommands: commands,
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
         activeSessionSettingsLoadId: null,
       );
-      final budget = acp.AcpInputBudget(
+      final budget = acp.ChatInputBudget(
         maxTurnRetainedBytes: 2048,
         maxTimelineBytes: 2048,
         maxUiStateBytes: desired.retainedBytes - 1,
       );
       final controller = ChatController(
         client: FakeAgentClient(
-          sessionSettings: const AcpSessionSettings(),
+          sessionSettings: const ChatSessionSettings(),
           createSessionEvents: const <AgentEvent>[
             AgentEvent(
               type: AgentEventType.status,
@@ -5589,14 +5590,14 @@ void main() {
         );
         final largeDescription = List<String>.filled(1000, 's').join();
         final currency = List<String>.filled(1000, 'u').join();
-        final settings = AcpSessionSettings(
-          configOptions: <AcpConfigOption>[
-            AcpConfigOption(
+        final settings = ChatSessionSettings(
+          configOptions: <ChatConfigOption>[
+            ChatConfigOption(
               id: 'large',
               name: 'Large',
               type: 'text',
               currentValue: 'safe',
-              options: const <AcpConfigOptionChoice>[],
+              options: const <ChatConfigOptionChoice>[],
               description: largeDescription,
             ),
           ],
@@ -5610,7 +5611,7 @@ void main() {
         ArchivedSessionSnapshot view({
           required List<ChatMessage> messages,
           AcpSessionUsage? usage,
-          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+          acp.ChatInputBudget budget = const acp.ChatInputBudget(),
         }) => ArchivedSessionSnapshot(
           session: session,
           wasCurrent: true,
@@ -5634,7 +5635,7 @@ void main() {
           messages: <ChatMessage>[currentMessage],
           usage: proposedUsage,
         ).retainedBytes;
-        final budget = acp.AcpInputBudget(
+        final budget = acp.ChatInputBudget(
           maxTurnRetainedBytes: 4096,
           maxTimelineBytes: 4096,
           maxUiStateBytes: proposedWithoutOld - 1,
@@ -5702,14 +5703,14 @@ void main() {
       final commands = <Map<String, Object?>>[
         <String, Object?>{'name': 'large', 'description': canary},
       ];
-      final settings = AcpSessionSettings(
-        configOptions: <AcpConfigOption>[
-          AcpConfigOption(
+      final settings = ChatSessionSettings(
+        configOptions: <ChatConfigOption>[
+          ChatConfigOption(
             id: 'large',
             name: 'Large',
             type: 'text',
             currentValue: 'safe',
-            options: const <AcpConfigOptionChoice>[],
+            options: const <ChatConfigOptionChoice>[],
             description: canary,
           ),
         ],
@@ -5719,8 +5720,8 @@ void main() {
         required List<ChatMessage> messages,
         List<Map<String, Object?>> availableCommands =
             const <Map<String, Object?>>[],
-        AcpSessionSettings sessionSettings = const AcpSessionSettings(),
-        acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+        ChatSessionSettings sessionSettings = const ChatSessionSettings(),
+        acp.ChatInputBudget budget = const acp.ChatInputBudget(),
       }) => ArchivedSessionSnapshot(
         session: session,
         wasCurrent: true,
@@ -5742,9 +5743,11 @@ void main() {
             ChatMessage(role: ChatMessageRole.user, text: 'u'),
           ],
           availableCommands: commandsCase ? commands : const [],
-          sessionSettings: commandsCase ? const AcpSessionSettings() : settings,
+          sessionSettings: commandsCase
+              ? const ChatSessionSettings()
+              : settings,
         );
-        final budget = acp.AcpInputBudget(
+        final budget = acp.ChatInputBudget(
           maxTurnRetainedBytes: 2048,
           maxTimelineBytes: 2048,
           maxUiStateBytes: desired.retainedBytes - 1,
@@ -5812,14 +5815,14 @@ void main() {
           createdAt: DateTime(2026, 7, 13, 18),
         );
         final largeSetting = List<String>.filled(1000, 's').join();
-        final settings = AcpSessionSettings(
-          configOptions: <AcpConfigOption>[
-            AcpConfigOption(
+        final settings = ChatSessionSettings(
+          configOptions: <ChatConfigOption>[
+            ChatConfigOption(
               id: 'large',
               name: 'Large',
               type: 'text',
               currentValue: largeSetting,
-              options: const <AcpConfigOptionChoice>[],
+              options: const <ChatConfigOptionChoice>[],
             ),
           ],
         );
@@ -5834,7 +5837,7 @@ void main() {
 
         ArchivedSessionSnapshot view(
           List<ChatMessage> messages, {
-          acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+          acp.ChatInputBudget budget = const acp.ChatInputBudget(),
         }) => ArchivedSessionSnapshot(
           session: session,
           wasCurrent: true,
@@ -5854,7 +5857,7 @@ void main() {
           plan(replacementText),
           ChatMessage(role: ChatMessageRole.user, text: 'u'),
         ]);
-        final budget = acp.AcpInputBudget(
+        final budget = acp.ChatInputBudget(
           maxTurnRetainedBytes: 4096,
           maxTimelineBytes: 4096,
           maxUiStateBytes: desired.retainedBytes - 1,
@@ -5915,7 +5918,7 @@ void main() {
         createdAt: DateTime(2026, 7, 13, 14),
       );
 
-      ArchivedSessionSnapshot snapshot(acp.AcpInputBudget budget) =>
+      ArchivedSessionSnapshot snapshot(acp.ChatInputBudget budget) =>
           ArchivedSessionSnapshot(
             session: session,
             wasCurrent: true,
@@ -5923,7 +5926,7 @@ void main() {
             availableCommands: const <Map<String, Object?>>[],
             lastLatency: null,
             lastError: null,
-            sessionSettings: const AcpSessionSettings(),
+            sessionSettings: const ChatSessionSettings(),
             sessionUsage: null,
             sessionSettingsLoading: false,
             status: app_state.ConnectionStatus.sessionReady,
@@ -5931,7 +5934,7 @@ void main() {
             inputBudget: budget,
           );
 
-      ChatController build(acp.AcpInputBudget budget) {
+      ChatController build(acp.ChatInputBudget budget) {
         final controller = ChatController(
           client: FakeAgentClient(),
           cwd: '/workspace',
@@ -5942,7 +5945,7 @@ void main() {
         return controller;
       }
 
-      const measuringBudget = acp.AcpInputBudget(
+      const measuringBudget = acp.ChatInputBudget(
         maxTurnRetainedBytes: 2048,
         maxTimelineBytes: 2048,
       );
@@ -5954,7 +5957,7 @@ void main() {
       appendMeasuring.appendTextForTesting('a\n');
       final appendExact = appendMeasuring.debugUiStateRetainedBytes;
 
-      final appendBudget = acp.AcpInputBudget(
+      final appendBudget = acp.ChatInputBudget(
         maxTurnRetainedBytes: 2048,
         maxTimelineBytes: 2048,
         maxUiStateBytes: appendExact,
@@ -5984,7 +5987,7 @@ void main() {
         isTrue,
       );
       final replaceExact = replaceMeasuring.debugUiStateRetainedBytes;
-      final replaceBudget = acp.AcpInputBudget(
+      final replaceBudget = acp.ChatInputBudget(
         maxTurnRetainedBytes: 2048,
         maxTimelineBytes: 2048,
         maxUiStateBytes: replaceExact - 1,
@@ -6018,7 +6021,7 @@ void main() {
       final controller = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace',
-        inputBudget: acp.AcpInputBudget(
+        inputBudget: acp.ChatInputBudget(
           maxMessageTextBytes: 700,
           maxMarkdownFallbackBytes: 700,
           maxTurnRetainedBytes: turnBytes,
@@ -6056,8 +6059,8 @@ void main() {
       );
 
       controller.addOmissionForTesting(
-        acp.AcpInputOmission(
-          reason: acp.AcpInputOmissionReason.invalidStructure,
+        acp.ChatInputOmission(
+          reason: acp.ChatInputOmissionReason.invalidStructure,
           resource: 'streaming text',
           truncated: false,
         ),
@@ -6093,7 +6096,7 @@ void main() {
       final controller = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(maxTimelineItems: 4),
+        inputBudget: const acp.ChatInputBudget(maxTimelineItems: 4),
       );
       addTearDown(controller.dispose);
       controller.addMessageForTesting(
@@ -6455,26 +6458,26 @@ void main() {
   });
 
   test('create session applies model and reasoning template options', () async {
-    const settings = AcpSessionSettings(
+    const settings = ChatSessionSettings(
       configOptions: [
-        AcpConfigOption(
+        ChatConfigOption(
           id: 'model',
           name: 'Model',
           type: 'select',
           currentValue: 'balanced',
           options: [
-            AcpConfigOptionChoice(value: 'balanced', name: 'Balanced'),
-            AcpConfigOptionChoice(value: 'fast', name: 'Fast'),
+            ChatConfigOptionChoice(value: 'balanced', name: 'Balanced'),
+            ChatConfigOptionChoice(value: 'fast', name: 'Fast'),
           ],
         ),
-        AcpConfigOption(
+        ChatConfigOption(
           id: 'reasoning_effort',
           name: 'Reasoning effort',
           type: 'select',
           currentValue: 'low',
           options: [
-            AcpConfigOptionChoice(value: 'low', name: 'Low'),
-            AcpConfigOptionChoice(value: 'high', name: 'High'),
+            ChatConfigOptionChoice(value: 'low', name: 'Low'),
+            ChatConfigOptionChoice(value: 'high', name: 'High'),
           ],
         ),
       ],
@@ -6509,12 +6512,12 @@ void main() {
   test(
     'create session applies a mode-only template through ACP fallback',
     () async {
-      const settings = AcpSessionSettings(
-        modes: AcpSessionModeInfo(
+      const settings = ChatSessionSettings(
+        modes: ChatSessionModeInfo(
           currentModeId: 'ask',
           availableModes: [
-            AcpSessionMode(id: 'ask', name: 'Ask'),
-            AcpSessionMode(id: 'review', name: 'Review'),
+            ChatSessionMode(id: 'ask', name: 'Ask'),
+            ChatSessionMode(id: 'review', name: 'Review'),
           ],
         ),
       );
@@ -7010,14 +7013,14 @@ void main() {
     final commands = <Map<String, Object?>>[
       <String, Object?>{'name': 'review', 'payload': commandPayload},
     ];
-    final modes = <AcpSessionMode>[
-      const AcpSessionMode(id: 'ask', name: 'Ask'),
+    final modes = <ChatSessionMode>[
+      const ChatSessionMode(id: 'ask', name: 'Ask'),
     ];
-    final choices = <AcpConfigOptionChoice>[
-      const AcpConfigOptionChoice(value: 'on', name: 'On'),
+    final choices = <ChatConfigOptionChoice>[
+      const ChatConfigOptionChoice(value: 'on', name: 'On'),
     ];
-    final options = <AcpConfigOption>[
-      AcpConfigOption(
+    final options = <ChatConfigOption>[
+      ChatConfigOption(
         id: 'approval',
         name: 'Approval',
         type: 'select',
@@ -7025,8 +7028,8 @@ void main() {
         options: choices,
       ),
     ];
-    final settings = AcpSessionSettings(
-      modes: AcpSessionModeInfo(currentModeId: 'ask', availableModes: modes),
+    final settings = ChatSessionSettings(
+      modes: ChatSessionModeInfo(currentModeId: 'ask', availableModes: modes),
       configOptions: options,
     );
     final snapshot = ArchivedSessionSnapshot(
@@ -7109,14 +7112,14 @@ void main() {
         role: ChatMessageRole.assistant,
         text: 'wide original',
         metadata: const <String, Object?>{'first': 'a', 'second': 'b'},
-        omissions: <acp.AcpInputOmission>[
-          acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidStructure,
+        omissions: <acp.ChatInputOmission>[
+          acp.ChatInputOmission(
+            reason: acp.ChatInputOmissionReason.invalidStructure,
             resource: 'first original omission',
             truncated: false,
           ),
-          acp.AcpInputOmission(
-            reason: acp.AcpInputOmissionReason.invalidEncoding,
+          acp.ChatInputOmission(
+            reason: acp.ChatInputOmissionReason.invalidEncoding,
             resource: 'second original omission',
             truncated: false,
           ),
@@ -7133,7 +7136,7 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -7143,7 +7146,7 @@ void main() {
       final controller = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace',
-        inputBudget: const acp.AcpInputBudget(
+        inputBudget: const acp.ChatInputBudget(
           maxMetadataEntries: 1,
           maxCollectionItems: 3,
         ),
@@ -7174,7 +7177,7 @@ void main() {
               (omission) => omission.resource == 'chat message metadata',
             )
             .reason,
-        acp.AcpInputOmissionReason.inputLimit,
+        acp.ChatInputOmissionReason.inputLimit,
       );
       expect(
         active.omissions.map((omission) => omission.resource),
@@ -7203,9 +7206,9 @@ void main() {
           role: ChatMessageRole.assistant,
           text: 'abcde',
           metadata: const <String, Object?>{'first': 'a', 'second': 'b'},
-          omissions: <acp.AcpInputOmission>[
-            acp.AcpInputOmission(
-              reason: acp.AcpInputOmissionReason.invalidStructure,
+          omissions: <acp.ChatInputOmission>[
+            acp.ChatInputOmission(
+              reason: acp.ChatInputOmissionReason.invalidStructure,
               resource: 'trusted original omission',
               truncated: false,
             ),
@@ -7221,7 +7224,7 @@ void main() {
       availableCommands: const <Map<String, Object?>>[],
       lastLatency: null,
       lastError: null,
-      sessionSettings: const AcpSessionSettings(),
+      sessionSettings: const ChatSessionSettings(),
       sessionUsage: null,
       sessionSettingsLoading: false,
       status: app_state.ConnectionStatus.sessionReady,
@@ -7236,7 +7239,7 @@ void main() {
     final controller = ChatController(
       client: FakeAgentClient(),
       cwd: '/workspace',
-      inputBudget: const acp.AcpInputBudget(
+      inputBudget: const acp.ChatInputBudget(
         maxMessageTextBytes: 4,
         maxThoughtTextBytes: 2,
         maxMarkdownFallbackBytes: 4,
@@ -7341,7 +7344,7 @@ void main() {
     'snapshot commands and settings fail safe without stringifying payloads',
     () {
       final canary = _CanaryPayload();
-      final hostileModes = _ThrowingReadList<AcpSessionMode>();
+      final hostileModes = _ThrowingReadList<ChatSessionMode>();
       final snapshot = ArchivedSessionSnapshot(
         session: AgentSession(
           id: 'session-hostile',
@@ -7355,15 +7358,15 @@ void main() {
         ],
         lastLatency: null,
         lastError: null,
-        sessionSettings: AcpSessionSettings(
-          modes: AcpSessionModeInfo(availableModes: hostileModes),
-          configOptions: const <AcpConfigOption>[
-            AcpConfigOption(
+        sessionSettings: ChatSessionSettings(
+          modes: ChatSessionModeInfo(availableModes: hostileModes),
+          configOptions: const <ChatConfigOption>[
+            ChatConfigOption(
               id: 'partial',
               name: 'Must not survive',
               type: 'boolean',
               currentValue: 'true',
-              options: <AcpConfigOptionChoice>[],
+              options: <ChatConfigOptionChoice>[],
             ),
           ],
         ),
@@ -7378,7 +7381,7 @@ void main() {
       expect(snapshot.sessionSettings.configOptions, isEmpty);
       expect(canary.toStringCalls, 0);
 
-      final hostileOptions = _ThrowingReadList<AcpConfigOption>();
+      final hostileOptions = _ThrowingReadList<ChatConfigOption>();
       final optionsSnapshot = ArchivedSessionSnapshot(
         session: AgentSession(
           id: 'session-hostile-options',
@@ -7390,11 +7393,11 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: AcpSessionSettings(
-          modes: const AcpSessionModeInfo(
+        sessionSettings: ChatSessionSettings(
+          modes: const ChatSessionModeInfo(
             currentModeId: 'ask',
-            availableModes: <AcpSessionMode>[
-              AcpSessionMode(id: 'ask', name: 'Must not survive'),
+            availableModes: <ChatSessionMode>[
+              ChatSessionMode(id: 'ask', name: 'Must not survive'),
             ],
           ),
           configOptions: hostileOptions,
@@ -7421,14 +7424,14 @@ void main() {
       availableCommands: const <Map<String, Object?>>[],
       lastLatency: null,
       lastError: null,
-      sessionSettings: const AcpSessionSettings(
-        configOptions: <AcpConfigOption>[
-          AcpConfigOption(
+      sessionSettings: const ChatSessionSettings(
+        configOptions: <ChatConfigOption>[
+          ChatConfigOption(
             id: 'i',
             name: 'n',
             type: 't',
             currentValue: 'v',
-            options: <AcpConfigOptionChoice>[],
+            options: <ChatConfigOptionChoice>[],
           ),
         ],
       ),
@@ -7436,7 +7439,7 @@ void main() {
       sessionSettingsLoading: false,
       status: app_state.ConnectionStatus.sessionReady,
       activeSessionSettingsLoadId: null,
-      inputBudget: const acp.AcpInputBudget(maxStructuredStringBytes: 1),
+      inputBudget: const acp.ChatInputBudget(maxStructuredStringBytes: 1),
     );
 
     expect(snapshot.sessionSettings.configOptions, hasLength(1));
@@ -7447,8 +7450,8 @@ void main() {
   });
 
   test('snapshot settings typed scalars share one root byte budget', () {
-    final omission = acp.AcpInputOmission(
-      reason: acp.AcpInputOmissionReason.inputLimit,
+    final omission = acp.ChatInputOmission(
+      reason: acp.ChatInputOmissionReason.inputLimit,
       resource: 'r',
       truncated: true,
       limit: 1,
@@ -7467,15 +7470,15 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: AcpSessionSettings(
-          omissions: <acp.AcpInputOmission>[omission],
+        sessionSettings: ChatSessionSettings(
+          omissions: <acp.ChatInputOmission>[omission],
           truncated: true,
         ),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
         activeSessionSettingsLoadId: null,
-        inputBudget: acp.AcpInputBudget(maxStructuredUpdateBytes: maxBytes),
+        inputBudget: acp.ChatInputBudget(maxStructuredUpdateBytes: maxBytes),
       );
     }
 
@@ -7490,16 +7493,16 @@ void main() {
 
   test('stateful settings collection lengths fail closed without partials', () {
     const canary = 'SECRET_SETTINGS_LENGTH_CANARY';
-    const choice = AcpConfigOptionChoice(value: 'v', name: 'n');
-    final option = AcpConfigOption(
+    const choice = ChatConfigOptionChoice(value: 'v', name: 'n');
+    final option = ChatConfigOption(
       id: 'i',
       name: 'n',
       type: 't',
       currentValue: 'v',
-      options: const <AcpConfigOptionChoice>[],
+      options: const <ChatConfigOptionChoice>[],
     );
 
-    ArchivedSessionSnapshot snapshot(AcpSessionSettings settings) {
+    ArchivedSessionSnapshot snapshot(ChatSessionSettings settings) {
       return ArchivedSessionSnapshot(
         session: AgentSession(
           id: 'a',
@@ -7520,29 +7523,29 @@ void main() {
     }
 
     final optionsSnapshot = snapshot(
-      AcpSessionSettings(
-        modes: const AcpSessionModeInfo(
-          availableModes: <AcpSessionMode>[
-            AcpSessionMode(id: 'partial', name: 'Must not survive'),
+      ChatSessionSettings(
+        modes: const ChatSessionModeInfo(
+          availableModes: <ChatSessionMode>[
+            ChatSessionMode(id: 'partial', name: 'Must not survive'),
           ],
         ),
-        configOptions: _GrowingLengthList<AcpConfigOption>(option, canary),
+        configOptions: _GrowingLengthList<ChatConfigOption>(option, canary),
       ),
     );
     final choicesSnapshot = snapshot(
-      AcpSessionSettings(
-        modes: const AcpSessionModeInfo(
-          availableModes: <AcpSessionMode>[
-            AcpSessionMode(id: 'partial', name: 'Must not survive'),
+      ChatSessionSettings(
+        modes: const ChatSessionModeInfo(
+          availableModes: <ChatSessionMode>[
+            ChatSessionMode(id: 'partial', name: 'Must not survive'),
           ],
         ),
-        configOptions: <AcpConfigOption>[
-          AcpConfigOption(
+        configOptions: <ChatConfigOption>[
+          ChatConfigOption(
             id: 'i',
             name: 'n',
             type: 't',
             currentValue: 'v',
-            options: _GrowingLengthList<AcpConfigOptionChoice>(choice, canary),
+            options: _GrowingLengthList<ChatConfigOptionChoice>(choice, canary),
           ),
         ],
       ),
@@ -7573,12 +7576,12 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
         activeSessionSettingsLoadId: null,
-        inputBudget: acp.AcpInputBudget(maxStructuredUpdateBytes: maxBytes),
+        inputBudget: acp.ChatInputBudget(maxStructuredUpdateBytes: maxBytes),
       );
     }
 
@@ -7642,12 +7645,12 @@ void main() {
       availableCommands: const <Map<String, Object?>>[],
       lastLatency: null,
       lastError: null,
-      sessionSettings: const AcpSessionSettings(),
+      sessionSettings: const ChatSessionSettings(),
       sessionUsage: null,
       sessionSettingsLoading: false,
       status: app_state.ConnectionStatus.sessionReady,
       activeSessionSettingsLoadId: null,
-      inputBudget: const acp.AcpInputBudget(maxStructuredUpdateBytes: 20),
+      inputBudget: const acp.ChatInputBudget(maxStructuredUpdateBytes: 20),
     );
 
     expect(snapshot.session.additionalDirectories, isEmpty);
@@ -7672,7 +7675,7 @@ void main() {
       availableCommands: const <Map<String, Object?>>[],
       lastLatency: null,
       lastError: null,
-      sessionSettings: const AcpSessionSettings(),
+      sessionSettings: const ChatSessionSettings(),
       sessionUsage: null,
       sessionSettingsLoading: false,
       status: app_state.ConnectionStatus.sessionReady,
@@ -7691,8 +7694,8 @@ void main() {
     'session snapshot rejects changing event omission length atomically',
     () {
       const canary = 'SECRET_EVENT_OMISSION_LENGTH_CANARY';
-      final omission = acp.AcpInputOmission(
-        reason: acp.AcpInputOmissionReason.invalidStructure,
+      final omission = acp.ChatInputOmission(
+        reason: acp.ChatInputOmissionReason.invalidStructure,
         resource: 'safe',
         truncated: false,
       );
@@ -7706,7 +7709,7 @@ void main() {
             AgentEvent(
               type: AgentEventType.status,
               text: 'safe',
-              omissions: _GrowingLengthList<acp.AcpInputOmission>(
+              omissions: _GrowingLengthList<acp.ChatInputOmission>(
                 omission,
                 canary,
               ),
@@ -7718,7 +7721,7 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -7749,7 +7752,7 @@ void main() {
       availableCommands: const <Map<String, Object?>>[],
       lastLatency: null,
       lastError: null,
-      sessionSettings: const AcpSessionSettings(),
+      sessionSettings: const ChatSessionSettings(),
       sessionUsage: null,
       sessionSettingsLoading: false,
       status: app_state.ConnectionStatus.sessionReady,
@@ -7796,7 +7799,7 @@ void main() {
           availableCommands: const <Map<String, Object?>>[],
           lastLatency: const Duration(milliseconds: 4),
           lastError: lastError,
-          sessionSettings: const AcpSessionSettings(),
+          sessionSettings: const ChatSessionSettings(),
           sessionUsage: null,
           sessionSettingsLoading: false,
           status: app_state.ConnectionStatus.sessionReady,
@@ -7851,8 +7854,8 @@ void main() {
   );
 
   test('two controllers restore independent active copies of one snapshot', () {
-    final omission = acp.AcpInputOmission(
-      reason: acp.AcpInputOmissionReason.inputLimit,
+    final omission = acp.ChatInputOmission(
+      reason: acp.ChatInputOmissionReason.inputLimit,
       resource: 'message text',
       truncated: true,
       limit: 4,
@@ -7872,7 +7875,7 @@ void main() {
           metadata: const <String, Object?>{
             'nested': <String, Object?>{'value': 'safe'},
           },
-          omissions: <acp.AcpInputOmission>[omission],
+          omissions: <acp.ChatInputOmission>[omission],
         ),
       ],
       availableCommands: const <Map<String, Object?>>[
@@ -7880,11 +7883,11 @@ void main() {
       ],
       lastLatency: null,
       lastError: null,
-      sessionSettings: const AcpSessionSettings(
-        modes: AcpSessionModeInfo(
+      sessionSettings: const ChatSessionSettings(
+        modes: ChatSessionModeInfo(
           currentModeId: 'ask',
-          availableModes: <AcpSessionMode>[
-            AcpSessionMode(id: 'ask', name: 'Ask'),
+          availableModes: <ChatSessionMode>[
+            ChatSessionMode(id: 'ask', name: 'Ask'),
           ],
         ),
       ),
@@ -7914,7 +7917,7 @@ void main() {
     expect(first.sessionSettings, isNot(same(second.sessionSettings)));
     first.setLastMessageTextForTesting('shared first');
     first.availableCommands = const <Map<String, Object?>>[];
-    first.sessionSettings = const AcpSessionSettings();
+    first.sessionSettings = const ChatSessionSettings();
 
     expect(first.messages.single.text, 'shared first');
     expect(second.messages.single.text, 'shared');
@@ -7928,7 +7931,7 @@ void main() {
   test(
     'empty snapshots work with one collection item and metadata node',
     () async {
-      const budget = acp.AcpInputBudget(
+      const budget = acp.ChatInputBudget(
         maxCollectionItems: 1,
         maxMetadataNodes: 1,
       );
@@ -7944,7 +7947,7 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -7963,12 +7966,12 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
         activeSessionSettingsLoadId: null,
-        inputBudget: const acp.AcpInputBudget(
+        inputBudget: const acp.ChatInputBudget(
           maxCollectionItems: 1,
           maxMetadataNodes: 1,
           maxStructuredStringBytes: 1,
@@ -7987,7 +7990,7 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -8195,7 +8198,7 @@ void main() {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -8204,7 +8207,7 @@ void main() {
       final controller = ChatController(
         client: FakeAgentClient(),
         cwd: '/workspace',
-        inputBudget: acp.AcpInputBudget(
+        inputBudget: acp.ChatInputBudget(
           maxTurnRetainedBytes: measured.retainedBytes,
           maxTimelineBytes: measured.retainedBytes,
           maxUiStateBytes: measured.retainedBytes,
@@ -8703,7 +8706,7 @@ void main() {
       ];
       controller.sessionSettings = _settingsWithMode('edit');
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-active-conflict',
           lifecycleId: 'lifecycle-active-conflict',
           title: 'Run bound workspace command',
@@ -8718,13 +8721,13 @@ void main() {
       await pumpEventQueue();
       final pendingBindingKeyBeforeConflict =
           controller.pendingPermissionRequest!.bindingKey;
-      final permissionHistoryBeforeConflict = List<AcpPermissionAuditEntry>.of(
+      final permissionHistoryBeforeConflict = List<ChatPermissionAuditEntry>.of(
         controller.permissionHistory,
       );
       expect(permissionHistoryBeforeConflict, hasLength(1));
       expect(
         permissionHistoryBeforeConflict.single.status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
       expect(fake.lastPermissionRequestId, isNull);
       final statusBeforeConflict = controller.status;
@@ -8767,7 +8770,7 @@ void main() {
       expect(controller.permissionHistory, permissionHistoryBeforeConflict);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
       expect(controller.permissionHistory.single.decisionSource, isNull);
       expect(controller.permissionHistory.single.resolvedAt, isNull);
@@ -8978,17 +8981,17 @@ void main() {
     expect(controller.permissionHistory, hasLength(1));
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.cancelled,
+      ChatPermissionAuditStatus.cancelled,
     );
     expect(
       controller.permissionHistory.single.decisionSource,
-      AcpPermissionDecisionSource.system,
+      ChatPermissionDecisionSource.system,
     );
-    expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+    expect(fake.permissionDecisions, [ChatPermissionDecision.cancel]);
 
-    await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
+    await controller.resolvePermissionRequest(ChatPermissionDecision.allow);
 
-    expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+    expect(fake.permissionDecisions, [ChatPermissionDecision.cancel]);
   });
 
   test(
@@ -9007,7 +9010,7 @@ void main() {
         cwd: '/workspace/remote',
       );
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'snapshot-stale-permission',
           title: 'Run remote command',
           rationale: 'Requested by the previous session',
@@ -9029,14 +9032,14 @@ void main() {
       expect(controller.currentSession?.id, snapshotSession.id);
       expect(controller.pendingPermissionRequest, isNull);
       expect(fake.permissionResponseStarted.isCompleted, isTrue);
-      expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+      expect(fake.permissionDecisions, [ChatPermissionDecision.cancel]);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
       expect(
         events
@@ -9070,7 +9073,7 @@ void main() {
       expect(controller.currentSession?.id, previousSession.id);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'local-stale-permission',
           title: 'Run previous command',
           rationale: 'Requested by the previous session',
@@ -9092,14 +9095,14 @@ void main() {
       expect(controller.currentSession?.id, localSession.id);
       expect(controller.pendingPermissionRequest, isNull);
       expect(fake.permissionResponseStarted.isCompleted, isTrue);
-      expect(fake.permissionDecisions, [AcpPermissionDecision.cancel]);
+      expect(fake.permissionDecisions, [ChatPermissionDecision.cancel]);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
       expect(
         events
@@ -9427,7 +9430,7 @@ void main() {
     addTearDown(controller.dispose);
     final permissionEvents = <ChatPermissionEvent>[];
     controller.addPermissionEventObserver(permissionEvents.add);
-    final request = AcpPermissionRequest(
+    final request = ChatPermissionRequest(
       id: 'permission-1',
       lifecycleId: 'lifecycle-current',
       title: 'Read file',
@@ -9440,26 +9443,26 @@ void main() {
     fake.emitPermissionRequest(request);
     await pumpEventQueue();
 
-    final mismatches = <AcpPermissionInvalidation>[
-      AcpPermissionInvalidation(
+    final mismatches = <ChatPermissionInvalidation>[
+      ChatPermissionInvalidation(
         requestId: 'permission-other',
         lifecycleId: request.lifecycleId,
         sessionId: request.sessionId,
-        reason: AcpPermissionInvalidationReason.timedOut,
+        reason: ChatPermissionInvalidationReason.timedOut,
         invalidatedAt: DateTime.utc(2026, 7, 14, 12, 1),
       ),
-      AcpPermissionInvalidation(
+      ChatPermissionInvalidation(
         requestId: request.id,
         lifecycleId: 'lifecycle-old',
         sessionId: request.sessionId,
-        reason: AcpPermissionInvalidationReason.timedOut,
+        reason: ChatPermissionInvalidationReason.timedOut,
         invalidatedAt: DateTime.utc(2026, 7, 14, 12, 2),
       ),
-      AcpPermissionInvalidation(
+      ChatPermissionInvalidation(
         requestId: request.id,
         lifecycleId: request.lifecycleId,
         sessionId: 'session-other',
-        reason: AcpPermissionInvalidationReason.timedOut,
+        reason: ChatPermissionInvalidationReason.timedOut,
         invalidatedAt: DateTime.utc(2026, 7, 14, 12, 3),
       ),
     ];
@@ -9472,16 +9475,16 @@ void main() {
       );
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
       expect(fake.lastPermissionRequestId, isNull);
     }
 
-    final matching = AcpPermissionInvalidation(
+    final matching = ChatPermissionInvalidation(
       requestId: request.id,
       lifecycleId: request.lifecycleId,
       sessionId: request.sessionId,
-      reason: AcpPermissionInvalidationReason.timedOut,
+      reason: ChatPermissionInvalidationReason.timedOut,
       invalidatedAt: DateTime.utc(2026, 7, 14, 12, 4),
     );
     fake.emitPermissionInvalidation(matching);
@@ -9492,11 +9495,11 @@ void main() {
     expect(controller.permissionHistory, hasLength(1));
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.cancelled,
+      ChatPermissionAuditStatus.cancelled,
     );
     expect(
       controller.permissionHistory.single.decisionSource,
-      AcpPermissionDecisionSource.system,
+      ChatPermissionDecisionSource.system,
     );
     expect(
       permissionEvents.where(
@@ -9512,7 +9515,7 @@ void main() {
   });
 
   test('permission invalidation reasons and UI races settle once', () async {
-    AcpPermissionRequest requestFor(String suffix) => AcpPermissionRequest(
+    ChatPermissionRequest requestFor(String suffix) => ChatPermissionRequest(
       id: 'permission-$suffix',
       lifecycleId: 'lifecycle-$suffix',
       title: 'Run command',
@@ -9524,7 +9527,7 @@ void main() {
       requestedAt: DateTime.utc(2026, 7, 14, 13),
     );
 
-    for (final decision in AcpPermissionDecision.values) {
+    for (final decision in ChatPermissionDecision.values) {
       final fake = FakeAgentClient();
       final controller = ChatController(client: fake, cwd: '/workspace');
       final request = requestFor('ui-${decision.name}');
@@ -9533,9 +9536,9 @@ void main() {
 
       await controller.resolvePermissionRequest(decision);
       final expectedStatus = switch (decision) {
-        AcpPermissionDecision.allow => AcpPermissionAuditStatus.allowed,
-        AcpPermissionDecision.deny => AcpPermissionAuditStatus.denied,
-        AcpPermissionDecision.cancel => AcpPermissionAuditStatus.cancelled,
+        ChatPermissionDecision.allow => ChatPermissionAuditStatus.allowed,
+        ChatPermissionDecision.deny => ChatPermissionAuditStatus.denied,
+        ChatPermissionDecision.cancel => ChatPermissionAuditStatus.cancelled,
       };
       expect(fake.lastPermissionRequestId, request.id);
       expect(fake.lastPermissionDecision, decision);
@@ -9543,15 +9546,15 @@ void main() {
       expect(controller.permissionHistory.single.status, expectedStatus);
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.manual,
+        ChatPermissionDecisionSource.manual,
       );
 
       fake.emitPermissionInvalidation(
-        AcpPermissionInvalidation(
+        ChatPermissionInvalidation(
           requestId: request.id,
           lifecycleId: request.lifecycleId,
           sessionId: request.sessionId,
-          reason: AcpPermissionInvalidationReason.connectionClosed,
+          reason: ChatPermissionInvalidationReason.connectionClosed,
           invalidatedAt: DateTime.utc(2026, 7, 14, 13, 1),
         ),
       );
@@ -9564,8 +9567,8 @@ void main() {
       await controller.disposalComplete;
     }
 
-    expect(AcpPermissionInvalidationReason.values, hasLength(6));
-    for (final reason in AcpPermissionInvalidationReason.values) {
+    expect(ChatPermissionInvalidationReason.values, hasLength(6));
+    for (final reason in ChatPermissionInvalidationReason.values) {
       final fake = FakeAgentClient();
       final reviewer = _DelayedPermissionReviewer();
       final controller = ChatController(
@@ -9574,7 +9577,7 @@ void main() {
         permissionReviewer: reviewer,
       );
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.autoReview,
+        ChatToolCallExecutionPolicy.autoReview,
       );
       final permissionEvents = <ChatPermissionEvent>[];
       controller.addPermissionEventObserver(permissionEvents.add);
@@ -9583,7 +9586,7 @@ void main() {
       await pumpEventQueue();
       expect(reviewer.requests.single.id, request.id);
 
-      final invalidation = AcpPermissionInvalidation(
+      final invalidation = ChatPermissionInvalidation(
         requestId: request.id,
         lifecycleId: request.lifecycleId,
         sessionId: request.sessionId,
@@ -9593,14 +9596,14 @@ void main() {
       fake.emitPermissionInvalidation(invalidation);
       fake.emitPermissionInvalidation(invalidation);
       final lateManual = controller.resolvePermissionRequest(
-        AcpPermissionDecision.deny,
+        ChatPermissionDecision.deny,
       );
-      if (reason == AcpPermissionInvalidationReason.disposed) {
+      if (reason == ChatPermissionInvalidationReason.disposed) {
         controller.dispose();
       }
       reviewer.complete(
-        const AcpPermissionReviewResult(
-          decision: AcpPermissionDecision.allow,
+        const ChatPermissionReviewResult(
+          decision: ChatPermissionDecision.allow,
           risk: 'low',
           rationale: 'Late reviewer result.',
         ),
@@ -9612,15 +9615,15 @@ void main() {
       expect(controller.permissionHistory, hasLength(1));
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
       expect(
         controller.permissionHistory.single.reviewResult?.rationale,
-        reason == AcpPermissionInvalidationReason.disposed
+        reason == ChatPermissionInvalidationReason.disposed
             ? isNull
             : 'Late reviewer result.',
       );
@@ -9647,7 +9650,7 @@ void main() {
     addTearDown(controller.dispose);
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Read file',
         rationale: 'Requested by agent',
@@ -9664,21 +9667,21 @@ void main() {
     expect(controller.permissionHistory, hasLength(1));
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.pending,
+      ChatPermissionAuditStatus.pending,
     );
 
-    await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+    await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
 
     expect(controller.pendingPermissionRequest, isNull);
     expect(fake.lastPermissionRequestId, 'permission-1');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.deny);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.deny);
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.denied,
+      ChatPermissionAuditStatus.denied,
     );
     expect(
       controller.permissionHistory.single.decisionSource,
-      AcpPermissionDecisionSource.manual,
+      ChatPermissionDecisionSource.manual,
     );
     expect(controller.permissionHistory.single.resolvedAt, isNotNull);
   });
@@ -9689,7 +9692,7 @@ void main() {
     addTearDown(controller.dispose);
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Run command',
         rationale: 'Requested by agent',
@@ -9697,17 +9700,17 @@ void main() {
         toolName: 'terminal',
         options: const ['Allow once', 'Always allow', 'Reject'],
         choices: const [
-          AcpPermissionChoice(
+          ChatPermissionChoice(
             optionId: 'allow-once',
             name: 'Allow once',
             kind: 'allow_once',
           ),
-          AcpPermissionChoice(
+          ChatPermissionChoice(
             optionId: 'allow-always',
             name: 'Always allow',
             kind: 'allow_always',
           ),
-          AcpPermissionChoice(
+          ChatPermissionChoice(
             optionId: 'reject-once',
             name: 'Reject',
             kind: 'reject_once',
@@ -9722,14 +9725,14 @@ void main() {
 
     expect(fake.lastPermissionRequestId, 'permission-1');
     expect(fake.lastPermissionOptionId, 'allow-always');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.allowed,
+      ChatPermissionAuditStatus.allowed,
     );
     expect(
       controller.permissionHistory.single.decisionSource,
-      AcpPermissionDecisionSource.manual,
+      ChatPermissionDecisionSource.manual,
     );
     expect(
       controller.permissionHistory.single.selectedOptionId,
@@ -9745,7 +9748,7 @@ void main() {
       addTearDown(controller.dispose);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Read file',
           rationale: 'Requested by agent',
@@ -9758,11 +9761,11 @@ void main() {
       await pumpEventQueue();
 
       final allow = controller.resolvePermissionRequest(
-        AcpPermissionDecision.allow,
+        ChatPermissionDecision.allow,
       );
       await fake.responseStarted.future;
       final deny = controller.resolvePermissionRequest(
-        AcpPermissionDecision.deny,
+        ChatPermissionDecision.deny,
       );
       await pumpEventQueue();
 
@@ -9773,11 +9776,11 @@ void main() {
       await Future.wait([allow, deny]);
 
       expect(fake.permissionResponseCount, 1);
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
       expect(controller.pendingPermissionRequest, isNull);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.allowed,
+        ChatPermissionAuditStatus.allowed,
       );
     },
   );
@@ -9792,7 +9795,7 @@ void main() {
       controller.addPermissionEventObserver(events.add);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-a',
           title: 'Read file',
           rationale: 'Requested by agent',
@@ -9805,12 +9808,12 @@ void main() {
       await pumpEventQueue();
 
       final allow = controller.resolvePermissionRequest(
-        AcpPermissionDecision.allow,
+        ChatPermissionDecision.allow,
       );
       await fake.responseStarted.future;
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-b',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -9829,8 +9832,8 @@ void main() {
       final auditA = controller.permissionHistory.singleWhere(
         (entry) => entry.request.id == 'permission-a',
       );
-      expect(auditA.status, AcpPermissionAuditStatus.cancelled);
-      expect(auditA.decisionSource, AcpPermissionDecisionSource.system);
+      expect(auditA.status, ChatPermissionAuditStatus.cancelled);
+      expect(auditA.decisionSource, ChatPermissionDecisionSource.system);
       expect(controller.pendingPermissionRequest?.id, 'permission-b');
       expect(
         events
@@ -9850,7 +9853,7 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
 
-    final request = AcpPermissionRequest(
+    final request = ChatPermissionRequest(
       id: 'permission-1',
       title: 'Read file',
       rationale: 'Requested by agent',
@@ -9862,13 +9865,13 @@ void main() {
 
     fake.emitPermissionRequest(request);
     await pumpEventQueue();
-    await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
+    await controller.resolvePermissionRequest(ChatPermissionDecision.allow);
 
     expect(fake.permissionResponseCount, 1);
     expect(controller.pendingPermissionRequest, isNull);
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.allowed,
+      ChatPermissionAuditStatus.allowed,
     );
 
     fake.emitPermissionRequest(request);
@@ -9879,15 +9882,15 @@ void main() {
     expect(controller.permissionHistory, hasLength(2));
     expect(
       controller.permissionHistory.first.status,
-      AcpPermissionAuditStatus.pending,
+      ChatPermissionAuditStatus.pending,
     );
     expect(
       controller.permissionHistory.last.status,
-      AcpPermissionAuditStatus.allowed,
+      ChatPermissionAuditStatus.allowed,
     );
     expect(
       controller.permissionHistory.last.decisionSource,
-      AcpPermissionDecisionSource.manual,
+      ChatPermissionDecisionSource.manual,
     );
   });
 
@@ -9899,7 +9902,7 @@ void main() {
     addTearDown(controller.dispose);
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Read file',
         rationale: 'Requested by agent',
@@ -9911,14 +9914,14 @@ void main() {
     );
     await pumpEventQueue();
 
-    await controller.resolvePermissionRequest(AcpPermissionDecision.allow);
+    await controller.resolvePermissionRequest(ChatPermissionDecision.allow);
 
     expect(fake.lastPermissionRequestId, 'permission-1');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
     expect(controller.pendingPermissionRequest?.id, 'permission-1');
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.pending,
+      ChatPermissionAuditStatus.pending,
     );
     expect(controller.permissionHistory.single.decisionSource, isNull);
     expect(controller.permissionHistory.single.resolvedAt, isNull);
@@ -9931,7 +9934,7 @@ void main() {
     addTearDown(controller.dispose);
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Read file',
         rationale: 'Requested by agent',
@@ -9943,7 +9946,7 @@ void main() {
     );
     await pumpEventQueue();
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-2',
         title: 'Run command',
         rationale: 'Requested by agent',
@@ -9957,22 +9960,22 @@ void main() {
 
     expect(controller.pendingPermissionRequest?.id, 'permission-2');
     expect(fake.lastPermissionRequestId, 'permission-1');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
     expect(controller.permissionHistory.map((entry) => entry.request.id), [
       'permission-2',
       'permission-1',
     ]);
     expect(
       controller.permissionHistory[0].status,
-      AcpPermissionAuditStatus.pending,
+      ChatPermissionAuditStatus.pending,
     );
     expect(
       controller.permissionHistory[1].status,
-      AcpPermissionAuditStatus.cancelled,
+      ChatPermissionAuditStatus.cancelled,
     );
     expect(
       controller.permissionHistory[1].decisionSource,
-      AcpPermissionDecisionSource.system,
+      ChatPermissionDecisionSource.system,
     );
   });
 
@@ -9985,7 +9988,7 @@ void main() {
 
       await controller.newSession();
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-active',
           title: 'Read file',
           rationale: 'Requested by agent',
@@ -10000,7 +10003,7 @@ void main() {
       expect(controller.pendingPermissionRequest?.id, 'permission-active');
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-stale',
           title: 'Run command',
           rationale: 'Requested by previous session',
@@ -10014,22 +10017,22 @@ void main() {
 
       expect(controller.pendingPermissionRequest?.id, 'permission-active');
       expect(fake.lastPermissionRequestId, 'permission-stale');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
       expect(controller.permissionHistory.map((entry) => entry.request.id), [
         'permission-stale',
         'permission-active',
       ]);
       expect(
         controller.permissionHistory[0].status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(
         controller.permissionHistory[0].decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
       expect(
         controller.permissionHistory[1].status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
     },
   );
@@ -10039,8 +10042,8 @@ void main() {
     () async {
       final fake = FakeAgentClient();
       final reviewer = _FakePermissionReviewer(
-        const AcpPermissionReviewResult(
-          decision: AcpPermissionDecision.allow,
+        const ChatPermissionReviewResult(
+          decision: ChatPermissionDecision.allow,
           risk: 'low',
         ),
       );
@@ -10051,11 +10054,11 @@ void main() {
       );
       addTearDown(controller.dispose);
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.autoReview,
+        ChatToolCallExecutionPolicy.autoReview,
       );
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-empty-session',
           title: 'Run command',
           rationale: 'Missing session context',
@@ -10071,10 +10074,10 @@ void main() {
       expect(controller.pendingPermissionRequest, isNull);
       expect(reviewer.requests, isEmpty);
       expect(fake.lastPermissionRequestId, 'permission-empty-session');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
     },
   );
@@ -10091,7 +10094,7 @@ void main() {
       expect(controller.currentSession, isNull);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-stale',
           title: 'Run command',
           rationale: 'Requested by closed session',
@@ -10105,7 +10108,7 @@ void main() {
 
       expect(controller.pendingPermissionRequest, isNull);
       expect(fake.lastPermissionRequestId, 'permission-stale');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
       expect(controller.permissionHistory, isEmpty);
     },
   );
@@ -10123,7 +10126,7 @@ void main() {
       await controller.newSession();
       await controller.sendPrompt('Hi');
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -10140,12 +10143,12 @@ void main() {
       await controller.stop();
 
       expect(fake.lastPermissionRequestId, 'permission-1');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
       expect(fake.cancelled, isTrue);
       expect(controller.pendingPermissionRequest, isNull);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(controller.lastError, contains('permission response failed'));
     },
@@ -10163,7 +10166,7 @@ void main() {
       await controller.newSession();
       await controller.sendPrompt('Hi');
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-never-responds',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -10198,7 +10201,7 @@ void main() {
       await controller.newSession();
       await controller.sendPrompt('Hi');
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-late-failure',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -10233,7 +10236,7 @@ void main() {
       addTearDown(controller.dispose);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Read file',
           rationale: 'Requested by agent',
@@ -10251,11 +10254,11 @@ void main() {
       expect(controller.pendingPermissionRequest, isNull);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
     },
   );
@@ -10272,7 +10275,7 @@ void main() {
       await controller.newSession();
       await controller.sendPrompt('Hi');
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -10292,14 +10295,14 @@ void main() {
       expect(controller.isStreaming, isFalse);
       expect(controller.pendingPermissionRequest, isNull);
       expect(fake.lastPermissionRequestId, 'permission-1');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
       expect(controller.lastError, isNull);
     },
@@ -10318,7 +10321,7 @@ void main() {
 
       for (var index = 1; index <= 3; index += 1) {
         fake.emitPermissionRequest(
-          AcpPermissionRequest(
+          ChatPermissionRequest(
             id: 'permission-$index',
             title: 'Permission $index',
             rationale: 'Requested by agent',
@@ -10337,15 +10340,15 @@ void main() {
       ]);
       expect(
         controller.permissionHistory[0].status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
       expect(
         controller.permissionHistory[1].status,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.cancelled,
       );
       expect(
         controller.permissionHistory[1].decisionSource,
-        AcpPermissionDecisionSource.system,
+        ChatPermissionDecisionSource.system,
       );
     },
   );
@@ -10353,7 +10356,7 @@ void main() {
   test(
     'permission history encoded byte limit accepts exact and drops plus one',
     () async {
-      final request = AcpPermissionRequest(
+      final request = ChatPermissionRequest(
         id: 'permission-sized',
         title: 'Read file',
         rationale: 'Requested by agent',
@@ -10367,7 +10370,7 @@ void main() {
       addTearDown(probe.dispose);
       probeClient.emitPermissionRequest(request);
       await pumpEventQueue();
-      final exactBytes = acpPermissionAuditEntryEncodedBytes(
+      final exactBytes = chatPermissionAuditEntryEncodedBytes(
         probe.permissionHistory.single,
       );
 
@@ -10399,8 +10402,8 @@ void main() {
     'permission history snapshots mutable request collections once',
     () async {
       final options = <String>['Allow', 'Deny'];
-      final choices = <AcpPermissionChoice>[
-        const AcpPermissionChoice(
+      final choices = <ChatPermissionChoice>[
+        const ChatPermissionChoice(
           optionId: 'allow-once',
           name: 'Allow',
           kind: 'allow_once',
@@ -10415,7 +10418,7 @@ void main() {
       addTearDown(controller.dispose);
 
       client.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-mutable-history',
           title: 'Review action',
           rationale: 'Requested by agent',
@@ -10435,14 +10438,14 @@ void main() {
 
       options.add(List<String>.filled(4096, 'late-option').join());
       choices.add(
-        const AcpPermissionChoice(optionId: 'late', name: 'Late choice'),
+        const ChatPermissionChoice(optionId: 'late', name: 'Late choice'),
       );
       metadataItems.add(List<String>.filled(4096, 'late-metadata').join());
 
       expect(jsonEncode(entry.toJson()), historyJson);
       expect(entry.request.contentFingerprint, fingerprint);
       expect(controller.permissionHistoryEncodedBytes, encodedBytes);
-      expect(acpPermissionAuditEntryEncodedBytes(entry), encodedBytes);
+      expect(chatPermissionAuditEntryEncodedBytes(entry), encodedBytes);
       expect(
         () => entry.request.options.add('blocked'),
         throwsUnsupportedError,
@@ -10466,7 +10469,7 @@ void main() {
           '$tokenCanary${List<String>.filled(2 * 1024 * 1024, 'x').join()}';
       final fake = FakeAgentClient();
       final reviewer = _FakePermissionReviewer(
-        AcpPermissionReviewResult(
+        ChatPermissionReviewResult(
           risk: 'unknown',
           rationale: huge,
           reviewer: 'remote-reviewer',
@@ -10484,12 +10487,12 @@ void main() {
       );
       addTearDown(controller.dispose);
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.autoReview,
+        ChatToolCallExecutionPolicy.autoReview,
       );
 
       for (var index = 0; index < 500; index += 1) {
         fake.emitPermissionRequest(
-          AcpPermissionRequest(
+          ChatPermissionRequest(
             id: 'permission-$index',
             title: 'Read file $index',
             rationale: 'Requested by agent',
@@ -10506,7 +10509,7 @@ void main() {
         await pumpEventQueue(times: 2);
       }
 
-      final exported = acpPermissionAuditEntriesToJson(
+      final exported = chatPermissionAuditEntriesToJson(
         controller.permissionHistory,
         maxEncodedBytes: 128 * 1024,
       );
@@ -10539,7 +10542,7 @@ void main() {
         controller.permissionHistoryEncodedBytes,
         controller.permissionHistory.fold<int>(
           0,
-          (total, entry) => total + acpPermissionAuditEntryEncodedBytes(entry),
+          (total, entry) => total + chatPermissionAuditEntryEncodedBytes(entry),
         ),
       );
       expect(utf8.encode(exported).length, lessThanOrEqualTo(128 * 1024));
@@ -10608,7 +10611,7 @@ void main() {
 
     expect(
       controller.toolCallExecutionPolicy,
-      AcpToolCallExecutionPolicy.defaultPermissions,
+      ChatToolCallExecutionPolicy.defaultPermissions,
     );
   });
 
@@ -10618,20 +10621,20 @@ void main() {
       client: fake,
       cwd: '/workspace',
       permissionTrustRules: const [
-        AcpPermissionTrustRule(
+        ChatPermissionTrustRule(
           toolName: 'read_text_file',
           toolKind: 'read',
-          decision: AcpPermissionDecision.allow,
+          decision: ChatPermissionDecision.allow,
         ),
       ],
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Read file',
         rationale: 'Requested by agent',
@@ -10646,15 +10649,15 @@ void main() {
 
     expect(controller.pendingPermissionRequest, isNull);
     expect(fake.lastPermissionRequestId, 'permission-1');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
     expect(controller.permissionHistory, hasLength(1));
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.allowed,
+      ChatPermissionAuditStatus.allowed,
     );
     expect(
       controller.permissionHistory.single.decisionSource,
-      AcpPermissionDecisionSource.trustRule,
+      ChatPermissionDecisionSource.trustRule,
     );
     expect(controller.permissionHistory.single.resolvedAt, isNotNull);
   });
@@ -10662,8 +10665,8 @@ void main() {
   test('auto review permission reviewer resolves requests', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
+      const ChatPermissionReviewResult(
+        decision: ChatPermissionDecision.allow,
         risk: 'low',
         rationale: 'Command stays in the workspace.',
         reviewer: 'sidecar-reviewer',
@@ -10675,26 +10678,26 @@ void main() {
       cwd: '/workspace',
       permissionReviewer: reviewer,
     );
-    controller.sessionSettings = const AcpSessionSettings(
+    controller.sessionSettings = const ChatSessionSettings(
       configOptions: [
-        AcpConfigOption(
+        ChatConfigOption(
           id: 'model',
           name: 'Model',
           type: 'select',
           currentValue: 'primary-model',
           options: [
-            AcpConfigOptionChoice(value: 'primary-model', name: 'Primary'),
+            ChatConfigOptionChoice(value: 'primary-model', name: 'Primary'),
           ],
         ),
       ],
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -10717,14 +10720,14 @@ void main() {
     expect(reviewer.models.single, 'primary-model');
     expect(controller.pendingPermissionRequest, isNull);
     expect(fake.lastPermissionRequestId, 'permission-1');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.allowed,
+      ChatPermissionAuditStatus.allowed,
     );
     expect(
       controller.permissionHistory.single.decisionSource,
-      AcpPermissionDecisionSource.reviewAgent,
+      ChatPermissionDecisionSource.reviewAgent,
     );
     expect(controller.permissionHistory.single.reviewResult?.risk, 'low');
     expect(
@@ -10736,8 +10739,8 @@ void main() {
   test('same-agent reviewer cannot auto approve', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
+      const ChatPermissionReviewResult(
+        decision: ChatPermissionDecision.allow,
         risk: 'low',
         rationale: 'The executing agent considers this safe.',
         reviewer: 'same-agent',
@@ -10751,11 +10754,11 @@ void main() {
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-same-agent',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -10778,8 +10781,8 @@ void main() {
   test('independent reviewer cannot auto approve non-low risk', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
+      const ChatPermissionReviewResult(
+        decision: ChatPermissionDecision.allow,
         risk: 'medium',
         rationale: 'The result is still ambiguous.',
         reviewer: 'independent-reviewer',
@@ -10792,11 +10795,11 @@ void main() {
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-medium-risk',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -10817,8 +10820,8 @@ void main() {
   test('redacted filesystem write review remains pending', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
+      const ChatPermissionReviewResult(
+        decision: ChatPermissionDecision.allow,
         risk: 'medium',
         rationale: 'The reviewer did not receive the proposed file content.',
         reviewer: 'independent-reviewer',
@@ -10831,11 +10834,11 @@ void main() {
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-redacted-write',
         title: 'Write file',
         rationale: 'Requested by agent',
@@ -10868,8 +10871,8 @@ void main() {
   test('auto review uses active session workspace roots', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
+      const ChatPermissionReviewResult(
+        decision: ChatPermissionDecision.allow,
         risk: 'low',
         rationale: 'Command stays in an additional workspace.',
         reviewer: 'sidecar-reviewer',
@@ -10889,11 +10892,11 @@ void main() {
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -10912,14 +10915,14 @@ void main() {
 
     expect(reviewer.workspaceRoots.single, '/other/project');
     expect(reviewer.additionalDirectories.single, ['/other/shared']);
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
   });
 
   test('auto review preserves explicit empty active session roots', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
+      const ChatPermissionReviewResult(
+        decision: ChatPermissionDecision.allow,
         risk: 'low',
         rationale: 'No additional roots are needed.',
         reviewer: 'sidecar-reviewer',
@@ -10939,11 +10942,11 @@ void main() {
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-empty-extra',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -10958,13 +10961,13 @@ void main() {
 
     expect(reviewer.workspaceRoots.single, '/other/project');
     expect(reviewer.additionalDirectories.single, isEmpty);
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
   });
 
   test('auto review opinion without a decision keeps request manual', () async {
     final fake = FakeAgentClient();
     final reviewer = _FakePermissionReviewer(
-      const AcpPermissionReviewResult(
+      const ChatPermissionReviewResult(
         risk: 'medium',
         rationale: 'Needs human confirmation.',
         reviewer: 'sidecar-reviewer',
@@ -10977,11 +10980,11 @@ void main() {
     );
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -10998,7 +11001,7 @@ void main() {
     expect(fake.lastPermissionRequestId, isNull);
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.pending,
+      ChatPermissionAuditStatus.pending,
     );
     expect(controller.permissionHistory.single.decisionSource, isNull);
     expect(controller.permissionHistory.single.reviewResult?.risk, 'medium');
@@ -11017,11 +11020,11 @@ void main() {
       permissionReviewer: reviewer,
     );
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.autoReview,
+      ChatToolCallExecutionPolicy.autoReview,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -11039,8 +11042,8 @@ void main() {
 
     controller.dispose();
     reviewer.complete(
-      const AcpPermissionReviewResult(
-        decision: AcpPermissionDecision.allow,
+      const ChatPermissionReviewResult(
+        decision: ChatPermissionDecision.allow,
         risk: 'low',
         rationale: 'Read-only command.',
       ),
@@ -11063,11 +11066,11 @@ void main() {
       );
       addTearDown(controller.dispose);
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.autoReview,
+        ChatToolCallExecutionPolicy.autoReview,
       );
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-reused',
           title: 'Read report',
           rationale: 'Read the generated report',
@@ -11082,7 +11085,7 @@ void main() {
       await pumpEventQueue();
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-reused',
           title: 'Read report',
           rationale: 'Read the generated report',
@@ -11105,14 +11108,14 @@ void main() {
       );
       expect(controller.permissionHistory, hasLength(2));
       expect(controller.permissionHistory.map((entry) => entry.status), [
-        AcpPermissionAuditStatus.pending,
-        AcpPermissionAuditStatus.cancelled,
+        ChatPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.cancelled,
       ]);
 
       reviewer.complete(
         0,
-        const AcpPermissionReviewResult(
-          decision: AcpPermissionDecision.allow,
+        const ChatPermissionReviewResult(
+          decision: ChatPermissionDecision.allow,
           risk: 'low',
           rationale: 'The original read is low risk.',
         ),
@@ -11124,7 +11127,7 @@ void main() {
       expect(controller.pendingPermissionRequest?.generation, 2);
       expect(
         controller.permissionHistory.first.status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
       expect(controller.permissionHistory.first.reviewResult, isNull);
       expect(
@@ -11142,19 +11145,19 @@ void main() {
         client: fake,
         cwd: '/workspace',
         permissionTrustRules: const [
-          AcpPermissionTrustRule(
+          ChatPermissionTrustRule(
             toolName: 'read_text_file',
-            decision: AcpPermissionDecision.allow,
+            decision: ChatPermissionDecision.allow,
           ),
         ],
       );
       addTearDown(controller.dispose);
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.defaultPermissions,
+        ChatToolCallExecutionPolicy.defaultPermissions,
       );
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Read file',
           rationale: 'Requested by agent',
@@ -11170,7 +11173,7 @@ void main() {
       expect(fake.lastPermissionRequestId, isNull);
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
     },
   );
@@ -11180,11 +11183,11 @@ void main() {
     final controller = ChatController(client: fake, cwd: '/workspace');
     addTearDown(controller.dispose);
     controller.setToolCallExecutionPolicy(
-      AcpToolCallExecutionPolicy.fullAccess,
+      ChatToolCallExecutionPolicy.fullAccess,
     );
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-1',
         title: 'Run command',
         rationale: 'Requested by agent',
@@ -11200,14 +11203,14 @@ void main() {
 
     expect(controller.pendingPermissionRequest, isNull);
     expect(fake.lastPermissionRequestId, 'permission-1');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
     expect(
       controller.permissionHistory.single.status,
-      AcpPermissionAuditStatus.allowed,
+      ChatPermissionAuditStatus.allowed,
     );
     expect(
       controller.permissionHistory.single.decisionSource,
-      AcpPermissionDecisionSource.policy,
+      ChatPermissionDecisionSource.policy,
     );
   });
 
@@ -11222,7 +11225,7 @@ void main() {
       controller.addPermissionEventObserver(events.add);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-direct-secret',
           title: 'Create terminal',
           rationale: 'Requested by agent',
@@ -11247,7 +11250,7 @@ void main() {
         controller.pendingPermissionRequest?.id,
         'permission-direct-secret',
       );
-      final historyJson = acpPermissionAuditEntriesToJson(
+      final historyJson = chatPermissionAuditEntriesToJson(
         controller.permissionHistory,
       );
       expect(historyJson, isNot(contains(secret)));
@@ -11258,7 +11261,7 @@ void main() {
         isNot(contains(secret)),
       );
 
-      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+      await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
       expect(events, hasLength(2));
       for (final event in events) {
         expect(event.request.metadata.toString(), isNot(contains(secret)));
@@ -11278,7 +11281,7 @@ void main() {
       controller.addPermissionEventObserver(events.add);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-text-secret',
           title:
               "Run: bash -c 'curl --tlspassword=$secret "
@@ -11295,14 +11298,14 @@ void main() {
       );
       await pumpEventQueue();
 
-      final historyJson = acpPermissionAuditEntriesToJson(
+      final historyJson = chatPermissionAuditEntriesToJson(
         controller.permissionHistory,
       );
       expect(historyJson, isNot(contains(secret)));
       expect(events.single.request.title, isNot(contains(secret)));
       expect(events.single.request.rationale, isNot(contains(secret)));
 
-      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+      await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
       expect(events, hasLength(2));
       expect(events.last.request.toJson().toString(), isNot(contains(secret)));
     },
@@ -11318,7 +11321,7 @@ void main() {
       final events = <ChatPermissionEvent>[];
       controller.addPermissionEventObserver(events.add);
 
-      final request = AcpPermissionRequest(
+      final request = ChatPermissionRequest(
         id: 'permission-comprehensive-secret',
         title: 'Upload to https://alice:$secret@collector.example/private',
         rationale: 'Archive destination intranet/upload?token=$secret',
@@ -11352,7 +11355,7 @@ void main() {
       expect(events.single.type, ChatPermissionEventType.requested);
       expect(events.single.request.bindingKey, activeBindingKey);
       expect(
-        acpPermissionAuditEntriesToJson(controller.permissionHistory),
+        chatPermissionAuditEntriesToJson(controller.permissionHistory),
         isNot(contains(secret)),
       );
       expect(
@@ -11360,7 +11363,7 @@ void main() {
         isNot(contains(secret)),
       );
 
-      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+      await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
 
       expect(events, hasLength(2));
       expect(events.last.type, ChatPermissionEventType.resolved);
@@ -11369,7 +11372,7 @@ void main() {
         expect(event.request.toJson().toString(), isNot(contains(secret)));
       }
       expect(
-        acpPermissionAuditEntriesToJson(controller.permissionHistory),
+        chatPermissionAuditEntriesToJson(controller.permissionHistory),
         isNot(contains(secret)),
       );
     },
@@ -11384,7 +11387,7 @@ void main() {
     controller.addPermissionEventObserver(events.add);
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-nested-tool-call',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -11414,12 +11417,12 @@ void main() {
     );
     expect(fake.lastPermissionDecision, isNull);
     expect(
-      acpPermissionAuditEntriesToJson(controller.permissionHistory),
+      chatPermissionAuditEntriesToJson(controller.permissionHistory),
       isNot(contains(secret)),
     );
     expect(events.single.request.toJson().toString(), isNot(contains(secret)));
 
-    await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+    await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
 
     expect(events, hasLength(2));
     for (final event in events) {
@@ -11442,7 +11445,7 @@ void main() {
       final events = <ChatPermissionEvent>[];
       controller.addPermissionEventObserver(events.add);
 
-      final request = AcpPermissionRequest(
+      final request = ChatPermissionRequest(
         id: 'permission-deep-command',
         title: 'Create terminal',
         rationale: 'Requested by agent',
@@ -11463,7 +11466,7 @@ void main() {
       expect(activeBindingKey, isNot(request.bindingKey));
       expect(fake.lastPermissionDecision, isNull);
       expect(
-        acpPermissionAuditEntriesToJson(controller.permissionHistory),
+        chatPermissionAuditEntriesToJson(controller.permissionHistory),
         isNot(contains(secret)),
       );
       expect(events.single.request.bindingKey, activeBindingKey);
@@ -11472,7 +11475,7 @@ void main() {
         isNot(contains(secret)),
       );
 
-      await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+      await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
 
       expect(events, hasLength(2));
       for (final event in events) {
@@ -11490,7 +11493,7 @@ void main() {
     final events = <ChatPermissionEvent>[];
     controller.addPermissionEventObserver(events.add);
 
-    final request = AcpPermissionRequest(
+    final request = ChatPermissionRequest(
       id: 'permission-curl-variable',
       title: 'Create terminal',
       rationale: 'Requested by agent',
@@ -11514,13 +11517,13 @@ void main() {
     expect(activeBindingKey, isNot(request.bindingKey));
     expect(fake.lastPermissionDecision, isNull);
     expect(
-      acpPermissionAuditEntriesToJson(controller.permissionHistory),
+      chatPermissionAuditEntriesToJson(controller.permissionHistory),
       isNot(contains(secret)),
     );
     expect(events.single.request.bindingKey, activeBindingKey);
     expect(events.single.request.toJson().toString(), isNot(contains(secret)));
 
-    await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+    await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
 
     expect(events, hasLength(2));
     for (final event in events) {
@@ -11537,7 +11540,7 @@ void main() {
     final events = <ChatPermissionEvent>[];
     controller.addPermissionEventObserver(events.add);
 
-    final request = AcpPermissionRequest(
+    final request = ChatPermissionRequest(
       id: 'permission-non-command-secret',
       title: 'Read file',
       rationale: 'Requested by agent',
@@ -11558,11 +11561,11 @@ void main() {
     expect(events.single.request.bindingKey, activeBindingKey);
     expect(events.single.request.metadata, isEmpty);
     expect(
-      acpPermissionAuditEntriesToJson(controller.permissionHistory),
+      chatPermissionAuditEntriesToJson(controller.permissionHistory),
       isNot(contains(secret)),
     );
 
-    await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+    await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
 
     expect(events, hasLength(2));
     for (final event in events) {
@@ -11579,7 +11582,7 @@ void main() {
       addTearDown(controller.dispose);
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -11594,16 +11597,16 @@ void main() {
       expect(controller.pendingPermissionRequest?.id, 'permission-1');
 
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.fullAccess,
+        ChatToolCallExecutionPolicy.fullAccess,
       );
       await pumpEventQueue();
 
       expect(controller.pendingPermissionRequest, isNull);
       expect(fake.lastPermissionRequestId, 'permission-1');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
       expect(
         controller.permissionHistory.single.decisionSource,
-        AcpPermissionDecisionSource.policy,
+        ChatPermissionDecisionSource.policy,
       );
     },
   );
@@ -11618,19 +11621,19 @@ void main() {
         client: fake,
         cwd: '/workspace',
         permissionTrustRules: const [
-          AcpPermissionTrustRule(
+          ChatPermissionTrustRule(
             toolName: 'read_text_file',
-            decision: AcpPermissionDecision.allow,
+            decision: ChatPermissionDecision.allow,
           ),
         ],
       );
       addTearDown(controller.dispose);
       controller.setToolCallExecutionPolicy(
-        AcpToolCallExecutionPolicy.autoReview,
+        ChatToolCallExecutionPolicy.autoReview,
       );
 
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Read file',
           rationale: 'Requested by agent',
@@ -11643,11 +11646,11 @@ void main() {
       await pumpEventQueue();
 
       expect(fake.lastPermissionRequestId, 'permission-1');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.allow);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.allow);
       expect(controller.pendingPermissionRequest?.id, 'permission-1');
       expect(
         controller.permissionHistory.single.status,
-        AcpPermissionAuditStatus.pending,
+        ChatPermissionAuditStatus.pending,
       );
       expect(controller.permissionHistory.single.decisionSource, isNull);
       expect(controller.permissionHistory.single.resolvedAt, isNull);
@@ -11743,16 +11746,16 @@ void main() {
 
   test('set session model updates model config option', () async {
     final fake = FakeAgentClient(
-      sessionSettings: const AcpSessionSettings(
+      sessionSettings: const ChatSessionSettings(
         configOptions: [
-          AcpConfigOption(
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
             currentValue: 'gpt-5',
             options: [
-              AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
-              AcpConfigOptionChoice(
+              ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+              ChatConfigOptionChoice(
                 value: 'claude-sonnet-4',
                 name: 'Claude Sonnet 4',
               ),
@@ -11777,16 +11780,16 @@ void main() {
     'set session reasoning effort updates reasoning config option',
     () async {
       final fake = FakeAgentClient(
-        sessionSettings: const AcpSessionSettings(
+        sessionSettings: const ChatSessionSettings(
           configOptions: [
-            AcpConfigOption(
+            ChatConfigOption(
               id: 'reasoning_effort',
               name: 'Reasoning Effort',
               type: 'select',
               currentValue: 'medium',
               options: [
-                AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
-                AcpConfigOptionChoice(value: 'high', name: 'High'),
+                ChatConfigOptionChoice(value: 'medium', name: 'Medium'),
+                ChatConfigOptionChoice(value: 'high', name: 'High'),
               ],
             ),
           ],
@@ -12036,7 +12039,7 @@ void main() {
 
       await controller.newSession();
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-1',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -12054,7 +12057,7 @@ void main() {
 
       expect(fake.lastClosedSessionId, 'fake-session-1');
       expect(fake.lastPermissionRequestId, 'permission-1');
-      expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+      expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
       expect(controller.currentSession, isNull);
       expect(controller.pendingPermissionRequest, isNull);
       expect(controller.lastError, isNull);
@@ -12094,7 +12097,7 @@ void main() {
           availableCommands: const <Map<String, Object?>>[],
           lastLatency: null,
           lastError: null,
-          sessionSettings: const AcpSessionSettings(),
+          sessionSettings: const ChatSessionSettings(),
           sessionUsage: null,
           sessionSettingsLoading: false,
           status: app_state.ConnectionStatus.sessionReady,
@@ -12102,7 +12105,7 @@ void main() {
         ),
       );
       fake.emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-close-failure',
           title: 'Run command',
           rationale: 'Requested by agent',
@@ -12282,7 +12285,7 @@ void main() {
     controller.sessionUsage = const AcpSessionUsage(used: 3, size: 10);
     controller.lastLatency = const Duration(milliseconds: 9);
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-dispose-close',
         title: 'Run command',
         rationale: 'Requested by agent',
@@ -12306,7 +12309,7 @@ void main() {
     final usageBeforeRelease = controller.sessionUsage;
     final latencyBeforeRelease = controller.lastLatency;
     final permissionBeforeRelease = controller.pendingPermissionRequest;
-    final historyBeforeRelease = List<AcpPermissionAuditEntry>.of(
+    final historyBeforeRelease = List<ChatPermissionAuditEntry>.of(
       controller.permissionHistory,
     );
     final statusBeforeRelease = controller.status;
@@ -12348,7 +12351,7 @@ void main() {
     expect(controller.status, app_state.ConnectionStatus.connected);
 
     fake.emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-logout-stale',
         title: 'Run command',
         rationale: 'Requested by logged-out session',
@@ -12362,7 +12365,7 @@ void main() {
 
     expect(controller.pendingPermissionRequest, isNull);
     expect(fake.lastPermissionRequestId, 'permission-logout-stale');
-    expect(fake.lastPermissionDecision, AcpPermissionDecision.cancel);
+    expect(fake.lastPermissionDecision, ChatPermissionDecision.cancel);
   });
 
   test('authenticate invokes advertised auth method', () async {
@@ -13191,7 +13194,7 @@ class _CountingErrorIterator implements Iterator<Object?> {
 
 class _OmittingConfigOptionsAgentClient extends FakeAgentClient {
   @override
-  Future<List<AcpConfigOption>> setConfigOption({
+  Future<List<ChatConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
     required Object value,
@@ -13201,7 +13204,7 @@ class _OmittingConfigOptionsAgentClient extends FakeAgentClient {
       configId: configId,
       value: value,
     );
-    return const <AcpConfigOption>[];
+    return const <ChatConfigOption>[];
   }
 }
 
@@ -13236,7 +13239,7 @@ class _ReusedSessionSetupPermissionAgentClient extends FakeAgentClient {
     const sessionId = 'reused-session';
     if (_createSessionCount > 1) {
       emitPermissionRequest(
-        AcpPermissionRequest(
+        ChatPermissionRequest(
           id: 'permission-reused-$_createSessionCount',
           title: 'Run command',
           rationale: 'Requested during session setup',
@@ -13292,10 +13295,10 @@ class _DelayedInitialSettingsAgentClient extends FakeAgentClient {
   final Completer<void> allowSettings = Completer<void>();
 
   @override
-  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+  Future<ChatSessionSettings> sessionSettings(String sessionId) async {
     if (!settingsStarted.isCompleted) settingsStarted.complete();
     await allowSettings.future;
-    return const AcpSessionSettings();
+    return const ChatSessionSettings();
   }
 }
 
@@ -13358,8 +13361,8 @@ class _MutableCreateSessionAgentClient extends FakeAgentClient {
 }
 
 class _PermissionThenFailingResumeAgentClient extends FakeAgentClient {
-  final List<AcpPermissionDecision> permissionDecisions =
-      <AcpPermissionDecision>[];
+  final List<ChatPermissionDecision> permissionDecisions =
+      <ChatPermissionDecision>[];
   final Completer<void> permissionResponseStarted = Completer<void>();
   final Completer<void> _permissionResponse = Completer<void>();
 
@@ -13371,7 +13374,7 @@ class _PermissionThenFailingResumeAgentClient extends FakeAgentClient {
   }) async {
     lastResumeCwd = cwd;
     emitPermissionRequest(
-      AcpPermissionRequest(
+      ChatPermissionRequest(
         id: 'permission-during-resume',
         title: 'Run target command',
         rationale: 'Requested by target session',
@@ -13389,7 +13392,7 @@ class _PermissionThenFailingResumeAgentClient extends FakeAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     permissionDecisions.add(decision);
@@ -13451,14 +13454,14 @@ class _ConfigOptionUpdateAgentClient extends FakeAgentClient {
       text: 'Session config options updated.',
       metadata: const <String, Object?>{
         'kind': 'config_option_update',
-        'configOptions': <AcpConfigOption>[
-          AcpConfigOption(
+        'configOptions': <ChatConfigOption>[
+          ChatConfigOption(
             id: 'model',
             name: 'Model',
             type: 'select',
             currentValue: 'gpt-5',
             category: 'model',
-            options: [AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
+            options: [ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5')],
           ),
         ],
       },
@@ -13487,7 +13490,7 @@ class _DelayedPermissionResponseAgentClient extends FakeAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     permissionResponseCount += 1;
@@ -13508,13 +13511,13 @@ class _NeverRespondingPermissionAgentClient extends FakeAgentClient {
 
   final Completer<void> _response = Completer<void>();
   final Completer<void> permissionResponseStarted = Completer<void>();
-  final List<AcpPermissionDecision> permissionDecisions =
-      <AcpPermissionDecision>[];
+  final List<ChatPermissionDecision> permissionDecisions =
+      <ChatPermissionDecision>[];
 
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) {
     permissionDecisions.add(decision);
@@ -13539,7 +13542,7 @@ class _DelayedFailingPermissionAgentClient extends FakeAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     await _response.future;
@@ -13563,7 +13566,7 @@ class _CountingPermissionResponseAgentClient extends FakeAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     permissionResponseCount += 1;
@@ -13709,17 +13712,17 @@ class _ThrowingPromptAgentClient extends FakeAgentClient {
 class _FakePermissionReviewer extends AcpPermissionReviewer {
   _FakePermissionReviewer(this.result, {this.canAutoApprove = true});
 
-  final AcpPermissionReviewResult result;
+  final ChatPermissionReviewResult result;
   @override
   final bool canAutoApprove;
-  final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
+  final List<ChatPermissionRequest> requests = <ChatPermissionRequest>[];
   final List<String> workspaceRoots = <String>[];
   final List<List<String>> additionalDirectories = <List<String>>[];
   final List<String?> models = <String?>[];
 
   @override
-  Future<AcpPermissionReviewResult?> review(
-    AcpPermissionRequest request, {
+  Future<ChatPermissionReviewResult?> review(
+    ChatPermissionRequest request, {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,
@@ -13733,17 +13736,17 @@ class _FakePermissionReviewer extends AcpPermissionReviewer {
 }
 
 class _DelayedPermissionReviewer extends AcpPermissionReviewer {
-  final Completer<AcpPermissionReviewResult?> _result =
-      Completer<AcpPermissionReviewResult?>();
-  final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
+  final Completer<ChatPermissionReviewResult?> _result =
+      Completer<ChatPermissionReviewResult?>();
+  final List<ChatPermissionRequest> requests = <ChatPermissionRequest>[];
 
-  void complete(AcpPermissionReviewResult? result) {
+  void complete(ChatPermissionReviewResult? result) {
     _result.complete(result);
   }
 
   @override
-  Future<AcpPermissionReviewResult?> review(
-    AcpPermissionRequest request, {
+  Future<ChatPermissionReviewResult?> review(
+    ChatPermissionRequest request, {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,
@@ -13754,26 +13757,26 @@ class _DelayedPermissionReviewer extends AcpPermissionReviewer {
 }
 
 class _SequencedPermissionReviewer extends AcpPermissionReviewer {
-  final List<AcpPermissionRequest> requests = <AcpPermissionRequest>[];
-  final List<Completer<AcpPermissionReviewResult?>> _results =
-      <Completer<AcpPermissionReviewResult?>>[];
+  final List<ChatPermissionRequest> requests = <ChatPermissionRequest>[];
+  final List<Completer<ChatPermissionReviewResult?>> _results =
+      <Completer<ChatPermissionReviewResult?>>[];
 
   @override
   bool get canAutoApprove => true;
 
-  void complete(int index, AcpPermissionReviewResult? result) {
+  void complete(int index, ChatPermissionReviewResult? result) {
     _results[index].complete(result);
   }
 
   @override
-  Future<AcpPermissionReviewResult?> review(
-    AcpPermissionRequest request, {
+  Future<ChatPermissionReviewResult?> review(
+    ChatPermissionRequest request, {
     required String workspaceRoot,
     List<String> additionalDirectories = const <String>[],
     String? model,
   }) {
     requests.add(request);
-    final result = Completer<AcpPermissionReviewResult?>();
+    final result = Completer<ChatPermissionReviewResult?>();
     _results.add(result);
     return result.future;
   }
@@ -13847,7 +13850,7 @@ class _DisposalRaceCloseAgentClient extends FakeAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     permissionResponseCount += 1;
@@ -13902,7 +13905,7 @@ class _DelayedSettingsMutationAgentClient extends FakeAgentClient {
   }
 
   @override
-  Future<List<AcpConfigOption>> setConfigOption({
+  Future<List<ChatConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
     required Object value,
@@ -13961,7 +13964,7 @@ class _StaleSessionSettingsAgentClient extends FakeAgentClient {
   int _originalSessionSettingsCalls = 0;
 
   @override
-  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+  Future<ChatSessionSettings> sessionSettings(String sessionId) async {
     if (sessionId == 'fake-session-1') {
       _originalSessionSettingsCalls += 1;
       if (_originalSessionSettingsCalls == 1) {
@@ -14189,13 +14192,13 @@ class _StatefulTypedConfigMetadataMap implements Map<String, Object?> {
     if (entriesReads == 1) {
       return <MapEntry<String, Object?>>[
         const MapEntry<String, Object?>('kind', 'config_option_update'),
-        MapEntry<String, Object?>('configOptions', <AcpConfigOption>[
-          AcpConfigOption(
+        MapEntry<String, Object?>('configOptions', <ChatConfigOption>[
+          ChatConfigOption(
             id: canary,
             name: 'Valid',
             type: 'select',
             currentValue: 'on',
-            options: <AcpConfigOptionChoice>[],
+            options: <ChatConfigOptionChoice>[],
           ),
         ]),
       ];
@@ -14349,7 +14352,7 @@ class _ArchivedSessionSnapshotSubclass extends ArchivedSessionSnapshot {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -14370,7 +14373,7 @@ class _ThrowingWasCurrentArchivedSnapshot extends ArchivedSessionSnapshot {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -14400,7 +14403,7 @@ class _StatefulWasCurrentArchivedSnapshot extends ArchivedSessionSnapshot {
         availableCommands: const <Map<String, Object?>>[],
         lastLatency: null,
         lastError: null,
-        sessionSettings: const AcpSessionSettings(),
+        sessionSettings: const ChatSessionSettings(),
         sessionUsage: null,
         sessionSettingsLoading: false,
         status: app_state.ConnectionStatus.sessionReady,
@@ -14528,13 +14531,13 @@ final class _YieldProbeMetadataMap extends MapBase<String, Object?> {
   Object? remove(Object? key) => _values.remove(key);
 }
 
-AcpSessionSettings _settingsWithMode(String modeId) {
-  return AcpSessionSettings(
-    modes: AcpSessionModeInfo(
+ChatSessionSettings _settingsWithMode(String modeId) {
+  return ChatSessionSettings(
+    modes: ChatSessionModeInfo(
       currentModeId: modeId,
       availableModes: const [
-        AcpSessionMode(id: 'ask', name: 'Ask'),
-        AcpSessionMode(id: 'edit', name: 'Edit'),
+        ChatSessionMode(id: 'ask', name: 'Ask'),
+        ChatSessionMode(id: 'edit', name: 'Edit'),
       ],
     ),
   );

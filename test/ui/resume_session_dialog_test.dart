@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:ianvs_acp/acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_session_catalog.dart';
@@ -505,7 +505,7 @@ void main() {
             agents: [
               _agent(() async => [project]),
             ],
-            inputBudget: const AcpInputBudget(
+            inputBudget: const ChatInputBudget(
               maxMetadataPreviewChars: 8,
               maxMetadataPreviewBytes: 8,
             ),
@@ -602,7 +602,7 @@ void main() {
   testWidgets('ResumeSessionDialog invalidates collapsed preview on budget', (
     tester,
   ) async {
-    final budget = ValueNotifier<AcpInputBudget>(const AcpInputBudget());
+    final budget = ValueNotifier<ChatInputBudget>(const ChatInputBudget());
     addTearDown(budget.dispose);
     final project = AcpProjectSessions(
       cwd: '/workspace/project-a',
@@ -618,7 +618,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ValueListenableBuilder<AcpInputBudget>(
+          body: ValueListenableBuilder<ChatInputBudget>(
             valueListenable: budget,
             builder: (context, inputBudget, _) => ResumeSessionDialog(
               agents: [
@@ -641,7 +641,7 @@ void main() {
 
     await tester.tap(find.text('Metadata'));
     await tester.pumpAndSettle();
-    budget.value = const AcpInputBudget(
+    budget.value = const ChatInputBudget(
       maxMetadataPreviewChars: 8,
       maxMetadataPreviewBytes: 8,
     );

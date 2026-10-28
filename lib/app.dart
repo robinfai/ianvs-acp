@@ -1,3 +1,5 @@
+import 'package:ianvs_agent_chat/ui/components/chat_timeline.dart';
+import 'package:ianvs_mermaid/ianvs_mermaid.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -9,8 +11,8 @@ import 'package:flutter/services.dart';
 
 import 'acp/acp_agent_client.dart';
 import 'acp/assistant_agent_enhancer.dart';
-import 'acp/acp_input_budget.dart';
-import 'acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'acp/agent_event.dart';
 import 'acp/agent_session.dart';
 import 'acp/rust_acp_agent_client.dart';
@@ -127,7 +129,7 @@ class AcpClientApp extends StatefulWidget {
     this.createAgentClient,
     this.agentClientFactoryKey,
     this.workspaceStateStore,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder,
     this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
@@ -157,7 +159,7 @@ class AcpClientApp extends StatefulWidget {
   final Object? agentClientFactoryKey;
 
   final WorkspaceSidebarStateStore? workspaceStateStore;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder? boundedImageDecoder;
   final bool Function(String path) gitWorkspaceDetector;
@@ -186,7 +188,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
   AcpClientConfig? _configurationAwaitingApply;
   late String _widgetConfigSignature;
   late ChatController _controller;
-  late AcpInputBudget _inputBudget;
+  late ChatInputBudget _inputBudget;
   late AcpImageDecodeBudgetLedger _imageDecodeLedger;
   late BoundedImageDecoder _boundedImageDecoder;
   late final String _cwd;
@@ -769,6 +771,18 @@ class _AcpClientAppState extends State<AcpClientApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      builder: (context, child) => ChatRenderingScope(
+        diagramBuilder: (context, source) => SizedBox(
+          height: 320,
+          child: MermaidView(
+            source: source,
+            options: Theme.of(context).brightness == Brightness.dark
+                ? const MermaidRenderOptions(theme: 'dark', themeVariables: {})
+                : MermaidRenderOptions.flutterSvgDefault,
+          ),
+        ),
+        child: child ?? const SizedBox.shrink(),
+      ),
       title: 'Shift',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
@@ -972,7 +986,7 @@ class _AcpClientAppState extends State<AcpClientApp> {
     }
   }
 
-  Future<AcpConfigOption?> _loadAssistantAgentModels(String agentName) async {
+  Future<ChatConfigOption?> _loadAssistantAgentModels(String agentName) async {
     final normalizedAgentName = agentName.trim();
     if (normalizedAgentName.isEmpty) {
       throw StateError('Choose an Assistant Agent before loading models.');

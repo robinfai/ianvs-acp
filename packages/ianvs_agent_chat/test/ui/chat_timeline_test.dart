@@ -11,8 +11,8 @@ import 'package:flutter/rendering.dart'
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/models/chat_input_budget.dart';
-import 'package:ianvs_agent_chat/models/chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
 import 'package:ianvs_agent_chat/ui/components/bounded_image_preview.dart';
 import 'package:ianvs_agent_chat/ui/components/chat_timeline.dart';
 import 'package:ianvs_agent_chat/ui/image_decode_budget.dart';

@@ -1,8 +1,7 @@
+import 'package:ianvs_agent_core/ianvs_agent_core.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
-import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
-import 'package:flutter/foundation.dart';
 import 'openai_chat_client.dart';
 
 typedef ChatToolExecutor =
@@ -37,9 +36,7 @@ class ChatTool {
 
 /// Each instance owns independent context, cancellation and permissions.
 /// Only completed turns enter future requests. Tools execute in the host.
-class LlmChatSession extends ChatSession
-    with ChangeNotifier
-    implements ChatSubmissionSession {
+class LlmChatSession extends ChatSession implements ChatSubmissionSession {
   LlmChatSession({
     required this.client,
     String? sessionId,
@@ -555,7 +552,7 @@ class LlmChatSession extends ChatSession
 
   void _notify() {
     _revision++;
-    if (!_disposed) notifyListeners();
+    if (!_disposed) notifySessionChanged();
   }
 
   @override

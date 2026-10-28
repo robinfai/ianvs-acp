@@ -63,6 +63,7 @@ void main() {
             event.status == 'ready',
       );
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: 'fixture',
         command: agentPath,
         processCwd: root,
@@ -145,6 +146,8 @@ void main() {
         await runtime.dispose();
       });
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
+        maxRestartAttempts: 1,
         agentName: 'disconnect-fixture',
         command: agentPath,
         processCwd: root,
@@ -193,7 +196,11 @@ void main() {
         'ianvs-missing-agent-',
       );
       addTearDown(() => absent.deleteSync());
-      runtime.startAgent(agentName: 'missing', command: '${absent.path}/agent');
+      runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
+        agentName: 'missing',
+        command: '${absent.path}/agent',
+      );
       final failure = await _nextWhere(
         iterator,
         (event) => event.type == IanvsRuntimeEventType.runtimeError,
@@ -228,6 +235,7 @@ void main() {
             event.status == 'ready',
       );
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: 'commands-fixture',
         command: agentPath,
         processCwd: root,
@@ -289,6 +297,7 @@ void main() {
             event.status == 'ready',
       );
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: 'session-lifecycle-fixture',
         command: agentPath,
         processCwd: root,
@@ -484,6 +493,7 @@ void main() {
             event.status == 'ready',
       );
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: 'terminal-fixture',
         command: agentPath,
         processCwd: root,
@@ -617,6 +627,7 @@ void main() {
             event.status == 'ready',
       );
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: 'attachment-fixture',
         command: agentPath,
         processCwd: root,
@@ -691,6 +702,7 @@ void main() {
             event.status == 'ready',
       );
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: 'cancellation-fixture',
         command: agentPath,
         processCwd: root,
@@ -777,6 +789,7 @@ void main() {
             event.status == 'ready',
       );
       runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
         agentName: 'filesystem-fixture',
         command: agentPath,
         processCwd: root,

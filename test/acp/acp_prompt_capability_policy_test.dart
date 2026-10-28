@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 import 'package:ianvs_acp/acp/acp_prompt_capability_policy.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 
 void main() {
   const advertised = AcpPromptCapabilities(
@@ -85,20 +85,20 @@ void main() {
   });
 }
 
-AcpSessionSettings _settings({
+ChatSessionSettings _settings({
   required String currentValue,
   required String name,
   String? description,
 }) {
-  return AcpSessionSettings(
-    configOptions: <AcpConfigOption>[
-      AcpConfigOption(
+  return ChatSessionSettings(
+    configOptions: <ChatConfigOption>[
+      ChatConfigOption(
         id: 'model',
         name: 'Model',
         type: 'select',
         currentValue: currentValue,
-        options: <AcpConfigOptionChoice>[
-          AcpConfigOptionChoice(
+        options: <ChatConfigOptionChoice>[
+          ChatConfigOptionChoice(
             value: currentValue,
             name: name,
             description: description,

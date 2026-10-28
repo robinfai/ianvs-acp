@@ -39,8 +39,6 @@ import 'package:re_highlight/re_highlight.dart';
 import 'package:re_highlight/styles/github.dart';
 import 'package:re_highlight/styles/github-dark.dart';
 
-import '../../mermaid/mermaid_view.dart';
-import '../../mermaid/mermaid_render_options.dart';
 import 'scroll_fade_region.dart';
 
 const int markdownCodeHighlightCharacterLimit = 200 * 1024;
@@ -69,9 +67,6 @@ class MarkdownCodeBlockBuilder extends MarkdownElementBuilder {
     final source = _stripMarkdownTerminalNewline(code.textContent);
     final language = markdownCodeLanguage(code);
 
-    if (language == 'mermaid' && source.trim().isNotEmpty) {
-      return MarkdownMermaidBlock(source: source, user: user);
-    }
     return MarkdownCodeBlock(source: source, language: language, user: user);
   }
 }
@@ -230,72 +225,6 @@ class _MarkdownCodeBlockState extends State<MarkdownCodeBlock> {
   }
 }
 
-class MarkdownMermaidBlock extends StatelessWidget {
-  const MarkdownMermaidBlock({
-    super.key,
-    required this.source,
-    required this.user,
-  });
-
-  final String source;
-  final bool user;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      margin: EdgeInsets.symmetric(vertical: 2),
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: ChatTheme.of(context).surface,
-        border: Border.all(
-          color: user
-              ? Colors.white.withValues(alpha: 0.34)
-              : ChatTheme.of(context).border,
-        ),
-        borderRadius: BorderRadius.circular(context.ianvs.panelRadius),
-        boxShadow: user ? null : kElevationToShadow[2]!,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _MermaidToolbar(source: source),
-          Divider(height: 1, color: ChatTheme.of(context).borderSoft),
-          SizedBox(
-            height: 320,
-            child: MermaidView(
-              source: source,
-              options: Theme.of(context).brightness == Brightness.dark
-                  ? const MermaidRenderOptions(
-                      theme: 'dark',
-                      themeVariables: {},
-                    )
-                  : MermaidRenderOptions.flutterSvgDefault,
-              semanticsLabel: 'Mermaid diagram',
-              loadingBuilder: (_) => Center(
-                child: SizedBox.square(
-                  dimension: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-              errorBuilder: (context, error) => Padding(
-                padding: EdgeInsets.all(14),
-                child: SelectableText(
-                  'Mermaid render failed:\n$error',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _CodeBlockToolbar extends StatelessWidget {
   const _CodeBlockToolbar({
     required this.language,
@@ -387,71 +316,6 @@ class _CodeBlockToolbar extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-class _MermaidToolbar extends StatefulWidget {
-  const _MermaidToolbar({required this.source});
-
-  final String source;
-
-  @override
-  State<_MermaidToolbar> createState() => _MermaidToolbarState();
-}
-
-class _MermaidToolbarState extends State<_MermaidToolbar> {
-  Timer? _timer;
-  var _copied = false;
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      constraints: BoxConstraints(minHeight: 36),
-      padding: EdgeInsets.only(left: 12, right: 4),
-      color: ChatTheme.of(context).surfaceMuted,
-      child: Row(
-        children: [
-          Icon(
-            Icons.account_tree_outlined,
-            size: 15,
-            color: ChatTheme.of(context).textTertiary,
-          ),
-          SizedBox(width: 7),
-          Text(
-            'MERMAID',
-            style: TextStyle(
-              color: ChatTheme.of(context).textSecondary,
-              fontSize: 10.5,
-              fontWeight: FontWeight.w600,
-              letterSpacing: .45,
-            ),
-          ),
-          Spacer(),
-          _CodeToolbarButton(
-            tooltip: _copied ? '已复制' : '复制源码',
-            icon: _copied ? Icons.check_rounded : Icons.content_copy_rounded,
-            selected: _copied,
-            onPressed: _copy,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: widget.source));
-    if (!mounted) return;
-    _timer?.cancel();
-    setState(() => _copied = true);
-    _timer = Timer(Duration(seconds: 2), () {
-      if (mounted) setState(() => _copied = false);
-    });
   }
 }
 

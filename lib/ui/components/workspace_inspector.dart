@@ -1,7 +1,7 @@
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_design/ianvs_design.dart';
 
-import '../../acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import '../../acp/acp_session_usage.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
@@ -19,7 +19,7 @@ class WorkspaceInspector extends StatelessWidget {
     required this.clientProviders,
     this.environmentBranch,
     this.configPath,
-    this.sessionSettings = const AcpSessionSettings(),
+    this.sessionSettings = const ChatSessionSettings(),
     this.sessionUsage,
     this.lastLatency,
     this.onShowSessionSettings,
@@ -34,7 +34,7 @@ class WorkspaceInspector extends StatelessWidget {
   final AcpClientProviderConfig clientProviders;
   final String? environmentBranch;
   final String? configPath;
-  final AcpSessionSettings sessionSettings;
+  final ChatSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final Duration? lastLatency;
   final VoidCallback? onShowSessionSettings;
@@ -266,7 +266,7 @@ String? _sessionBranch(AgentSession? session) {
   return null;
 }
 
-String? _sessionModeLabel(AcpSessionSettings settings) {
+String? _sessionModeLabel(ChatSessionSettings settings) {
   if (!settings.shouldUseModeFallback) return null;
   final currentId = settings.modes.currentModeId?.trim();
   if (currentId == null || currentId.isEmpty) return null;
@@ -488,7 +488,7 @@ class _ContextPane extends StatelessWidget {
   final WorkspaceRecord workspace;
   final String agentName;
   final AgentSession? currentSession;
-  final AcpSessionSettings sessionSettings;
+  final ChatSessionSettings sessionSettings;
   final AcpSessionUsage? sessionUsage;
   final Duration? lastLatency;
   final VoidCallback? onShowSessionSettings;

@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import '../components/activity_diagnostics_dialog.dart';
 import 'independent_llm_page.dart';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
@@ -10,7 +11,7 @@ import 'dart:io';
 import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 
-import '../../acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import '../../acp/acp_prompt_capability_policy.dart';
 import '../../acp/agent_session.dart';
 import '../../config/acp_client_config.dart';
@@ -79,7 +80,7 @@ class AppShell extends StatelessWidget {
     this.sessionControllers = const <ChatController>[],
     this.supportsConcurrentSessions = false,
     this.processRunner,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
     this.imageDecodeLedger,
     this.boundedImageDecoder = const DartUiBoundedImageDecoder(),
     this.gitWorkspaceDetector = workspaceSupportsGitWorktrees,
@@ -134,7 +135,7 @@ class AppShell extends StatelessWidget {
   final List<ChatController> sessionControllers;
   final bool supportsConcurrentSessions;
   final AppShellProcessRunner? processRunner;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final AcpImageDecodeBudgetLedger? imageDecodeLedger;
   final BoundedImageDecoder boundedImageDecoder;
   final bool Function(String path) gitWorkspaceDetector;

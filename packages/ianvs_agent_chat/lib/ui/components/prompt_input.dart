@@ -1,6 +1,6 @@
 import '../../chat_strings.dart';
 import '../../chat_composer_controller.dart';
-import '../../chat_submission.dart';
+import 'package:ianvs_agent_core/chat_submission.dart';
 import '../../chat_theme.dart';
 import 'dart:async';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
@@ -13,18 +13,19 @@ import 'package:ianvs_design/ianvs_design.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
-import '../../models/chat_capabilities.dart';
-import '../../models/chat_input_budget.dart';
-import '../../models/chat_permission_request.dart';
-import '../../models/chat_session_settings.dart';
-import '../../models/prompt_attachment.dart';
-export '../../models/prompt_attachment.dart' show PromptAttachmentKind;
+import 'package:ianvs_agent_core/models/chat_capabilities.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
+export 'package:ianvs_agent_core/models/prompt_attachment.dart'
+    show PromptAttachmentKind;
 import '../../platform/chat_platform.dart';
 export '../../platform/chat_platform.dart' show readDroppedImageAttachment;
 import '../../platform/prompt_image_clipboard.dart';
 export '../../platform/prompt_image_clipboard.dart' show emptyClipboardImage;
-import '../../models/chat_message.dart';
-import '../../models/permission_context.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
+import 'package:ianvs_agent_core/models/permission_context.dart';
 import '../bounded_metadata_preview.dart';
 import 'accessible_text_field.dart';
 

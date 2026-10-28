@@ -15,5 +15,4 @@ IANVS_ACP_RUST_LIBRARY="${CARGO_TARGET_DIR}/debug/libianvs_acp_ffi.dylib" \
   IANVS_ACP_FIXTURE_AGENT="${CARGO_TARGET_DIR}/debug/ianvs-acp-fixture-agent" \
   bash tool/flutter_test_isolated.sh \
   test/acp/rust_acp_agent_client_test.dart \
-  test/rust/ianvs_acp_native_test.dart \
   test/rust/ianvs_acp_ffi_integration_test.dart

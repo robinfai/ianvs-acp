@@ -50,15 +50,24 @@ fn explicit_retry_drops_failed_process_sessions_but_rejected_start_does_not() {
     state.agent_ready().unwrap();
     state.session_created("session-1").unwrap();
     assert!(state.start_agent().is_err());
-    assert_eq!(state.session_status("session-1"), Some(SessionStatus::Ready));
+    assert_eq!(
+        state.session_status("session-1"),
+        Some(SessionStatus::Ready)
+    );
 
     state.agent_failed();
-    assert_eq!(state.session_status("session-1"), Some(SessionStatus::Failed));
+    assert_eq!(
+        state.session_status("session-1"),
+        Some(SessionStatus::Failed)
+    );
     state.start_agent().unwrap();
     assert_eq!(state.session_status("session-1"), None);
     state.agent_ready().unwrap();
     state.session_created("session-1").unwrap();
-    assert_eq!(state.session_status("session-1"), Some(SessionStatus::Ready));
+    assert_eq!(
+        state.session_status("session-1"),
+        Some(SessionStatus::Ready)
+    );
 }
 
 #[test]

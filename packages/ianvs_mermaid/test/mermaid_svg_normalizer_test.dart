@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/mermaid/mermaid_svg_normalizer.dart';
+import 'package:ianvs_mermaid/mermaid_svg_normalizer.dart';
 
 void main() {
   test('inlines Mermaid class styles for flutter_svg', () {

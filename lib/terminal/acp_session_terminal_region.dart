@@ -121,7 +121,6 @@ class _AcpSessionTerminalRegionState extends State<AcpSessionTerminalRegion> {
       id: '${session.id}-terminal-$index',
       title: index == 1 ? baseTitle : '$baseTitle $index',
       followTerminalTitle: false,
-      options: local.options,
       sessionConfig: local.sessionConfig.copyWith(
         launch: local.sessionConfig.launch.copyWith(cwd: session.cwd),
       ),

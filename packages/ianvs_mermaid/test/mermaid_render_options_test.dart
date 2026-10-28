@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/mermaid/mermaid_render_options.dart';
+import 'package:ianvs_mermaid/mermaid_render_options.dart';
 
 void main() {
   test('serializes the Flutter SVG default for strict SVG consumers', () {

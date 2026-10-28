@@ -1,5 +1,5 @@
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
-import 'package:ianvs_agent_chat/chat_submission.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/chat_submission.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
@@ -63,7 +63,7 @@ void main() {
         notifications++;
       }
 
-      session.addListener(listener);
+      final subscription = session.changes.listen((_) => listener());
       await controller.connect();
       await controller.newSession();
       await session.send('hello');
@@ -77,7 +77,7 @@ void main() {
         same(controller.visibleMessages.first),
       );
       expect(notifications, greaterThan(0));
-      session.removeListener(listener);
+      await subscription.cancel();
       final previous = notifications;
       await session.send('again');
       while (controller.isStreaming) {

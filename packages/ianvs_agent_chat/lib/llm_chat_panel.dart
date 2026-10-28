@@ -63,8 +63,8 @@ class _LlmChatPanelState extends State<LlmChatPanel> {
     if (session != null) {
       return Column(
         children: [
-          ListenableBuilder(
-            listenable: session,
+          ChatSessionBinding(
+            session: session,
             builder: (context, _) => ListTile(
               dense: true,
               title: Text(session.client.model),

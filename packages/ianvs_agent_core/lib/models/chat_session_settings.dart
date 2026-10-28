@@ -1,4 +1,4 @@
-import 'chat_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
 
 class ChatSessionSettings {
   const ChatSessionSettings({

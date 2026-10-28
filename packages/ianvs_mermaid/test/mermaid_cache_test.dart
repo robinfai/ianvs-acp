@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_agent_chat/mermaid/mermaid_cache.dart';
+import 'package:ianvs_mermaid/mermaid_cache.dart';
 
 void main() {
   test('cache key includes source, options, and engine version', () {

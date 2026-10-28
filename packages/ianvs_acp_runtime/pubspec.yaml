@@ -1,6 +1,7 @@
 name: ianvs_acp_runtime
 description: Shared Rust stdio ACP runtime and Dart C FFI bindings for macOS agent hosts, with streaming sessions, permissions, cancellation and native build tooling.
 version: 0.1.0
+publish_to: none
 repository: https://github.com/robinfai/ianvs-acp
 issue_tracker: https://github.com/robinfai/ianvs-acp/issues
 topics:
@@ -16,6 +17,8 @@ environment:
   sdk: ^3.12.0
 
 dependencies:
+  ianvs_agent_core:
+    path: ../ianvs_agent_core
   ffi: ^2.2.0
 
 dev_dependencies:

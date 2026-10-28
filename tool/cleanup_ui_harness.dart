@@ -2,7 +2,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/app.dart';
@@ -33,7 +33,7 @@ Future<void> main() async {
   );
   await controller.newSession();
   client.emitPermissionRequest(
-    AcpPermissionRequest(
+    ChatPermissionRequest(
       id: 'acceptance-read',
       title: 'Read the test workspace',
       rationale: 'Synthetic permission for export verification.',
@@ -44,7 +44,7 @@ Future<void> main() async {
     ),
   );
   await Future<void>.delayed(Duration.zero);
-  await controller.resolvePermissionRequest(AcpPermissionDecision.deny);
+  await controller.resolvePermissionRequest(ChatPermissionDecision.deny);
   runApp(
     AcpClientApp(
       controller: controller,

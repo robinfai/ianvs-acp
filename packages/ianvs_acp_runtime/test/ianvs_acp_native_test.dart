@@ -1,3 +1,4 @@
+import 'package:ianvs_acp_runtime/acp_chat_session.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -5,6 +6,185 @@ import 'package:test/test.dart';
 import 'package:ianvs_acp_runtime/ianvs_acp_runtime.dart';
 
 void main() {
+  test(
+    'adapter restores turn boundaries and merges partial tool omissions',
+    () async {
+      final native = _FakeNativeApi();
+      final runtime = IanvsRustRuntime(
+        native: native,
+        pollInterval: const Duration(milliseconds: 1),
+      );
+      final session = AcpRuntimeChatSession(
+        runtime: runtime,
+        sessionId: 's',
+        agentName: 'test',
+        cwd: '/tmp',
+      );
+      addTearDown(runtime.dispose);
+      addTearDown(session.dispose);
+      var sequence = 0;
+      void event(String type, Map<String, Object?> payload) =>
+          native.events.add(
+            jsonEncode({
+              'schemaVersion': 5,
+              'sequence': ++sequence,
+              'type': type,
+              ...payload,
+            }),
+          );
+      final restored = session.restore();
+      event('render_snapshot_chunk', {
+        'requestId': native.lastRestoreId,
+        'sessionId': 's',
+        'chunkIndex': 0,
+        'isLast': true,
+        'updates': [
+          for (final n in [1, 2]) ...[
+            {'sessionId': 's', 'kind': 'user_message', 'text': 'user $n'},
+            {'sessionId': 's', 'kind': 'assistant_text', 'text': 'answer $n'},
+            {'sessionId': 's', 'kind': 'turn_completed'},
+          ],
+        ],
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(session.state.messages, isEmpty);
+      event('session_update', {
+        'update': {
+          'sessionId': 's',
+          'kind': 'session_restored',
+          'requestId': native.lastRestoreId,
+        },
+      });
+      await restored.timeout(const Duration(seconds: 2));
+      expect(session.state.messages.map((m) => m.turnId), [1, 1, 2, 2]);
+      final sent = session.send('third');
+      event('render_update', {
+        'update': {
+          'sessionId': 's',
+          'kind': 'tool_call',
+          'text': 'Run',
+          'metadata': {
+            'toolCallId': 'tool',
+            'status': 'pending',
+            'rawInput': {'server': 'bridge', 'tool': 'read'},
+          },
+        },
+      });
+      event('render_update', {
+        'update': {
+          'sessionId': 's',
+          'kind': 'tool_call',
+          'text': ' ',
+          'metadata': {
+            'toolCallId': 'tool',
+            'status': 'completed',
+            'rawInput': null,
+          },
+        },
+      });
+      event('render_update', {
+        'update': {
+          'sessionId': 's',
+          'kind': 'turn_completed',
+          'metadata': {
+            'requestId': native.lastPrompt!['requestId'],
+            'stopReason': 'end_turn',
+          },
+        },
+      });
+      await sent.timeout(const Duration(seconds: 2));
+      final tool = session.state.messages.last;
+      expect(tool.turnId, 3);
+      expect(tool.text, 'Run');
+      expect(tool.metadata['rawInput'], {'server': 'bridge', 'tool': 'read'});
+      expect(tool.metadata['status'], 'completed');
+    },
+  );
+
+  test(
+    'runtime stream closure fails pending operations without normal completion',
+    () async {
+      final runtime = IanvsRustRuntime(native: _FakeNativeApi());
+      final session = AcpRuntimeChatSession(
+        runtime: runtime,
+        sessionId: 's',
+        agentName: 'test',
+      );
+      addTearDown(session.dispose);
+      final pending = expectLater(session.send('pending'), throwsStateError);
+      await runtime.dispose();
+      await pending;
+      expect(session.state.error, contains('stream closed'));
+      expect(session.lastResultMeta, isNull);
+    },
+  );
+
+  test('session adapter waits for matching prompt result on cancel', () async {
+    final native = _FakeNativeApi();
+    final runtime = IanvsRustRuntime(
+      native: native,
+      pollInterval: const Duration(milliseconds: 1),
+    );
+    final session = AcpRuntimeChatSession(
+      runtime: runtime,
+      sessionId: 's',
+      agentName: 'test',
+    );
+    addTearDown(runtime.dispose);
+    addTearDown(session.dispose);
+    final send = session.send('hello');
+    var stopped = false;
+    final stop = session.stop().then((_) => stopped = true);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(stopped, isFalse);
+    expect(session.state.isSending, isTrue);
+    native.events.add(
+      jsonEncode({
+        'schemaVersion': 5,
+        'sequence': 1,
+        'type': 'render_update',
+        'update': {
+          'sessionId': 's',
+          'kind': 'turn_completed',
+          'metadata': {
+            'requestId': native.lastPrompt!['requestId'],
+            'stopReason': 'cancelled',
+            'resultMeta': {
+              'quota': {'remaining': 42},
+            },
+          },
+        },
+      }),
+    );
+    await send.timeout(const Duration(seconds: 2));
+    await stop;
+    expect(stopped, isTrue);
+    expect(session.state.isSending, isFalse);
+    expect(session.lastResultMeta, {
+      'quota': {'remaining': 42},
+    });
+    session.dispose();
+    expect(native.disposed, isFalse);
+  });
+
+  test(
+    'explicit replace environment and no restart survive the native boundary',
+    () async {
+      final native = _FakeNativeApi();
+      final runtime = IanvsRustRuntime(native: native);
+      addTearDown(runtime.dispose);
+      runtime.startAgent(
+        environmentPolicy: AcpEnvironmentPolicy.replace,
+        agentName: 'fixture',
+        command: 'fixture',
+        environment: {'CODEX_HOME': '/isolated'},
+      );
+      expect(native.startedConfig!['environmentPolicy'], 'replace');
+      expect(native.startedConfig!['maxRestartAttempts'], 0);
+      expect(native.startedConfig!['environment'], {'CODEX_HOME': '/isolated'});
+    },
+  );
+
   test('rejects libraries that would ignore the outside-read policy', () {
     final native = _FakeNativeApi(ffiVersion: 10);
     expect(() => IanvsRustRuntime(native: native), throwsStateError);
@@ -15,7 +195,11 @@ void main() {
     final native = _FakeNativeApi();
     final runtime = IanvsRustRuntime(native: native);
     addTearDown(runtime.dispose);
-    runtime.startAgent(agentName: 'fixture', command: 'fixture');
+    runtime.startAgent(
+      environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
+      agentName: 'fixture',
+      command: 'fixture',
+    );
     expect(native.startedConfig?['enableFilesystemReadTextFile'], isFalse);
     expect(native.startedConfig?['enableFilesystemWriteTextFile'], isFalse);
     expect(native.startedConfig?['enableTerminalProvider'], isFalse);
@@ -66,13 +250,13 @@ void main() {
     final native = _FakeNativeApi()
       ..events.addAll(<String>[
         jsonEncode(<String, Object?>{
-          'schemaVersion': 4,
+          'schemaVersion': 5,
           'sequence': 1,
           'type': 'status_changed',
           'status': 'ready',
         }),
         jsonEncode(<String, Object?>{
-          'schemaVersion': 4,
+          'schemaVersion': 5,
           'sequence': 2,
           'type': 'render_update',
           'update': <String, Object?>{
@@ -101,7 +285,7 @@ void main() {
       }
       ..events.add(
         jsonEncode(<String, Object?>{
-          'schemaVersion': 4,
+          'schemaVersion': 5,
           'sequence': 1,
           'type': 'status_changed',
           'status': 'ready',
@@ -124,7 +308,7 @@ void main() {
     for (var sequence = 1; sequence <= 9; sequence += 1) {
       native.events.add(
         jsonEncode(<String, Object?>{
-          'schemaVersion': 4,
+          'schemaVersion': 5,
           'sequence': sequence,
           'type': 'status_changed',
           'status': 'ready',
@@ -160,7 +344,7 @@ void main() {
     for (var sequence = 1; sequence <= 4; sequence += 1) {
       native.events.add(
         jsonEncode(<String, Object?>{
-          'schemaVersion': 4,
+          'schemaVersion': 5,
           'sequence': sequence,
           'type': 'status_changed',
           'status': 'ready',
@@ -194,6 +378,7 @@ void main() {
       pollInterval: const Duration(hours: 1),
     );
     runtime.startAgent(
+      environmentPolicy: AcpEnvironmentPolicy.inheritAndOverride,
       agentName: 'Codex',
       persistenceIdentity: 'stable-codex',
       persistenceAliases: const <String>['Codex', 'Original Codex'],
@@ -291,7 +476,7 @@ void main() {
     var sequence = 1;
     for (final entry in types.entries) {
       final event = IanvsRuntimeEvent.fromJson(<String, Object?>{
-        'schemaVersion': 4,
+        'schemaVersion': 5,
         'sequence': sequence++,
         'type': entry.key,
         'sessionId': 'session-1',
@@ -321,6 +506,7 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
   final List<String> events = <String>[];
   Map<String, Object?>? startedConfig;
   Map<String, String>? lastPrompt;
+  String? lastRestoreId;
   bool disposed = false;
   bool freed = false;
   void Function()? onPoll;
@@ -354,7 +540,10 @@ final class _FakeNativeApi implements IanvsAcpNativeApi {
     required String cwd,
     required List<String> additionalDirectories,
     bool replayHistory = true,
-  }) => true;
+  }) {
+    lastRestoreId = requestId;
+    return true;
+  }
 
   @override
   bool listSessions(Object runtime, {required String requestId}) => true;

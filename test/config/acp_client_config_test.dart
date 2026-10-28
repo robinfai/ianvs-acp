@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
 import 'package:ianvs_agent_chat/platform/bounded_file_snapshot.dart';
 import 'package:path/path.dart' as path_utils;
@@ -955,10 +955,10 @@ void main() {
     expect(config.clientProviders.permissions.hasTrustRules, isTrue);
     expect(rules[0].toolName, 'read_text_file');
     expect(rules[0].toolKind, 'read');
-    expect(rules[0].decision, AcpPermissionDecision.allow);
+    expect(rules[0].decision, ChatPermissionDecision.allow);
     expect(rules[1].toolName, 'terminal');
     expect(rules[1].toolKind, isNull);
-    expect(rules[1].decision, AcpPermissionDecision.deny);
+    expect(rules[1].decision, ChatPermissionDecision.deny);
 
     final selected = config.withActiveAgentServer('Codex');
     expect(selected.clientProviders.permissions.trustRules, hasLength(2));

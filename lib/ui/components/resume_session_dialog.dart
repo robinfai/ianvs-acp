@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:ianvs_design/ianvs_design.dart';
 
-import '../../acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import '../../acp/acp_session_catalog.dart';
 import '../../workspace/workspace.dart';
 import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
@@ -51,14 +51,14 @@ class ResumeSessionDialog extends StatefulWidget {
     this.initialAgentId,
     this.initialCwd,
     this.workspaceCwd,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
   });
 
   final List<ResumeSessionAgentOption> agents;
   final String? initialAgentId;
   final String? initialCwd;
   final String? workspaceCwd;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
 
   @override
   State<ResumeSessionDialog> createState() => _ResumeSessionDialogState();
@@ -788,7 +788,7 @@ class _GroupedSessionList extends StatelessWidget {
   final AcpSessionEntry? selectedConversation;
   final AcpSessionEntry? expandedConversation;
   final String agentName;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final void Function(AcpProjectSessions, AcpSessionEntry) onSelected;
 
   @override
@@ -897,7 +897,7 @@ class _SessionResultTile extends StatelessWidget {
   final bool selected;
   final bool expanded;
   final String agentName;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final VoidCallback onTap;
 
   @override
@@ -1207,7 +1207,7 @@ class _ConversationPreview extends StatelessWidget {
 
   final String agentName;
   final AcpSessionEntry? conversation;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -1289,7 +1289,7 @@ class _MetadataPreview extends StatefulWidget {
   });
 
   final Map<String, Object?> meta;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final Object sessionIdentity;
 
   @override
@@ -1382,7 +1382,7 @@ class _MetadataPreviewState extends State<_MetadataPreview> {
 class _MetadataOmissionLabel extends StatelessWidget {
   const _MetadataOmissionLabel({required this.omission});
 
-  final AcpInputOmission omission;
+  final ChatInputOmission omission;
 
   @override
   Widget build(BuildContext context) {

@@ -1,4 +1,4 @@
-import 'acp_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
 
 class AcpProjectSessions {
   AcpProjectSessions({required this.cwd, required this.sessions});
@@ -33,7 +33,7 @@ class AcpSessionEntry {
   final List<String> additionalDirectories;
   final DateTime? updatedAt;
   final Map<String, Object?> meta;
-  final acp.AcpInputOmission? metaOmission;
+  final acp.ChatInputOmission? metaOmission;
 
   String get shortId => id.length <= 8 ? id : id.substring(0, 8);
 

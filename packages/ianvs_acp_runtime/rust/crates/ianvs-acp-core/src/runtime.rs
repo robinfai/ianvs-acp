@@ -230,7 +230,7 @@ enum InternalEvent {
     PromptFinished {
         request_id: String,
         session_id: String,
-        result: Result<String, String>,
+        result: Result<(String, Option<serde_json::Value>), String>,
     },
     PermissionWaiting {
         request_id: String,
@@ -1044,6 +1044,7 @@ fn merge_content_block_metadata(
 /// The worker owns a current-thread Tokio runtime and the ACP subprocess. No
 /// Flutter lifecycle object owns protocol or session state.
 pub struct RuntimeHandle {
+    shutdown: Arc<tokio::sync::Notify>,
     command_sender: Option<tokio_mpsc::Sender<RuntimeCommand>>,
     events: Option<EventReceiver>,
     worker: Option<JoinHandle<()>>,
@@ -1078,6 +1079,8 @@ impl RuntimeHandle {
             receiver: event_receiver,
             budget: event_budget,
         };
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("ianvs-acp-runtime".to_string())
             .spawn(move || {
@@ -1085,7 +1088,22 @@ impl RuntimeHandle {
                     .enable_all()
                     .build();
                 match runtime {
-                    Ok(runtime) => runtime.block_on(runtime_main(command_receiver, sink)),
+                    Ok(runtime) => runtime.block_on(async move {
+                        // Out-of-band disposal must interrupt initialize and every
+                        // awaited setup request, even before command_loop starts.
+                        let shutdown_sink = sink.clone();
+                        tokio::select! {
+                            biased;
+                            () = worker_shutdown.notified() => {
+                                shutdown_sink.emit(RuntimeEvent::StatusChanged {
+                                    status: RuntimeStatus::Disposed,
+                                    detail: None,
+                                    capabilities: None,
+                                });
+                            }
+                            () = runtime_main(command_receiver, sink) => {}
+                        }
+                    }),
                     Err(error) => {
                         // No receiver-independent recovery exists when the async
                         // runtime itself cannot be constructed.
@@ -1095,6 +1113,7 @@ impl RuntimeHandle {
             })
             .expect("failed to spawn ianvs ACP runtime worker");
         Self {
+            shutdown,
             command_sender: Some(command_sender),
             events: Some(events),
             worker: Some(worker),
@@ -1263,7 +1282,8 @@ impl RuntimeHandle {
     }
 
     pub fn dispose(&self) -> Result<(), RuntimeError> {
-        self.send(RuntimeCommand::Dispose)
+        self.shutdown.notify_one();
+        Ok(())
     }
 
     /// Non-blocking event receive for UI frame polling.
@@ -1322,6 +1342,7 @@ impl RuntimeHandle {
 
 impl Drop for RuntimeHandle {
     fn drop(&mut self) {
+        self.shutdown.notify_one();
         if let Some(command_sender) = self.command_sender.as_ref() {
             let _ = command_sender.try_send(RuntimeCommand::Dispose);
         }
@@ -1987,7 +2008,7 @@ async fn run_agent(
                     .map(|method| method.id.clone())
                     .collect::<HashSet<_>>();
                 let logout_supported = response.agent_capabilities.auth.logout.is_some();
-                let capabilities = capability_projection(
+                let mut capabilities = capability_projection(
                     &response.agent_capabilities,
                     session_support,
                     auth_methods,
@@ -1995,6 +2016,9 @@ async fn run_agent(
                     config.enable_filesystem_write_text_file,
                     config.enable_terminal_provider,
                 );
+                capabilities.agent_info = response.agent_info.as_ref()
+                    .map(serde_json::to_value).transpose()
+                    .map_err(AcpError::into_internal_error)?;
                 let mut detail = response.agent_info.as_ref().map_or_else(
                     || format!("{} ready", config.agent_name),
                     |info| format!("{} {} ready", info.name, info.version),
@@ -2653,8 +2677,15 @@ async fn command_loop(
                         let tx = internal_sender.clone();
                         connection.spawn(async move {
                             let result = sent.block_task().await
-                                .map(|response| stop_reason_name(response.stop_reason).to_string())
-                                .map_err(|error| error.to_string());
+                                .map_err(|error| error.to_string())
+                                .and_then(|response| {
+                                    let meta = response.meta.map(serde_json::to_value)
+                                        .transpose().map_err(|error| error.to_string())?;
+                                    if serde_json::to_vec(&meta).map_err(|error| error.to_string())?.len() > 16 * 1024 {
+                                        return Err("prompt result metadata exceeds 16384 bytes".to_string());
+                                    }
+                                    Ok((stop_reason_name(response.stop_reason).to_string(), meta))
+                                });
                             let _ = tx.send(InternalEvent::PromptFinished {
                                 request_id,
                                 session_id,
@@ -3288,7 +3319,7 @@ async fn command_loop(
                             sink.error(Some(request_id.clone()), "invalid_session_state", error.to_string(), false);
                         }
                         match result {
-                            Ok(stop_reason) => {
+                            Ok((stop_reason, result_meta)) => {
                                 if let Err(message) = session_registry.touch(&session_id) {
                                     sink.error(
                                         Some(request_id.clone()),
@@ -3303,6 +3334,7 @@ async fn command_loop(
                                     text: String::new(),
                                     metadata: Some(serde_json::json!({
                                         "stopReason": stop_reason,
+                                        "resultMeta": result_meta,
                                         "requestId": request_id,
                                     })),
                                 });
@@ -3936,6 +3968,7 @@ fn capability_projection(
     terminal: bool,
 ) -> CapabilityProjection {
     CapabilityProjection {
+        agent_info: None,
         protocol_version: 1,
         // Host-facing capabilities are the intersection of the peer and core.
         load_session: session_support.load,
@@ -4908,6 +4941,9 @@ impl ConnectTo<agent_client_protocol::Client> for LocalAgentTransport {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), AcpError> {
         let mut command = async_process::Command::new(&self.config.command);
         command.args(&self.config.args);
+        if self.config.environment_policy == crate::model::EnvironmentPolicy::Replace {
+            command.env_clear();
+        }
         command.envs(&self.config.environment);
         if let Some(cwd) = self.config.process_cwd.as_deref() {
             let cwd = PathBuf::from(cwd)
@@ -5060,6 +5096,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
         let runtime = RuntimeHandle {
+            shutdown: Arc::new(tokio::sync::Notify::new()),
             command_sender: Some(command_sender),
             events: Some(event_receiver),
             worker: Some(worker),
@@ -5128,6 +5165,7 @@ mod tests {
         });
         first_received.recv_timeout(Duration::from_secs(1)).unwrap();
         let runtime = RuntimeHandle {
+            shutdown: Arc::new(tokio::sync::Notify::new()),
             command_sender: Some(command_sender),
             events: Some(event_receiver),
             worker: Some(worker),

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/acp_session_usage.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
 import 'package:ianvs_acp/acp/agent_session.dart';
@@ -46,19 +46,19 @@ void main() {
               agentName: 'Codex',
               currentSession: workspace.sessions.single,
               environmentBranch: 'main',
-              sessionSettings: const AcpSessionSettings(
+              sessionSettings: const ChatSessionSettings(
                 configOptions: [
-                  AcpConfigOption(
+                  ChatConfigOption(
                     id: 'model',
                     name: 'Model',
                     type: 'select',
                     currentValue: 'sol',
                     options: [
-                      AcpConfigOptionChoice(value: 'sol', name: '5.6 Sol'),
-                      AcpConfigOptionChoice(value: 'terra', name: '5.6 Terra'),
+                      ChatConfigOptionChoice(value: 'sol', name: '5.6 Sol'),
+                      ChatConfigOptionChoice(value: 'terra', name: '5.6 Terra'),
                     ],
                   ),
-                  AcpConfigOption(
+                  ChatConfigOption(
                     id: 'fast_mode',
                     name: 'Fast',
                     type: 'boolean',

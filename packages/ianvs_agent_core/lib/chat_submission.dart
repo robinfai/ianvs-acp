@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 /// An immutable draft captured before a host starts asynchronous admission.
 class ChatSubmission {

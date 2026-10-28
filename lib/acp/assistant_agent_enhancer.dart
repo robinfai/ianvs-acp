@@ -2,7 +2,7 @@ import 'dart:async';
 
 import '../config/assistant_agent_config.dart';
 import 'acp_agent_client.dart';
-import 'acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'agent_event.dart';
 import 'bounded_utf8_accumulator.dart';
 
@@ -160,7 +160,7 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
     }
   }
 
-  Future<AcpConfigOption?> discoverModelOption() async {
+  Future<ChatConfigOption?> discoverModelOption() async {
     if (_disposed) {
       throw StateError('Assistant Agent model discovery is disposed.');
     }
@@ -213,8 +213,8 @@ class AcpAssistantAgentEnhancer implements AssistantAgentEnhancer {
     );
   }
 
-  AcpConfigOptionChoice? _matchingChoice(
-    AcpConfigOption option,
+  ChatConfigOptionChoice? _matchingChoice(
+    ChatConfigOption option,
     String requested,
   ) {
     final normalized = requested.trim().toLowerCase();

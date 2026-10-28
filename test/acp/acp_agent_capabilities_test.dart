@@ -1,6 +1,6 @@
 import 'dart:collection';
 
-import 'package:ianvs_acp/acp/acp_input_budget.dart' as acp;
+import 'package:ianvs_agent_core/models/chat_input_budget.dart' as acp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_acp/acp/acp_agent_capabilities.dart';
 
@@ -110,7 +110,7 @@ void main() {
   });
 
   test('ACP input budget exposes stable defensive defaults', () {
-    const budget = acp.AcpInputBudget();
+    const budget = acp.ChatInputBudget();
 
     expect(budget.maxJsonDepth, 32);
     expect(budget.maxCapabilityDepth, 16);
@@ -149,7 +149,7 @@ void main() {
   test('capability depth accepts the exact boundary', () {
     final capabilities = _parseCapabilities(<String, Object?>{
       'nested': <String, Object?>{'leaf': true},
-    }, budget: const acp.AcpInputBudget(maxCapabilityDepth: 2));
+    }, budget: const acp.ChatInputBudget(maxCapabilityDepth: 2));
 
     expect(capabilities.rawAgentCapabilities['nested'], isA<Map>());
   });
@@ -162,9 +162,9 @@ void main() {
         'nested': <String, Object?>{
           'tooDeep': <String, Object?>{'value': secret},
         },
-      }, budget: const acp.AcpInputBudget(maxCapabilityDepth: 2)),
+      }, budget: const acp.ChatInputBudget(maxCapabilityDepth: 2)),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 2)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 3)
             .having(
@@ -179,7 +179,7 @@ void main() {
   test('capability nodes accept the exact aggregate boundary', () {
     final capabilities = _parseCapabilities(<String, Object?>{
       'one': true,
-    }, budget: const acp.AcpInputBudget(maxCapabilityNodes: 3));
+    }, budget: const acp.ChatInputBudget(maxCapabilityNodes: 3));
 
     expect(capabilities.loadSession, isFalse);
   });
@@ -189,9 +189,9 @@ void main() {
       () => _parseCapabilities(<String, Object?>{
         'one': true,
         'two': false,
-      }, budget: const acp.AcpInputBudget(maxCapabilityNodes: 3)),
+      }, budget: const acp.ChatInputBudget(maxCapabilityNodes: 3)),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 3)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
       ),
@@ -201,7 +201,7 @@ void main() {
   test('capability UTF-8 bytes accept the exact aggregate boundary', () {
     final capabilities = _parseCapabilities(<String, Object?>{
       'token': '秘密',
-    }, budget: const acp.AcpInputBudget(maxCapabilityBytes: 11));
+    }, budget: const acp.ChatInputBudget(maxCapabilityBytes: 11));
 
     expect(capabilities.rawAgentCapabilities['token'], '秘密');
   });
@@ -212,9 +212,9 @@ void main() {
     expect(
       () => _parseCapabilities(<String, Object?>{
         'token': secret,
-      }, budget: const acp.AcpInputBudget(maxCapabilityBytes: 10)),
+      }, budget: const acp.ChatInputBudget(maxCapabilityBytes: 10)),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 10)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 11)
             .having(
@@ -233,7 +233,7 @@ void main() {
         <String, Object?>{'id': 'one'},
         <String, Object?>{'id': 'two'},
       ],
-      budget: const acp.AcpInputBudget(maxAuthMethods: 2),
+      budget: const acp.ChatInputBudget(maxAuthMethods: 2),
     );
     expect(atBoundary.authMethods, hasLength(2));
 
@@ -245,10 +245,10 @@ void main() {
           <String, Object?>{'id': 'two'},
           <String, Object?>{'id': 'auth-secret'},
         ],
-        budget: const acp.AcpInputBudget(maxAuthMethods: 2),
+        budget: const acp.ChatInputBudget(maxAuthMethods: 2),
       ),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 2)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 3)
             .having(
@@ -364,7 +364,7 @@ void main() {
     ];
 
     for (final testCase in cases) {
-      final exact = acp.AcpJsonInputGuard(
+      final exact = acp.ChatJsonInputGuard(
         resource: 'ACP test input',
         maxDepth: 4,
         maxNodes: 8,
@@ -375,7 +375,7 @@ void main() {
         testCase.value,
       );
 
-      final over = acp.AcpJsonInputGuard(
+      final over = acp.ChatJsonInputGuard(
         resource: 'ACP test input',
         maxDepth: 4,
         maxNodes: 8,
@@ -384,7 +384,7 @@ void main() {
       expect(
         () => over.copyMap(<String, Object?>{'k': testCase.value}),
         throwsA(
-          isA<acp.AcpInputLimitExceeded>()
+          isA<acp.ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', testCase.bytes)
               .having(
                 (error) => error.observedAtLeast,
@@ -397,7 +397,7 @@ void main() {
   });
 
   test('JSON input guard stops UTF-8 counting at the first overflow', () {
-    final guard = acp.AcpJsonInputGuard(
+    final guard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 8,
@@ -407,7 +407,7 @@ void main() {
     expect(
       () => guard.copyMap(<String, Object?>{'k': 'Aé€😀'}),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 2)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
       ),
@@ -417,7 +417,7 @@ void main() {
   test('JSON input guard rejects non-string keys without calling toString', () {
     const secret = 'map-key-secret';
     final hostileKey = _HostileMapKey(secret);
-    final guard = acp.AcpJsonInputGuard(
+    final guard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 8,
@@ -444,7 +444,7 @@ void main() {
   });
 
   test('JSON input guard rejects numeric and string key collisions', () {
-    final guard = acp.AcpJsonInputGuard(
+    final guard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 8,
@@ -469,7 +469,7 @@ void main() {
       double.infinity,
       double.negativeInfinity,
     ]) {
-      final guard = acp.AcpJsonInputGuard(
+      final guard = acp.ChatJsonInputGuard(
         resource: 'ACP test input',
         maxDepth: 4,
         maxNodes: 8,
@@ -490,16 +490,16 @@ void main() {
   });
 
   test('ACP input budget rejects every dynamic non-positive limit at use', () {
-    final invalidBudgets = <acp.AcpInputBudget Function()>[
-      () => acp.AcpInputBudget(maxJsonDepth: 0),
-      () => acp.AcpInputBudget(maxCapabilityDepth: 0),
-      () => acp.AcpInputBudget(maxCapabilityNodes: 0),
-      () => acp.AcpInputBudget(maxCapabilityBytes: 0),
-      () => acp.AcpInputBudget(maxAuthMethods: 0),
-      () => acp.AcpInputBudget(maxMetadataDepth: 0),
-      () => acp.AcpInputBudget(maxMetadataNodes: 0),
-      () => acp.AcpInputBudget(maxMetadataEntries: 0),
-      () => acp.AcpInputBudget(maxMetadataBytes: 0),
+    final invalidBudgets = <acp.ChatInputBudget Function()>[
+      () => acp.ChatInputBudget(maxJsonDepth: 0),
+      () => acp.ChatInputBudget(maxCapabilityDepth: 0),
+      () => acp.ChatInputBudget(maxCapabilityNodes: 0),
+      () => acp.ChatInputBudget(maxCapabilityBytes: 0),
+      () => acp.ChatInputBudget(maxAuthMethods: 0),
+      () => acp.ChatInputBudget(maxMetadataDepth: 0),
+      () => acp.ChatInputBudget(maxMetadataNodes: 0),
+      () => acp.ChatInputBudget(maxMetadataEntries: 0),
+      () => acp.ChatInputBudget(maxMetadataBytes: 0),
     ];
 
     for (final createBudget in invalidBudgets) {
@@ -516,7 +516,7 @@ void main() {
 
   test('JSON input guard runtime-validates direct construction', () {
     expect(
-      () => acp.AcpJsonInputGuard(
+      () => acp.ChatJsonInputGuard(
         resource: 'ACP test input',
         maxDepth: 0,
         maxNodes: 1,
@@ -525,7 +525,7 @@ void main() {
       throwsA(isA<ArgumentError>()),
     );
     expect(
-      () => acp.AcpJsonInputGuard(
+      () => acp.ChatJsonInputGuard(
         resource: 'ACP test input',
         maxDepth: 1,
         maxNodes: 0,
@@ -534,7 +534,7 @@ void main() {
       throwsA(isA<ArgumentError>()),
     );
     expect(
-      () => acp.AcpJsonInputGuard(
+      () => acp.ChatJsonInputGuard(
         resource: 'ACP test input',
         maxDepth: 1,
         maxNodes: 1,
@@ -546,7 +546,7 @@ void main() {
 
   test('remaining node precheck avoids traversing an oversized nested map', () {
     final exactMap = _CountingMap(<String, Object?>{'one': true, 'two': false});
-    final exactGuard = acp.AcpJsonInputGuard(
+    final exactGuard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 4,
@@ -563,7 +563,7 @@ void main() {
       'two': false,
       'three': null,
     });
-    final overGuard = acp.AcpJsonInputGuard(
+    final overGuard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 4,
@@ -572,7 +572,7 @@ void main() {
     expect(
       () => overGuard.copyMap(<String, Object?>{'nested': overMap}),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 4)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 5),
       ),
@@ -582,7 +582,7 @@ void main() {
 
   test('remaining node precheck spans roots before reading a list', () {
     final exactList = _CountingList(<Object?>[true]);
-    final exactGuard = acp.AcpJsonInputGuard(
+    final exactGuard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 4,
@@ -593,7 +593,7 @@ void main() {
     expect(exactList.itemsRead, 1);
 
     final overList = _CountingList(<Object?>[true, false]);
-    final overGuard = acp.AcpJsonInputGuard(
+    final overGuard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 4,
@@ -603,7 +603,7 @@ void main() {
     expect(
       () => overGuard.copyList(overList),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 4)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 5),
       ),
@@ -622,7 +622,7 @@ void main() {
         'five': 5,
       },
     );
-    final guard = acp.AcpJsonInputGuard(
+    final guard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 4,
@@ -632,7 +632,7 @@ void main() {
     expect(
       () => guard.copyMap(source),
       throwsA(
-        isA<acp.AcpInputLimitExceeded>()
+        isA<acp.ChatInputLimitExceeded>()
             .having((error) => error.limit, 'limit', 4)
             .having((error) => error.observedAtLeast, 'observedAtLeast', 5),
       ),
@@ -646,7 +646,7 @@ void main() {
       laterLength: 1000,
       values: <Object?>[true],
     );
-    final guard = acp.AcpJsonInputGuard(
+    final guard = acp.ChatJsonInputGuard(
       resource: 'ACP test input',
       maxDepth: 4,
       maxNodes: 4,
@@ -686,7 +686,7 @@ void main() {
 AcpAgentCapabilities _parseCapabilities(
   Object? agentCapabilities, {
   Object? authMethods = const <Object?>[],
-  acp.AcpInputBudget budget = const acp.AcpInputBudget(),
+  acp.ChatInputBudget budget = const acp.ChatInputBudget(),
 }) {
   return AcpAgentCapabilities.fromInitialize(
     protocolVersion: 1,

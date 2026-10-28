@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_core/buffered_chat_message.dart';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
@@ -1490,7 +1491,11 @@ class _MultiWorkspaceCatalogClient extends FakeAgentClient {
   }
 }
 
-class _RecordingTerminalBackend implements PtySessionBackend {
+class _RecordingTerminalBackend
+    implements
+        PtySessionBackend,
+        PtySessionConfigV1Backend,
+        PtySessionFramePacketV1Backend {
   final List<String> createdSessionIds = <String>[];
   final List<String> closedSessionIds = <String>[];
   int _nextSessionId = 0;
@@ -1499,7 +1504,7 @@ class _RecordingTerminalBackend implements PtySessionBackend {
   int ping() => 1;
 
   @override
-  String createSession(String sessionConfigJson) {
+  String createSessionV1(String sessionConfigJson) {
     final sessionId = 'terminal-session-${++_nextSessionId}';
     createdSessionIds.add(sessionId);
     return sessionId;
@@ -1531,7 +1536,10 @@ class _RecordingTerminalBackend implements PtySessionBackend {
   void scrollViewportTo(String sessionId, int offset) {}
 
   @override
-  String? takeFrameDiffJson(String sessionId) => null;
+  Uint8List? takeFramePacketV1Protobuf(
+    String sessionId, {
+    required int? afterSequence,
+  }) => null;
 
   @override
   void writeInput(String sessionId, List<int> bytes) {}

@@ -1,3 +1,4 @@
+import 'package:ianvs_agent_core/ianvs_agent_core.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -5,9 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ianvs_agent_chat/ianvs_agent_chat.dart';
 
-class AdmissionSession extends ChatSession
-    with ChangeNotifier
-    implements ChatSubmissionSession {
+class AdmissionSession extends ChatSession implements ChatSubmissionSession {
   Object identity = 'one';
   final pending = <Completer<ChatSubmitResult>>[];
   final submissions = <ChatSubmission>[];
@@ -30,7 +29,7 @@ class AdmissionSession extends ChatSession
     return receipt.future;
   }
 
-  void update() => notifyListeners();
+  void update() => notifySessionChanged();
   @override
   Future<void> send(
     String text, {

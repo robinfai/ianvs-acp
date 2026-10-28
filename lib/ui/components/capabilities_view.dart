@@ -1,18 +1,18 @@
 import 'package:ianvs_design/ianvs_design.dart';
 
 import '../../acp/acp_agent_capabilities.dart';
-import '../../acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
 
 class CapabilitiesView extends StatelessWidget {
   const CapabilitiesView({
     super.key,
     required this.capabilities,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
     this.scrollable = true,
   });
   final AcpAgentCapabilities? capabilities;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final bool scrollable;
   @override
   Widget build(BuildContext context) {
@@ -381,7 +381,7 @@ class _RawSection extends StatefulWidget {
   const _RawSection({required this.capabilities, required this.inputBudget});
 
   final AcpAgentCapabilities capabilities;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
 
   @override
   State<_RawSection> createState() => _RawSectionState();
@@ -525,7 +525,7 @@ final class _RawPreviewCacheEntry {
   });
 
   final Object? value;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final BoundedMetadataPreview preview;
 }
 

@@ -26,7 +26,7 @@ pub use filesystem::{
     FilesystemOperationKind, FilesystemOperationResult,
 };
 pub use model::{
-    AgentLaunchConfig, AuthMethodProjection, CapabilityProjection, CommandKind,
+    AgentLaunchConfig, AuthMethodProjection, CapabilityProjection, CommandKind, EnvironmentPolicy,
     McpServerLaunchConfig, PermissionDecision, PermissionOptionProjection,
     PermissionRequestProjection, PromptAttachmentInput, RenderUpdate, RenderUpdateKind,
     RuntimeEvent, RuntimeEventEnvelope, RuntimeStatus, SessionCatalogEntryProjection,

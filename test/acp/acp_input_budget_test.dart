@@ -2,32 +2,32 @@
 
 import 'dart:collection';
 
-import 'package:ianvs_acp/acp/acp_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('AcpInputOmission', () {
+  group('ChatInputOmission', () {
     test('serializes every reason with its exact wire fields', () {
-      final omissions = <AcpInputOmission>[
-        AcpInputOmission(
-          reason: AcpInputOmissionReason.inputLimit,
+      final omissions = <ChatInputOmission>[
+        ChatInputOmission(
+          reason: ChatInputOmissionReason.inputLimit,
           resource: 'message_text',
           truncated: true,
           limit: 0,
           observedAtLeast: 1,
         ),
-        AcpInputOmission(
-          reason: AcpInputOmissionReason.invalidEncoding,
+        ChatInputOmission(
+          reason: ChatInputOmissionReason.invalidEncoding,
           resource: 'message_text',
           truncated: false,
         ),
-        AcpInputOmission(
-          reason: AcpInputOmissionReason.invalidImage,
+        ChatInputOmission(
+          reason: ChatInputOmissionReason.invalidImage,
           resource: 'embedded_image',
           truncated: false,
         ),
-        AcpInputOmission(
-          reason: AcpInputOmissionReason.invalidStructure,
+        ChatInputOmission(
+          reason: ChatInputOmissionReason.invalidStructure,
           resource: 'structured_update',
           truncated: true,
         ),
@@ -66,8 +66,8 @@ void main() {
         (limit: null, observedAtLeast: 11),
       ]) {
         expect(
-          () => AcpInputOmission(
-            reason: AcpInputOmissionReason.inputLimit,
+          () => ChatInputOmission(
+            reason: ChatInputOmissionReason.inputLimit,
             resource: 'message_text',
             truncated: true,
             limit: capacity.limit,
@@ -79,10 +79,10 @@ void main() {
     });
 
     test('non-capacity reasons reject every capacity field shape', () {
-      for (final reason in const <AcpInputOmissionReason>[
-        AcpInputOmissionReason.invalidEncoding,
-        AcpInputOmissionReason.invalidImage,
-        AcpInputOmissionReason.invalidStructure,
+      for (final reason in const <ChatInputOmissionReason>[
+        ChatInputOmissionReason.invalidEncoding,
+        ChatInputOmissionReason.invalidImage,
+        ChatInputOmissionReason.invalidStructure,
       ]) {
         for (final capacity in const <({int? limit, int? observedAtLeast})>[
           (limit: 10, observedAtLeast: 11),
@@ -90,7 +90,7 @@ void main() {
           (limit: null, observedAtLeast: 11),
         ]) {
           expect(
-            () => AcpInputOmission(
+            () => ChatInputOmission(
               reason: reason,
               resource: 'untrusted_input',
               truncated: false,
@@ -105,20 +105,20 @@ void main() {
 
     test('exposes immutable fields and formats only the fixed key set', () {
       const canary = 'PAYLOAD_CANARY_MUST_NOT_APPEAR';
-      final inputLimit = AcpInputOmission(
-        reason: AcpInputOmissionReason.inputLimit,
+      final inputLimit = ChatInputOmission(
+        reason: ChatInputOmissionReason.inputLimit,
         resource: 'message_text',
         truncated: true,
         limit: 0,
         observedAtLeast: 1,
       );
-      final invalidImage = AcpInputOmission(
-        reason: AcpInputOmissionReason.invalidImage,
+      final invalidImage = ChatInputOmission(
+        reason: ChatInputOmissionReason.invalidImage,
         resource: 'embedded_image',
         truncated: false,
       );
 
-      expect(inputLimit.reason, AcpInputOmissionReason.inputLimit);
+      expect(inputLimit.reason, ChatInputOmissionReason.inputLimit);
       expect(inputLimit.resource, 'message_text');
       expect(inputLimit.truncated, isTrue);
       expect(inputLimit.limit, 0);
@@ -150,141 +150,143 @@ void main() {
     });
   });
 
-  group('AcpInputBudget', () {
+  group('ChatInputBudget', () {
     final newBudgetLimits =
-        <({String field, AcpInputBudget Function(int value) create})>[
+        <({String field, ChatInputBudget Function(int value) create})>[
           (
             field: 'maxCollectionItems',
-            create: (value) => AcpInputBudget(maxCollectionItems: value),
+            create: (value) => ChatInputBudget(maxCollectionItems: value),
           ),
           (
             field: 'maxStructuredUpdateNodes',
-            create: (value) => AcpInputBudget(maxStructuredUpdateNodes: value),
+            create: (value) => ChatInputBudget(maxStructuredUpdateNodes: value),
           ),
           (
             field: 'maxStructuredUpdateBytes',
-            create: (value) => AcpInputBudget(maxStructuredUpdateBytes: value),
+            create: (value) => ChatInputBudget(maxStructuredUpdateBytes: value),
           ),
           (
             field: 'maxStructuredStringBytes',
-            create: (value) => AcpInputBudget(maxStructuredStringBytes: value),
+            create: (value) => ChatInputBudget(maxStructuredStringBytes: value),
           ),
           (
             field: 'maxMessageTextBytes',
-            create: (value) => AcpInputBudget(maxMessageTextBytes: value),
+            create: (value) => ChatInputBudget(maxMessageTextBytes: value),
           ),
           (
             field: 'maxMessageTextLines',
-            create: (value) => AcpInputBudget(maxMessageTextLines: value),
+            create: (value) => ChatInputBudget(maxMessageTextLines: value),
           ),
           (
             field: 'maxMarkdownSyntaxTokens',
-            create: (value) => AcpInputBudget(maxMarkdownSyntaxTokens: value),
+            create: (value) => ChatInputBudget(maxMarkdownSyntaxTokens: value),
           ),
           (
             field: 'maxMarkdownFallbackBytes',
-            create: (value) => AcpInputBudget(maxMarkdownFallbackBytes: value),
+            create: (value) => ChatInputBudget(maxMarkdownFallbackBytes: value),
           ),
           (
             field: 'maxThoughtTextBytes',
-            create: (value) => AcpInputBudget(maxThoughtTextBytes: value),
+            create: (value) => ChatInputBudget(maxThoughtTextBytes: value),
           ),
           (
             field: 'maxEmbeddedMediaBytes',
-            create: (value) => AcpInputBudget(maxEmbeddedMediaBytes: value),
+            create: (value) => ChatInputBudget(maxEmbeddedMediaBytes: value),
           ),
           (
             field: 'maxImageDimension',
-            create: (value) => AcpInputBudget(maxImageDimension: value),
+            create: (value) => ChatInputBudget(maxImageDimension: value),
           ),
           (
             field: 'maxImagePixels',
-            create: (value) => AcpInputBudget(maxImagePixels: value),
+            create: (value) => ChatInputBudget(maxImagePixels: value),
           ),
           (
             field: 'maxImagePreviewPixels',
-            create: (value) => AcpInputBudget(maxImagePreviewPixels: value),
+            create: (value) => ChatInputBudget(maxImagePreviewPixels: value),
           ),
           (
             field: 'maxConcurrentImageDecodes',
-            create: (value) => AcpInputBudget(maxConcurrentImageDecodes: value),
+            create: (value) =>
+                ChatInputBudget(maxConcurrentImageDecodes: value),
           ),
           (
             field: 'maxImagePreviewPixelsGlobal',
             create: (value) =>
-                AcpInputBudget(maxImagePreviewPixelsGlobal: value),
+                ChatInputBudget(maxImagePreviewPixelsGlobal: value),
           ),
           (
             field: 'maxImageDecodeBytesGlobal',
-            create: (value) => AcpInputBudget(maxImageDecodeBytesGlobal: value),
+            create: (value) =>
+                ChatInputBudget(maxImageDecodeBytesGlobal: value),
           ),
           (
             field: 'maxTurnItems',
-            create: (value) => AcpInputBudget(maxTurnItems: value),
+            create: (value) => ChatInputBudget(maxTurnItems: value),
           ),
           (
             field: 'maxTurnRetainedBytes',
-            create: (value) => AcpInputBudget(maxTurnRetainedBytes: value),
+            create: (value) => ChatInputBudget(maxTurnRetainedBytes: value),
           ),
           (
             field: 'maxTimelineItems',
-            create: (value) => AcpInputBudget(maxTimelineItems: value),
+            create: (value) => ChatInputBudget(maxTimelineItems: value),
           ),
           (
             field: 'maxTimelineBytes',
-            create: (value) => AcpInputBudget(maxTimelineBytes: value),
+            create: (value) => ChatInputBudget(maxTimelineBytes: value),
           ),
           (
             field: 'maxUiStateBytes',
-            create: (value) => AcpInputBudget(maxUiStateBytes: value),
+            create: (value) => ChatInputBudget(maxUiStateBytes: value),
           ),
           (
             field: 'maxMetadataPreviewBytes',
-            create: (value) => AcpInputBudget(maxMetadataPreviewBytes: value),
+            create: (value) => ChatInputBudget(maxMetadataPreviewBytes: value),
           ),
           (
             field: 'maxMetadataPreviewChars',
-            create: (value) => AcpInputBudget(maxMetadataPreviewChars: value),
+            create: (value) => ChatInputBudget(maxMetadataPreviewChars: value),
           ),
         ];
 
     final allBudgetLimits =
-        <({String field, AcpInputBudget Function(int value) create})>[
+        <({String field, ChatInputBudget Function(int value) create})>[
           (
             field: 'maxJsonDepth',
-            create: (value) => AcpInputBudget(maxJsonDepth: value),
+            create: (value) => ChatInputBudget(maxJsonDepth: value),
           ),
           (
             field: 'maxCapabilityDepth',
-            create: (value) => AcpInputBudget(maxCapabilityDepth: value),
+            create: (value) => ChatInputBudget(maxCapabilityDepth: value),
           ),
           (
             field: 'maxCapabilityNodes',
-            create: (value) => AcpInputBudget(maxCapabilityNodes: value),
+            create: (value) => ChatInputBudget(maxCapabilityNodes: value),
           ),
           (
             field: 'maxCapabilityBytes',
-            create: (value) => AcpInputBudget(maxCapabilityBytes: value),
+            create: (value) => ChatInputBudget(maxCapabilityBytes: value),
           ),
           (
             field: 'maxAuthMethods',
-            create: (value) => AcpInputBudget(maxAuthMethods: value),
+            create: (value) => ChatInputBudget(maxAuthMethods: value),
           ),
           (
             field: 'maxMetadataDepth',
-            create: (value) => AcpInputBudget(maxMetadataDepth: value),
+            create: (value) => ChatInputBudget(maxMetadataDepth: value),
           ),
           (
             field: 'maxMetadataNodes',
-            create: (value) => AcpInputBudget(maxMetadataNodes: value),
+            create: (value) => ChatInputBudget(maxMetadataNodes: value),
           ),
           (
             field: 'maxMetadataEntries',
-            create: (value) => AcpInputBudget(maxMetadataEntries: value),
+            create: (value) => ChatInputBudget(maxMetadataEntries: value),
           ),
           (
             field: 'maxMetadataBytes',
-            create: (value) => AcpInputBudget(maxMetadataBytes: value),
+            create: (value) => ChatInputBudget(maxMetadataBytes: value),
           ),
           ...newBudgetLimits,
         ];
@@ -323,7 +325,7 @@ void main() {
 
     test('approved small turn limits remain valid', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxTurnItems: 1,
           maxTurnRetainedBytes: 1024,
         ).validate,
@@ -333,7 +335,7 @@ void main() {
 
     test('image preview pixels accept the image pixel boundary', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxImagePixels: 10,
           maxImagePreviewPixels: 10,
         ).validate,
@@ -343,12 +345,12 @@ void main() {
 
     test('image preview pixels reject one beyond image pixels', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxImagePixels: 10,
           maxImagePreviewPixels: 11,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 10)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 11),
         ),
@@ -357,7 +359,7 @@ void main() {
 
     test('image preview pixels accept the global preview boundary', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxImagePreviewPixels: 10,
           maxImagePreviewPixelsGlobal: 10,
         ).validate,
@@ -367,12 +369,12 @@ void main() {
 
     test('image preview pixels reject one beyond the global budget', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxImagePreviewPixels: 11,
           maxImagePreviewPixelsGlobal: 10,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 10)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 11),
         ),
@@ -381,7 +383,7 @@ void main() {
 
     test('embedded media plus preview bytes accepts the exact boundary', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxEmbeddedMediaBytes: 8,
           maxImagePreviewPixels: 3,
           maxImageDecodeBytesGlobal: 20,
@@ -392,13 +394,13 @@ void main() {
 
     test('embedded media plus preview bytes rejects one beyond boundary', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxEmbeddedMediaBytes: 9,
           maxImagePreviewPixels: 3,
           maxImageDecodeBytesGlobal: 20,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -412,7 +414,7 @@ void main() {
 
     test('markdown fallback bytes accept the message text boundary', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxMessageTextBytes: 10,
           maxMarkdownFallbackBytes: 10,
         ).validate,
@@ -422,12 +424,12 @@ void main() {
 
     test('markdown fallback bytes reject one beyond message text bytes', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxMessageTextBytes: 10,
           maxMarkdownFallbackBytes: 11,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 10)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 11),
         ),
@@ -436,7 +438,7 @@ void main() {
 
     test('turn, timeline, and UI bytes accept equal boundaries', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxTurnRetainedBytes: 1024,
           maxTimelineBytes: 1024,
           maxUiStateBytes: 1024,
@@ -447,13 +449,13 @@ void main() {
 
     test('turn retained bytes reject one beyond timeline bytes', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxTurnRetainedBytes: 1025,
           maxTimelineBytes: 1024,
           maxUiStateBytes: 1024,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 1024)
               .having(
                 (error) => error.observedAtLeast,
@@ -466,13 +468,13 @@ void main() {
 
     test('timeline bytes reject one beyond UI state bytes', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxTurnRetainedBytes: 1024,
           maxTimelineBytes: 1025,
           maxUiStateBytes: 1024,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 1024)
               .having(
                 (error) => error.observedAtLeast,
@@ -488,7 +490,7 @@ void main() {
       const unsafePreviewPixels = maxSafeBudgetInteger ~/ 4 + 1;
 
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxImagePreviewPixels: unsafePreviewPixels,
         ).validate,
         throwsA(
@@ -505,7 +507,7 @@ void main() {
       const maxSafeBudgetInteger = 0x1fffffffffffff;
 
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxImageDecodeBytesGlobal: maxSafeBudgetInteger + 1,
         ).validate,
         throwsA(
@@ -524,7 +526,7 @@ void main() {
       const previewPixels = 562949953421313;
 
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxEmbeddedMediaBytes: maxSafeDecodedBytes,
           maxImagePixels: previewPixels,
           maxImagePreviewPixels: previewPixels,
@@ -532,7 +534,7 @@ void main() {
           maxImageDecodeBytesGlobal: maxSafeBudgetInteger,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', maxSafeDecodedBytes - 2)
               .having(
                 (error) => error.observedAtLeast,
@@ -547,13 +549,13 @@ void main() {
       'preview bytes beyond global decode bytes report non-negative limit',
       () {
         expect(
-          const AcpInputBudget(
+          const ChatInputBudget(
             maxEmbeddedMediaBytes: 1,
             maxImagePreviewPixels: 2,
             maxImageDecodeBytesGlobal: 7,
           ).validate,
           throwsA(
-            isA<AcpInputLimitExceeded>()
+            isA<ChatInputLimitExceeded>()
                 .having(
                   (error) => error.resource,
                   'resource',
@@ -569,13 +571,13 @@ void main() {
 
     test('preview bytes may consume global decode bytes exactly', () {
       expect(
-        const AcpInputBudget(
+        const ChatInputBudget(
           maxEmbeddedMediaBytes: 1,
           maxImagePreviewPixels: 2,
           maxImageDecodeBytesGlobal: 8,
         ).validate,
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -588,11 +590,11 @@ void main() {
     });
   });
 
-  group('AcpUtf8LineBudgetCounter', () {
-    AcpUtf8LineBudgetCounter counter({
+  group('ChatUtf8LineBudgetCounter', () {
+    ChatUtf8LineBudgetCounter counter({
       int maxBytes = 100,
       int maxLines = 100,
-    }) => AcpUtf8LineBudgetCounter(
+    }) => ChatUtf8LineBudgetCounter(
       maxBytes: maxBytes,
       maxLines: maxLines,
       resource: 'message_text',
@@ -737,11 +739,11 @@ void main() {
         expect(truncated.totalBytes, value.bytes);
         expect(
           truncated.omission,
-          isA<AcpInputOmission>()
+          isA<ChatInputOmission>()
               .having(
                 (value) => value.reason,
                 'reason',
-                AcpInputOmissionReason.inputLimit,
+                ChatInputOmissionReason.inputLimit,
               )
               .having((value) => value.resource, 'resource', 'message_text')
               .having((value) => value.limit, 'limit', value.bytes)
@@ -816,7 +818,7 @@ void main() {
         <
           ({
             String name,
-            AcpTextBudgetChunk Function(AcpUtf8LineBudgetCounter counter) run,
+            ChatTextBudgetChunk Function(ChatUtf8LineBudgetCounter counter) run,
           })
         >[
           (name: 'same chunk', run: (value) => value.append('$high$low')),
@@ -979,7 +981,7 @@ void main() {
     for (final testCase in newlineCases) {
       test('${testCase.name} accepts the exact two-line boundary', () {
         final value = counter(maxLines: 2);
-        final results = <AcpTextBudgetChunk>[];
+        final results = <ChatTextBudgetChunk>[];
         for (final chunk in testCase.chunks) {
           results.add(value.append(chunk));
         }
@@ -996,7 +998,7 @@ void main() {
         '${testCase.name} rejects the first line beyond a one-line limit',
         () {
           final value = counter(maxLines: 1);
-          final results = <AcpTextBudgetChunk>[];
+          final results = <ChatTextBudgetChunk>[];
           for (final chunk in testCase.chunks) {
             results.add(value.append(chunk));
           }
@@ -1084,7 +1086,7 @@ void main() {
       const unsafe = 0x1fffffffffffff + 1;
       for (final value in const <int>[0, -1, unsafe]) {
         expect(
-          () => AcpUtf8LineBudgetCounter(
+          () => ChatUtf8LineBudgetCounter(
             maxBytes: value,
             maxLines: 1,
             resource: 'message_text',
@@ -1098,7 +1100,7 @@ void main() {
           ),
         );
         expect(
-          () => AcpUtf8LineBudgetCounter(
+          () => ChatUtf8LineBudgetCounter(
             maxBytes: 1,
             maxLines: value,
             resource: 'message_text',
@@ -1115,19 +1117,19 @@ void main() {
     });
   });
 
-  group('scanAcpBase64', () {
+  group('scanChatBase64', () {
     test('accepts the standard alphabet, empty input, and padding', () {
       const alphabet =
           'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
       expect(
-        scanAcpBase64('', maxDecodedBytes: 1, resource: 'media'),
-        isA<AcpBase64ScanResult>()
+        scanChatBase64('', maxDecodedBytes: 1, resource: 'media'),
+        isA<ChatBase64ScanResult>()
             .having((value) => value.encodedLength, 'encodedLength', 0)
             .having((value) => value.decodedBytes, 'decodedBytes', 0),
       );
       expect(
-        scanAcpBase64(
+        scanChatBase64(
           alphabet,
           maxDecodedBytes: 48,
           resource: 'media',
@@ -1135,7 +1137,7 @@ void main() {
         48,
       );
       expect(
-        scanAcpBase64(
+        scanChatBase64(
           'TQ==',
           maxDecodedBytes: 1,
           resource: 'media',
@@ -1143,7 +1145,7 @@ void main() {
         1,
       );
       expect(
-        scanAcpBase64(
+        scanChatBase64(
           'TWE=',
           maxDecodedBytes: 2,
           resource: 'media',
@@ -1151,8 +1153,8 @@ void main() {
         2,
       );
       expect(
-        scanAcpBase64('TWFu', maxDecodedBytes: 3, resource: 'media'),
-        isA<AcpBase64ScanResult>()
+        scanChatBase64('TWFu', maxDecodedBytes: 3, resource: 'media'),
+        isA<ChatBase64ScanResult>()
             .having((value) => value.encodedLength, 'encodedLength', 4)
             .having((value) => value.decodedBytes, 'decodedBytes', 3),
       );
@@ -1170,7 +1172,8 @@ void main() {
         'T===',
       ]) {
         expect(
-          () => scanAcpBase64(encoded, maxDecodedBytes: 100, resource: 'media'),
+          () =>
+              scanChatBase64(encoded, maxDecodedBytes: 100, resource: 'media'),
           throwsA(isA<FormatException>()),
           reason: encoded,
         );
@@ -1180,7 +1183,7 @@ void main() {
     test('rejects non-canonical Base64 padding bits', () {
       for (final encoded in const <String>['TR==', 'TWF=']) {
         expect(
-          () => scanAcpBase64(encoded, maxDecodedBytes: 2, resource: 'media'),
+          () => scanChatBase64(encoded, maxDecodedBytes: 2, resource: 'media'),
           throwsA(
             isA<FormatException>().having(
               (error) => error.message,
@@ -1193,7 +1196,7 @@ void main() {
       }
 
       expect(
-        scanAcpBase64(
+        scanChatBase64(
           'TQ==',
           maxDecodedBytes: 1,
           resource: 'media',
@@ -1201,7 +1204,7 @@ void main() {
         1,
       );
       expect(
-        scanAcpBase64(
+        scanChatBase64(
           'TWE=',
           maxDecodedBytes: 2,
           resource: 'media',
@@ -1219,7 +1222,8 @@ void main() {
         'TW!E',
       ]) {
         expect(
-          () => scanAcpBase64(encoded, maxDecodedBytes: 100, resource: 'media'),
+          () =>
+              scanChatBase64(encoded, maxDecodedBytes: 100, resource: 'media'),
           throwsA(isA<FormatException>()),
           reason: encoded,
         );
@@ -1228,7 +1232,7 @@ void main() {
 
     test('accepts decoded boundary and stops at the first byte beyond it', () {
       expect(
-        scanAcpBase64(
+        scanChatBase64(
           'TWFu',
           maxDecodedBytes: 3,
           resource: 'embedded_media',
@@ -1236,13 +1240,13 @@ void main() {
         3,
       );
       expect(
-        () => scanAcpBase64(
+        () => scanChatBase64(
           'TWFu',
           maxDecodedBytes: 2,
           resource: 'embedded_media',
         ),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.resource, 'resource', 'embedded_media')
               .having((error) => error.limit, 'limit', 2)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
@@ -1254,7 +1258,7 @@ void main() {
       var decoderCalled = false;
 
       void decodeAfterScan(String encoded, int maxDecodedBytes) {
-        scanAcpBase64(
+        scanChatBase64(
           encoded,
           maxDecodedBytes: maxDecodedBytes,
           resource: 'embedded_media',
@@ -1266,7 +1270,7 @@ void main() {
       expect(decoderCalled, isFalse);
       expect(
         () => decodeAfterScan('TWFu', 2),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(decoderCalled, isFalse);
       decodeAfterScan('TWFu', 3);
@@ -1279,7 +1283,7 @@ void main() {
         const unsafe = 0x1fffffffffffff + 1;
         for (final value in const <int>[0, -1, unsafe]) {
           expect(
-            () => scanAcpBase64(
+            () => scanChatBase64(
               '',
               maxDecodedBytes: value,
               resource: 'embedded_media',
@@ -1295,7 +1299,7 @@ void main() {
         }
 
         expect(
-          () => scanAcpBase64(
+          () => scanChatBase64(
             'PAYLOAD_CANARY_MUST_NOT_APPEAR!',
             maxDecodedBytes: 100,
             resource: 'embedded_media',
@@ -1309,13 +1313,13 @@ void main() {
           ),
         );
         expect(
-          () => scanAcpBase64(
+          () => scanChatBase64(
             'UEFZTE9BRF9DQU5BUlk=',
             maxDecodedBytes: 1,
             resource: 'embedded_media',
           ),
           throwsA(
-            isA<AcpInputLimitExceeded>().having(
+            isA<ChatInputLimitExceeded>().having(
               (error) => error.toString(),
               'message',
               isNot(contains('PAYLOAD_CANARY')),
@@ -1326,15 +1330,15 @@ void main() {
     );
   });
 
-  group('AcpRetainedSizeEstimator', () {
-    AcpRetainedSizeEstimator estimator({
+  group('ChatRetainedSizeEstimator', () {
+    ChatRetainedSizeEstimator estimator({
       int maxDepth = 16,
       int maxNodes = 8192,
       int maxEntries = 1024,
       int maxItems = 1024,
       int maxStringBytes = 64 * 1024,
-    }) => AcpRetainedSizeEstimator(
-      budget: AcpInputBudget(
+    }) => ChatRetainedSizeEstimator(
+      budget: ChatInputBudget(
         maxMetadataDepth: maxDepth,
         maxMetadataNodes: maxNodes,
         maxMetadataEntries: maxEntries,
@@ -1383,13 +1387,13 @@ void main() {
 
     test('estimates three-field and five-field omission models', () {
       final value = estimator();
-      final invalidImage = AcpInputOmission(
-        reason: AcpInputOmissionReason.invalidImage,
+      final invalidImage = ChatInputOmission(
+        reason: ChatInputOmissionReason.invalidImage,
         resource: 'media',
         truncated: false,
       );
-      final inputLimit = AcpInputOmission(
-        reason: AcpInputOmissionReason.inputLimit,
+      final inputLimit = ChatInputOmission(
+        reason: ChatInputOmissionReason.inputLimit,
         resource: 'message_text',
         truncated: true,
         limit: 10,
@@ -1427,7 +1431,7 @@ void main() {
           ],
         ]),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1444,7 +1448,7 @@ void main() {
           <Object?>[null],
         ]),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1461,7 +1465,7 @@ void main() {
       expect(
         () => estimator(maxItems: 2).estimate(<Object?>[null, null, null]),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1485,7 +1489,7 @@ void main() {
           maxEntries: 2,
         ).estimate(<String, Object?>{'a': null, 'b': null, 'c': null}),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1503,7 +1507,7 @@ void main() {
       expect(
         () => value.estimate('\u20aca'),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1517,7 +1521,7 @@ void main() {
       expect(
         () => value.estimate(<String, Object?>{'\u20aca': null}),
         throwsA(
-          isA<AcpInputLimitExceeded>().having(
+          isA<ChatInputLimitExceeded>().having(
             (error) => error.resource,
             'resource',
             'ACP retained state string bytes',
@@ -1533,7 +1537,7 @@ void main() {
           maxStringBytes: 3,
         ).estimate(<String, Object?>{'long': null}),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1554,7 +1558,7 @@ void main() {
       expect(
         () => estimator(maxNodes: 1, maxStringBytes: 3).estimate(source),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1618,7 +1622,7 @@ void main() {
       expect(
         () => estimator(maxNodes: maxSafe, maxItems: maxSafe).estimate(huge),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having(
                 (error) => error.resource,
                 'resource',
@@ -1636,18 +1640,18 @@ void main() {
     });
   });
 
-  group('acpMaxBase64EncodedLength', () {
+  group('chatMaxBase64EncodedLength', () {
     test('derives the default embedded media encoded limit', () {
-      expect(acpMaxBase64EncodedLength(8 * 1024 * 1024), 11184812);
+      expect(chatMaxBase64EncodedLength(8 * 1024 * 1024), 11184812);
     });
 
     test('accepts the exact cross-platform safe boundary', () {
-      expect(acpMaxBase64EncodedLength(6755399441055741), 9007199254740988);
+      expect(chatMaxBase64EncodedLength(6755399441055741), 9007199254740988);
     });
 
     test('rejects one decoded byte beyond the safe boundary', () {
       expect(
-        () => acpMaxBase64EncodedLength(6755399441055742),
+        () => chatMaxBase64EncodedLength(6755399441055742),
         throwsA(isA<ArgumentError>()),
       );
     });
@@ -1655,7 +1659,7 @@ void main() {
     for (final value in const <int>[0, -1]) {
       test('rejects non-positive decoded byte limit $value', () {
         expect(
-          () => acpMaxBase64EncodedLength(value),
+          () => chatMaxBase64EncodedLength(value),
           throwsA(
             isA<ArgumentError>().having(
               (error) => error.name,
@@ -1668,14 +1672,14 @@ void main() {
     }
   });
 
-  group('AcpStructuredUpdateGuard typed values', () {
-    AcpStructuredUpdateGuard guard({
+  group('ChatStructuredUpdateGuard typed values', () {
+    ChatStructuredUpdateGuard guard({
       int maxNodes = 100,
       int maxBytes = 100,
       int maxStringBytes = 100,
       int maxItems = 100,
-    }) => AcpStructuredUpdateGuard(
-      budget: AcpInputBudget(
+    }) => ChatStructuredUpdateGuard(
+      budget: ChatInputBudget(
         maxStructuredUpdateNodes: maxNodes,
         maxStructuredUpdateBytes: maxBytes,
         maxStructuredStringBytes: maxStringBytes,
@@ -1700,7 +1704,7 @@ void main() {
           maxStringBytes: 3,
         ).copyString('${isolatedSurrogate}a', field: 'title'),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 3)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
         ),
@@ -1714,7 +1718,7 @@ void main() {
           maxStringBytes: 1,
         ).copyString('ab', field: 'title'),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.resource, 'resource', contains('title'))
               .having((error) => error.limit, 'limit', 1)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
@@ -1732,7 +1736,7 @@ void main() {
       expect(
         () => guard(maxBytes: 3).copyScalar(true, field: 'value'),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 3)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 4),
         ),
@@ -1755,7 +1759,7 @@ void main() {
             maxBytes: testCase.bytes - 1,
           ).copyScalar(testCase.input, field: 'beyond'),
           throwsA(
-            isA<AcpInputLimitExceeded>()
+            isA<ChatInputLimitExceeded>()
                 .having(
                   (error) => error.resource,
                   'resource',
@@ -1807,7 +1811,7 @@ void main() {
       expect(shared.copyString('ab', field: 'first'), 'ab');
       expect(
         () => shared.copyScalar(true, field: 'second'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
 
       final nodes = guard(maxNodes: 2);
@@ -1815,7 +1819,7 @@ void main() {
       expect(nodes.copyScalar(null, field: 'second'), isNull);
       expect(
         () => nodes.copyScalar(null, field: 'third'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
 
       expect(guard(maxNodes: 1).copyScalar(null, field: 'a'), isNull);
@@ -1826,7 +1830,7 @@ void main() {
       final value = guard(maxNodes: 1, maxBytes: 2, maxStringBytes: 3);
       expect(
         () => value.copyString('abc', field: 'large'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(value.copyString('ok', field: 'small'), 'ok');
     });
@@ -1839,7 +1843,7 @@ void main() {
       final beyond = _ReportedLengthList(3);
       expect(
         () => guard(maxItems: 2).checkCollection(beyond, field: 'items'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(beyond.indexReads, 0);
       expect(
@@ -1851,7 +1855,7 @@ void main() {
           'a': null,
           'b': null,
         }, field: 'map'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(
         () => guard().checkCollection('not a collection', field: 'items'),
@@ -1891,7 +1895,7 @@ void main() {
       expect(strings.copyString('b', field: 'strings[]'), 'b');
       expect(
         () => strings.consumeEntry(field: 'extra'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
 
       final models = guard(maxNodes: 5, maxBytes: 2);
@@ -1902,13 +1906,13 @@ void main() {
       }
       expect(
         () => models.consumeContainerNode(field: 'nested'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
     });
   });
 
-  group('AcpStructuredUpdateGuard metadata', () {
-    AcpStructuredUpdateGuard guard({
+  group('ChatStructuredUpdateGuard metadata', () {
+    ChatStructuredUpdateGuard guard({
       int maxDepth = 100,
       int maxNodes = 100,
       int maxEntries = 100,
@@ -1917,8 +1921,8 @@ void main() {
       int maxRootBytes = 100,
       int maxStringBytes = 100,
       int maxItems = 100,
-    }) => AcpStructuredUpdateGuard(
-      budget: AcpInputBudget(
+    }) => ChatStructuredUpdateGuard(
+      budget: ChatInputBudget(
         maxJsonDepth: maxDepth,
         maxMetadataDepth: maxDepth,
         maxMetadataNodes: maxNodes,
@@ -1933,7 +1937,7 @@ void main() {
     );
 
     final reentrantCalls =
-        <({String name, void Function(AcpStructuredUpdateGuard guard) call})>[
+        <({String name, void Function(ChatStructuredUpdateGuard guard) call})>[
           (
             name: 'copyString',
             call: (value) => value.copyString('a', field: 'reentrant'),
@@ -1973,7 +1977,7 @@ void main() {
 
     for (final testCase in reentrantCalls) {
       test('root length rejects reentrant ${testCase.name}', () {
-        late AcpStructuredUpdateGuard value;
+        late ChatStructuredUpdateGuard value;
         final source = _ReentrantMetadataMap(
           stage: _MetadataReentryStage.length,
           onReenter: () => testCase.call(value),
@@ -2057,7 +2061,7 @@ void main() {
       );
       expect(
         () => value.consumeEntry(field: 'beyond exact root'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
 
       final failed = guard(
@@ -2068,7 +2072,7 @@ void main() {
       );
       expect(
         () => failed.copyJsonValue(source, field: 'json value'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(failed.copyScalar(null, field: 'after failure'), isNull);
     });
@@ -2113,7 +2117,7 @@ void main() {
       expect(
         () => localNodes.copyMetadata(input, field: 'metadata'),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 1)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 2),
         ),
@@ -2126,7 +2130,7 @@ void main() {
       final rootNodes = guard(maxRootNodes: 1);
       expect(
         () => rootNodes.copyMetadata(input, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(
         rootNodes.copyMetadata(<String, Object?>{}, field: 'afterFailure'),
@@ -2142,7 +2146,7 @@ void main() {
       expect(
         () => guard(maxDepth: 2).copyMetadata(input, field: 'metadata'),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 2)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
         ),
@@ -2157,13 +2161,13 @@ void main() {
       );
       expect(
         () => guard(maxEntries: 1).copyMetadata(map, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(
         () => guard(maxEntries: 1).copyMetadata(<String, Object?>{
           'list': <Object?>[null, null],
         }, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
     });
 
@@ -2180,7 +2184,7 @@ void main() {
       final localBytes = guard(maxMetadataBytes: 4, maxRootBytes: 4);
       expect(
         () => localBytes.copyMetadata(input, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(
         localBytes.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
@@ -2190,7 +2194,7 @@ void main() {
       final rootBytes = guard(maxRootBytes: 4);
       expect(
         () => rootBytes.copyMetadata(input, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(
         rootBytes.copyMetadata(<String, Object?>{'': null}, field: 'exact'),
@@ -2199,7 +2203,7 @@ void main() {
       expect(
         () => guard(maxStringBytes: 2).copyMetadata(input, field: 'metadata'),
         throwsA(
-          isA<AcpInputLimitExceeded>()
+          isA<ChatInputLimitExceeded>()
               .having((error) => error.limit, 'limit', 2)
               .having((error) => error.observedAtLeast, 'observedAtLeast', 3),
         ),
@@ -2229,7 +2233,7 @@ void main() {
                 '': testCase.input,
               }, field: 'metadata'),
           throwsA(
-            isA<AcpInputLimitExceeded>()
+            isA<ChatInputLimitExceeded>()
                 .having(
                   (error) => error.resource,
                   'resource',
@@ -2258,7 +2262,7 @@ void main() {
       expect(
         () =>
             nodes.copyMetadata(<String, Object?>{'b': null}, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(nodes.copyScalar(null, field: 'afterFailure'), isNull);
 
@@ -2267,7 +2271,7 @@ void main() {
       expect(
         () =>
             bytes.copyMetadata(<String, Object?>{'b': null}, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(bytes.copyString('bbb', field: 'afterFailure'), 'bbb');
     });
@@ -2366,7 +2370,7 @@ void main() {
           () => guard(
             maxEntries: 2,
           ).copyMetadata(underreported, field: 'metadata'),
-          throwsA(isA<AcpInputLimitExceeded>()),
+          throwsA(isA<ChatInputLimitExceeded>()),
         );
         expect(underreported.entriesVisited, 3);
       },
@@ -2379,7 +2383,7 @@ void main() {
           maxEntries: 2,
           maxItems: 2,
         ).copyMetadata(<String, Object?>{'huge': huge}, field: 'metadata'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
       expect(huge.indexReads, 0);
     });
@@ -2450,7 +2454,7 @@ void main() {
 
       expect(
         failure,
-        isA<AcpInputLimitExceeded>()
+        isA<ChatInputLimitExceeded>()
             .having(
               (error) => error.resource,
               'resource',
@@ -2484,7 +2488,7 @@ void main() {
 
       expect(
         failure,
-        isA<AcpInputLimitExceeded>()
+        isA<ChatInputLimitExceeded>()
             .having(
               (error) => error.resource,
               'resource',
@@ -2524,7 +2528,7 @@ void main() {
     });
 
     test('rejects reentrancy from root entries before mutation', () {
-      late AcpStructuredUpdateGuard value;
+      late ChatStructuredUpdateGuard value;
       final source = _ReentrantMetadataMap(
         stage: _MetadataReentryStage.entries,
         onReenter: () => value.copyString('a', field: 'PAYLOAD_CANARY'),
@@ -2547,7 +2551,7 @@ void main() {
     });
 
     test('rejects reentrancy from root iterator current before mutation', () {
-      late AcpStructuredUpdateGuard value;
+      late ChatStructuredUpdateGuard value;
       final source = _ReentrantMetadataMap(
         stage: _MetadataReentryStage.current,
         onReenter: () => value.consumeEntry(field: 'PAYLOAD_CANARY'),
@@ -2578,7 +2582,7 @@ void main() {
     });
 
     test('rejects reentrancy from nested list iterator before mutation', () {
-      late AcpStructuredUpdateGuard value;
+      late ChatStructuredUpdateGuard value;
       final list = _ReentrantMetadataList(
         onReenter: () => value.copyScalar(null, field: 'PAYLOAD_CANARY'),
       );
@@ -2610,7 +2614,7 @@ void main() {
     });
 
     test('caught reentrant failure consumes no hidden root budget', () {
-      late AcpStructuredUpdateGuard value;
+      late ChatStructuredUpdateGuard value;
       StateError? innerFailure;
       final source = _ReentrantMetadataMap(
         stage: _MetadataReentryStage.length,
@@ -2632,7 +2636,7 @@ void main() {
       expect(value.copyString('a', field: 'afterMetadata'), 'a');
       expect(
         () => value.consumeEntry(field: 'beyond'),
-        throwsA(isA<AcpInputLimitExceeded>()),
+        throwsA(isA<ChatInputLimitExceeded>()),
       );
     });
 

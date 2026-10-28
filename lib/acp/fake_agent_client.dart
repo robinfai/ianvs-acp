@@ -3,12 +3,12 @@ import 'dart:async';
 import 'acp_agent_capabilities.dart';
 import 'acp_agent_client.dart';
 import 'acp_available_commands.dart';
-import 'acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'acp_session_catalog.dart';
-import 'acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'agent_event.dart';
 import 'agent_session.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 class FakeAgentClient implements AcpAgentClient {
   FakeAgentClient({
@@ -39,7 +39,7 @@ class FakeAgentClient implements AcpAgentClient {
     this.forkSessionEvents = const <AgentEvent>[],
     this.promptEvents,
     List<AgentEvent>? resumeEvents,
-    AcpSessionSettings? sessionSettings,
+    ChatSessionSettings? sessionSettings,
   }) : resumeEvents =
            resumeEvents ??
            const [
@@ -96,7 +96,7 @@ class FakeAgentClient implements AcpAgentClient {
   final List<AgentEvent> forkSessionEvents;
   final List<AgentEvent>? promptEvents;
   final List<AgentEvent> resumeEvents;
-  AcpSessionSettings _settings;
+  ChatSessionSettings _settings;
 
   bool connected = false;
   bool cancelled = false;
@@ -107,7 +107,7 @@ class FakeAgentClient implements AcpAgentClient {
   String? lastConfigId;
   Object? lastConfigValue;
   String? lastPermissionRequestId;
-  AcpPermissionDecision? lastPermissionDecision;
+  ChatPermissionDecision? lastPermissionDecision;
   String? lastPermissionOptionId;
   String? lastForkedSessionId;
   String? lastClosedSessionId;
@@ -117,12 +117,12 @@ class FakeAgentClient implements AcpAgentClient {
   List<PromptAttachment> lastAttachments = const <PromptAttachment>[];
   bool? _lastRestoreReplayedHistory;
 
-  final StreamController<AcpPermissionRequest> _permissionRequests =
-      StreamController<AcpPermissionRequest>.broadcast(sync: true);
+  final StreamController<ChatPermissionRequest> _permissionRequests =
+      StreamController<ChatPermissionRequest>.broadcast(sync: true);
   bool _permissionRequestsClosed = false;
 
-  final StreamController<AcpPermissionInvalidation> _permissionInvalidations =
-      StreamController<AcpPermissionInvalidation>.broadcast(sync: true);
+  final StreamController<ChatPermissionInvalidation> _permissionInvalidations =
+      StreamController<ChatPermissionInvalidation>.broadcast(sync: true);
   bool _permissionInvalidationsClosed = false;
   final StreamController<AcpAvailableCommandsUpdate> _availableCommandsUpdates =
       StreamController<AcpAvailableCommandsUpdate>.broadcast(sync: true);
@@ -176,11 +176,11 @@ class FakeAgentClient implements AcpAgentClient {
       : null;
 
   @override
-  Stream<AcpPermissionRequest> get permissionRequests =>
+  Stream<ChatPermissionRequest> get permissionRequests =>
       _permissionRequests.stream;
 
   @override
-  Stream<AcpPermissionInvalidation> get permissionInvalidations =>
+  Stream<ChatPermissionInvalidation> get permissionInvalidations =>
       _permissionInvalidations.stream;
 
   @override
@@ -235,29 +235,30 @@ class FakeAgentClient implements AcpAgentClient {
     }
   }
 
-  static const AcpSessionSettings _defaultSessionSettings = AcpSessionSettings(
-    modes: AcpSessionModeInfo(
-      currentModeId: 'ask',
-      availableModes: [
-        AcpSessionMode(id: 'ask', name: 'Ask'),
-        AcpSessionMode(id: 'edit', name: 'Edit'),
-      ],
-    ),
-    configOptions: [
-      AcpConfigOption(
-        id: 'approval',
-        name: 'Approval mode',
-        type: 'select',
-        currentValue: 'suggest',
-        description: 'Controls how the agent asks before changing files.',
-        group: 'Safety',
-        options: [
-          AcpConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
-          AcpConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+  static const ChatSessionSettings _defaultSessionSettings =
+      ChatSessionSettings(
+        modes: ChatSessionModeInfo(
+          currentModeId: 'ask',
+          availableModes: [
+            ChatSessionMode(id: 'ask', name: 'Ask'),
+            ChatSessionMode(id: 'edit', name: 'Edit'),
+          ],
+        ),
+        configOptions: [
+          ChatConfigOption(
+            id: 'approval',
+            name: 'Approval mode',
+            type: 'select',
+            currentValue: 'suggest',
+            description: 'Controls how the agent asks before changing files.',
+            group: 'Safety',
+            options: [
+              ChatConfigOptionChoice(value: 'suggest', name: 'Suggest first'),
+              ChatConfigOptionChoice(value: 'auto', name: 'Auto apply'),
+            ],
+          ),
         ],
-      ),
-    ],
-  );
+      );
 
   @override
   Future<void> connect() async {
@@ -371,7 +372,7 @@ class FakeAgentClient implements AcpAgentClient {
   }
 
   @override
-  Future<AcpSessionSettings> sessionSettings(String sessionId) async {
+  Future<ChatSessionSettings> sessionSettings(String sessionId) async {
     if (!connected) {
       throw StateError('Fake client is not connected.');
     }
@@ -392,7 +393,7 @@ class FakeAgentClient implements AcpAgentClient {
   }
 
   @override
-  Future<List<AcpConfigOption>> setConfigOption({
+  Future<List<ChatConfigOption>> setConfigOption({
     required String sessionId,
     required String configId,
     required Object value,
@@ -542,12 +543,12 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Future<void> cancelSession({required String sessionId}) => cancel();
 
-  void emitPermissionRequest(AcpPermissionRequest request) {
+  void emitPermissionRequest(ChatPermissionRequest request) {
     if (_permissionRequestsClosed) return;
     _permissionRequests.add(request);
   }
 
-  void emitPermissionInvalidation(AcpPermissionInvalidation event) {
+  void emitPermissionInvalidation(ChatPermissionInvalidation event) {
     if (_permissionInvalidationsClosed) return;
     _permissionInvalidations.add(event);
   }
@@ -567,7 +568,7 @@ class FakeAgentClient implements AcpAgentClient {
   @override
   Future<void> respondToPermissionRequest({
     required String id,
-    required AcpPermissionDecision decision,
+    required ChatPermissionDecision decision,
     String? selectedOptionId,
   }) async {
     lastPermissionRequestId = id;

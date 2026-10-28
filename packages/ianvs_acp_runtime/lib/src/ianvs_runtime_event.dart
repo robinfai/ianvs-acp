@@ -65,7 +65,7 @@ final class IanvsRuntimeEvent {
     );
   }
 
-  static const int supportedSchemaVersion = 4;
+  static const int supportedSchemaVersion = 5;
 
   final int schemaVersion;
   final int sequence;

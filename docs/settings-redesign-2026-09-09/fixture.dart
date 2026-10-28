@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:ianvs_acp/acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import 'package:ianvs_acp/acp/fake_agent_client.dart';
 import 'package:ianvs_acp/app.dart';
 import 'package:ianvs_acp/config/acp_client_config.dart';
@@ -41,36 +41,36 @@ final settingsFixtureConfig = AcpClientConfig.fromJson({
   },
 }, configPath: '/tmp/ianvs-settings-design/settings.json');
 
-const settingsFixtureOptions = AcpSessionSettings(
-  modes: AcpSessionModeInfo(
+const settingsFixtureOptions = ChatSessionSettings(
+  modes: ChatSessionModeInfo(
     currentModeId: 'ask',
     availableModes: [
-      AcpSessionMode(id: 'ask', name: 'Ask'),
-      AcpSessionMode(id: 'edit', name: 'Edit'),
+      ChatSessionMode(id: 'ask', name: 'Ask'),
+      ChatSessionMode(id: 'edit', name: 'Edit'),
     ],
   ),
   configOptions: [
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'model',
       name: 'Model',
       type: 'select',
       currentValue: 'gpt-5-codex',
       group: 'Model',
       options: [
-        AcpConfigOptionChoice(value: 'gpt-5-codex', name: 'GPT-5 Codex'),
-        AcpConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
+        ChatConfigOptionChoice(value: 'gpt-5-codex', name: 'GPT-5 Codex'),
+        ChatConfigOptionChoice(value: 'gpt-5', name: 'GPT-5'),
       ],
     ),
-    AcpConfigOption(
+    ChatConfigOption(
       id: 'reasoning_effort',
       name: 'Reasoning effort',
       type: 'select',
       currentValue: 'medium',
       group: 'Model',
       options: [
-        AcpConfigOptionChoice(value: 'low', name: 'Low'),
-        AcpConfigOptionChoice(value: 'medium', name: 'Medium'),
-        AcpConfigOptionChoice(value: 'high', name: 'High'),
+        ChatConfigOptionChoice(value: 'low', name: 'Low'),
+        ChatConfigOptionChoice(value: 'medium', name: 'Medium'),
+        ChatConfigOptionChoice(value: 'high', name: 'High'),
       ],
     ),
   ],

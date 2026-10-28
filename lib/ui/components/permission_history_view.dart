@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:ianvs_design/ianvs_design.dart';
 
-import '../../acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 
 typedef PermissionHistoryExporter =
     Future<String?> Function(String fileName, String json);
@@ -15,7 +15,7 @@ class PermissionHistoryView extends StatefulWidget {
     required this.entries,
     this.exporter,
   });
-  final List<AcpPermissionAuditEntry> entries;
+  final List<ChatPermissionAuditEntry> entries;
   final PermissionHistoryExporter? exporter;
   @override
   State<PermissionHistoryView> createState() => _PermissionHistoryViewState();
@@ -80,7 +80,7 @@ class _PermissionHistoryViewState extends State<PermissionHistoryView> {
       final fileName = _permissionHistoryFileName(DateTime.now());
       final path = await exporter(
         fileName,
-        acpPermissionAuditEntriesToJson(widget.entries),
+        chatPermissionAuditEntriesToJson(widget.entries),
       );
       if (!mounted) return;
       setState(() {
@@ -180,7 +180,7 @@ class _ExportStatus extends StatelessWidget {
 class _PermissionHistoryRow extends StatelessWidget {
   const _PermissionHistoryRow({required this.entry});
 
-  final AcpPermissionAuditEntry entry;
+  final ChatPermissionAuditEntry entry;
 
   @override
   Widget build(BuildContext context) {
@@ -335,21 +335,21 @@ class _MetaChip extends StatelessWidget {
   }
 }
 
-IconData _statusIcon(AcpPermissionAuditStatus status) {
+IconData _statusIcon(ChatPermissionAuditStatus status) {
   return switch (status) {
-    AcpPermissionAuditStatus.pending => Icons.hourglass_top_rounded,
-    AcpPermissionAuditStatus.allowed => Icons.check_circle_outline_rounded,
-    AcpPermissionAuditStatus.denied => Icons.block_rounded,
-    AcpPermissionAuditStatus.cancelled => Icons.cancel_outlined,
+    ChatPermissionAuditStatus.pending => Icons.hourglass_top_rounded,
+    ChatPermissionAuditStatus.allowed => Icons.check_circle_outline_rounded,
+    ChatPermissionAuditStatus.denied => Icons.block_rounded,
+    ChatPermissionAuditStatus.cancelled => Icons.cancel_outlined,
   };
 }
 
-Color _statusColor(BuildContext context, AcpPermissionAuditStatus status) {
+Color _statusColor(BuildContext context, ChatPermissionAuditStatus status) {
   return switch (status) {
-    AcpPermissionAuditStatus.pending => context.ianvs.warning,
-    AcpPermissionAuditStatus.allowed => context.ianvs.success,
-    AcpPermissionAuditStatus.denied => context.ianvs.danger,
-    AcpPermissionAuditStatus.cancelled => context.ianvs.subtle,
+    ChatPermissionAuditStatus.pending => context.ianvs.warning,
+    ChatPermissionAuditStatus.allowed => context.ianvs.success,
+    ChatPermissionAuditStatus.denied => context.ianvs.danger,
+    ChatPermissionAuditStatus.cancelled => context.ianvs.subtle,
   };
 }
 

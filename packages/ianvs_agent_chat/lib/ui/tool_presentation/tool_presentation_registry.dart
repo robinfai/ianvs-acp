@@ -2,7 +2,7 @@ import 'dart:collection';
 
 import 'package:flutter/material.dart';
 
-import '../../models/chat_message.dart';
+import 'package:ianvs_agent_core/models/chat_message.dart';
 
 const List<String> _toolCallIdMetadataKeys = [
   'toolCallId',

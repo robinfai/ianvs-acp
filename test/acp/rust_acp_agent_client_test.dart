@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ianvs_acp/acp/acp_permission_request.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
 import 'package:ianvs_acp/acp/agent_event.dart';
-import 'package:ianvs_agent_chat/models/prompt_attachment.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 import 'package:ianvs_acp/acp/rust_acp_agent_client.dart';
 import 'package:ianvs_acp/acp/session_title.dart';
-import 'package:ianvs_acp/rust/ianvs_acp_native.dart';
+import 'package:ianvs_acp_runtime/ianvs_acp_runtime.dart';
 
 void main() {
   test(
@@ -68,7 +68,7 @@ void main() {
       expect(permission.choices.single.kind, 'allow_once');
       await client.respondToPermissionRequest(
         id: permission.id,
-        decision: AcpPermissionDecision.allow,
+        decision: ChatPermissionDecision.allow,
       );
       final events = await eventsFuture;
       expect(events.map((event) => event.type), <AgentEventType>[
@@ -839,7 +839,7 @@ void main() {
     });
     await client.respondToPermissionRequest(
       id: permission.id,
-      decision: AcpPermissionDecision.allow,
+      decision: ChatPermissionDecision.allow,
     );
     final events = await eventsFuture;
     expect(
@@ -1008,11 +1008,11 @@ void main() {
       final invalidation = await invalidationFuture;
       expect(invalidation.requestId, permission.id);
       expect(invalidation.lifecycleId, permission.lifecycleId);
-      expect(invalidation.reason, AcpPermissionInvalidationReason.timedOut);
+      expect(invalidation.reason, ChatPermissionInvalidationReason.timedOut);
       await expectLater(
         client.respondToPermissionRequest(
           id: permission.id,
-          decision: AcpPermissionDecision.allow,
+          decision: ChatPermissionDecision.allow,
         ),
         throwsStateError,
       );
@@ -1116,7 +1116,7 @@ final class _ClientFakeNative implements IanvsAcpNativeApi {
   void emit(String type, Map<String, Object?> data) {
     events.add(
       jsonEncode(<String, Object?>{
-        'schemaVersion': 4,
+        'schemaVersion': 5,
         'sequence': _sequence++,
         'type': type,
         ...data,

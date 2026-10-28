@@ -1,8 +1,8 @@
-import 'package:flutter/foundation.dart';
-import 'chat_session.dart';
-import 'chat_submission.dart';
-import 'models/chat_permission_request.dart';
-import 'models/prompt_attachment.dart';
+import 'dart:async';
+import 'package:ianvs_agent_core/chat_session.dart';
+import 'package:ianvs_agent_core/chat_submission.dart';
+import 'package:ianvs_agent_core/models/chat_permission_request.dart';
+import 'package:ianvs_agent_core/models/prompt_attachment.dart';
 
 /// Adapts an existing ACP/client controller without transferring its ownership.
 /// The host projects protocol state once, then reuses the common UI unchanged.
@@ -21,12 +21,13 @@ class CallbackChatSession extends ChatSession {
     this.onClearQueuedPrompts,
     this.onReorderQueuedPrompt,
   });
-  final ValueChanged<ChatToolCallExecutionPolicy>? onSetExecutionPolicy;
-  final ValueChanged<int>? onGuideQueuedPrompt;
-  final ValueChanged<int>? onRemoveQueuedPrompt;
-  final VoidCallback? onClearQueuedPrompts;
+  final void Function(ChatToolCallExecutionPolicy)? onSetExecutionPolicy;
+  final void Function(int)? onGuideQueuedPrompt;
+  final void Function(int)? onRemoveQueuedPrompt;
+  final void Function()? onClearQueuedPrompts;
   final void Function(int, int)? onReorderQueuedPrompt;
-  final Listenable changes;
+  @override
+  final Stream<ChatSessionState> changes;
   final ChatSessionState Function() readState;
   final Future<void> Function(String text, List<PromptAttachment> attachments)
   onSend;
@@ -36,11 +37,6 @@ class CallbackChatSession extends ChatSession {
   final Future<void> Function(String, Object)? onSetConfigOption;
   @override
   ChatSessionState get state => readState();
-  @override
-  void addListener(VoidCallback listener) => changes.addListener(listener);
-  @override
-  void removeListener(VoidCallback listener) =>
-      changes.removeListener(listener);
   @override
   Future<void> send(
     String text, {
@@ -74,8 +70,7 @@ class CallbackChatSession extends ChatSession {
       onSetConfigOption?.call(id, value) ?? super.setConfigOption(id, value);
 }
 
-/// Callback adapter with an explicit admission callback. The legacy adapter
-/// continues to use onSend, with its existing completion timing.
+/// Callback adapter with an explicit admission callback, separate from generation completion.
 class CallbackSubmissionChatSession extends CallbackChatSession
     implements ChatSubmissionSession {
   CallbackSubmissionChatSession({

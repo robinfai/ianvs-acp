@@ -6,7 +6,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-import '../../models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
 import '../image_decode_budget.dart';
 
 abstract interface class BoundedImageDecoder {

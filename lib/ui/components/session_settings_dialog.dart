@@ -2,8 +2,8 @@ import 'dart:async';
 
 import 'package:ianvs_design/ianvs_design.dart';
 
-import '../../acp/acp_input_budget.dart';
-import '../../acp/acp_session_settings.dart';
+import 'package:ianvs_agent_core/models/chat_input_budget.dart';
+import 'package:ianvs_agent_core/models/chat_session_settings.dart';
 import '../../state/chat_controller.dart';
 import 'package:ianvs_agent_chat/ui/bounded_metadata_preview.dart';
 
@@ -13,11 +13,11 @@ class SessionSettingsDialog extends StatelessWidget {
   const SessionSettingsDialog({
     super.key,
     required this.controller,
-    this.inputBudget = const AcpInputBudget(),
+    this.inputBudget = const ChatInputBudget(),
   });
 
   final ChatController controller;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -111,9 +111,9 @@ class _SessionSettingsScroll extends StatefulWidget {
   final String cwd;
   final String agentName;
   final bool loading;
-  final AcpSessionSettings settings;
+  final ChatSessionSettings settings;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final ValueChanged<String> onModelChanged;
   final ValueChanged<String> onReasoningEffortChanged;
   final ValueChanged<String> onModeChanged;
@@ -275,9 +275,9 @@ final class _SettingsProjection {
     required this.nonModelOptionIndexes,
   });
 
-  factory _SettingsProjection.from(List<AcpConfigOption> options) {
-    AcpConfigOption? modelOption;
-    AcpConfigOption? reasoningEffortOption;
+  factory _SettingsProjection.from(List<ChatConfigOption> options) {
+    ChatConfigOption? modelOption;
+    ChatConfigOption? reasoningEffortOption;
     final nonModelOptionIndexes = <int>[];
     for (var index = 0; index < options.length; index++) {
       final option = options[index];
@@ -296,8 +296,8 @@ final class _SettingsProjection {
     );
   }
 
-  final AcpConfigOption? modelOption;
-  final AcpConfigOption? reasoningEffortOption;
+  final ChatConfigOption? modelOption;
+  final ChatConfigOption? reasoningEffortOption;
   final List<int> nonModelOptionIndexes;
 }
 
@@ -433,10 +433,10 @@ class _SessionConfigurationSection extends StatelessWidget {
     required this.onReasoningEffortChanged,
   });
 
-  final AcpConfigOption? modelOption;
-  final AcpConfigOption? reasoningEffortOption;
+  final ChatConfigOption? modelOption;
+  final ChatConfigOption? reasoningEffortOption;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final ValueChanged<String> onModelChanged;
   final ValueChanged<String> onReasoningEffortChanged;
 
@@ -482,9 +482,9 @@ class _ModelDropdown extends StatelessWidget {
     required this.onChanged,
   });
 
-  final AcpConfigOption option;
+  final ChatConfigOption option;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final ValueChanged<String> onChanged;
 
   @override
@@ -541,9 +541,9 @@ class _ReasoningEffortControl extends StatelessWidget {
     required this.onChanged,
   });
 
-  final AcpConfigOption option;
+  final ChatConfigOption option;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final ValueChanged<String> onChanged;
 
   @override
@@ -683,9 +683,9 @@ class _ModeSection extends StatelessWidget {
     required this.onChanged,
   });
 
-  final AcpSessionSettings settings;
+  final ChatSessionSettings settings;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final ValueChanged<String> onChanged;
 
   @override
@@ -753,9 +753,9 @@ class _ConfigOptionTile extends StatelessWidget {
     required this.onChanged,
   });
 
-  final AcpConfigOption option;
+  final ChatConfigOption option;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final ValueChanged<Object> onChanged;
 
   @override
@@ -922,7 +922,7 @@ class _LargeChoiceControl extends StatefulWidget {
   final Object sourceIdentity;
   final String currentValue;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final int itemCount;
   final String Function(int index) valueAt;
   final String Function(int index) labelAt;
@@ -1099,7 +1099,7 @@ class _SearchableChoiceDialog extends StatefulWidget {
   final String title;
   final String currentValue;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
   final int itemCount;
   final String Function(int index) valueAt;
   final String Function(int index) labelAt;
@@ -1207,7 +1207,7 @@ class _ChoiceListTile extends StatelessWidget {
   final String? description;
   final bool selected;
   final bool enabled;
-  final AcpInputBudget inputBudget;
+  final ChatInputBudget inputBudget;
 
   @override
   Widget build(BuildContext context) {
@@ -1251,7 +1251,7 @@ class _SettingsIncompleteNotice extends StatelessWidget {
   });
 
   final bool truncated;
-  final List<AcpInputOmission> omissions;
+  final List<ChatInputOmission> omissions;
 
   @override
   Widget build(BuildContext context) {
