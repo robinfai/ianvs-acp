@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build and embed ABI v11 from this package, regardless of the consumer's cwd.
+# Build and embed ABI v12 from this package, regardless of the consumer's cwd.
 set -eu
 
 PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)

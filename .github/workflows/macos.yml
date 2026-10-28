@@ -66,6 +66,13 @@ jobs:
           test "$(printf '%s' "$version_json" | jq -r .frameworkRevision)" \
             = "$FLUTTER_FRAMEWORK_REVISION"
 
+      - name: Install verified Rust toolchain
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --component clippy --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default 1.90.0
+          rustc --version
+          cargo --version
+
       - name: Resolve Dart dependencies
         run: make bootstrap
 

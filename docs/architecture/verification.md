@@ -90,3 +90,8 @@ the produced `ianvs_core.framework` was checked with `lipo` and contains both
 x86_64 and arm64, and its signature passes the bundle signing-closure check.
 Remote GitHub Actions and notarization remain untested. No application was
 installed or launched, and no commits were pushed.
+
+CI explicitly installs the locally verified Rust 1.90.0 toolchain with Clippy
+and both `aarch64-apple-darwin` and `x86_64-apple-darwin` targets. It sets the
+runner default before Flutter/native hooks execute, so consumer working
+directories do not select an older toolchain.
