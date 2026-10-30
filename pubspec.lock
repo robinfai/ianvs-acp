@@ -325,7 +325,7 @@ packages:
       path: "packages/ianvs_agent_chat"
       relative: true
     source: path
-    version: "0.3.0"
+    version: "0.3.1"
   ianvs_agent_core:
     dependency: "direct main"
     description:
@@ -345,10 +345,10 @@ packages:
     dependency: transitive
     description:
       name: ianvs_markdown
-      sha256: "39ec2c1d76e44bdfd2c6092b5673e1465b31562c2fa9c402f19b2107a209e126"
+      sha256: "8b092b459d06c63de151de82227ecb0331854dc7a94a150d571056bd7fcf6ed1"
       url: "https://pub.dev"
     source: hosted
-    version: "0.3.1"
+    version: "0.3.2"
   ianvs_mermaid:
     dependency: "direct main"
     description:

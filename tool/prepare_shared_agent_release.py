@@ -13,13 +13,15 @@ VERSIONS = {
     "ianvs_agent_core": "0.1.0",
     "ianvs_mermaid": "0.1.0",
     "ianvs_acp_runtime": "0.2.0",
-    "ianvs_agent_chat": "0.3.0",
+    "ianvs_agent_chat": "0.3.1",
 }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="new directory (default: temporary directory)")
+    parser.add_argument("--package", action="append", choices=VERSIONS,
+                        help="prepare only selected packages (repeatable; default: all)")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     if args.output:
@@ -30,6 +32,8 @@ def main():
     manifest = {"sourceIncludesWorkingTree": True, "baseCommit": subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(), "packages": {}}
     for name, version in VERSIONS.items():
+        if args.package and name not in args.package:
+            continue
         prefix = Path("packages") / name
         listed = subprocess.check_output(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", str(prefix)], cwd=root)
