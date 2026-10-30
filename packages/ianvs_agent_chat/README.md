@@ -15,7 +15,7 @@ Reusable Flutter **Agent Chat UI** for ACP-powered agents and OpenAI-compatible 
 
 ```yaml
 dependencies:
-  ianvs_agent_chat: ^0.3.0
+  ianvs_agent_chat: ^0.3.1
 ```
 
 Requires Dart 3.12 or later and Flutter. The desktop integration is validated on macOS. Other platforms require testing their file, drag/drop, clipboard and Mermaid integrations; this release does not claim full platform parity.

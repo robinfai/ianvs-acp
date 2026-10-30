@@ -1,3 +1,8 @@
+## 0.3.1
+
+* Require `ianvs_markdown ^0.3.2` so consumers receive measured ordered-list markers and bounded, compact table columns with horizontal scrolling on narrow screens.
+* Add real timeline consumer regressions for narrow table readability, horizontal gestures and ordered-list marker widths. Public chat APIs are unchanged.
+
 ## 0.3.0
 
 * Extract pure Dart models and sessions into `ianvs_agent_core`; move native diagrams into optional `ianvs_mermaid`.
